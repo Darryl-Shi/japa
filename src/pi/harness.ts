@@ -2,7 +2,8 @@
 // conversation and getting answers back to a channel lives here.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import type { Models } from "@earendil-works/pi-ai";
+import type { Message, Models } from "@earendil-works/pi-ai";
+import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import {
 	AssistantEntry,
 	type Conversation,
@@ -15,7 +16,9 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
+import { summarizeSlice, transcriptText } from "./state.ts";
 
 /** Where an answer goes once it exists. Written before submitting, so a restart can still deliver it. */
 export type ReplyTarget = { chatId: number; messageId: number };
@@ -47,27 +50,50 @@ const Core = defineExtension({
 
 export type Answer = { text: string } | { error: string };
 
-/** What a compaction keeps verbatim: roughly the last exchange. */
-const KEEP_RECENT_TOKENS = 4000;
+/** What the channel knows about an incoming message that bears on where it belongs. */
+export type Arrival = {
+	/** The message it replies to, if any. */
+	replyTo?: { messageId: number; text: string; at: number };
+	/** The user asked for a fresh start (/new). */
+	newTopic?: boolean;
+};
 
-const REST_NOTE = [
-	"The conversation is going quiet. Write the summary as a short handoff note for picking it up later:",
-	"open threads, commitments made, questions waiting on an answer, and anything the next message will likely need.",
-	"Under 150 words. Drop anything finished. No timestamps.",
-].join(" ");
+/** When the current slice started; a reply to anything older anchors a new one. */
+const Slice = defineDoc<{ startedAt: number }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
+
+const RECENT_MESSAGES = 6;
+const RECENT_CHARS = 4000;
+const MESSAGE_CHARS = 800;
+/** A departing slice smaller than this is already covered by the recent messages; no summary call. */
+const SUMMARIZE_ABOVE_TOKENS = 1500;
+
+const textOf = (message: Message) =>
+	typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 
 export class MainThread {
 	readonly harness: Harness;
 	readonly root: Conversation;
+	private readonly models: Models;
 	private readonly settings: () => Settings;
+	private readonly state: { openItems: OpenItems; workingSet: WorkingSetFile } | undefined;
 	private readonly log: (line: string) => void;
-	private restTimer: NodeJS.Timeout | undefined;
+	private readonly background = new Set<Promise<void>>();
+	private inFlight = 0;
 
-	private constructor(harness: Harness, root: Conversation, settings: () => Settings, log: (line: string) => void) {
-		this.harness = harness;
-		this.root = root;
-		this.settings = settings;
-		this.log = log;
+	private constructor(options: {
+		harness: Harness;
+		root: Conversation;
+		models: Models;
+		settings: () => Settings;
+		state: { openItems: OpenItems; workingSet: WorkingSetFile } | undefined;
+		log: (line: string) => void;
+	}) {
+		this.harness = options.harness;
+		this.root = options.root;
+		this.models = options.models;
+		this.settings = options.settings;
+		this.state = options.state;
+		this.log = options.log;
 	}
 
 	static async open(
@@ -77,7 +103,9 @@ export class MainThread {
 			models: Models;
 			settings: () => Settings;
 			extensions?: readonly Extension[];
-			/** Per-answer cost and cache numbers, for tuning the context policy from real use. */
+			/** Open items and working set a new slice starts from. */
+			state?: { openItems: OpenItems; workingSet: WorkingSetFile };
+			/** Per-answer slice, cost and cache numbers, for tuning the boundaries from real use. */
 			log?: (line: string) => void;
 		},
 		context: Context,
@@ -86,56 +114,13 @@ export class MainThread {
 		registry.install(Core);
 		for (const extension of options.extensions ?? []) registry.install(extension);
 		const storage = options.storage ?? (await openNodeSqliteStorage(join(options.dataDir ?? "data", "session.sqlite")));
-		const harness = await Harness.open(
-			storage,
-			{
-				models: options.models,
-				registry,
-				// Default (short) provider caching only: the context is kept small by construction instead.
-				settings: { compaction: { keepRecentTokens: KEEP_RECENT_TOKENS } },
-			},
-			context,
-		);
+		// Default (short) provider caching only: the context is kept small by construction instead.
+		const harness = await Harness.open(storage, { models: options.models, registry }, context);
 		const root = await harness.root(context, { agent: { model: options.settings().model } });
-		const thread = new MainThread(harness, root, options.settings, options.log ?? (() => {}));
+		const thread = new MainThread({ harness, root, models: options.models, settings: options.settings, state: options.state, log: options.log ?? (() => {}) });
 		await thread.applySettings(options.settings(), context);
 		harness.resume();
-		await thread.scheduleRest(context);
 		return thread;
-	}
-
-	/** When the last message was, and how big the last request's prompt was. */
-	async activity(context: Context): Promise<{ lastAt: number | undefined; promptTokens: number }> {
-		const { messages } = await this.root.context(context);
-		const last = messages.at(-1);
-		const answer = messages.findLast((message) => message.role === "assistant");
-		const usage = answer?.role === "assistant" ? answer.usage : undefined;
-		return {
-			lastAt: last?.role === "system" ? undefined : last?.timestamp,
-			promptTokens: usage === undefined ? 0 : usage.input + usage.cacheRead + usage.cacheWrite,
-		};
-	}
-
-	/** Compact to a handoff note. A no-op when the context is already small. */
-	async rest(context: Context): Promise<void> {
-		await this.harness.waitForTask(await this.root.compact(REST_NOTE, context), context);
-	}
-
-	/** Rest after a quiet gap: the cache is cold by then anyway, so compacting throws nothing warm away. */
-	private async scheduleRest(context: Context): Promise<void> {
-		clearTimeout(this.restTimer);
-		const { lastAt } = await this.activity(context);
-		if (lastAt === undefined) return;
-		const due = lastAt + this.settings().context.restAfterMinutes * 60_000 - Date.now();
-		this.restTimer = setTimeout(() => void this.restIfQuiet(context).catch(() => {}), Math.max(0, due));
-		this.restTimer.unref();
-	}
-
-	private async restIfQuiet(context: Context): Promise<void> {
-		const { lastAt } = await this.activity(context);
-		const quietFor = Date.now() - (lastAt ?? Date.now());
-		if (quietFor >= this.settings().context.restAfterMinutes * 60_000) await this.rest(context);
-		else await this.scheduleRest(context);
 	}
 
 	/** Follow the settings' main model; a change applies from the next request. */
@@ -147,11 +132,11 @@ export class MainThread {
 	}
 
 	/** Submit a message from a channel and resolve with its answer. Idempotent per requestId. */
-	async ask(requestId: string, content: string, reply: ReplyTarget, context: Context): Promise<Answer> {
+	async ask(requestId: string, content: string, reply: ReplyTarget, context: Context, arrival: Arrival = {}): Promise<Answer> {
 		await this.root.commit(async (tx) => {
 			(await tx.doc(PendingReplies)).byRequest[requestId] = { ...reply, content };
 		}, context);
-		return this.answer(requestId, content, context);
+		return this.answer(requestId, content, context, arrival);
 	}
 
 	/** Answers the last process admitted but never delivered. */
@@ -160,33 +145,108 @@ export class MainThread {
 		return Object.entries(doc?.byRequest ?? {}).map(([requestId, pending]) => ({ requestId, ...pending }));
 	}
 
-	async answer(requestId: string, content: string, context: Context): Promise<Answer> {
+	async answer(requestId: string, content: string, context: Context, arrival: Arrival = {}): Promise<Answer> {
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
-		const { lastAt } = await this.activity(context);
-		const gapMs = lastAt === undefined ? undefined : Date.now() - lastAt;
-		// After a gap (e.g. the process was down when the timer was due): resend the short note, not the whole burst.
-		if (existing === undefined && gapMs !== undefined && gapMs >= this.settings().context.restAfterMinutes * 60_000) await this.rest(context);
-		const submission = await this.root.submit({ type: "input", content, requestId }, context);
-		const settled = await submission.wait(context);
-		void this.afterAnswer(context).catch(() => {});
+		const boundary = existing === undefined ? await this.boundary(content, arrival, context) : undefined;
+		if (boundary !== undefined) await this.startSlice(arrival, context);
+		this.inFlight++;
+		let settled;
+		try {
+			settled = await (await this.root.submit({ type: "input", content, requestId }, context)).wait(context);
+		} finally {
+			this.inFlight--;
+		}
 		if (settled.status !== "done" || settled.type !== "input") {
 			return { error: settled.status === "unanswered" ? settled.reason : settled.status };
 		}
 		const entry = await this.root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 		const message = entry?.model?.[0];
 		if (message?.role !== "assistant") return { error: "no answer" };
-		const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 		const { usage } = message;
 		this.log(
-			`${requestId} gap=${gapMs === undefined ? "-" : `${Math.round(gapMs / 60_000)}m`} input=${usage.input} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} output=${usage.output} cost=$${usage.cost.total.toFixed(5)} (last request)`,
+			`${requestId} slice=${boundary ?? "continued"} input=${usage.input} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} output=${usage.output} cost=$${usage.cost.total.toFixed(5)} (last request)`,
 		);
-		return message.stopReason === "error" ? { error: message.errorMessage ?? "model error" } : { text };
+		return message.stopReason === "error" ? { error: message.errorMessage ?? "model error" } : { text: textOf(message) };
 	}
 
-	private async afterAnswer(context: Context): Promise<void> {
-		// A long burst still gets bounded; this one runs in the background and keeps the conversation working.
-		if ((await this.activity(context)).promptTokens > this.settings().context.maxTokens) await this.root.compact(undefined, context);
-		await this.scheduleRest(context);
+	/**
+	 * Whether this message starts a new slice, decided now that it has arrived. Never while an answer is running: a
+	 * reset placed mid-run would end it.
+	 */
+	async boundary(content: string, arrival: Arrival, context: Context): Promise<string | undefined> {
+		if (this.inFlight > 0) return undefined;
+		const { messages } = await this.root.context(context);
+		const conversation = messages.filter((message) => message.role !== "system");
+		if (conversation.length === 0) return undefined;
+		if (arrival.newTopic === true) return "new-topic";
+		const startedAt = (await this.harness.snapshot(Slice, context))?.startedAt ?? 0;
+		if (arrival.replyTo !== undefined && arrival.replyTo.at < startedAt) return "reply-to-earlier";
+		const limits = this.settings().context;
+		const lastUser = conversation.findLast((message) => message.role === "user");
+		const anchoredHere = arrival.replyTo !== undefined;
+		if (!anchoredHere && lastUser !== undefined && Date.now() - lastUser.timestamp >= limits.idleMinutes * 60_000) return "idle";
+		const projected = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + Math.ceil(content.length / 4);
+		if (projected > limits.sliceTokens) return "size";
+		return undefined;
+	}
+
+	/**
+	 * Start a new slice from state: the open items and working set (system sections), plus the last few visible
+	 * messages and, for a reply, the message replied to. The departing slice's working set is written in the
+	 * background, so the user's message never waits for a summary.
+	 */
+	private async startSlice(arrival: Arrival, context: Context): Promise<void> {
+		const { messages } = await this.root.context(context);
+		const departing = transcriptText(messages);
+		const version = (await this.harness.snapshot(Slice, context))?.startedAt ?? 0;
+		await this.root.reset(await this.handoff(arrival, context), context);
+		await this.root.commit(async (tx) => {
+			(await tx.doc(Slice)).startedAt = Date.now();
+		}, context);
+		if (this.state !== undefined && Math.ceil(departing.length / 4) > SUMMARIZE_ABOVE_TOKENS) this.inBackground(this.writeWorkingSet(version, departing));
+	}
+
+	private async handoff(arrival: Arrival, context: Context): Promise<string> {
+		const recent: string[] = [];
+		let used = 0;
+		let cursor: Parameters<Conversation["entries"]>[2];
+		scan: do {
+			const page = await this.root.entries({}, 50, cursor, context);
+			for (const entry of page.items) {
+				if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
+				const message = entry.model?.[0];
+				if (message === undefined) continue;
+				const line = `${message.role === "user" ? "Darryl" : "You"}: ${textOf(message).slice(0, MESSAGE_CHARS)}`;
+				if (recent.length >= RECENT_MESSAGES || used + line.length > RECENT_CHARS) break scan;
+				recent.unshift(line);
+				used += line.length;
+			}
+			cursor = page.next;
+		} while (cursor !== undefined);
+		const parts = ["Earlier turns of this conversation are not in your context. The last few messages:", ...recent];
+		if (arrival.replyTo !== undefined) {
+			parts.push("", `His next message replies to this earlier message: «${arrival.replyTo.text.slice(0, 2000)}»`);
+			const item = this.state?.openItems.forMessage(arrival.replyTo.messageId);
+			if (item !== undefined) parts.push(`It belongs to open item ${item.id} [${item.kind}]: ${item.text}${item.closedAt === undefined ? "" : ` (closed: ${item.outcome ?? "done"})`}`);
+		}
+		return parts.join("\n");
+	}
+
+	private async writeWorkingSet(version: number, departing: string): Promise<void> {
+		const workingSet = this.state?.workingSet;
+		if (workingSet === undefined) return;
+		const text = await summarizeSlice(this.models, this.settings().model, workingSet.read()?.text, departing);
+		if (text !== undefined && workingSet.write({ version, text })) this.log(`working set updated from slice ${version}`);
+	}
+
+	private inBackground(work: Promise<void>): void {
+		const tracked = work.catch((error: unknown) => this.log(`background: ${String(error)}`)).finally(() => this.background.delete(tracked));
+		this.background.add(tracked);
+	}
+
+	/** Resolve once background work (working-set summaries) has finished. */
+	async settled(): Promise<void> {
+		while (this.background.size > 0) await Promise.all(this.background);
 	}
 
 	async delivered(requestId: string, context: Context): Promise<void> {
@@ -195,8 +255,8 @@ export class MainThread {
 		}, context);
 	}
 
-	close(context: Context): Promise<void> {
-		clearTimeout(this.restTimer);
-		return this.harness.close(context);
+	async close(context: Context): Promise<void> {
+		await this.settled();
+		await this.harness.close(context);
 	}
 }

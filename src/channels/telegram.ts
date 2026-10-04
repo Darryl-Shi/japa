@@ -2,7 +2,7 @@
 // the message that asked for it.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
-import type { MainThread, ReplyTarget } from "../pi/harness.ts";
+import type { Arrival, MainThread, ReplyTarget } from "../pi/harness.ts";
 import type { SettingsFile } from "../settings.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -28,12 +28,12 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 		}
 	};
 
-	const deliver = async (requestId: string, content: string, target: ReplyTarget, admit: boolean) => {
+	const deliver = async (requestId: string, content: string, target: ReplyTarget, admit: boolean, arrival: Arrival = {}) => {
 		const started = Date.now();
 		const typing = setInterval(() => void bot.api.sendChatAction(target.chatId, "typing").catch(() => {}), 4000);
 		void bot.api.sendChatAction(target.chatId, "typing").catch(() => {});
 		try {
-			const answer = admit ? await thread.ask(requestId, content, target, context) : await thread.answer(requestId, content, context);
+			const answer = admit ? await thread.ask(requestId, content, target, context, arrival) : await thread.answer(requestId, content, context);
 			await send(target, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`);
 			await thread.delivered(requestId, context);
 			log(`${requestId} answered in ${Date.now() - started}ms`);
@@ -50,10 +50,29 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 			log(`ignored message from chat ${ctx.chat.id}`);
 			return;
 		}
+		let text = ctx.message.text;
+		const arrival: Arrival = {};
+		// "/new" (optionally followed by the message) starts the model on a fresh slice.
+		const fresh = /^\/new(?:@\w+)?(?:\s+|$)/.exec(text);
+		if (fresh !== null) {
+			arrival.newTopic = true;
+			text = text.slice(fresh[0].length);
+			if (text.trim() === "") {
+				await ctx.reply("Fresh start.", { reply_parameters: { message_id: ctx.message.message_id } });
+				text = "(Darryl started a new topic.)";
+			}
+		}
+		const replied = ctx.message.reply_to_message;
+		if (replied !== undefined && (replied.text ?? replied.caption) !== undefined) {
+			arrival.replyTo = { messageId: replied.message_id, text: replied.text ?? replied.caption ?? "", at: replied.date * 1000 };
+		}
 		const target = { chatId: ctx.chat.id, messageId: ctx.message.message_id };
 		const requestId = `tg:${target.chatId}:${target.messageId}`;
-		const content = `[${stamp(ctx.message.date * 1000, settings.get().timezone)}] ${ctx.message.text}`;
-		void thread.applySettings(settings.get(), context).then(() => deliver(requestId, content, target, true)).catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
+		const content = `[${stamp(ctx.message.date * 1000, settings.get().timezone)}] ${text}`;
+		void thread
+			.applySettings(settings.get(), context)
+			.then(() => deliver(requestId, content, target, true, arrival))
+			.catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
 	});
 
 	// Answers admitted before the last restart and never delivered.

@@ -28,7 +28,7 @@ test("the portrait records, corrects and forgets", async () => {
 	await rm(home, { recursive: true, force: true });
 });
 
-test("the agent remembers into its prompt and finds compacted history with dates", async () => {
+test("the agent remembers into its prompt and finds earlier slices in history, with dates", async () => {
 	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
 	const home = await mkdtemp(join(tmpdir(), "jarvis-home-"));
 	const history = new History(join(dataDir, "history.sqlite"));
@@ -58,11 +58,11 @@ test("the agent remembers into its prompt and finds compacted history with dates
 
 	await thread.ask("2", "What did we decide on pricing?", target, context);
 	await thread.ask("2b", "Tell me something long.", target, context);
-	await thread.rest(context);
-	const before = JSON.stringify((await thread.root.context(context)).messages);
-	assert.ok(!before.includes("$29 until launch."), "the pricing answer was compacted away");
 
-	assert.deepEqual(await thread.ask("3", "Remind me about pricing?", target, context), { text: "Hold at $29 until launch (from our earlier chat)." });
+	// A new slice: the earlier entries leave the model's context but stay searchable.
+	assert.deepEqual(await thread.ask("3", "Remind me about pricing?", target, context, { newTopic: true }), {
+		text: "Hold at $29 until launch (from our earlier chat).",
+	});
 	const after = JSON.stringify((await thread.root.context(context)).messages);
 	assert.ok(after.includes("Sister: Mia"), "the portrait is in the system prompt after compaction");
 	assert.match(after, /\d{4}-\d{2}-\d{2} \d{2}:\d{2} you: «Pricing» stays at \$29 until «launch»/);

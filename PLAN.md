@@ -12,7 +12,7 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 |---|---|---|
 | A small query turns into a big agentic task | The main thread answers directly. Anything longer is announced and goes to a subagent. | A simple question gets its first reply in under ~5s |
 | Poor memory by default | Memory is always on | It recalls things from weeks ago without being reminded |
-| Every task needs its own thread | One thread in Telegram. The model context stays small: it grows append-only while you chat, then is compacted to a short handoff note after a quiet gap. History search brings back anything older. | A message after a gap costs a few thousand input tokens on any provider |
+| Every task needs its own thread | One thread in Telegram; the model works in short slices that start from state (open items, working set, last few messages), not from history. History search brings back anything older. | 4–6k input tokens for a quick question and 5–8k for a follow-up or resumed topic, on any provider |
 | Bloated | A small core, loaded on demand | Base prompt under ~3k tokens, at most ~8 tools in the main turn |
 
 **What it knows and does**
@@ -76,16 +76,24 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
 ## M1 build order
 
 1. **Skeleton.** Harness on SQLite and one root conversation. Telegram through grammY long polling, restricted to the owner's chat ID. Requests are tagged with a `requestId` taken from the Telegram message ID. The answer is sent as a reply, and pending replies survive a restart.
-2. **Fast path and context policy.** A fast main model with a small toolset. The context is kept small by construction, not by relying on any provider's cache settings.
-   - Each provider's default short cache is used; there's no 1h retention.
-   - The prefix is stable: the time goes in each new message, never in the prompt.
-   - After `restAfterMinutes` of quiet (default 15, past every provider's short cache), the context is compacted to a handoff note plus the last exchange. A message arriving after a gap triggers the same compaction first.
-   - `maxTokens` caps a long burst.
-   - Every answer logs the gap, cache reads/writes and cost, so the policy gets tuned from real use. This follows what OpenClaw and Hermes converged on in 2026: one thread, and the context shrinks at idle boundaries.
+2. **Fast path and slices.** A fast main model with a small toolset. The context is kept small by construction, not by any provider's cache settings; only the default short cache is used. Designed with GPT-6 Astra.
+   - **There's one Telegram DM and one root conversation as the record.** The model works in slices of it. A slice starts with `reset()` and carries the open items and working set (system sections), plus the last few visible messages, plus the message being replied to, if any.
+   - **A new slice starts when the next message from Darryl arrives and:**
+     - he's been quiet for `idleMinutes` (10),
+     - the request would pass `sliceTokens` (8k),
+     - he sends `/new`, or
+     - he replies to a message from an earlier slice.
+
+     Background reports don't count as activity, and nothing resets while an answer is running.
+   - **Open items** are structured records: task / waiting / promise, plus the Telegram message each belongs to. Promises and questions are never dropped from the prompt.
+   - **The working set** (options, constraints, decisions, the last question) is written in the background by one cheap call over the departing slice only. It's versioned, so a late summary never overwrites a newer one, and Darryl's message never waits for it.
+   - **The time goes in each message**, never in the prefix. Every answer logs the slice decision, cache reads/writes and cost.
 3. **Prompt sections.** Identity, the memory portrait, and (M2) the list of units. The prefix never contains anything that changes per message.
 4. **Memory.** `home/memory.md` with a `remember` tool, plus history search with citations (FTS5 over the transcript).
 5. **Sandbox.** An `ExecutionEnv` for your own endpoint and one for boat.dev, chosen in settings. No secrets in the sandbox.
-6. **Delegation.** Background subagents (Pi example 23), and the coding agent in the sandbox. Results come back as replies to the message that asked.
+6. **Delegation.** Background subagents (Pi example 23), and the coding agent in the sandbox. Results come back as replies to the message that asked. Each task gets an open item with its originating Telegram message.
+   - Reports are recorded and delivered **without waking the main model** unless a decision is needed.
+   - Acceptance tests: background subagents survive a slice `reset()`; a reset during a tool round with queued messages loses and duplicates nothing; and **many background completions don't delay one simple question**.
 7. **Web.** Parallel search, with several queries fanned out at once, and page fetching.
 8. **Guardrails.** A `beforeTool` hook that sorts calls into send/pay/delete/deploy and waits durably for a Telegram button press. A daily spend cap read from `pi.usage`. An append-only audit log.
 9. **`/settings`.** Model, coding agent, sandbox and spend cap.

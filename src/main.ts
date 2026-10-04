@@ -9,9 +9,11 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { startTelegram } from "./channels/telegram.ts";
 import { History } from "./core/history.ts";
 import { Portrait } from "./core/portrait.ts";
+import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { FileCredentialStore } from "./credentials.ts";
 import { MainThread } from "./pi/harness.ts";
 import { indexHistory, memoryExtension } from "./pi/memory.ts";
+import { stateExtension } from "./pi/state.ts";
 import { SettingsFile } from "./settings.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -23,7 +25,11 @@ const models = builtinModels({ credentials: new FileCredentialStore(join(dataDir
 const history = new History(join(dataDir, "history.sqlite"));
 const portrait = new Portrait(process.env.JARVIS_HOME ?? join(homedir(), "jarvis-home"));
 const memory = memoryExtension({ portrait, history, catchUp: (callContext) => indexHistory(thread.root, history, callContext) });
-const thread: MainThread = await MainThread.open({ dataDir, models, settings: () => settings.get(), extensions: [memory], log: console.log }, context);
+const state = { openItems: new OpenItems(join(dataDir, "open-items.json")), workingSet: new WorkingSetFile(join(dataDir, "working-set.json")) };
+const thread: MainThread = await MainThread.open(
+	{ dataDir, models, settings: () => settings.get(), extensions: [memory, stateExtension(state)], state, log: console.log },
+	context,
+);
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (token === undefined) throw new Error("Set TELEGRAM_BOT_TOKEN (from @BotFather).");

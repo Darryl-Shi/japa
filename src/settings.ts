@@ -18,12 +18,12 @@ export type Settings = {
 	/** IANA zone for the time stamped on each message; default: the machine's. */
 	timezone?: string;
 	/**
-	 * The main thread's model context. Within a burst it grows append-only, so even a provider's default short cache
-	 * hits. After restAfterMinutes of quiet (past every provider's short cache, so nothing warm is lost) it is
-	 * compacted to a short handoff note, so a message after a gap is cheap on any provider. maxTokens caps a long
-	 * burst. Older detail comes back through history search.
+	 * The main thread is one Telegram DM, but the model works in short slices of it. A new slice starts (decided when
+	 * the next message from the user arrives) after idleMinutes without one, when the next request would pass
+	 * sliceTokens, on /new, or on a reply to a message from an earlier slice. A slice starts from state — open items,
+	 * the working set, the last few visible messages — not from a summary of history.
 	 */
-	context: { restAfterMinutes: number; maxTokens: number };
+	context: { idleMinutes: number; sliceTokens: number };
 };
 
 export const DEFAULTS: Settings = {
@@ -33,7 +33,7 @@ export const DEFAULTS: Settings = {
 	sandbox: { kind: "none" },
 	spendCapUsd: 20,
 	telegram: {},
-	context: { restAfterMinutes: 15, maxTokens: 40_000 },
+	context: { idleMinutes: 10, sliceTokens: 8000 },
 };
 
 export class SettingsFile {
