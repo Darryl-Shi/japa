@@ -152,7 +152,8 @@ export class BoatBackend implements Backend {
 }
 
 /**
- * Config per role: `sandboxId` to use an existing machine, else one is created (`type`, default "small") and its
+ * Config per role: `sandboxId` to use an existing machine, else one is created (`type`, default "small"; `ttlSeconds`,
+ * default none) and its
  * id remembered in `stateFile`, so the same machine — and everything on it — comes back next time.
  */
 export function boatProvider(options: { apiKey: string; stateFile: string; fetch?: typeof fetch }): BackendProvider {
@@ -165,7 +166,8 @@ export function boatProvider(options: { apiKey: string; stateFile: string; fetch
 			if (sandboxId === undefined) {
 				const created = await api.json<{ sandbox: { id: string } }>("POST", "/sandboxes", {
 					type: typeof config.type === "string" ? config.type : "small",
-					ttlSeconds: null,
+					// Auto-stop (archive) after this long; it resumes on the next command. Free trials require ≤ 7200.
+					ttlSeconds: typeof config.ttlSeconds === "number" ? config.ttlSeconds : null,
 					noEnv: true,
 				});
 				sandboxId = created.sandbox.id;
