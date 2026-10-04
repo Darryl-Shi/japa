@@ -19,8 +19,8 @@ export type OpenItem = {
 	kind: OpenItemKind;
 	text: string;
 	openedAt: number;
-	/** The Telegram message it belongs to, so a reply to that message finds it. */
-	telegramMessageId?: number;
+	/** The Telegram messages it belongs to (the request, the report), so a reply to any of them finds it. */
+	messageIds?: number[];
 	closedAt?: number;
 	outcome?: string;
 };
@@ -43,26 +43,52 @@ export class OpenItems {
 		return this.all().filter((item) => item.closedAt === undefined);
 	}
 
-	add(kind: OpenItemKind, text: string, telegramMessageId?: number, now = Date.now()): OpenItem {
+	add(kind: OpenItemKind, text: string, messageId?: number, now = Date.now()): OpenItem {
 		const items = this.all();
 		const id = `${kind[0]}${(items.reduce((max, item) => Math.max(max, Number(item.id.slice(1)) || 0), 0) + 1).toString()}`;
-		const item: OpenItem = { id, kind, text, openedAt: now, ...(telegramMessageId === undefined ? {} : { telegramMessageId }) };
+		const item: OpenItem = { id, kind, text, openedAt: now, ...(messageId === undefined ? {} : { messageIds: [messageId] }) };
 		save(this.path, [...items, item]);
 		return item;
 	}
 
+	private change(id: string, edit: (item: OpenItem) => void): OpenItem | undefined {
+		const items = this.all();
+		const item = items.find((candidate) => candidate.id === id);
+		if (item === undefined) return undefined;
+		edit(item);
+		save(this.path, items);
+		return item;
+	}
+
+	/** Close an item. Closing one that's already closed is a no-op, so a retried report is harmless. */
 	close(id: string, outcome?: string, now = Date.now()): OpenItem {
 		const items = this.all();
-		const item = items.find((candidate) => candidate.id === id && candidate.closedAt === undefined);
+		const item = items.find((candidate) => candidate.id === id);
 		if (item === undefined) throw new Error(`No open item ${id}`);
+		if (item.closedAt !== undefined) return item;
 		item.closedAt = now;
 		if (outcome !== undefined) item.outcome = outcome;
 		save(this.path, items.filter((candidate) => candidate.closedAt === undefined || now - candidate.closedAt < CLOSED_KEEP_MS));
 		return item;
 	}
 
-	forMessage(telegramMessageId: number): OpenItem | undefined {
-		return this.all().findLast((item) => item.telegramMessageId === telegramMessageId);
+	/** A task that now needs the user: it becomes a question waiting on him. */
+	needsUser(id: string, question: string): OpenItem | undefined {
+		return this.change(id, (item) => {
+			item.kind = "waiting";
+			item.text = question;
+		});
+	}
+
+	/** Remember another Telegram message that belongs to this item. */
+	link(id: string, messageId: number): void {
+		this.change(id, (item) => {
+			item.messageIds = [...new Set([...(item.messageIds ?? []), messageId])];
+		});
+	}
+
+	forMessage(messageId: number): OpenItem | undefined {
+		return this.all().findLast((item) => item.messageIds?.includes(messageId) === true);
 	}
 
 	/** What goes in the prompt. Promises and questions waiting on the user are never dropped; tasks are, oldest first. */

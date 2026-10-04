@@ -56,7 +56,7 @@ export async function indexHistory(conversation: Conversation, history: History,
 		const page = await conversation.entries({ minEntryId: (after + 1) as never }, 200, cursor, context);
 		for (const entry of page.items) {
 			newest = Math.max(newest, entry.id);
-			if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
+			if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant" && entry.kind !== "jarvis.report") continue;
 			for (const message of entry.model ?? []) {
 				if (message.role !== "user" && message.role !== "assistant") continue;
 				const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");

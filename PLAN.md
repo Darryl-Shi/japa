@@ -95,9 +95,12 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
    - Providers implement it: boat (built in), local (reference and tests), and anyone's own infrastructure through an extension. Settings map roles to providers: `machines.workbench` (its own machine, no secrets) and later `machines.desk` (a screen plus your logged-in browser).
    - Everything on top is a generic extension that never names a provider. Pi's bash/read/write/edit run *directly* on the workbench through `BackendExecutionEnv`, which builds Pi's whole `ExecutionEnv` on `exec`. It's verified to behave like Pi's own local environment by a differential test.
    - The `computer` tool (screenshot, click, type, key, scroll, drag, share_screen) drives a machine's display. It uses the backend's native screen API if it has one, otherwise X over `exec` (xdotool, plus ImageMagick or ffmpeg). Screenshots are downscaled to 1280 wide and clicks are scaled back. `share_screen` gives Darryl a watch/take-over link.
-6. **Delegation.** Background subagents (Pi example 23), and the coding agent in the sandbox. Results come back as replies to the message that asked. Each task gets an open item with its originating Telegram message.
-   - Reports are recorded and delivered **without waking the main model** unless a decision is needed.
-   - Acceptance tests: background subagents survive a slice `reset()`; a reset during a tool round with queued messages loses and duplicates nothing; and **many background completions don't delay one simple question**.
+6. **Delegation.** A `delegate` tool hands self-contained work to a background subagent. The subagent gets its own conversation, the delegate model, and the same computer, but not the main thread's memory writes, open items or delegation. `cancel_task` stops one.
+   - Each task gets an open item linked to the Telegram message that asked.
+   - **Reports never wake the main model.** The run task updates the open item and adds to a durable outbox. The channel delivers the report as a reply to the original message (silent, unless the subagent needs a decision, which buzzes and turns the item into "waiting"), and a passive note is written to the main transcript so the model sees it next time.
+   - **What wakes the main model:** Darryl's messages, approval taps (which continue a paused run), and restart recovery. Behaviours and reports don't.
+   - **Tested:** reports arrive as replies; decisions buzz; five reports landing at once add zero main-model runs and don't delay a simple question; a task keeps running across a new slice.
+   - **Not done yet:** an opt-in `report_to: "me"` for when the main thread must combine results itself; Claude Code / Codex as the subagent's engine.
 7. **Web.** Parallel search, with several queries fanned out at once, and page fetching.
 8. **Guardrails.** A `beforeTool` hook that sorts calls into send/pay/delete/deploy and waits durably for a Telegram button press. A daily spend cap read from `pi.usage`. An append-only audit log.
 9. **`/settings`.** Model, coding agent, sandbox and spend cap.

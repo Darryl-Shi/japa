@@ -19,6 +19,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
+import { Outbox, type Origin, type OutboxMessage } from "./delegation.ts";
 import { summarizeSlice, transcriptText } from "./state.ts";
 
 /** Where an answer goes once it exists. Written before submitting, so a restart can still deliver it. */
@@ -61,6 +62,9 @@ export type Arrival = {
 
 /** When the current slice started; a reply to anything older anchors a new one. */
 const Slice = defineDoc<{ startedAt: number }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
+
+/** Transcript kind of a background report's note: visible to the model, never a request. */
+export const REPORT = "jarvis.report";
 
 const RECENT_MESSAGES = 6;
 const RECENT_CHARS = 4000;
@@ -186,9 +190,10 @@ export class MainThread {
 		const startedAt = (await this.harness.snapshot(Slice, context))?.startedAt ?? 0;
 		if (arrival.replyTo !== undefined && arrival.replyTo.at < startedAt) return "reply-to-earlier";
 		const limits = this.settings().context;
-		const lastUser = conversation.findLast((message) => message.role === "user");
+		// Only Darryl's own messages count: reports and notes written in the background never reset the idle clock.
+		const lastFromHim = (await this.root.context(context)).entries.findLast((entry) => entry.kind === "pi.user")?.model?.[0];
 		const anchoredHere = arrival.replyTo !== undefined;
-		if (!anchoredHere && lastUser !== undefined && Date.now() - lastUser.timestamp >= limits.idleMinutes * 60_000) return "idle";
+		if (!anchoredHere && lastFromHim !== undefined && Date.now() - lastFromHim.timestamp >= limits.idleMinutes * 60_000) return "idle";
 		const projected = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + Math.ceil(content.length / 4);
 		if (projected > limits.sliceTokens) return "size";
 		return undefined;
@@ -217,10 +222,11 @@ export class MainThread {
 		scan: do {
 			const page = await this.root.entries({}, 50, cursor, context);
 			for (const entry of page.items) {
-				if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
+				if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant" && entry.kind !== REPORT) continue;
 				const message = entry.model?.[0];
 				if (message === undefined) continue;
-				const line = `${message.role === "user" ? "Darryl" : "You"}: ${textOf(message).slice(0, MESSAGE_CHARS)}`;
+				const who = entry.kind === REPORT ? "Report" : message.role === "user" ? "Darryl" : "You";
+				const line = `${who}: ${textOf(message).slice(0, MESSAGE_CHARS)}`;
 				if (recent.length >= RECENT_MESSAGES || used + line.length > RECENT_CHARS) break scan;
 				recent.unshift(line);
 				used += line.length;
@@ -251,6 +257,45 @@ export class MainThread {
 	/** Resolve once background work (working-set summaries) has finished. */
 	async settled(): Promise<void> {
 		while (this.background.size > 0) await Promise.all(this.background);
+	}
+
+	/** The Telegram message the main thread is answering right now (the placed input). */
+	async origin(context: Context): Promise<Origin | undefined> {
+		const placed = (await this.harness.inspect(context)).submissions.findLast(
+			(submission) => submission.conversationId === this.root.id && submission.type === "input" && submission.status === "placed",
+		);
+		if (placed?.requestId === undefined) return undefined;
+		const target = (await this.harness.snapshot(PendingReplies, context))?.byRequest[placed.requestId];
+		return target === undefined ? undefined : { chatId: target.chatId, messageId: target.messageId };
+	}
+
+	/**
+	 * Deliver the outbox through a channel, now and whenever something is added. Each message: its note goes into the
+	 * transcript as a passive write (no model run), the channel sends it, the open item learns the sent message's id.
+	 */
+	async deliverOutbox(send: (message: OutboxMessage) => Promise<number | undefined>, context: Context): Promise<void> {
+		await this.root.commit(async (tx) => void (await tx.doc(Outbox)), context);
+		let draining = Promise.resolve();
+		const drain = () => {
+			draining = draining.then(async () => {
+				const pending = (await this.harness.snapshot(Outbox, context))?.messages ?? {};
+				for (const [id, message] of Object.entries(pending)) {
+					if (message.note !== undefined) {
+						const entry = { kind: REPORT, model: [{ role: "user" as const, content: message.note, timestamp: Date.now() }] };
+						await this.root.submit({ type: "write", requestId: id, entry }, context);
+					}
+					const sent = await send(message);
+					if (sent !== undefined && message.itemId !== undefined) this.state?.openItems.link(message.itemId, sent);
+					await this.root.commit(async (tx) => {
+						delete (await tx.doc(Outbox)).messages[id];
+					}, context);
+				}
+			}).catch((error: unknown) => this.log(`outbox: ${String(error)}`));
+			this.inBackground(draining);
+		};
+		const state = await this.harness.documentState(Outbox, context);
+		state?.subscribe(() => drain());
+		drain();
 	}
 
 	async delivered(requestId: string, context: Context): Promise<void> {

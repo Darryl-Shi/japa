@@ -16,6 +16,7 @@ import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { FileCredentialStore } from "./credentials.ts";
 import { BackendExecutionEnv } from "./pi/backend-env.ts";
 import { computerExtension } from "./pi/computer.ts";
+import { delegationExtension } from "./pi/delegation.ts";
 import { MainThread } from "./pi/harness.ts";
 import { indexHistory, memoryExtension } from "./pi/memory.ts";
 import { shellExtension } from "./pi/shell.ts";
@@ -40,6 +41,14 @@ const workbench = workbenchConfig === undefined ? undefined : await providers.op
 if (workbench !== undefined) console.log(`workbench: ${workbench.id}`);
 
 const state = { openItems: new OpenItems(join(dataDir, "open-items.json")), workingSet: new WorkingSetFile(join(dataDir, "working-set.json")) };
+const stateTools = stateExtension(state);
+const delegation = delegationExtension({
+	openItems: state.openItems,
+	delegateModel: () => settings.get().delegateModel,
+	origin: (callContext) => thread.origin(callContext),
+	// A subagent gets the same computer, but not the main thread's memory writes, open items, or delegation.
+	withhold: () => [memory, stateTools, delegation],
+});
 const thread: MainThread = await MainThread.open(
 	{
 		dataDir,
@@ -47,7 +56,8 @@ const thread: MainThread = await MainThread.open(
 		settings: () => settings.get(),
 		extensions: [
 			memory,
-			stateExtension(state),
+			stateTools,
+			delegation,
 			...(workbench === undefined ? [] : [shellExtension()]),
 			...(workbench === undefined || workbenchConfig?.screen !== true ? [] : [computerExtension({ backend: workbench })]),
 		],

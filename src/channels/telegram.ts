@@ -20,12 +20,17 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 	const log = options.log ?? ((line: string) => console.log(line));
 	const bot = new Bot(options.token);
 
-	const send = async (target: ReplyTarget, text: string) => {
+	/** Send, split to Telegram's limit; resolves with the last message's id. Silent unless `buzz`. */
+	const send = async (chatId: number, text: string, replyTo?: number, buzz = true): Promise<number> => {
+		let last = 0;
 		for (let start = 0; start < text.length || start === 0; start += LIMIT) {
-			await bot.api.sendMessage(target.chatId, text.slice(start, start + LIMIT) || "(empty answer)", {
-				reply_parameters: { message_id: target.messageId, allow_sending_without_reply: true },
+			const sent = await bot.api.sendMessage(chatId, text.slice(start, start + LIMIT) || "(empty)", {
+				...(replyTo === undefined ? {} : { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }),
+				disable_notification: !buzz,
 			});
+			last = sent.message_id;
 		}
+		return last;
 	};
 
 	const deliver = async (requestId: string, content: string, target: ReplyTarget, admit: boolean, arrival: Arrival = {}) => {
@@ -34,7 +39,7 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 		void bot.api.sendChatAction(target.chatId, "typing").catch(() => {});
 		try {
 			const answer = admit ? await thread.ask(requestId, content, target, context, arrival) : await thread.answer(requestId, content, context);
-			await send(target, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`);
+			await send(target.chatId, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, target.messageId);
 			await thread.delivered(requestId, context);
 			log(`${requestId} answered in ${Date.now() - started}ms`);
 		} finally {
@@ -81,6 +86,13 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 			void deliver(requestId, content, { chatId, messageId }, false).catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
 		}
 	});
+
+	// Reports and other messages from background work: replies to the message that asked, silent unless they need him.
+	void thread.deliverOutbox(async (message) => {
+		const chatId = message.replyTo?.chatId ?? settings.get().telegram.ownerChatId;
+		if (chatId === undefined) return undefined;
+		return send(chatId, message.text, message.replyTo?.messageId, message.buzz);
+	}, context);
 
 	bot.catch((error) => log(`telegram: ${String(error.error)}`));
 	void bot.start({ onStart: (me) => log(`telegram: polling as @${me.username}`) });
