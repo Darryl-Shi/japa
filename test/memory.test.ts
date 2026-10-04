@@ -65,7 +65,7 @@ test("the agent remembers into its prompt and finds earlier slices in history, w
 	});
 	const after = JSON.stringify((await thread.root.context(context)).messages);
 	assert.ok(after.includes("Sister: Mia"), "the portrait is in the system prompt after compaction");
-	assert.match(after, /\d{4}-\d{2}-\d{2} \d{2}:\d{2} you: «Pricing» stays at \$29 until «launch»/);
+	assert.match(after, /\d{4}-\d{2}-\d{2} \d{2}:\d{2} You: «Pricing» stays at \$29 until «launch»/);
 
 	await thread.close(context);
 	history.close();

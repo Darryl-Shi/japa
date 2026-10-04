@@ -8,10 +8,12 @@ export type ModelChoice = { provider: string; modelId: string };
 export type MachineConfig = { provider: string; screen?: boolean; [option: string]: unknown };
 
 export type Settings = {
-	/** The main thread: fast, answers directly. */
+	/** The chief of staff: judgment and synthesis, kept fast by small contexts rather than a small model. */
 	model: ModelChoice;
-	/** Delegated work: subagents. */
+	/** A job's model when the chief of staff doesn't pick one. */
 	delegateModel: ModelChoice;
+	/** Named models the chief of staff can assign to a job (bound to that job and its subagents). */
+	jobModels: Record<string, ModelChoice>;
 	codingAgent: "claude-code" | "codex";
 	/**
 	 * The computers the agent works on, by role, each backed by a provider (built in: "boat", "local"; extensions can
@@ -21,6 +23,8 @@ export type Settings = {
 	machines: { workbench?: MachineConfig; desk?: MachineConfig };
 	/** Daily model spend cap in USD. */
 	spendCapUsd: number;
+	/** Who the agent works for. Optional; the agent also learns about them in memory. */
+	user?: { name?: string };
 	telegram: { ownerChatId?: number };
 	/** IANA zone for the time stamped on each message; default: the machine's. */
 	timezone?: string;
@@ -34,8 +38,12 @@ export type Settings = {
 };
 
 export const DEFAULTS: Settings = {
-	model: { provider: "anthropic", modelId: "claude-haiku-4-5" },
+	model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
 	delegateModel: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
+	jobModels: {
+		fast: { provider: "anthropic", modelId: "claude-haiku-4-5" },
+		strong: { provider: "anthropic", modelId: "claude-opus-5-5" },
+	},
 	codingAgent: "claude-code",
 	machines: {},
 	spendCapUsd: 20,

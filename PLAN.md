@@ -47,7 +47,8 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 
 ## Configuration (`/settings`)
 
-- **Model:** any model pi-ai supports. That includes Claude and ChatGPT subscriptions through OAuth. There's one fast model for the main thread and one for delegated work.
+- **Models:** any model pi-ai supports, including Claude and ChatGPT subscriptions through OAuth. `model` is the chief of staff's: a strong one, kept fast by small contexts. `delegateModel` is the default for jobs, and `jobModels` holds named choices the chief of staff can assign per job.
+- **User:** `user.name` (optional). The prompts otherwise just say "the user".
 - **Coding agent:** `claude-code` or `codex`, running in the sandbox.
 - **Machines:** a provider per role (`workbench`, later `desk`): boat.dev, local, or any provider an extension registers.
 - **Web search:** [Parallel](https://docs.parallel.ai) Search API (fast mode, ~700ms), with several queries run in parallel.
@@ -97,12 +98,13 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
    - Providers implement it: boat (built in), local (reference and tests), and anyone's own infrastructure through an extension. Settings map roles to providers: `machines.workbench` (its own machine, no secrets) and later `machines.desk` (a screen plus your logged-in browser).
    - Everything on top is a generic extension that never names a provider. Pi's bash/read/write/edit run *directly* on the workbench through `BackendExecutionEnv`, which builds Pi's whole `ExecutionEnv` on `exec`. It's verified to behave like Pi's own local environment by a differential test.
    - The `computer` tool (screenshot, click, type, key, scroll, drag, share_screen) drives a machine's display. It uses the backend's native screen API if it has one, otherwise X over `exec` (xdotool, plus ImageMagick or ffmpeg). Screenshots are downscaled to 1280 wide and clicks are scaled back. `share_screen` gives Darryl a watch/take-over link.
-6. **Delegation.** A `delegate` tool hands self-contained work to a background subagent. The subagent gets its own conversation, the delegate model, and the same computer, but not the main thread's memory writes, open items or delegation. `cancel_task` stops one.
-   - Each task gets an open item linked to the Telegram message that asked.
-   - **Reports never wake the main model.** The run task updates the open item and adds to a durable outbox. The channel delivers the report as a reply to the original message (silent, unless the subagent needs a decision, which buzzes and turns the item into "waiting"), and a passive note is written to the main transcript so the model sees it next time.
-   - **What wakes the main model:** Darryl's messages, approval taps (which continue a paused run), and restart recovery. Behaviours and reports don't.
-   - **Tested:** reports arrive as replies; decisions buzz; five reports landing at once add zero main-model runs and don't delay a simple question; a task keeps running across a new slice.
-   - **Not done yet:** an opt-in `report_to: "me"` for when the main thread must combine results itself; Claude Code / Codex as the subagent's engine.
+6. **Delegation: one chief of staff and its team.** The user only ever talks to the chief of staff.
+   - **Job agents:** `delegate` starts one job agent per job. It's a Pi conversation with its own small context, the same computer, and a model the chief of staff assigns from `jobModels` (default `delegateModel`), bound to that job. A job agent can start sub-agents (two levels deep), and they report to it.
+   - **Reports:** the job agent decides when to report (done / stuck / decision needed / progress). A report wakes the chief of staff, which checks it, can question or redirect the job (`check_job`), connects it with other jobs and with memory, and decides what the user hears through `message_user` (now or silent, threaded under the original request). A job agent that ends a run without reporting is reported automatically.
+   - **Jobs can't vanish:** only `conclude_job` closes one, after the user has accepted or dropped it. `cancel_job` stops a job and its sub-agents. Open jobs stay in every prompt.
+   - **Scheduling:** the user's message jumps into a run that's busy with a report; it doesn't queue behind it. Reports that pile up are taken in one turn (`followUpMode: "all"`). Only the user's own messages count towards the idle clock.
+   - **Tested:** reports reach the chief of staff and not the user; auto-report when a job goes quiet; per-job models; sub-agents report to their job; the user's question is answered quickly while reports are being handled; five reports are taken in at most three turns; jobs survive a slice reset.
+   - **Open:** an `engine` per job (`pi` / `claude-code` / `codex`). The external engines need credentials on the workbench.
 7. **Web.** Parallel search, with several queries fanned out at once, and page fetching.
 8. **Guardrails.** A `beforeTool` hook that sorts calls into send/pay/delete/deploy and waits durably for a Telegram button press. A daily spend cap read from `pi.usage`. An append-only audit log.
 9. **`/settings`.** Model, coding agent, sandbox and spend cap.

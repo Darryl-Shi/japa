@@ -10,7 +10,7 @@ export function shellExtension(): Extension {
 			section(
 				"computer",
 				(input) =>
-					`You have your own Linux computer (no access to Darryl's accounts or secrets). bash, read, write and edit act on it directly. Working directory: ${input.env?.cwd ?? "~"}. Anything that takes more than a couple of minutes belongs in a delegated task, not this conversation.`,
+					`You have your own Linux computer (no access to the user's accounts or secrets). bash, read, write and edit act on it directly. Working directory: ${input.env?.cwd ?? "~"}. Anything that takes more than a couple of minutes belongs in a delegated task, not this conversation.`,
 			),
 		],
 		tools: [createBashTool(), createReadTool(), createWriteTool(), createEditTool()],

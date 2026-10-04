@@ -10,6 +10,7 @@ import {
 	createRegistry,
 	type Extension,
 	defineDoc,
+	LiveDoc,
 	defineExtension,
 	Harness,
 	section,
@@ -20,7 +21,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { Portrait } from "../core/portrait.ts";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
-import { Outbox, type Origin, type OutboxMessage } from "./delegation.ts";
+import { Outbox, type Origin, type OutboxMessage, REPORT_PREFIX } from "./delegation.ts";
 import { reflectOnSlice, transcriptText } from "./state.ts";
 
 /** Where an answer goes once it exists. Written before submitting, so a restart can still deliver it. */
@@ -34,22 +35,26 @@ const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
 	initial: () => ({ byRequest: {} }),
 });
 
-const Core = defineExtension({
-	name: "jarvis.core",
-	sections: [
-		section(
-			"preamble",
-			() =>
-				[
-					"You are Darryl's chief of staff, talking with him over Telegram in one continuous conversation.",
-					"Answer directly and briefly. Lead with the answer. Plain text; no headings.",
-					// The time lives in each new message, never in this prefix, so the prefix stays cacheable.
-					"Each of his messages starts with the local time he sent it, in brackets.",
-				].join("\n"),
-			{ tag: false },
-		),
-	],
-});
+/** Who the agent is and who it works for. The user's name comes from settings; everything else says "the user". */
+function coreExtension(settings: () => Settings): Extension {
+	return defineExtension({
+		name: "jarvis.core",
+		sections: [
+			section(
+				"preamble",
+				() =>
+					[
+						"You are the user's chief of staff, talking with them over Telegram in one continuous conversation.",
+						...(settings().user?.name === undefined ? [] : [`The user is ${settings().user?.name}.`]),
+						"Answer directly and briefly. Lead with the answer. Plain text; no headings.",
+						// The time lives in each new message, never in this prefix, so the prefix stays cacheable.
+						"Each of their messages starts with the local time they sent it, in brackets.",
+					].join("\n"),
+				{ tag: false },
+			),
+		],
+	});
+}
 
 export type Answer = { text: string } | { error: string };
 
@@ -67,8 +72,8 @@ export type SliceState = { openItems: OpenItems; workingSet: WorkingSetFile; mem
 /** When the current slice started; a reply to anything older anchors a new one. */
 const Slice = defineDoc<{ startedAt: number }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
 
-/** Transcript kind of a background report's note: visible to the model, never a request. */
-export const REPORT = "jarvis.report";
+/** When the user last wrote. Reports from the team are inputs too, so the idle clock can't be read off the transcript. */
+const Heard = defineDoc<{ at: number }>({ kind: "jarvis.heard", version: 1, scope: "session", initial: () => ({ at: 0 }) });
 
 const RECENT_MESSAGES = 6;
 const RECENT_CHARS = 4000;
@@ -110,6 +115,8 @@ export class MainThread {
 			models: Models;
 			settings: () => Settings;
 			extensions?: readonly Extension[];
+			/** Installed extensions the chief of staff itself must not select. */
+			exclude?: readonly Extension[];
 			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
 			env?: () => ExecutionEnv;
 			/** Open items and working set a new slice starts from. */
@@ -120,13 +127,25 @@ export class MainThread {
 		context: Context,
 	): Promise<MainThread> {
 		const registry = createRegistry();
-		registry.install(Core);
+		registry.install(coreExtension(options.settings));
 		for (const extension of options.extensions ?? []) registry.install(extension);
 		const storage = options.storage ?? (await openNodeSqliteStorage(join(options.dataDir ?? "data", "session.sqlite")));
 		// Default (short) provider caching only: the context is kept small by construction instead.
 		const env = options.env;
-		const harness = await Harness.open(storage, { models: options.models, registry, ...(env === undefined ? {} : { env: () => env() }) }, context);
+		const harness = await Harness.open(
+			storage,
+			{
+				models: options.models,
+				registry,
+				...(env === undefined ? {} : { env: () => env() }),
+				// Reports that queue up while the chief of staff is busy are taken in one turn, not one wake each.
+				settings: { followUpMode: "all" },
+			},
+			context,
+		);
 		const root = await harness.root(context, { agent: { model: options.settings().model } });
+		// Tools meant for other agents (a job agent's report/subagent) stay off the chief of staff.
+		if (options.exclude !== undefined && options.exclude.length > 0) await root.configure({ extensions: { remove: [...options.exclude] } }, context);
 		const thread = new MainThread({ harness, root, models: options.models, settings: options.settings, state: options.state, log: options.log ?? (() => {}) });
 		await thread.applySettings(options.settings(), context);
 		harness.resume();
@@ -159,10 +178,19 @@ export class MainThread {
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
 		const boundary = existing === undefined ? await this.boundary(content, arrival, context) : undefined;
 		if (boundary !== undefined) await this.startSlice(arrival, context);
+		// Recorded after the boundary decision, which measures the gap since the previous message.
+		if (existing === undefined) {
+			await this.root.commit(async (tx) => {
+				(await tx.doc(Heard)).at = Date.now();
+			}, context);
+		}
 		this.inFlight++;
 		let settled;
 		try {
-			settled = await (await this.root.submit({ type: "input", content, requestId }, context)).wait(context);
+			// The user comes first: if the chief of staff is busy with a report, their message joins that run at its next
+			// step instead of waiting behind it. Behind their own earlier message, it queues as usual.
+			const whenBusy = this.inFlight > 1 ? "followUp" : "steer";
+			settled = await (await this.root.submit({ type: "input", content, requestId, whenBusy }, context)).wait(context);
 		} finally {
 			this.inFlight--;
 		}
@@ -180,11 +208,11 @@ export class MainThread {
 	}
 
 	/**
-	 * Whether this message starts a new slice, decided now that it has arrived. Never while an answer is running: a
-	 * reset placed mid-run would end it.
+	 * Whether this message starts a new slice, decided now that it has arrived. Never while a run is going (an answer,
+	 * or a report being handled): a reset placed mid-run would end it.
 	 */
 	async boundary(content: string, arrival: Arrival, context: Context): Promise<string | undefined> {
-		if (this.inFlight > 0) return undefined;
+		if (this.inFlight > 0 || (await this.harness.snapshot(LiveDoc, this.root.id, context))?.run !== undefined) return undefined;
 		const { messages } = await this.root.context(context);
 		const conversation = messages.filter((message) => message.role !== "system");
 		if (conversation.length === 0) return undefined;
@@ -192,10 +220,10 @@ export class MainThread {
 		const startedAt = (await this.harness.snapshot(Slice, context))?.startedAt ?? 0;
 		if (arrival.replyTo !== undefined && arrival.replyTo.at < startedAt) return "reply-to-earlier";
 		const limits = this.settings().context;
-		// Only Darryl's own messages count: reports and notes written in the background never reset the idle clock.
-		const lastFromHim = (await this.root.context(context)).entries.findLast((entry) => entry.kind === "pi.user")?.model?.[0];
+		// Only the user's own messages count: reports from the team never reset the idle clock.
+		const heardAt = (await this.harness.snapshot(Heard, context))?.at ?? 0;
 		const anchoredHere = arrival.replyTo !== undefined;
-		if (!anchoredHere && lastFromHim !== undefined && Date.now() - lastFromHim.timestamp >= limits.idleMinutes * 60_000) return "idle";
+		if (!anchoredHere && heardAt > 0 && Date.now() - heardAt >= limits.idleMinutes * 60_000) return "idle";
 		const projected = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + Math.ceil(content.length / 4);
 		if (projected > limits.sliceTokens) return "size";
 		return undefined;
@@ -214,7 +242,7 @@ export class MainThread {
 		await this.root.commit(async (tx) => {
 			(await tx.doc(Slice)).startedAt = Date.now();
 		}, context);
-		// Reflect on any slice where Darryl said something: even one line ("in Tokyo till the 14th") can matter.
+		// Reflect on any slice where the user said something: even one line ("in Tokyo till the 14th") can matter.
 		if (this.state !== undefined && messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing));
 	}
 
@@ -225,10 +253,10 @@ export class MainThread {
 		scan: do {
 			const page = await this.root.entries({}, 50, cursor, context);
 			for (const entry of page.items) {
-				if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant" && entry.kind !== REPORT) continue;
+				if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
 				const message = entry.model?.[0];
 				if (message === undefined) continue;
-				const who = entry.kind === REPORT ? "Report" : message.role === "user" ? "Darryl" : "You";
+				const who = message.role === "assistant" ? "You" : textOf(message).startsWith(REPORT_PREFIX) ? "Team" : "User";
 				const line = `${who}: ${textOf(message).slice(0, MESSAGE_CHARS)}`;
 				if (recent.length >= RECENT_MESSAGES || used + line.length > RECENT_CHARS) break scan;
 				recent.unshift(line);
@@ -238,7 +266,7 @@ export class MainThread {
 		} while (cursor !== undefined);
 		const parts = ["Earlier turns of this conversation are not in your context. The last few messages:", ...recent];
 		if (arrival.replyTo !== undefined) {
-			parts.push("", `His next message replies to this earlier message: «${arrival.replyTo.text.slice(0, 2000)}»`);
+			parts.push("", `Their next message replies to this earlier message: «${arrival.replyTo.text.slice(0, 2000)}»`);
 			const item = this.state?.openItems.forMessage(arrival.replyTo.messageId);
 			if (item !== undefined) parts.push(`It belongs to open item ${item.id} [${item.kind}]: ${item.text}${item.closedAt === undefined ? "" : ` (closed: ${item.outcome ?? "done"})`}`);
 		}
@@ -283,8 +311,8 @@ export class MainThread {
 	}
 
 	/**
-	 * Deliver the outbox through a channel, now and whenever something is added. Each message: its note goes into the
-	 * transcript as a passive write (no model run), the channel sends it, the open item learns the sent message's id.
+	 * Deliver the outbox (messages the chief of staff sends on its own: results, questions, news) through a channel, now
+	 * and whenever something is added. The open item learns the sent message's id, so a reply to it finds the job.
 	 */
 	async deliverOutbox(send: (message: OutboxMessage) => Promise<number | undefined>, context: Context): Promise<void> {
 		await this.root.commit(async (tx) => void (await tx.doc(Outbox)), context);
@@ -293,10 +321,6 @@ export class MainThread {
 			draining = draining.then(async () => {
 				const pending = (await this.harness.snapshot(Outbox, context))?.messages ?? {};
 				for (const [id, message] of Object.entries(pending)) {
-					if (message.note !== undefined) {
-						const entry = { kind: REPORT, model: [{ role: "user" as const, content: message.note, timestamp: Date.now() }] };
-						await this.root.submit({ type: "write", requestId: id, entry }, context);
-					}
 					const sent = await send(message);
 					if (sent !== undefined && message.itemId !== undefined) this.state?.openItems.link(message.itemId, sent);
 					await this.root.commit(async (tx) => {

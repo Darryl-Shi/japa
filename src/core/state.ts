@@ -72,7 +72,7 @@ export class OpenItems {
 		return item;
 	}
 
-	/** A task that now needs the user: it becomes a question waiting on him. */
+	/** A task that now needs the user: it becomes a question waiting on them. */
 	needsUser(id: string, question: string): OpenItem | undefined {
 		return this.change(id, (item) => {
 			item.kind = "waiting";

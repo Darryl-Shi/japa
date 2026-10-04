@@ -100,7 +100,7 @@ export function computerExtension(options: { backend: Backend; display?: string 
 			section(
 				"screen",
 				() =>
-					"Your computer also has a screen. The computer tool shows it (screenshot) and drives it like a person: click, type, key, scroll, drag. Coordinates are pixels in the latest screenshot. Prefer bash for anything scriptable; use the screen for GUIs and websites. share_screen gives a link Darryl can open to watch or take over, e.g. when a login or 2FA needs him.",
+					"Your computer also has a screen. The computer tool shows it (screenshot) and drives it like a person: click, type, key, scroll, drag. Coordinates are pixels in the latest screenshot. Prefer bash for anything scriptable; use the screen for GUIs and websites. share_screen gives a link the user can open to watch or take over, e.g. when a login or 2FA needs them.",
 			),
 		],
 		tools: [

@@ -64,7 +64,7 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 			text = text.slice(fresh[0].length);
 			if (text.trim() === "") {
 				await ctx.reply("Fresh start.", { reply_parameters: { message_id: ctx.message.message_id } });
-				text = "(Darryl started a new topic.)";
+				text = "(New topic.)";
 			}
 		}
 		const replied = ctx.message.reply_to_message;
@@ -87,7 +87,7 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 		}
 	});
 
-	// Reports and other messages from background work: replies to the message that asked, silent unless they need him.
+	// Reports and other messages from background work: replies to the message that asked, silent unless they need the user.
 	void thread.deliverOutbox(async (message) => {
 		const chatId = message.replyTo?.chatId ?? settings.get().telegram.ownerChatId;
 		if (chatId === undefined) return undefined;

@@ -1,19 +1,19 @@
-// Delegation: the main thread hands self-contained work to a background subagent and answers Darryl at once. The
-// subagent has its own conversation (its own small context, the delegate model, the same computer). When it
-// finishes, its report is recorded and delivered without waking the main model: the open item is updated, the
-// report goes into the outbox (the channel delivers it as a reply to the message that asked), and a passive note
-// lands in the main transcript. Only a report that needs Darryl's decision buzzes.
+// Delegation. The user only ever talks to the chief of staff (the main thread). The chief of staff hands work to a
+// job agent: one per job, with a model assigned to that job, its own small conversation, the same computer, and
+// subagents of its own when the work splits. The job agent decides when to report; a report wakes the chief of
+// staff, which synthesizes and decides what the user hears (message_user). Jobs never vanish: only the chief of staff
+// concludes one, once the user has accepted or dropped it, and a job agent that goes quiet is reported automatically.
 import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, Type } from "@earendil-works/pi-ai";
-import { type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension } from "@earendil-works/pi-durable";
+import { type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
 import type { ModelChoice } from "../settings.ts";
 
 /** Where a reply goes. */
 export type Origin = { chatId: number; messageId: number };
 
-/** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose a report. */
-export type OutboxMessage = { text: string; replyTo?: Origin; buzz: boolean; itemId?: string; note?: string };
+/** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose one. */
+export type OutboxMessage = { text: string; replyTo?: Origin; buzz: boolean; itemId?: string };
 export const Outbox = defineDoc<{ messages: Record<string, OutboxMessage> }>({
 	kind: "jarvis.outbox",
 	version: 1,
@@ -21,130 +21,263 @@ export const Outbox = defineDoc<{ messages: Record<string, OutboxMessage> }>({
 	initial: () => ({ messages: {} }),
 });
 
-/** Prefix a subagent uses when it can't finish without Darryl. */
-const DECISION = "DECISION NEEDED:";
-const NOTE_CHARS = 1200;
+type Job = {
+	id: string;
+	title: string;
+	conversationId: ConversationId;
+	/** Who it reports to: the chief of staff, or the job that started it. */
+	parentConversationId: ConversationId;
+	/** 1: a job; 2: a job's subagent (no subagents of its own). */
+	depth: 1 | 2;
+	model: ModelChoice;
+	origin?: Origin;
+	status: "working" | "reported" | "concluded" | "cancelled";
+	lastReportAt?: number;
+};
+const Jobs = defineDoc<{ jobs: Record<string, Job> }>({ kind: "jarvis.jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
+
+/** The prefix of a report as it reaches its parent, so the main thread can tell reports from the user. */
+export const REPORT_PREFIX = "[Report from job ";
 
 const textOf = (message: AssistantMessage | undefined) => (message?.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
+const background = { ownership: { kind: "conversation" }, background: true } as const;
 
-/** Owns a subagent's conversation; a background task, so the main thread's aborts and idle waits stop at it. */
+/** Owns a job's conversation; a background task, so the chief of staff's aborts and idle waits stop at it. */
 const Anchor = defineTask<null, { phase: "done" }, null>({
-	name: "jarvis.delegation-anchor",
+	name: "jarvis.job-anchor",
 	version: 1,
 	initial: () => ({ phase: "done" }),
 	phases: { done: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context) },
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-type RunInput = { itemId: string; title: string; brief: string; conversationId: ConversationId; origin?: Origin };
-type RunState = { phase: "run" } | { phase: "report"; report: string; decision: boolean };
+function reportText(job: Job, kind: string, text: string): string {
+	return `${REPORT_PREFIX}${job.id} "${job.title}" — ${kind}] ${text}`;
+}
 
-export function delegationExtension(options: {
+/** Send a message to a job and see it through; if the job agent ends its run without reporting, report for it. */
+type RunInput = { jobId: string; message: string; startedAt: number };
+type RunState = { phase: "run" } | { phase: "report"; text?: string };
+const Run = defineTask<RunInput, RunState, null>({
+	name: "jarvis.job-run",
+	version: 1,
+	initial: () => ({ phase: "run" }),
+	phases: {
+		run: async (task, runtime, context) => {
+			const job = (await runtime.snapshot(Jobs, context))?.jobs[task.input.jobId];
+			if (job === undefined) return void (await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context));
+			const conversation = (await runtime.conversation(job.conversationId, context))!;
+			const settled = await (await conversation.submit({ type: "input", content: task.input.message, requestId: `job-run:${task.id}`, whenBusy: "followUp" }, context)).wait(context);
+			const current = (await runtime.snapshot(Jobs, context))?.jobs[job.id];
+			let text: string | undefined;
+			if (current?.status === "cancelled" || current?.status === "concluded") text = undefined;
+			else if ((current?.lastReportAt ?? 0) >= task.input.startedAt) text = undefined; // it reported itself
+			else if (settled.status === "unanswered") text = settled.reason === "aborted" ? undefined : `Failed: ${settled.reason}`;
+			else if (settled.type === "input") {
+				const answer = (await runtime.context(job.conversationId, context)).entries.find((entry) => entry.id === settled.answer);
+				text = `Went quiet without reporting. Its last words: ${textOf(answer?.model?.[0] as AssistantMessage | undefined) || "(nothing)"}`;
+			}
+			await runtime.commit(() => ({ status: "running", checkpoint: { phase: "report", ...(text === undefined ? {} : { text }) } }), context);
+		},
+		report: async (task, runtime, context) => {
+			const text = task.state.checkpoint.text;
+			const job = (await runtime.snapshot(Jobs, context))?.jobs[task.input.jobId];
+			if (text !== undefined && job !== undefined) {
+				const parent = await runtime.conversation(job.parentConversationId, context);
+				await parent?.submit({ type: "input", content: reportText(job, "automatic", text), requestId: `auto-report:${task.id}`, whenBusy: "followUp" }, context);
+			}
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+		},
+	},
+	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
+const CHIEF_GUIDE = [
+	"You run a team. delegate hands a self-contained job to a job agent (its own computer and model; pick a model",
+	"name only when the job needs it). Job agents report back to you as messages starting with \"[Report from job\" —",
+	"those are your team, not the user, and your reply to them goes nowhere. On a report: check it, ask the job agent",
+	"more (check_job with a question) or redirect it if it's thin or wrong, and connect it with other jobs and what",
+	"you know of the user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet.",
+	"Don't break into an unrelated conversation with non-urgent news; mention it at a natural opening. A job stays",
+	"open until the user has accepted the result or dropped it; only then conclude_job.",
+].join(" ");
+
+const JOB_GUIDE = [
+	"You are a job agent working for the user's chief of staff on one job. You decide when to report: call report when",
+	"the job is done, when you're stuck, when you need a decision, or at milestones of long work. A report should",
+	"stand alone: the result itself, how sure you are, and where the details are (files on your computer, sources).",
+	"For work that splits into independent parts, use subagent; their results come back to you as reports.",
+].join(" ");
+
+export type Delegation = {
+	/** The chief of staff's tools: delegate, check_job, cancel_job, conclude_job, message_user (and the tasks). */
+	chief: Extension;
+	/** A job agent's tools: report, subagent. */
+	job: Extension;
+	/** Report only: for a job's subagents (and selected alongside `job` for job agents). */
+	helper: Extension;
+};
+
+export function delegationExtensions(options: {
 	openItems: OpenItems;
-	delegateModel: () => ModelChoice;
-	/** The Telegram message the main thread is answering right now. */
+	settings: () => { delegateModel: ModelChoice; jobModels: Record<string, ModelChoice> };
+	/** The Telegram message the chief of staff is answering right now. */
 	origin: (context: Context) => Promise<Origin | undefined>;
-	/** Extensions a subagent must not have (delegation itself, the main thread's state tools). */
-	withhold: () => readonly Extension[];
-}): Extension {
+	/** The chief of staff's own extensions a job agent must not have (its memory writes, open items). */
+	chiefOnly: () => readonly Extension[];
+}): Delegation {
 	const { openItems } = options;
 
-	const Run = defineTask<RunInput, RunState, null>({
-		name: "jarvis.delegation",
-		version: 1,
-		initial: () => ({ phase: "run" }),
-		phases: {
-			run: async (task, runtime, context) => {
-				const subagent = (await runtime.conversation(task.input.conversationId, context))!;
-				const settled = await (await subagent.submit({ type: "input", content: task.input.brief, requestId: `delegation:${task.id}` }, context)).wait(context);
-				let report: string;
-				if (settled.status === "unanswered") report = settled.reason === "aborted" ? "Stopped." : `Failed: ${settled.reason}`;
-				else if (settled.type !== "input") report = "Finished.";
-				else {
-					// The answer lives in the subagent's conversation, not this task's (the main thread's).
-					const answer = (await runtime.context(task.input.conversationId, context)).entries.find((entry) => entry.id === settled.answer);
-					report = textOf(answer?.model?.[0] as AssistantMessage | undefined) || "Finished.";
-				}
-				const decision = report.trimStart().startsWith(DECISION);
-				if (decision) report = report.trimStart().slice(DECISION.length).trim();
-				await runtime.commit(() => ({ status: "running", checkpoint: { phase: "report", report, decision } }), context);
-			},
-			report: async (task, runtime, context) => {
-				const { itemId, title, origin } = task.input;
-				const { report, decision } = task.state.checkpoint;
-				// Idempotent, so a crash between here and the commit below only repeats harmless writes.
-				if (decision) openItems.needsUser(itemId, `${title}: ${report.slice(0, 300)}`);
-				else openItems.close(itemId, report.slice(0, 300));
-				await runtime.commit(async (tx) => {
-					(await tx.doc(Outbox)).messages[`report:${task.id}`] = {
-						text: decision ? `${title}: needs you.\n\n${report}` : report,
-						...(origin === undefined ? {} : { replyTo: origin }),
-						buzz: decision,
-						itemId,
-						note: `[${decision ? "Needs Darryl" : "Done"}: ${itemId} ${title}] ${report.length > NOTE_CHARS ? `${report.slice(0, NOTE_CHARS)}…` : report}`,
-					};
-					return { status: "terminal", outcome: { status: "completed", result: null } };
-				}, context);
-			},
-		},
-		abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
-	});
+	/** Create a job's conversation and send it its brief, in one commit. */
+	const startJob = async (tx: Tx, job: Omit<Job, "conversationId" | "status">, brief: string, withhold: readonly Extension[]) => {
+		const anchor = await tx.createTask(Anchor, null, background);
+		const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
+		await configure(tx, conversation.id, { model: job.model, extensions: { remove: [...withhold] }, instructions: `Your job (${job.id}): "${job.title}".` });
+		(await tx.doc(Jobs)).jobs[job.id] = { ...job, conversationId: conversation.id, status: "working" };
+		await tx.createTask(Run, { jobId: job.id, message: brief, startedAt: Date.now() }, background);
+	};
 
-	/** Delegations started from the main thread, by open item: the subagent conversation and its run task. */
-	const Delegations = defineDoc<{ byItem: Record<string, { conversationId: ConversationId }> }>({
-		kind: "jarvis.delegations",
-		version: 1,
-		scope: "session",
-		initial: () => ({ byItem: {} }),
-	});
-
-	return defineExtension({
-		name: "jarvis.delegation",
-		tasks: [Anchor, Run],
+	const helper = defineExtension({
+		name: "jarvis.job-report",
+		sections: [section("job_guide", () => JOB_GUIDE, { tag: false })],
 		tools: [
 			defineTool({
-				name: "delegate",
-				description:
-					"Hand self-contained work (research, multi-step tasks, anything that takes more than a minute or two) to a background subagent with its own computer. Returns at once; its report reaches Darryl as a reply to his message, and you'll see a note. The brief must stand alone: the subagent sees nothing of this conversation.",
+				name: "report",
+				description: "Report to whoever gave you this job: done, stuck, a decision needed, or a milestone. The job stays yours until they conclude it.",
 				parameters: Type.Object({
-					title: Type.String({ description: "A few words, shown to Darryl" }),
-					brief: Type.String({ description: "Everything the subagent needs: goal, context, constraints, what to report back" }),
+					kind: Type.Union([Type.Literal("done"), Type.Literal("stuck"), Type.Literal("decision needed"), Type.Literal("progress")]),
+					text: Type.String(),
 				}),
-				// A rerun after a crash would start a second subagent; the model sees the interruption instead.
-				replay: "unsafe",
 				execute: async (args, api, context) => {
-					const origin = await options.origin(context);
-					const item = openItems.add("task", args.title, origin?.messageId);
+					const job = Object.values((await api.snapshot(Jobs, context))?.jobs ?? {}).find((candidate) => candidate.conversationId === api.conversationId);
+					if (job === undefined) return reply("You're not on a job.");
 					await api.commit(async (tx) => {
-						const background = { ownership: { kind: "conversation" }, background: true } as const;
-						const anchor = await tx.createTask(Anchor, null, background);
-						const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-						await configure(tx, child.id, {
-							model: options.delegateModel(),
-							extensions: { remove: [...options.withhold()] },
-							instructions: [
-								`You are working on a delegated task for Darryl's chief of staff: "${args.title}".`,
-								"Do the work, then answer with the result itself — what Darryl needs, concise and complete. No preamble.",
-								`If you can't finish without a decision or information only Darryl has, end by starting your answer with "${DECISION}" followed by the question and the options.`,
-							].join(" "),
-						});
-						(await tx.doc(Delegations)).byItem[item.id] = { conversationId: child.id };
-						await tx.createTask(Run, { itemId: item.id, title: args.title, brief: args.brief, conversationId: child.id, ...(origin === undefined ? {} : { origin }) }, background);
+						const stored = (await tx.doc(Jobs)).jobs[job.id];
+						if (stored !== undefined && stored.status === "working") stored.status = "reported";
+						if (stored !== undefined) stored.lastReportAt = Date.now();
 					}, context);
-					return { content: [{ type: "text", text: `Started as ${item.id}. Tell Darryl briefly; the report will come to him directly.` }] };
-				},
-			}),
-			defineTool({
-				name: "cancel_task",
-				description: "Stop a delegated task by its open item id.",
-				parameters: Type.Object({ id: Type.String() }),
-				execute: async (args, api, context) => {
-					const found = (await api.snapshot(Delegations, context))?.byItem[args.id];
-					if (found === undefined) return { content: [{ type: "text", text: `No delegated task ${args.id}.` }] };
-					await (await api.conversation(found.conversationId, context))?.abort(context);
-					return { content: [{ type: "text", text: `Stopping ${args.id}.` }] };
+					const parent = await api.conversation(job.parentConversationId, context);
+					await parent?.submit({ type: "input", content: reportText(job, args.kind, args.text), requestId: `report:${api.taskId}`, whenBusy: "followUp" }, context);
+					return reply("Reported.");
 				},
 			}),
 		],
 	});
+
+	const job: Extension = defineExtension({
+		name: "jarvis.job",
+		tools: [
+			defineTool({
+				name: "subagent",
+				description: "Hand an independent part of your job to a subagent (same model and computer). Its result comes back to you as a report.",
+				parameters: Type.Object({ title: Type.String(), brief: Type.String({ description: "Everything it needs; it sees nothing else" }) }),
+				replay: "unsafe",
+				execute: async (args, api, context) => {
+					const jobs = (await api.snapshot(Jobs, context))?.jobs ?? {};
+					const parent = Object.values(jobs).find((candidate) => candidate.conversationId === api.conversationId);
+					if (parent === undefined) return reply("You're not on a job.");
+					const id = `${parent.id}.${Object.values(jobs).filter((candidate) => candidate.parentConversationId === api.conversationId).length + 1}`;
+					await api.commit((tx) => startJob(tx, { id, title: args.title, parentConversationId: api.conversationId, depth: 2, model: parent.model }, args.brief, [...options.chiefOnly(), chief, job]), context);
+					return reply(`Started subagent ${id}.`);
+				},
+			}),
+		],
+	});
+
+	const chief: Extension = defineExtension({
+		name: "jarvis.delegation",
+		tasks: [Anchor, Run],
+		sections: [section("team", () => CHIEF_GUIDE, { tag: false })],
+		tools: [
+			defineTool({
+				name: "delegate",
+				description: "Start a job: self-contained work (research, multi-step tasks, anything over a minute or two) for a job agent with its own computer. Returns at once. The brief must stand alone: the agent sees nothing of this conversation.",
+				parameters: Type.Object({
+					title: Type.String({ description: "A few words" }),
+					brief: Type.String({ description: "Goal, context, constraints, what to report back" }),
+					model: Type.Optional(Type.String({ description: "A model name for this job, if it needs a specific one" })),
+				}),
+				replay: "unsafe",
+				execute: async (args, api, context) => {
+					const settings = options.settings();
+					const model = args.model === undefined ? settings.delegateModel : settings.jobModels[args.model];
+					if (model === undefined) return reply(`No model named ${args.model}; choose from: ${Object.keys(settings.jobModels).join(", ")}.`);
+					const origin = await options.origin(context);
+					const item = openItems.add("task", args.title, origin?.messageId);
+					const job1 = { id: item.id, title: args.title, parentConversationId: api.conversationId, depth: 1 as const, model, ...(origin === undefined ? {} : { origin }) };
+					await api.commit((tx) => startJob(tx, job1, args.brief, [...options.chiefOnly(), chief]), context);
+					return reply(`Started job ${item.id}.`);
+				},
+			}),
+			defineTool({
+				name: "check_job",
+				description: "A job's status. With a question, the job agent is asked and answers with a report.",
+				parameters: Type.Object({ id: Type.String(), question: Type.Optional(Type.String()) }),
+				execute: async (args, api, context) => {
+					const jobs = (await api.snapshot(Jobs, context))?.jobs ?? {};
+					const found = jobs[args.id];
+					if (found === undefined) return reply(`No job ${args.id}.`);
+					if (args.question !== undefined) {
+						await api.commit((tx) => tx.createTask(Run, { jobId: found.id, message: `From the chief of staff: ${args.question}`, startedAt: Date.now() }, background), context);
+						return reply(`Asked ${found.id}; the answer will come as a report.`);
+					}
+					const lines = [`${found.id} "${found.title}": ${found.status}${found.lastReportAt === undefined ? "" : `, last report ${new Date(found.lastReportAt).toISOString().slice(0, 16)}`}, model ${found.model.modelId}`];
+					for (const sub of Object.values(jobs).filter((candidate) => candidate.parentConversationId === found.conversationId)) lines.push(`  ${sub.id} "${sub.title}": ${sub.status}`);
+					return reply(lines.join("\n"));
+				},
+			}),
+			defineTool({
+				name: "cancel_job",
+				description: "Stop a job and its subagents; it is concluded as cancelled.",
+				parameters: Type.Object({ id: Type.String(), reason: Type.Optional(Type.String()) }),
+				execute: async (args, api, context) => {
+					const jobs = (await api.snapshot(Jobs, context))?.jobs ?? {};
+					const found = jobs[args.id];
+					if (found === undefined) return reply(`No job ${args.id}.`);
+					const family = Object.values(jobs).filter((each) => each.id === found.id || each.id.startsWith(`${found.id}.`));
+					await api.commit(async (tx) => {
+						const all = (await tx.doc(Jobs)).jobs;
+						for (const each of family) if (all[each.id] !== undefined) all[each.id]!.status = "cancelled";
+					}, context);
+					for (const each of family) await (await api.conversation(each.conversationId, context))?.abort(context);
+					openItems.close(found.id, `cancelled${args.reason === undefined ? "" : `: ${args.reason}`}`);
+					return reply(`Cancelled ${found.id}.`);
+				},
+			}),
+			defineTool({
+				name: "conclude_job",
+				description: "Close a job once the user has accepted the result or dropped it. Never before.",
+				parameters: Type.Object({ id: Type.String(), outcome: Type.String() }),
+				execute: async (args, api, context) => {
+					if ((await api.snapshot(Jobs, context))?.jobs[args.id] === undefined) return reply(`No job ${args.id}.`);
+					await api.commit(async (tx) => {
+						const stored = (await tx.doc(Jobs)).jobs[args.id];
+						if (stored !== undefined) stored.status = "concluded";
+					}, context);
+					openItems.close(args.id, args.outcome);
+					return reply(`Concluded ${args.id}.`);
+				},
+			}),
+			defineTool({
+				name: "message_user",
+				description: "Send the user a message when you're not replying to them: a result, a question, news. urgency now buzzes; silent arrives without a notification. With a job id it threads under their original request.",
+				parameters: Type.Object({ text: Type.String(), urgency: Type.Union([Type.Literal("now"), Type.Literal("silent")]), job: Type.Optional(Type.String()) }),
+				execute: async (args, api, context) => {
+					const found = args.job === undefined ? undefined : (await api.snapshot(Jobs, context))?.jobs[args.job];
+					await api.commit(async (tx) => {
+						(await tx.doc(Outbox)).messages[`message:${api.taskId}`] = {
+							text: args.text,
+							buzz: args.urgency === "now",
+							...(found?.origin === undefined ? {} : { replyTo: found.origin }),
+							...(found === undefined ? {} : { itemId: found.id }),
+						};
+					}, context);
+					return reply("Sent.");
+				},
+			}),
+		],
+	});
+
+	return { chief, job, helper };
 }

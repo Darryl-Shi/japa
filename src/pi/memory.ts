@@ -7,9 +7,9 @@ import type { History, HistoryLine } from "../core/history.ts";
 import type { Portrait } from "../core/portrait.ts";
 
 const GUIDE = [
-	"<memory> is your own memory of Darryl and his world, organized however serves you: who he is and how he works,",
-	"what he's in the middle of, people, plans, this week or this season — whatever you'd want to know weeks from now.",
-	"When he tells you something worth keeping, call remember and end your reply with one line: \"Noted: …\". Write dates",
+	"<memory> is your own memory of the user and their world, organized however serves you: who they are and how they work,",
+	"what they're in the middle of, people, plans, this week or this season — whatever you'd want to know weeks from now.",
+	"When they tell you something worth keeping, call remember and end your reply with one line: \"Noted: …\". Write dates",
 	"into the text (\"until Oct 14\", \"since early Sept\"), and when something stops being true, correct it rather than",
 	"adding a contradiction. Memory is also kept up in the background after each stretch of conversation. For anything",
 	"said before, call search_history and cite the date, e.g. \"(from our Sep 12 chat)\".",
@@ -34,14 +34,14 @@ export function memoryExtension(options: { portrait: Portrait; history: History;
 			}),
 			defineTool({
 				name: "search_history",
-				description: "Full-text search over everything said in earlier conversations with Darryl. Returns dated snippets; cite the date.",
+				description: "Full-text search over everything said in earlier conversations with the user. Returns dated snippets; cite the date.",
 				parameters: Type.Object({ query: Type.String({ description: "Distinctive words likely to appear in the messages" }) }),
 				replay: "safe",
 				execute: async (args, _api, context) => {
 					await options.catchUp(context);
 					const hits = history.search(args.query);
 					if (hits.length === 0) return text("No matches.");
-					return text(hits.map((hit) => `${new Date(hit.at).toISOString().slice(0, 16).replace("T", " ")} ${hit.role === "user" ? "Darryl" : "you"}: ${hit.snippet}`).join("\n"));
+					return text(hits.map((hit) => `${new Date(hit.at).toISOString().slice(0, 16).replace("T", " ")} ${hit.role === "user" ? "User" : "You"}: ${hit.snippet}`).join("\n"));
 				},
 			}),
 		],
@@ -58,7 +58,7 @@ export async function indexHistory(conversation: Conversation, history: History,
 		const page = await conversation.entries({ minEntryId: (after + 1) as never }, 200, cursor, context);
 		for (const entry of page.items) {
 			newest = Math.max(newest, entry.id);
-			if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant" && entry.kind !== "jarvis.report") continue;
+			if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
 			for (const message of entry.model ?? []) {
 				if (message.role !== "user" && message.role !== "assistant") continue;
 				const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");

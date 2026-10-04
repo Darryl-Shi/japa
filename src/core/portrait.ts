@@ -1,5 +1,5 @@
-// Memory: the agent's own memory of the user and his world — one free-form markdown document it organizes itself
-// (who he is, how he works, what he's in the middle of, people, plans, seasons: whatever is worth knowing). The user
+// Memory: the agent's own memory of the user and their world — one free-form markdown document it organizes itself
+// (who they are, how they work, what they're in the middle of, people, plans, seasons: whatever is worth knowing). The user
 // can read and edit it. It changes through small edits, from `remember` in conversation and from reflection after
 // each slice, never by wholesale rewrite; every change is logged (and committed when the home is a git repo).
 import { execFile } from "node:child_process";

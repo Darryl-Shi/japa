@@ -9,10 +9,10 @@ import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { ModelChoice } from "../settings.ts";
 
 const GUIDE = [
-	"<open_items> lists what is still open: tasks in flight, things waiting on Darryl, promises you made. When you",
-	"promise something, ask him something that needs an answer, or start work that will report back, call track; when",
+	"<open_items> lists what is still open: tasks in flight, things waiting on the user, promises you made. When you",
+	"promise something, ask them something that needs an answer, or start work that will report back, call track; when",
 	"it's done or answered, call resolve. <working_set> is where the last topic stood. Earlier turns are not in your",
-	"context: if he refers to something you can't see, call search_history; if it's still ambiguous and matters, ask.",
+	"context: if they refer to something you can't see, call search_history; if it's still ambiguous and matters, ask.",
 ].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
@@ -29,7 +29,7 @@ export function stateExtension(options: { openItems: OpenItems; workingSet: Work
 		tools: [
 			defineTool({
 				name: "track",
-				description: "Add an open item: task (work in flight), waiting (a question or proposal waiting on Darryl), or promise (something you said you'd do).",
+				description: "Add an open item: task (work in flight), waiting (a question or proposal waiting on the user), or promise (something you said you'd do).",
 				parameters: Type.Object({ kind: Type.Union([Type.Literal("task"), Type.Literal("waiting"), Type.Literal("promise")]), text: Type.String() }),
 				execute: async (args) => text(`Tracked as ${openItems.add(args.kind, args.text).id}.`),
 			}),
@@ -53,12 +53,12 @@ export function stateExtension(options: { openItems: OpenItems; workingSet: Work
 }
 
 const REFLECT_PROMPT = [
-	"You are the reflective side of Darryl's chief of staff. A stretch of conversation just ended. Return JSON only:",
+	"You are the reflective side of the user's chief of staff. A stretch of conversation just ended. Return JSON only:",
 	'{"working_set": string, "memory_edits": [{"add": string} | {"replace": string, "with": string}]}.',
 	"working_set: where the latest topic stands — options on the table (and ones rejected), constraints, decisions, the",
 	"last open question. Keep what still matters from the previous working set; drop what's finished. Under 120 words.",
-	"memory_edits: small changes to your memory of Darryl and his world, organized however serves you — anything you'd",
-	"want to know in days, weeks or months: who he is, how he works, what he's in the middle of, people, plans, seasons.",
+	"memory_edits: small changes to your memory of the user and their world, organized however serves you — anything you'd",
+	"want to know in days, weeks or months: who they are, how they work, what they're in the middle of, people, plans, seasons.",
 	"Write dates into the text. When something in memory is no longer true, replace it (e.g. past tense with when it",
 	"ended) or remove it (replace with \"\"); `replace` must quote memory exactly. Only what the conversation supports;",
 	"no how-to steps or rules (skills and behaviours hold those), nothing only relevant today, nothing already there.",
@@ -72,7 +72,7 @@ export function transcriptText(messages: readonly Message[]): string {
 			if (message.role === "system") return [];
 			const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 			if (content.trim() === "") return [];
-			const who = message.role === "user" ? "Darryl" : message.role === "assistant" ? "You" : "Tool";
+			const who = message.role === "user" ? "User" : message.role === "assistant" ? "You" : "Tool";
 			return [`${who}: ${message.role === "toolResult" ? content.slice(0, 300) : content}`];
 		})
 		.join("\n");
