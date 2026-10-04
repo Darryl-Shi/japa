@@ -20,19 +20,28 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 - **Memory:** one free-form document, the agent's own memory of the user and their world, organised however serves it: who they are, how they work, what they're in the middle of, people, plans, seasons. There are no fixed categories.
   - It changes only through small edits: `remember` during a conversation, plus a reflection at the end of each slice. That reflection marks things that stopped being true (past tense with when, or removed) instead of letting them silently expire. This is the lever StateMemBench says matters.
   - Every change is logged for a weekly check-in. What happened stays in the transcript, which history search can cite.
-- **One unit: the extension.** Everything beyond the core loop is an extension entry. That covers memory, open items, the team, the computer and screen, the web, coding agents, approvals, and later email, calendar, skills and behaviours. An entry has a name, a title, what it gives the chief of staff, what it gives job agents, the settings it adds to `/settings`, and the tools that never need approval. Only the backend (which computer) is a separate, config-level abstraction, because it is infrastructure rather than a capability.
-  - A **skill** (how to get something done) is an extension that adds a prompt section and maybe a script.
-  - A **behaviour** (when or whether to act) is an extension that adds a trigger (*always*, *time*, or an *event* from another extension). The trigger is the one thing the entry doesn't have yet; it comes in M2. A behaviour that makes the agent do less applies immediately; one that gives it more autonomy needs the user to confirm.
-  - Agent-built extensions (M3) run **outside the harness** as a manifest plus a service in the extension host, and are turned on in `/settings`. Built-in ones are trusted code in the harness. Changes to the core loop are reviewed PRs.
-  - Extensions use each other only when needed. Today that's wiring at construction (the team uses open items, coding agents use the workbench). A declared `uses:` link with lazy loading arrives with the extension host.
+- **The core** can't be turned off: the main thread (the chief of staff, slices, the record of the conversation), open items, the team (job agents and their reports), triggers, the UI and `/settings`.
+- **One unit: the extension.** Everything else is an extension, made from the **Host** and hooked in only through it. The Host gives settings, secrets, models, the workbench, the UI (cards with buttons, questions answered by reply, slash commands), `wake` (a new turn for the chief of staff or a job), holds (a job paused on the user), `emit` (events for triggers), history search, and `inbox(platform)`. It never gives the main thread itself. An extension says:
+  - what it gives the chief of staff (`chief`) and job agents (`jobs`): Pi tools, prompt sections, hooks, durable tasks;
+  - its `/settings` fields, and the tools that never need approval (`safeTools`);
+  - `onSliceEnd`, for work when a slice ends (memory reflection uses it);
+  - `triggers`, to wake the chief of staff by itself: on a schedule (`every`, or `at` a local time on given days; durable tasks that survive restarts) or on an event another extension emits. A trigger arrives as a message starting "[Trigger", and the chief of staff decides what the user hears;
+  - `channel` (a messaging platform: it gets an Inbox, and the last channel can't be turned off);
+  - `start` and `stop`, run when it's turned on or off, live.
+  - Only the backend (which computer) is a separate, config-level abstraction, because it is infrastructure rather than a capability.
+  - A **skill** is an extension with a prompt section and maybe a script. A **behaviour** is an extension with a trigger. A behaviour that makes the agent do less applies immediately; one that gives it more autonomy needs the user to confirm.
+  - Agent-built extensions (M3) run **outside the harness** as a manifest plus a service in the extension host, and are turned on in `/settings`. Built-in ones are trusted code in the harness. Changes to the core are reviewed PRs.
+  - Extensions use each other only through the Host (cards, wake, emit). A declared `uses:` link with lazy loading arrives with the extension host.
 - **Default extensions (each can be turned off in `/settings`):**
 
-  | Extension | Gives | Notes |
+  | Extension | Gives | Hooks used |
   |---|---|---|
-  | Web (Parallel) | `web_search`, `web_fetch` | fast mode, the most accurate $1/1000 tier |
-  | Claude Code, Codex | `claude_code`, `codex` (job agents) | run on the workbench; a key set in `/settings` is passed per run, never stored there |
-  | Approvals | a `beforeTool` hook | smart mode by default |
-  | Memory, Computer, Screen | as before | Team and Open items are required |
+  | Telegram | the main channel | `channel`, `start`/`stop`, renders UI cards |
+  | Memory | `<memory>`, `remember`, `search_history` | `chief`, `onSliceEnd` (reflection) |
+  | Approvals | a `beforeTool` hook in every agent | `chief`+`jobs` hook, UI cards, `wake`, holds, `start` (recovery) |
+  | Web (Parallel) | `web_search`, `web_fetch` | `chief`+`jobs`, settings, secret |
+  | Computer, Screen | bash/files, the `computer` tool on the workbench | `chief`+`jobs` |
+  | Claude Code, Codex | `claude_code`, `codex` | `jobs` only; a key set in `/settings` is passed per run, never stored on the workbench |
 
 **Messaging UX**
 
@@ -74,11 +83,12 @@ Pinned to `@earendil-works/pi-durable`, `pi-ai`, `chord` and `pi-mcp` **1.0.2**.
 
 ```
 src/
-  main.ts              open the harness, install core, start channels
+  main.ts              the default extensions, and start
+  jarvis.ts            the core, assembled; builds the Host
   settings.ts          live settings (settings.json, read on every use)
-  core/                our formats; no Pi imports
-  pi/                  Pi adapters and the built-in extensions (extension.ts: the one unit type)
-  channels/telegram/
+  core/                our formats and services (UI, schedule, approvals store); no Pi imports
+  pi/                  Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host)
+  channels/            the Inbox (allowlist gate), /settings, Telegram
   backends/            backend providers: boat, local
 home/                  (default ~/jarvis-home, a separate git repo) memory, skills, behaviours
 ```

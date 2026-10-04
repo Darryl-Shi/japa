@@ -10,7 +10,7 @@ import type { OpenItems } from "../core/state.ts";
 import type { ModelChoice } from "../settings.ts";
 
 /** Where a reply goes. */
-export type Origin = { chatId: number; messageId: number };
+export type Origin = { chatId: number; messageId: number; channel?: string };
 
 /** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose one. */
 export type OutboxMessage = { text: string; replyTo?: Origin; buzz: boolean; itemId?: string };
@@ -102,7 +102,8 @@ const CHIEF_GUIDE = [
 	"more (check_job with a question) or redirect it if it's thin or wrong, and connect it with other jobs and what",
 	"you know of the user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet.",
 	"Don't break into an unrelated conversation with non-urgent news; mention it at a natural opening. A job stays",
-	"open until the user has accepted the result or dropped it; only then conclude_job.",
+	"open until the user has accepted the result or dropped it; only then conclude_job. Messages starting \"[Trigger\" are",
+	"your own schedule or an event, not the user: do what they ask and, as with reports, decide what the user hears.",
 ].join(" ");
 
 const JOB_GUIDE = [

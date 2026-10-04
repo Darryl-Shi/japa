@@ -18,14 +18,15 @@ import {
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { Portrait } from "../core/portrait.ts";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
 import { Outbox, type Origin, type OutboxMessage, REPORT_PREFIX } from "./delegation.ts";
-import { reflectOnSlice, transcriptText } from "./state.ts";
+import type { SliceEnd } from "./extension.ts";
+import { summarizeSlice, transcriptText } from "./state.ts";
+import { TRIGGER_PREFIX } from "./triggers.ts";
 
 /** Where an answer goes once it exists. Written before submitting, so a restart can still deliver it. */
-export type ReplyTarget = { chatId: number; messageId: number };
+export type ReplyTarget = { chatId: number; messageId: number; channel?: string };
 type PendingReply = ReplyTarget & { content: string };
 
 const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
@@ -66,8 +67,8 @@ export type Arrival = {
 	newTopic?: boolean;
 };
 
-/** What a slice starts from and what reflection keeps current. */
-export type SliceState = { openItems: OpenItems; workingSet: WorkingSetFile; memory?: Portrait };
+/** What a slice starts from, and the working set the end of a slice keeps current. */
+export type SliceState = { openItems: OpenItems; workingSet: WorkingSetFile };
 
 /** When the current slice started; a reply to anything older anchors a new one. */
 const Slice = defineDoc<{ startedAt: number }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
@@ -91,6 +92,7 @@ export class MainThread {
 	private readonly settings: () => Settings;
 	private readonly selected: () => readonly Extension[];
 	private readonly state: SliceState | undefined;
+	private readonly onSliceEnd: (slice: SliceEnd) => Promise<void>;
 	private readonly log: (line: string) => void;
 	private readonly background = new Set<Promise<void>>();
 	private inFlight = 0;
@@ -103,6 +105,7 @@ export class MainThread {
 		settings: () => Settings;
 		selected: () => readonly Extension[];
 		state: SliceState | undefined;
+		onSliceEnd: (slice: SliceEnd) => Promise<void>;
 		log: (line: string) => void;
 	}) {
 		this.harness = options.harness;
@@ -112,6 +115,7 @@ export class MainThread {
 		this.settings = options.settings;
 		this.selected = options.selected;
 		this.state = options.state;
+		this.onSliceEnd = options.onSliceEnd;
 		this.log = options.log;
 	}
 
@@ -129,6 +133,8 @@ export class MainThread {
 			env?: () => ExecutionEnv;
 			/** Open items and working set a new slice starts from. */
 			state?: SliceState;
+			/** Extensions' work when a slice ends (e.g. memory reflection), in the background. */
+			onSliceEnd?: (slice: SliceEnd) => Promise<void>;
 			/** Per-answer slice, cost and cache numbers, for tuning the boundaries from real use. */
 			log?: (line: string) => void;
 		},
@@ -162,6 +168,7 @@ export class MainThread {
 			settings: options.settings,
 			selected: () => [core, ...selected()],
 			state: options.state,
+			onSliceEnd: options.onSliceEnd ?? (async () => {}),
 			log: options.log ?? (() => {}),
 		});
 		await thread.applySettings(options.settings(), context);
@@ -264,7 +271,7 @@ export class MainThread {
 			(await tx.doc(Slice)).startedAt = Date.now();
 		}, context);
 		// Reflect on any slice where the user said something: even one line ("in Tokyo till the 14th") can matter.
-		if (this.state !== undefined && messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing));
+		if (messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing));
 	}
 
 	private async handoff(arrival: Arrival, context: Context): Promise<string> {
@@ -277,8 +284,9 @@ export class MainThread {
 				if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
 				const message = entry.model?.[0];
 				if (message === undefined) continue;
-				const who = message.role === "assistant" ? "You" : textOf(message).startsWith(REPORT_PREFIX) ? "Team" : "User";
-				const line = `${who}: ${textOf(message).slice(0, MESSAGE_CHARS)}`;
+				const said = textOf(message);
+				const who = message.role === "assistant" ? "You" : said.startsWith(REPORT_PREFIX) ? "Team" : said.startsWith(TRIGGER_PREFIX) ? "Trigger" : "User";
+				const line = `${who}: ${said.slice(0, MESSAGE_CHARS)}`;
 				if (recent.length >= RECENT_MESSAGES || used + line.length > RECENT_CHARS) break scan;
 				recent.unshift(line);
 				used += line.length;
@@ -294,21 +302,15 @@ export class MainThread {
 		return parts.join("\n");
 	}
 
-	/** Reflection on a departing slice: a new working set (versioned) and small edits to memory. */
+	/** The end of a slice: a new working set (versioned), then the extensions' own work (e.g. memory reflection). */
 	private async reflect(version: number, departing: string): Promise<void> {
 		const state = this.state;
-		if (state === undefined) return;
-		const reflection = await reflectOnSlice(this.models, this.settings().model, {
-			workingSet: state.workingSet.read()?.text,
-			memory: state.memory?.read() ?? "",
-			openItems: state.openItems.projection(),
-			conversation: departing,
-			today: new Date().toISOString().slice(0, 10),
-		});
-		if (reflection === undefined) return;
-		if (reflection.workingSet !== undefined && state.workingSet.write({ version, text: reflection.workingSet })) this.log(`working set updated from slice ${version}`);
-		const applied = state.memory?.apply(reflection.memoryEdits, "reflection") ?? [];
-		if (applied.length > 0) this.log(`memory: ${applied.length} edit(s) from reflection`);
+		const slice = { conversation: departing, openItems: state?.openItems.projection(), today: new Date().toISOString().slice(0, 10) };
+		if (state !== undefined) {
+			const workingSet = await summarizeSlice(this.models, this.settings().model, { workingSet: state.workingSet.read()?.text, ...slice });
+			if (workingSet !== undefined && state.workingSet.write({ version, text: workingSet })) this.log(`working set updated from slice ${version}`);
+		}
+		await this.onSliceEnd(slice);
 	}
 
 	private inBackground(work: Promise<void>): void {
@@ -328,7 +330,7 @@ export class MainThread {
 		);
 		if (placed?.requestId === undefined) return undefined;
 		const target = (await this.harness.snapshot(PendingReplies, context))?.byRequest[placed.requestId];
-		return target === undefined ? undefined : { chatId: target.chatId, messageId: target.messageId };
+		return target === undefined ? undefined : { chatId: target.chatId, messageId: target.messageId, ...(target.channel === undefined ? {} : { channel: target.channel }) };
 	}
 
 	/**

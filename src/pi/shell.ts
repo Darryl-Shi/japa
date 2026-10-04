@@ -2,6 +2,8 @@
 // knows nothing about the provider behind it.
 import { defineExtension, type Extension, section } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
+import { computerExtension } from "./computer.ts";
+import type { Host, JarvisExtension } from "./extension.ts";
 
 export function shellExtension(): Extension {
 	return defineExtension({
@@ -15,4 +17,23 @@ export function shellExtension(): Extension {
 		],
 		tools: [createBashTool(), createReadTool(), createWriteTool(), createEditTool()],
 	});
+}
+
+/** The workbench as two extensions: its shell and files, and its screen. None without a workbench. */
+export function workbenchExtensions(host: Pick<Host, "workbench">, options: { screen: boolean }): JarvisExtension[] {
+	const workbench = host.workbench;
+	if (workbench === undefined) return [];
+	const shell = shellExtension();
+	const screen = computerExtension({ backend: workbench });
+	return [
+		{
+			name: "computer",
+			title: "Computer",
+			about: `Shell and files on its own machine (${workbench.id}), which holds none of your secrets.`,
+			safeTools: ["read"],
+			chief: [shell],
+			jobs: [shell],
+		},
+		{ name: "screen", title: "Screen", about: "Seeing and using the machine's desktop.", enabledByDefault: options.screen, chief: [screen], jobs: [screen] },
+	];
 }

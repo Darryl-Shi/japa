@@ -2,6 +2,7 @@
 // theirs. Kept in data/approvals.json so a request survives a restart, and every reviewed action is appended to
 // data/audit.jsonl.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import type { CardRef } from "./ui.ts";
 
 export type ApprovalRequest = {
 	id: string;
@@ -16,8 +17,8 @@ export type ApprovalRequest = {
 	rule: string;
 	at: number;
 	status: "pending" | "approved" | "denied";
-	/** The Telegram message that asked. */
-	messageId?: number;
+	/** The card that asked. */
+	card?: CardRef;
 	/** The agent has been told the decision. */
 	told?: boolean;
 	/** The approved call has run. */
@@ -36,8 +37,6 @@ export function canonical(value: unknown): string {
 export class Approvals {
 	private readonly path: string;
 	private readonly auditPath: string;
-	private readonly requestListeners = new Set<(request: ApprovalRequest) => void>();
-	private readonly decisionListeners = new Set<(request: ApprovalRequest, decision: Decision) => void>();
 
 	constructor(path: string, auditPath: string) {
 		this.path = path;
@@ -74,7 +73,6 @@ export class Approvals {
 		all[id] = request;
 		this.save(all);
 		this.audit({ conversationId: fields.conversationId, tool: fields.tool, args: fields.args, verdict: "asked", approval: id, summary: fields.summary });
-		for (const listener of this.requestListeners) listener(request);
 		return request;
 	}
 
@@ -96,28 +94,14 @@ export class Approvals {
 		request.status = decision === "deny" ? "denied" : "approved";
 		this.save(all);
 		this.audit({ conversationId: request.conversationId, tool: request.tool, args: request.args, verdict: decision, approval: id });
-		for (const listener of this.decisionListeners) listener(request, decision);
 		return request;
 	}
 
-	update(id: string, change: Partial<Pick<ApprovalRequest, "messageId" | "told">>): void {
+	update(id: string, change: Partial<Pick<ApprovalRequest, "card" | "told">>): void {
 		const all = this.load();
 		if (all[id] === undefined) return;
 		all[id] = { ...all[id], ...change };
 		this.save(all);
-	}
-
-	/** Is this conversation paused on the user? */
-	waiting(conversationId: string): boolean {
-		return this.all().some((request) => request.conversationId === conversationId && (request.status === "pending" || request.told !== true));
-	}
-
-	onRequest(listener: (request: ApprovalRequest) => void): void {
-		this.requestListeners.add(listener);
-	}
-
-	onDecision(listener: (request: ApprovalRequest, decision: Decision) => void): void {
-		this.decisionListeners.add(listener);
 	}
 
 	audit(record: { conversationId: string; tool: string; args: string; verdict: string; approval?: string; summary?: string; reason?: string }): void {

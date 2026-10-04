@@ -2,9 +2,7 @@
 // extension; fast mode by default, the most accurate of the $1-per-1000 modes (~700ms).
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { SecretsFile } from "../credentials.ts";
-import type { SettingsFile } from "../settings.ts";
-import type { JarvisExtension } from "./extension.ts";
+import type { Host, JarvisExtension } from "./extension.ts";
 
 const API = "https://api.parallel.ai/v1";
 const DEFAULTS = { mode: "fast", maxResults: 8 };
@@ -28,9 +26,9 @@ function render(pages: readonly Page[], full = false): string {
 	return out.trim();
 }
 
-export function webExtension(options: { settings: SettingsFile; secrets: SecretsFile; fetch?: typeof fetch }): JarvisExtension {
+export function webExtension(host: Pick<Host, "settings" | "secrets">, options: { fetch?: typeof fetch } = {}): JarvisExtension {
 	const request = async (path: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> => {
-		const key = options.secrets.get("web.apiKey", "PARALLEL_API_KEY");
+		const key = host.secrets.get("web.apiKey", "PARALLEL_API_KEY");
 		if (key === undefined) throw new Error("No Parallel API key: set one in /settings → Web.");
 		const response = await (options.fetch ?? fetch)(`${API}${path}`, {
 			method: "POST",
@@ -54,7 +52,7 @@ export function webExtension(options: { settings: SettingsFile; secrets: Secrets
 				}),
 				replay: "safe",
 				execute: async (args, _api, context) => {
-					const { mode, maxResults } = options.settings.options("web", DEFAULTS);
+					const { mode, maxResults } = host.settings.options("web", DEFAULTS);
 					const result = await request("/search", { objective: args.objective, search_queries: args.queries, mode, max_results: Number(maxResults) }, context.abortSignal);
 					const pages = (result.results ?? []) as Page[];
 					return text(pages.length === 0 ? "No results." : render(pages));

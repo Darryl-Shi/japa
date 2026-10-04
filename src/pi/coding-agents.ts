@@ -3,10 +3,8 @@
 // workbench; without one, the agent uses whatever login the workbench has.
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
-import { type Backend, shellQuote as q } from "../core/backend.ts";
-import type { SecretsFile } from "../credentials.ts";
-import type { SettingsFile } from "../settings.ts";
-import type { JarvisExtension } from "./extension.ts";
+import { shellQuote as q } from "../core/backend.ts";
+import type { Host, JarvisExtension } from "./extension.ts";
 
 const DEFAULTS = { model: "", timeoutMinutes: 60 };
 
@@ -81,7 +79,7 @@ export const CODEX: Engine = {
 	},
 };
 
-export function codingAgentExtension(engine: Engine, options: { workbench: Backend | undefined; settings: SettingsFile; secrets: SecretsFile }): JarvisExtension {
+export function codingAgentExtension(engine: Engine, host: Pick<Host, "workbench" | "settings" | "secrets">): JarvisExtension {
 	const extension = defineExtension({
 		name: `jarvis.${engine.name}`,
 		sections: [
@@ -102,12 +100,12 @@ export function codingAgentExtension(engine: Engine, options: { workbench: Backe
 					session: Type.Optional(Type.String({ description: "A session id from an earlier run, to continue it" })),
 				}),
 				execute: async (args, _api, context) => {
-					const workbench = options.workbench;
+					const workbench = host.workbench;
 					if (workbench === undefined) return text("No computer is configured, so there's nowhere to run it.");
-					const { model, timeoutMinutes } = options.settings.options(engine.name, DEFAULTS);
+					const { model, timeoutMinutes } = host.settings.options(engine.name, DEFAULTS);
 					const env: Record<string, string> = {};
 					for (const secret of engine.secrets) {
-						const value = options.secrets.get(`${engine.name}.${secret.key}`, secret.env);
+						const value = host.secrets.get(`${engine.name}.${secret.key}`, secret.env);
 						if (value !== undefined) env[secret.env] = value;
 					}
 					const dir = args.dir ?? "work";

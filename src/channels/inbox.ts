@@ -1,7 +1,8 @@
 // The hard user whitelist. Every messaging channel (Telegram now; WhatsApp, email, voice later) reaches the agent
-// only through an Inbox, and an Inbox refuses anyone not on the platform's list in settings.allowlist, before
-// anything else runs. An empty list lets no one in. The list lives only in data/settings.json: not in /settings,
-// and no tool can change it, so neither a message nor the agent itself can widen it.
+// only through an Inbox, and an Inbox refuses anyone not on the platform's list in settings.allowlist. An empty list
+// lets no one in. The list lives only in data/settings.json: not in /settings, and no tool can change it, so neither
+// a message nor the agent itself can widen it. Channels are extensions, and the Host gives them an Inbox, never the
+// main thread.
 import type { Context } from "@earendil-works/chord";
 import type { Answer, Arrival, MainThread, ReplyTarget } from "../pi/harness.ts";
 import type { SettingsFile } from "../settings.ts";
@@ -10,14 +11,23 @@ export class NotAllowed extends Error {}
 
 export class Inbox {
 	readonly platform: string;
-	private readonly thread: MainThread;
+	private readonly thread: () => MainThread;
 	private readonly settings: SettingsFile;
+	private readonly prepare: (context: Context) => Promise<void>;
 	private readonly log: (line: string) => void;
 
-	constructor(options: { platform: string; thread: MainThread; settings: SettingsFile; log?: (line: string) => void }) {
+	constructor(options: {
+		platform: string;
+		thread: () => MainThread;
+		settings: SettingsFile;
+		/** Before each new message: follow the settings (model, extensions turned on or off). */
+		prepare?: (context: Context) => Promise<void>;
+		log?: (line: string) => void;
+	}) {
 		this.platform = options.platform;
 		this.thread = options.thread;
 		this.settings = options.settings;
+		this.prepare = options.prepare ?? (async () => {});
 		this.log = options.log ?? ((line) => console.log(line));
 	}
 
@@ -39,13 +49,23 @@ export class Inbox {
 	}
 
 	/** A message from someone on the list; checked again here, so a channel can't skip the gate. */
-	ask(from: string | number, requestId: string, content: string, reply: ReplyTarget, context: Context, arrival?: Arrival): Promise<Answer> {
-		if (!this.allowed().includes(String(from))) return Promise.reject(new NotAllowed(`${this.platform} user ${from} is not on the allowlist`));
-		return this.thread.ask(requestId, content, reply, context, arrival);
+	async ask(from: string | number, requestId: string, content: string, reply: ReplyTarget, context: Context, arrival?: Arrival): Promise<Answer> {
+		if (!this.allowed().includes(String(from))) throw new NotAllowed(`${this.platform} user ${from} is not on the allowlist`);
+		await this.prepare(context);
+		return this.thread().ask(requestId, content, reply, context, arrival);
 	}
 
-	/** The thread for everything that isn't a new message: redelivery, outbox, settings. */
-	get main(): Pick<MainThread, "answer" | "pending" | "delivered" | "deliverOutbox" | "applySettings"> {
-		return this.thread;
+	/** Messages admitted before a restart whose answers were never delivered. */
+	pending(context: Context): ReturnType<MainThread["pending"]> {
+		return this.thread().pending(context);
+	}
+
+	/** The answer to an admitted message (after a restart: no new admission, so no gate). */
+	answer(requestId: string, content: string, context: Context): Promise<Answer> {
+		return this.thread().answer(requestId, content, context);
+	}
+
+	delivered(requestId: string, context: Context): Promise<void> {
+		return this.thread().delivered(requestId, context);
 	}
 }
