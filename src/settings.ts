@@ -4,6 +4,7 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type ModelChoice = { provider: string; modelId: string };
+export type MachineConfig = { provider: string; [option: string]: unknown };
 
 export type Settings = {
 	/** The main thread: fast, answers directly. */
@@ -11,7 +12,12 @@ export type Settings = {
 	/** Delegated work: subagents. */
 	delegateModel: ModelChoice;
 	codingAgent: "claude-code" | "codex";
-	sandbox: { kind: "endpoint"; url: string } | { kind: "boat" } | { kind: "none" };
+	/**
+	 * The computers the agent works on, by role, each backed by a provider (built in: "boat", "local"; extensions can
+	 * add more). workbench: its own machine for shell, files, scripts and coding agents — no secrets. desk (later):
+	 * a machine with a screen and the user's logged-in browser. A role with no entry is not available.
+	 */
+	machines: { workbench?: MachineConfig; desk?: MachineConfig };
 	/** Daily model spend cap in USD. */
 	spendCapUsd: number;
 	telegram: { ownerChatId?: number };
@@ -30,7 +36,7 @@ export const DEFAULTS: Settings = {
 	model: { provider: "anthropic", modelId: "claude-haiku-4-5" },
 	delegateModel: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
 	codingAgent: "claude-code",
-	sandbox: { kind: "none" },
+	machines: {},
 	spendCapUsd: 20,
 	telegram: {},
 	context: { idleMinutes: 10, sliceTokens: 8000 },

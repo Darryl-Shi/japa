@@ -15,6 +15,7 @@ import {
 	section,
 	type Storage,
 } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
@@ -103,6 +104,8 @@ export class MainThread {
 			models: Models;
 			settings: () => Settings;
 			extensions?: readonly Extension[];
+			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
+			env?: () => ExecutionEnv;
 			/** Open items and working set a new slice starts from. */
 			state?: { openItems: OpenItems; workingSet: WorkingSetFile };
 			/** Per-answer slice, cost and cache numbers, for tuning the boundaries from real use. */
@@ -115,7 +118,8 @@ export class MainThread {
 		for (const extension of options.extensions ?? []) registry.install(extension);
 		const storage = options.storage ?? (await openNodeSqliteStorage(join(options.dataDir ?? "data", "session.sqlite")));
 		// Default (short) provider caching only: the context is kept small by construction instead.
-		const harness = await Harness.open(storage, { models: options.models, registry }, context);
+		const env = options.env;
+		const harness = await Harness.open(storage, { models: options.models, registry, ...(env === undefined ? {} : { env: () => env() }) }, context);
 		const root = await harness.root(context, { agent: { model: options.settings().model } });
 		const thread = new MainThread({ harness, root, models: options.models, settings: options.settings, state: options.state, log: options.log ?? (() => {}) });
 		await thread.applySettings(options.settings(), context);

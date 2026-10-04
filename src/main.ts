@@ -6,13 +6,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { boatProvider } from "./backends/boat.ts";
+import { localProvider } from "./backends/local.ts";
 import { startTelegram } from "./channels/telegram.ts";
+import { BackendProviders } from "./core/backend.ts";
 import { History } from "./core/history.ts";
 import { Portrait } from "./core/portrait.ts";
 import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { FileCredentialStore } from "./credentials.ts";
+import { BackendExecutionEnv } from "./pi/backend-env.ts";
 import { MainThread } from "./pi/harness.ts";
 import { indexHistory, memoryExtension } from "./pi/memory.ts";
+import { shellExtension } from "./pi/shell.ts";
 import { stateExtension } from "./pi/state.ts";
 import { SettingsFile } from "./settings.ts";
 
@@ -25,9 +30,25 @@ const models = builtinModels({ credentials: new FileCredentialStore(join(dataDir
 const history = new History(join(dataDir, "history.sqlite"));
 const portrait = new Portrait(process.env.JARVIS_HOME ?? join(homedir(), "jarvis-home"));
 const memory = memoryExtension({ portrait, history, catchUp: (callContext) => indexHistory(thread.root, history, callContext) });
+// Computers the agent works on. Providers are registered here; extensions can register more.
+const providers = new BackendProviders();
+providers.register(localProvider);
+if (process.env.BOAT_API_KEY !== undefined) providers.register(boatProvider({ apiKey: process.env.BOAT_API_KEY, stateFile: join(dataDir, "boat-machines.json") }));
+const workbenchConfig = settings.get().machines.workbench;
+const workbench = workbenchConfig === undefined ? undefined : await providers.open("workbench", workbenchConfig);
+if (workbench !== undefined) console.log(`workbench: ${workbench.id}`);
+
 const state = { openItems: new OpenItems(join(dataDir, "open-items.json")), workingSet: new WorkingSetFile(join(dataDir, "working-set.json")) };
 const thread: MainThread = await MainThread.open(
-	{ dataDir, models, settings: () => settings.get(), extensions: [memory, stateExtension(state)], state, log: console.log },
+	{
+		dataDir,
+		models,
+		settings: () => settings.get(),
+		extensions: [memory, stateExtension(state), ...(workbench === undefined ? [] : [shellExtension()])],
+		...(workbench === undefined ? {} : { env: () => new BackendExecutionEnv(workbench) }),
+		state,
+		log: console.log,
+	},
 	context,
 );
 

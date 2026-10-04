@@ -47,7 +47,7 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 
 - **Model:** any model pi-ai supports. That includes Claude and ChatGPT subscriptions through OAuth. There's one fast model for the main thread and one for delegated work.
 - **Coding agent:** `claude-code` or `codex`, running in the sandbox.
-- **Sandbox:** your own endpoint, or boat.dev. Any other provider means writing an extension.
+- **Machines:** a provider per role (`workbench`, later `desk`): boat.dev, local, or any provider an extension registers.
 - **Web search:** [Parallel](https://docs.parallel.ai) Search API (fast mode, ~700ms), with several queries run in parallel.
 
 ## Architecture
@@ -69,7 +69,8 @@ src/
   core/                our formats; no Pi imports
   pi/                  Pi adapters: extensions, sections, tasks
   channels/telegram/
-  extensions/          built-in: sandbox, web, coding-agent
+  backends/            backend providers: boat, local
+  extensions/          built-in: web, coding-agent
 home/                  (default ~/jarvis-home, a separate git repo) memory, skills, behaviours
 ```
 
@@ -90,7 +91,9 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
    - **The time goes in each message**, never in the prefix. Every answer logs the slice decision, cache reads/writes and cost.
 3. **Prompt sections.** Identity, the memory portrait, and (M2) the list of units. The prefix never contains anything that changes per message.
 4. **Memory.** `home/memory.md` with a `remember` tool, plus history search with citations (FTS5 over the transcript).
-5. **Sandbox.** An `ExecutionEnv` for your own endpoint and one for boat.dev, chosen in settings. No secrets in the sandbox.
+5. **Backends (the agent's computers).** `Backend` is the single abstraction over infrastructure: `exec`, plus optional fast file paths, a screen, a view link for a human, and suspend.
+   - Providers implement it: boat (built in), local (reference and tests), and anyone's own infrastructure through an extension. Settings map roles to providers: `machines.workbench` (its own machine, no secrets) and later `machines.desk` (a screen plus your logged-in browser).
+   - Everything on top is a generic extension that never names a provider. Pi's bash/read/write/edit run *directly* on the workbench through `BackendExecutionEnv`, which builds Pi's whole `ExecutionEnv` on `exec`. It's verified to behave like Pi's own local environment by a differential test.
 6. **Delegation.** Background subagents (Pi example 23), and the coding agent in the sandbox. Results come back as replies to the message that asked. Each task gets an open item with its originating Telegram message.
    - Reports are recorded and delivered **without waking the main model** unless a decision is needed.
    - Acceptance tests: background subagents survive a slice `reset()`; a reset during a tool round with queued messages loses and duplicates nothing; and **many background completions don't delay one simple question**.
