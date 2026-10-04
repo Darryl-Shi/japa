@@ -7,6 +7,7 @@ import {
 	AssistantEntry,
 	type Conversation,
 	createRegistry,
+	type Extension,
 	defineDoc,
 	defineExtension,
 	Harness,
@@ -67,9 +68,13 @@ export class MainThread {
 		this.settings = settings;
 	}
 
-	static async open(options: { dataDir?: string; storage?: Storage; models: Models; settings: () => Settings }, context: Context): Promise<MainThread> {
+	static async open(
+		options: { dataDir?: string; storage?: Storage; models: Models; settings: () => Settings; extensions?: readonly Extension[] },
+		context: Context,
+	): Promise<MainThread> {
 		const registry = createRegistry();
 		registry.install(Core);
+		for (const extension of options.extensions ?? []) registry.install(extension);
 		const storage = options.storage ?? (await openNodeSqliteStorage(join(options.dataDir ?? "data", "session.sqlite")));
 		const harness = await Harness.open(
 			storage,
