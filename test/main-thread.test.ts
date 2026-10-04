@@ -67,7 +67,7 @@ async function sliceHarness(context_: { idleMinutes: number; sliceTokens: number
 	const state = { openItems: new OpenItems(join(dataDir, "open-items.json")), workingSet: new WorkingSetFile(join(dataDir, "working-set.json")) };
 	const live = { ...settings(), context: context_ };
 	const lines: string[] = [];
-	const thread = await MainThread.open({ dataDir, models, settings: () => live, extensions: [stateExtension(state)], state, log: (line) => lines.push(line) }, context);
+	const thread = await MainThread.open({ dataDir, models, settings: () => live, installed: [stateExtension(state)], state, log: (line) => lines.push(line) }, context);
 	const sent = async () => JSON.stringify((await thread.root.context(context)).messages);
 	const slices = () => lines.flatMap((line) => /slice=(\S+)/.exec(line)?.[1] ?? []);
 	const done = async () => {

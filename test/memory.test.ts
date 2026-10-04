@@ -51,7 +51,7 @@ test("the agent remembers into its prompt and finds earlier slices in history, w
 		JSON.stringify(request).includes("<conversation>") ? fauxAssistantMessage("Handoff: nothing open.") : (script.shift() ?? fauxAssistantMessage("?"));
 	faux.setResponses(Array.from({ length: 12 }, () => respond));
 
-	thread = await MainThread.open({ dataDir, models, settings, extensions: [memory] }, context);
+	thread = await MainThread.open({ dataDir, models, settings, installed: [memory] }, context);
 	const target = { chatId: 1, messageId: 1 };
 	await thread.ask("1", "My sister is Mia.", target, context);
 	assert.equal(portrait.read(), "- Sister: Mia");

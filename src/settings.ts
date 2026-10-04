@@ -1,5 +1,5 @@
-// Live settings: data/settings.json, re-read whenever the file changes. Secrets never live here;
-// model credentials are in data/auth.json and channel tokens in the environment.
+// Live settings: data/settings.json, re-read whenever the file changes. Secrets never live here: model credentials
+// are in data/auth.json, extension secrets in data/secrets.json, the bot token in the environment.
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -14,15 +14,12 @@ export type Settings = {
 	delegateModel: ModelChoice;
 	/** Named models the chief of staff can assign to a job (bound to that job and its subagents). */
 	jobModels: Record<string, ModelChoice>;
-	codingAgent: "claude-code" | "codex";
 	/**
 	 * The computers the agent works on, by role, each backed by a provider (built in: "boat", "local"; extensions can
 	 * add more). workbench: its own machine for shell, files, scripts and coding agents — no secrets. desk (later):
 	 * a machine with a screen and the user's logged-in browser. A role with no entry is not available.
 	 */
 	machines: { workbench?: MachineConfig; desk?: MachineConfig };
-	/** Daily model spend cap in USD. */
-	spendCapUsd: number;
 	/** Who the agent works for. Optional; the agent also learns about them in memory. */
 	user?: { name?: string };
 	telegram: { ownerChatId?: number };
@@ -35,7 +32,11 @@ export type Settings = {
 	 * the working set, the last few visible messages — not from a summary of history.
 	 */
 	context: { idleMinutes: number; sliceTokens: number };
+	/** Per extension, by name: `enabled` and the extension's own options (see each extension's settings fields). */
+	extensions: Record<string, ExtensionOptions>;
 };
+
+export type ExtensionOptions = { enabled?: boolean; [option: string]: unknown };
 
 export const DEFAULTS: Settings = {
 	model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
@@ -44,11 +45,10 @@ export const DEFAULTS: Settings = {
 		fast: { provider: "anthropic", modelId: "claude-haiku-4-5" },
 		strong: { provider: "anthropic", modelId: "claude-opus-5-5" },
 	},
-	codingAgent: "claude-code",
 	machines: {},
-	spendCapUsd: 20,
 	telegram: {},
 	context: { idleMinutes: 10, sliceTokens: 8000 },
+	extensions: {},
 };
 
 export class SettingsFile {
@@ -74,9 +74,22 @@ export class SettingsFile {
 		return this.cached;
 	}
 
+	/** An extension's options: its defaults, overridden by what settings say. */
+	options<T extends Record<string, unknown>>(name: string, defaults: T): T & ExtensionOptions {
+		return { ...defaults, ...this.get().extensions[name] };
+	}
+
+	setOption(name: string, key: string, value: unknown): void {
+		const extensions = this.get().extensions;
+		this.update({ extensions: { ...extensions, [name]: { ...extensions[name], [key]: value } } });
+	}
+
 	update(change: Partial<Settings>): Settings {
 		const next = { ...this.get(), ...change };
 		writeFileSync(this.path, `${JSON.stringify(next, null, "\t")}\n`);
-		return this.get();
+		// Writes can land within the file system's mtime resolution, so read back what was written rather than trust it.
+		this.cached = { ...DEFAULTS, ...(JSON.parse(readFileSync(this.path, "utf8")) as Partial<Settings>) };
+		this.mtimeMs = statSync(this.path).mtimeMs;
+		return this.cached;
 	}
 }

@@ -5,7 +5,7 @@
 // concludes one, once the user has accepted or dropped it, and a job agent that goes quiet is reported automatically.
 import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, Type } from "@earendil-works/pi-ai";
-import { type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
 import type { ModelChoice } from "../settings.ts";
 
@@ -59,7 +59,7 @@ function reportText(job: Job, kind: string, text: string): string {
 /** Send a message to a job and see it through; if the job agent ends its run without reporting, report for it. */
 type RunInput = { jobId: string; message: string; startedAt: number };
 type RunState = { phase: "run" } | { phase: "report"; text?: string };
-const Run = defineTask<RunInput, RunState, null>({
+const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean) => defineTask<RunInput, RunState, null>({
 	name: "jarvis.job-run",
 	version: 1,
 	initial: () => ({ phase: "run" }),
@@ -73,6 +73,7 @@ const Run = defineTask<RunInput, RunState, null>({
 			let text: string | undefined;
 			if (current?.status === "cancelled" || current?.status === "concluded") text = undefined;
 			else if ((current?.lastReportAt ?? 0) >= task.input.startedAt) text = undefined; // it reported itself
+			else if (waitingOnUser(job.conversationId)) text = undefined; // paused on the user's approval, which resumes it
 			else if (settled.status === "unanswered") text = settled.reason === "aborted" ? undefined : `Failed: ${settled.reason}`;
 			else if (settled.type === "input") {
 				const answer = (await runtime.context(job.conversationId, context)).entries.find((entry) => entry.id === settled.answer);
@@ -95,7 +96,8 @@ const Run = defineTask<RunInput, RunState, null>({
 
 const CHIEF_GUIDE = [
 	"You run a team. delegate hands a self-contained job to a job agent (its own computer and model; pick a model",
-	"name only when the job needs it). Job agents report back to you as messages starting with \"[Report from job\" —",
+	"name only when the job needs it). Job agents can have tools you don't, such as coding agents: hand them coding work.",
+	"Job agents report back to you as messages starting with \"[Report from job\" —",
 	"those are your team, not the user, and your reply to them goes nowhere. On a report: check it, ask the job agent",
 	"more (check_job with a question) or redirect it if it's thin or wrong, and connect it with other jobs and what",
 	"you know of the user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet.",
@@ -117,6 +119,8 @@ export type Delegation = {
 	job: Extension;
 	/** Report only: for a job's subagents (and selected alongside `job` for job agents). */
 	helper: Extension;
+	/** Send a message to a job (e.g. the user's decision on its approval); it's seen through like any other run. */
+	resume: (root: Conversation, conversationId: string, message: string, context: Context) => Promise<boolean>;
 };
 
 export function delegationExtensions(options: {
@@ -124,10 +128,13 @@ export function delegationExtensions(options: {
 	settings: () => { delegateModel: ModelChoice; jobModels: Record<string, ModelChoice> };
 	/** The Telegram message the chief of staff is answering right now. */
 	origin: (context: Context) => Promise<Origin | undefined>;
-	/** The chief of staff's own extensions a job agent must not have (its memory writes, open items). */
-	chiefOnly: () => readonly Extension[];
+	/** What a new job agent must not have (the chief of staff's own extensions, anything turned off). */
+	withhold: () => readonly Extension[];
+	/** A job paused on something only the user can give (an approval) isn't reported as gone quiet. */
+	waitingOnUser?: (conversationId: ConversationId) => boolean;
 }): Delegation {
 	const { openItems } = options;
+	const Run = makeRun(options.waitingOnUser ?? (() => false));
 
 	/** Create a job's conversation and send it its brief, in one commit. */
 	const startJob = async (tx: Tx, job: Omit<Job, "conversationId" | "status">, brief: string, withhold: readonly Extension[]) => {
@@ -178,7 +185,7 @@ export function delegationExtensions(options: {
 					const parent = Object.values(jobs).find((candidate) => candidate.conversationId === api.conversationId);
 					if (parent === undefined) return reply("You're not on a job.");
 					const id = `${parent.id}.${Object.values(jobs).filter((candidate) => candidate.parentConversationId === api.conversationId).length + 1}`;
-					await api.commit((tx) => startJob(tx, { id, title: args.title, parentConversationId: api.conversationId, depth: 2, model: parent.model }, args.brief, [...options.chiefOnly(), chief, job]), context);
+					await api.commit((tx) => startJob(tx, { id, title: args.title, parentConversationId: api.conversationId, depth: 2, model: parent.model }, args.brief, [...options.withhold(), job]), context);
 					return reply(`Started subagent ${id}.`);
 				},
 			}),
@@ -206,7 +213,7 @@ export function delegationExtensions(options: {
 					const origin = await options.origin(context);
 					const item = openItems.add("task", args.title, origin?.messageId);
 					const job1 = { id: item.id, title: args.title, parentConversationId: api.conversationId, depth: 1 as const, model, ...(origin === undefined ? {} : { origin }) };
-					await api.commit((tx) => startJob(tx, job1, args.brief, [...options.chiefOnly(), chief]), context);
+					await api.commit((tx) => startJob(tx, job1, args.brief, options.withhold()), context);
 					return reply(`Started job ${item.id}.`);
 				},
 			}),
@@ -279,5 +286,13 @@ export function delegationExtensions(options: {
 		],
 	});
 
-	return { chief, job, helper };
+	const resume = async (root: Conversation, conversationId: string, message: string, context: Context) =>
+		root.commit(async (tx) => {
+			const found = Object.values((await tx.doc(Jobs)).jobs).find((candidate) => String(candidate.conversationId) === conversationId);
+			if (found === undefined || found.status === "cancelled" || found.status === "concluded") return false;
+			await tx.createTask(Run, { jobId: found.id, message, startedAt: Date.now() }, background);
+			return true;
+		}, context);
+
+	return { chief, job, helper, resume };
 }

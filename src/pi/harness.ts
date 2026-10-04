@@ -85,8 +85,11 @@ const textOf = (message: Message) =>
 export class MainThread {
 	readonly harness: Harness;
 	readonly root: Conversation;
+	/** The chief of staff's identity: job agents must not have it. */
+	readonly core: Extension;
 	private readonly models: Models;
 	private readonly settings: () => Settings;
+	private readonly selected: () => readonly Extension[];
 	private readonly state: SliceState | undefined;
 	private readonly log: (line: string) => void;
 	private readonly background = new Set<Promise<void>>();
@@ -95,15 +98,19 @@ export class MainThread {
 	private constructor(options: {
 		harness: Harness;
 		root: Conversation;
+		core: Extension;
 		models: Models;
 		settings: () => Settings;
+		selected: () => readonly Extension[];
 		state: SliceState | undefined;
 		log: (line: string) => void;
 	}) {
 		this.harness = options.harness;
 		this.root = options.root;
+		this.core = options.core;
 		this.models = options.models;
 		this.settings = options.settings;
+		this.selected = options.selected;
 		this.state = options.state;
 		this.log = options.log;
 	}
@@ -114,9 +121,10 @@ export class MainThread {
 			storage?: Storage;
 			models: Models;
 			settings: () => Settings;
-			extensions?: readonly Extension[];
-			/** Installed extensions the chief of staff itself must not select. */
-			exclude?: readonly Extension[];
+			/** Every Pi extension any agent may use (the chief of staff's, job agents'). */
+			installed?: readonly Extension[];
+			/** The ones the chief of staff has right now; re-read with the settings, so a toggle applies on the next message. */
+			selected?: () => readonly Extension[];
 			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
 			env?: () => ExecutionEnv;
 			/** Open items and working set a new slice starts from. */
@@ -127,8 +135,9 @@ export class MainThread {
 		context: Context,
 	): Promise<MainThread> {
 		const registry = createRegistry();
-		registry.install(coreExtension(options.settings));
-		for (const extension of options.extensions ?? []) registry.install(extension);
+		const core = coreExtension(options.settings);
+		registry.install(core);
+		for (const extension of options.installed ?? []) registry.install(extension);
 		const storage = options.storage ?? (await openNodeSqliteStorage(join(options.dataDir ?? "data", "session.sqlite")));
 		// Default (short) provider caching only: the context is kept small by construction instead.
 		const env = options.env;
@@ -144,20 +153,32 @@ export class MainThread {
 			context,
 		);
 		const root = await harness.root(context, { agent: { model: options.settings().model } });
-		// Tools meant for other agents (a job agent's report/subagent) stay off the chief of staff.
-		if (options.exclude !== undefined && options.exclude.length > 0) await root.configure({ extensions: { remove: [...options.exclude] } }, context);
-		const thread = new MainThread({ harness, root, models: options.models, settings: options.settings, state: options.state, log: options.log ?? (() => {}) });
+		const selected = options.selected ?? (() => options.installed ?? []);
+		const thread = new MainThread({
+			harness,
+			root,
+			core,
+			models: options.models,
+			settings: options.settings,
+			selected: () => [core, ...selected()],
+			state: options.state,
+			log: options.log ?? (() => {}),
+		});
 		await thread.applySettings(options.settings(), context);
 		harness.resume();
 		return thread;
 	}
 
-	/** Follow the settings' main model; a change applies from the next request. */
+	/** Follow the settings' main model and the extensions that are on; a change applies from the next request. */
 	async applySettings(settings: Settings, context: Context): Promise<void> {
-		const current = (await this.root.agent(context)).model;
+		const agent = await this.root.agent(context);
+		const current = agent.model;
 		if (current?.provider !== settings.model.provider || current?.modelId !== settings.model.modelId) {
 			await this.root.configure({ model: settings.model }, context);
 		}
+		const wanted = this.selected();
+		const names = (list: readonly Extension[]) => list.map((extension) => extension.name).join(",");
+		if (names(agent.extensions) !== names(wanted)) await this.root.configure({ extensions: wanted }, context);
 	}
 
 	/** Submit a message from a channel and resolve with its answer. Idempotent per requestId. */

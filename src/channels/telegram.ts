@@ -2,8 +2,10 @@
 // the message that asked for it.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
+import type { ApprovalRequest, Approvals, Decision } from "../core/approvals.ts";
 import type { Arrival, MainThread, ReplyTarget } from "../pi/harness.ts";
 import type { SettingsFile } from "../settings.ts";
+import type { Button, Prompt, SettingsMenu, View } from "./settings-menu.ts";
 
 const context = BACKGROUND_CONTEXT;
 const LIMIT = 4096;
@@ -15,8 +17,23 @@ export function stamp(at: number, timeZone?: string): string {
 	return `${part("weekday")} ${part("day")} ${part("month")} ${part("hour")}:${part("minute")}`;
 }
 
-export function startTelegram(options: { token: string; thread: MainThread; settings: SettingsFile; log?: (line: string) => void }): Bot {
-	const { thread, settings } = options;
+export type Telegram = {
+	/** Put a message to the chief of staff as if from the user (e.g. their tap on an approval), and deliver its answer. */
+	tell: (requestId: string, text: string, target: ReplyTarget) => Promise<void>;
+	stop: () => Promise<void>;
+};
+
+const keyboard = (buttons: Button[][]) => ({ inline_keyboard: buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) });
+
+export function startTelegram(options: {
+	token: string;
+	thread: MainThread;
+	settings: SettingsFile;
+	menu?: SettingsMenu;
+	approvals?: Approvals;
+	log?: (line: string) => void;
+}): Telegram {
+	const { thread, settings, menu, approvals } = options;
 	const log = options.log ?? ((line: string) => console.log(line));
 	const bot = new Bot(options.token);
 
@@ -49,11 +66,57 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 
 	bot.command("whoami", (ctx) => ctx.reply(`chat id ${ctx.chat.id}`));
 
+	const isOwner = (chatId: number | undefined) => chatId !== undefined && chatId === settings.get().telegram.ownerChatId;
+
+	// /settings: a menu of buttons. A field that needs a value asks for it; the reply to that question sets it.
+	const prompts = new Map<number, Prompt>();
+	const showView = async (chatId: number, view: View, editing?: number) => {
+		if (editing !== undefined) await bot.api.editMessageText(chatId, editing, view.text, { reply_markup: keyboard(view.buttons) }).catch(() => {});
+		else await bot.api.sendMessage(chatId, view.text, { reply_markup: keyboard(view.buttons) });
+	};
+	bot.command("settings", async (ctx) => {
+		if (menu !== undefined && isOwner(ctx.chat.id)) await showView(ctx.chat.id, menu.main());
+	});
+
+	bot.on("callback_query:data", async (ctx) => {
+		const chatId = ctx.chat?.id;
+		const messageId = ctx.callbackQuery.message?.message_id;
+		if (!isOwner(chatId) || chatId === undefined || messageId === undefined) return void (await ctx.answerCallbackQuery());
+		const data = ctx.callbackQuery.data;
+		if (data.startsWith("st:") && menu !== undefined) {
+			const next = menu.press(data);
+			await ctx.answerCallbackQuery();
+			if ("buttons" in next) return void (await showView(chatId, next, messageId));
+			const asked = await bot.api.sendMessage(chatId, `Send the new value for "${next.label}" as a reply to this message ("-" to clear).${next.secret ? " I'll delete your message once it's saved." : ""}`, {
+				reply_markup: { force_reply: true, input_field_placeholder: next.label },
+			});
+			prompts.set(asked.message_id, next);
+			return;
+		}
+		if (data.startsWith("ap:") && approvals !== undefined) {
+			const [, id = "", choice] = data.split(":");
+			const decision: Decision = choice === "y" ? "approve" : choice === "a" ? "always" : "deny";
+			const decided = approvals.decide(id, decision);
+			await ctx.answerCallbackQuery(decided === undefined ? { text: "Already decided." } : {});
+			const request = approvals.get(id);
+			if (request !== undefined) await bot.api.editMessageText(chatId, messageId, approvalText(request, decision)).catch(() => {});
+			return;
+		}
+		await ctx.answerCallbackQuery();
+	});
+
 	bot.on("message:text", async (ctx) => {
-		const owner = settings.get().telegram.ownerChatId;
-		if (owner === undefined || ctx.chat.id !== owner) {
+		if (!isOwner(ctx.chat.id)) {
 			log(`ignored message from chat ${ctx.chat.id}`);
 			return;
+		}
+		const prompt = ctx.message.reply_to_message === undefined ? undefined : prompts.get(ctx.message.reply_to_message.message_id);
+		if (prompt !== undefined && menu !== undefined) {
+			const result = menu.answer(prompt, ctx.message.text);
+			if (prompt.secret) await ctx.deleteMessage().catch(() => {});
+			if ("error" in result) return void (await ctx.reply(result.error));
+			prompts.delete(ctx.message.reply_to_message!.message_id);
+			return void (await showView(ctx.chat.id, result));
 		}
 		let text = ctx.message.text;
 		const arrival: Arrival = {};
@@ -94,7 +157,30 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 		return send(chatId, message.text, message.replyTo?.messageId, message.buzz);
 	}, context);
 
+	// Approval requests: a message with buttons, sent once (again after a restart if it never went out).
+	const ask = async (request: ApprovalRequest) => {
+		const chatId = settings.get().telegram.ownerChatId;
+		if (chatId === undefined || approvals === undefined || request.messageId !== undefined || request.status !== "pending") return;
+		const sent = await bot.api.sendMessage(chatId, approvalText(request), {
+			reply_markup: keyboard([[{ text: "Approve", data: `ap:${request.id}:y` }, { text: "Deny", data: `ap:${request.id}:n` }], [{ text: `Always: ${request.rule}`.slice(0, 60), data: `ap:${request.id}:a` }]]),
+		});
+		approvals.update(request.id, { messageId: sent.message_id });
+	};
+	if (approvals !== undefined) {
+		approvals.onRequest((request) => void ask(request).catch((error: unknown) => log(`approval ${request.id}: ${String(error)}`)));
+		for (const request of approvals.all()) void ask(request).catch((error: unknown) => log(`approval ${request.id}: ${String(error)}`));
+	}
+
 	bot.catch((error) => log(`telegram: ${String(error.error)}`));
 	void bot.start({ onStart: (me) => log(`telegram: polling as @${me.username}`) });
-	return bot;
+	return {
+		tell: (requestId, text, target) => deliver(requestId, `[${stamp(Date.now(), settings.get().timezone)}] ${text}`, target, true),
+		stop: () => bot.stop(),
+	};
+}
+
+function approvalText(request: ApprovalRequest, decision?: Decision): string {
+	const args = request.args.length > 600 ? `${request.args.slice(0, 600)}…` : request.args;
+	const head = decision === undefined ? "Approve?" : decision === "deny" ? "Denied." : decision === "always" ? "Approved (and always from now on)." : "Approved.";
+	return `${head} ${request.summary}\n\n${request.tool} ${args}`;
 }

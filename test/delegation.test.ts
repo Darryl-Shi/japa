@@ -51,10 +51,10 @@ async function setup(script: (turn: Turn) => AssistantMessage | Promise<Assistan
 		openItems: state.openItems,
 		settings: () => ({ delegateModel: { provider: "faux", modelId: "faux-1" }, jobModels: { fast: { provider: "faux", modelId: "faux-fast" } } }),
 		origin: (callContext) => thread!.origin(callContext),
-		chiefOnly: () => [stateTools],
+		withhold: () => [thread!.core, stateTools, team.chief],
 	});
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" }, context: { idleMinutes: 60, sliceTokens: 1_000_000 } });
-	thread = await MainThread.open({ dataDir, models, settings, extensions: [stateTools, team.chief, team.job, team.helper], exclude: [team.job, team.helper], state }, context);
+	thread = await MainThread.open({ dataDir, models, settings, installed: [stateTools, team.chief, team.job, team.helper], selected: () => [stateTools, team.chief], state }, context);
 	const sent: OutboxMessage[] = [];
 	await thread.deliverOutbox(async (message) => (sent.push(message), 1000 + sent.length - 1), context);
 	const until = async (check: () => boolean, what: string) => {

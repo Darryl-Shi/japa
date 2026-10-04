@@ -52,7 +52,7 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		fauxAssistantMessage("Looked."),
 	]);
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
-	const thread = await MainThread.open({ dataDir, models, settings, extensions: [computerExtension({ backend, display: ":97" })] }, context);
+	const thread = await MainThread.open({ dataDir, models, settings, installed: [computerExtension({ backend, display: ":97" })] }, context);
 	try {
 		await thread.ask("1", "look at the screen", { chatId: 1, messageId: 1 }, context);
 		const results = (await thread.root.context(context)).messages.filter((message): message is ToolResultMessage => message.role === "toolResult");

@@ -28,7 +28,7 @@ test("the agent's own bash/write/read act directly on the workbench backend", as
 		fauxAssistantMessage("Two steps written."),
 	]);
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
-	const thread = await MainThread.open({ dataDir, models, settings, extensions: [shellExtension()], env: () => new BackendExecutionEnv(machine) }, context);
+	const thread = await MainThread.open({ dataDir, models, settings, installed: [shellExtension()], env: () => new BackendExecutionEnv(machine) }, context);
 	assert.deepEqual(await thread.ask("1", "plan it", { chatId: 1, messageId: 1 }, context), { text: "Two steps written." });
 	assert.equal(await readFile(join(machine.home, "notes/plan.md"), "utf8"), "step one\nstep two\n");
 	const sent = JSON.stringify((await thread.root.context(context)).messages);
