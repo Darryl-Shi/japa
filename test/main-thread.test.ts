@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import { MainThread } from "../src/pi/harness.ts";
 import { DEFAULTS } from "../src/settings.ts";
 
@@ -43,6 +43,34 @@ test("the main model follows the settings", async () => {
 	const thread = await MainThread.open({ dataDir, models, settings }, context);
 	await thread.applySettings({ ...settings(), model: { provider: "faux", modelId: "faux-2" } }, context);
 	assert.equal((await thread.root.agent(context)).model?.modelId, "faux-2");
+	await thread.close(context);
+	await rm(dataDir, { recursive: true, force: true });
+});
+
+test("after a quiet gap the next message starts from a short handoff note", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const replies = ["alpha ".repeat(5000), "beta ".repeat(5000), "Done."];
+	const respond: FauxResponseFactory = (request) =>
+		fauxAssistantMessage(JSON.stringify(request).includes("<conversation>") ? "HANDOFF: nothing open." : (replies.shift() ?? "?"));
+	faux.setResponses(Array.from({ length: 10 }, () => respond));
+
+	const live = { ...settings(), context: { restAfterMinutes: 60, maxTokens: 1_000_000 } };
+	const thread = await MainThread.open({ dataDir, models, settings: () => live }, context);
+	const target = { chatId: 1, messageId: 1 };
+	await thread.ask("a", "first", target, context);
+	await thread.ask("b", "second", target, context);
+
+	// The cache has gone cold by the time the next message arrives.
+	live.context = { ...live.context, restAfterMinutes: 0.0001 };
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.deepEqual(await thread.ask("c", "third", target, context), { text: "Done." });
+
+	const sent = JSON.stringify((await thread.root.context(context)).messages);
+	assert.ok(sent.includes("HANDOFF"), "the handoff note is in context");
+	assert.ok(!sent.includes("alpha"), "the old exchange is not resent");
 	await thread.close(context);
 	await rm(dataDir, { recursive: true, force: true });
 });

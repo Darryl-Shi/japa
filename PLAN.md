@@ -12,7 +12,7 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 |---|---|---|
 | A small query turns into a big agentic task | The main thread answers directly. Anything longer is announced and goes to a subagent. | A simple question gets its first reply in under ~5s |
 | Poor memory by default | Memory is always on | It recalls things from weeks ago without being reminded |
-| Every task needs its own thread | One thread forever, with compaction, plus history search | Two weeks with no resets |
+| Every task needs its own thread | One thread in Telegram. The model context stays small: it grows while you chat and is cached, then is compacted to a short handoff note once the cache expires. History search brings back anything older. | A message after a gap costs a few thousand input tokens, not the whole history |
 | Bloated | A small core, loaded on demand | Base prompt under ~3k tokens, at most ~8 tools in the main turn |
 
 **What it knows and does**
@@ -40,7 +40,7 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 |---|---|
 | **M1: It answers** | Telegram, one thread, fast path, memory and history search, sandbox, subagents plus a coding agent, web search, approvals, spend cap, audit log, a basic `/settings` |
 | **M2: It has habits** | The extension host first, with email and calendar as its first extensions. Then skills and behaviours as units with `uses:` links, `always` and `time` triggers, digests and the delivery gate |
-| **M3: It extends itself** | Event triggers, the extension host, the loop of build → prove → card → toggle → rollback. First test: WhatsApp. |
+| **M3: It extends itself** | Event triggers, the agent building its own extensions: the loop of build → prove → card → toggle → rollback. First test: WhatsApp. |
 | **M4: Voice** | Calls |
 
 ## Configuration (`/settings`)
@@ -76,7 +76,10 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
 ## M1 build order
 
 1. **Skeleton.** Harness on SQLite and one root conversation. Telegram through grammY long polling, restricted to the owner's chat ID. Requests are tagged with a `requestId` taken from the Telegram message ID. The answer is sent as a reply, and pending replies survive a restart.
-2. **Fast path.** A fast main model with a small toolset. Time to first reply is measured from day one.
+2. **Fast path and context policy.** A fast main model with a small toolset, and a 1h provider cache.
+   - After `restAfterMinutes` of quiet, the context is compacted to a handoff note plus the last exchange. A message arriving after a gap triggers the same compaction first.
+   - A long burst is capped at `maxTokens`.
+   - Time to first reply is measured from day one.
 3. **Prompt sections.** Identity, today's date (by the day), the memory portrait, and the list of units.
 4. **Memory.** `home/memory.md` with a `remember` tool, plus history search with citations (FTS5 over the transcript).
 5. **Sandbox.** An `ExecutionEnv` for your own endpoint and one for boat.dev, chosen in settings. No secrets in the sandbox.

@@ -15,6 +15,12 @@ export type Settings = {
 	/** Daily model spend cap in USD. */
 	spendCapUsd: number;
 	telegram: { ownerChatId?: number };
+	/**
+	 * The main thread's model context. While messages keep coming it grows and stays cached; once the provider cache
+	 * has expired it is compacted to a short handoff note, so a message after a gap is cheap. Older detail comes back
+	 * through history search.
+	 */
+	context: { restAfterMinutes: number; maxTokens: number };
 };
 
 export const DEFAULTS: Settings = {
@@ -24,6 +30,8 @@ export const DEFAULTS: Settings = {
 	sandbox: { kind: "none" },
 	spendCapUsd: 20,
 	telegram: {},
+	// Just under the 1h prompt cache ("long" retention).
+	context: { restAfterMinutes: 55, maxTokens: 40_000 },
 };
 
 export class SettingsFile {
