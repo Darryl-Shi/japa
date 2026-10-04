@@ -100,4 +100,6 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
 
 ## Open
 
+- Deployment: server first (Node on an always-on VM). Serverless comes later: Fly scale-to-zero, then possibly a Cloudflare Durable Object after a spike. Until then, avoid new direct `setTimeout` scheduling, so the switch stays cheap.
+
 - Where the harness VM runs.
