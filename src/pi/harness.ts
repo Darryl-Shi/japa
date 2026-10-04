@@ -37,11 +37,11 @@ const Core = defineExtension({
 				[
 					"You are Darryl's chief of staff, talking with him over Telegram in one continuous conversation.",
 					"Answer directly and briefly. Lead with the answer. Plain text; no headings.",
+					// The time lives in each new message, never in this prefix, so the prefix stays cacheable.
+					"Each of his messages starts with the local time he sent it, in brackets.",
 				].join("\n"),
 			{ tag: false },
 		),
-		// By the day, not the minute, so the prompt cache stays warm.
-		section("today", () => new Date().toISOString().slice(0, 10)),
 	],
 });
 
@@ -53,23 +53,33 @@ const KEEP_RECENT_TOKENS = 4000;
 const REST_NOTE = [
 	"The conversation is going quiet. Write the summary as a short handoff note for picking it up later:",
 	"open threads, commitments made, questions waiting on an answer, and anything the next message will likely need.",
-	"Under 150 words. Drop anything finished.",
+	"Under 150 words. Drop anything finished. No timestamps.",
 ].join(" ");
 
 export class MainThread {
 	readonly harness: Harness;
 	readonly root: Conversation;
 	private readonly settings: () => Settings;
+	private readonly log: (line: string) => void;
 	private restTimer: NodeJS.Timeout | undefined;
 
-	private constructor(harness: Harness, root: Conversation, settings: () => Settings) {
+	private constructor(harness: Harness, root: Conversation, settings: () => Settings, log: (line: string) => void) {
 		this.harness = harness;
 		this.root = root;
 		this.settings = settings;
+		this.log = log;
 	}
 
 	static async open(
-		options: { dataDir?: string; storage?: Storage; models: Models; settings: () => Settings; extensions?: readonly Extension[] },
+		options: {
+			dataDir?: string;
+			storage?: Storage;
+			models: Models;
+			settings: () => Settings;
+			extensions?: readonly Extension[];
+			/** Per-answer cost and cache numbers, for tuning the context policy from real use. */
+			log?: (line: string) => void;
+		},
 		context: Context,
 	): Promise<MainThread> {
 		const registry = createRegistry();
@@ -81,16 +91,13 @@ export class MainThread {
 			{
 				models: options.models,
 				registry,
-				settings: {
-					// 1h provider cache where supported, so a burst of messages minutes apart stays cached.
-					stream: { cacheRetention: "long" },
-					compaction: { keepRecentTokens: KEEP_RECENT_TOKENS },
-				},
+				// Default (short) provider caching only: the context is kept small by construction instead.
+				settings: { compaction: { keepRecentTokens: KEEP_RECENT_TOKENS } },
 			},
 			context,
 		);
 		const root = await harness.root(context, { agent: { model: options.settings().model } });
-		const thread = new MainThread(harness, root, options.settings);
+		const thread = new MainThread(harness, root, options.settings, options.log ?? (() => {}));
 		await thread.applySettings(options.settings(), context);
 		harness.resume();
 		await thread.scheduleRest(context);
@@ -114,7 +121,7 @@ export class MainThread {
 		await this.harness.waitForTask(await this.root.compact(REST_NOTE, context), context);
 	}
 
-	/** Rest once the provider cache has expired; until then the growing context is cheap to resend. */
+	/** Rest after a quiet gap: the cache is cold by then anyway, so compacting throws nothing warm away. */
 	private async scheduleRest(context: Context): Promise<void> {
 		clearTimeout(this.restTimer);
 		const { lastAt } = await this.activity(context);
@@ -155,11 +162,10 @@ export class MainThread {
 
 	async answer(requestId: string, content: string, context: Context): Promise<Answer> {
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
-		if (existing === undefined) {
-			// After a gap the cache is cold anyway: make sure what gets resent is the short note, not the whole burst.
-			const { lastAt } = await this.activity(context);
-			if (lastAt !== undefined && Date.now() - lastAt >= this.settings().context.restAfterMinutes * 60_000) await this.rest(context);
-		}
+		const { lastAt } = await this.activity(context);
+		const gapMs = lastAt === undefined ? undefined : Date.now() - lastAt;
+		// After a gap (e.g. the process was down when the timer was due): resend the short note, not the whole burst.
+		if (existing === undefined && gapMs !== undefined && gapMs >= this.settings().context.restAfterMinutes * 60_000) await this.rest(context);
 		const submission = await this.root.submit({ type: "input", content, requestId }, context);
 		const settled = await submission.wait(context);
 		void this.afterAnswer(context).catch(() => {});
@@ -170,6 +176,10 @@ export class MainThread {
 		const message = entry?.model?.[0];
 		if (message?.role !== "assistant") return { error: "no answer" };
 		const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+		const { usage } = message;
+		this.log(
+			`${requestId} gap=${gapMs === undefined ? "-" : `${Math.round(gapMs / 60_000)}m`} input=${usage.input} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} output=${usage.output} cost=$${usage.cost.total.toFixed(5)} (last request)`,
+		);
 		return message.stopReason === "error" ? { error: message.errorMessage ?? "model error" } : { text };
 	}
 

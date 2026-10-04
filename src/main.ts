@@ -23,7 +23,7 @@ const models = builtinModels({ credentials: new FileCredentialStore(join(dataDir
 const history = new History(join(dataDir, "history.sqlite"));
 const portrait = new Portrait(process.env.JARVIS_HOME ?? join(homedir(), "jarvis-home"));
 const memory = memoryExtension({ portrait, history, catchUp: (callContext) => indexHistory(thread.root, history, callContext) });
-const thread: MainThread = await MainThread.open({ dataDir, models, settings: () => settings.get(), extensions: [memory] }, context);
+const thread: MainThread = await MainThread.open({ dataDir, models, settings: () => settings.get(), extensions: [memory], log: console.log }, context);
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (token === undefined) throw new Error("Set TELEGRAM_BOT_TOKEN (from @BotFather).");

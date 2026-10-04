@@ -15,10 +15,13 @@ export type Settings = {
 	/** Daily model spend cap in USD. */
 	spendCapUsd: number;
 	telegram: { ownerChatId?: number };
+	/** IANA zone for the time stamped on each message; default: the machine's. */
+	timezone?: string;
 	/**
-	 * The main thread's model context. While messages keep coming it grows and stays cached; once the provider cache
-	 * has expired it is compacted to a short handoff note, so a message after a gap is cheap. Older detail comes back
-	 * through history search.
+	 * The main thread's model context. Within a burst it grows append-only, so even a provider's default short cache
+	 * hits. After restAfterMinutes of quiet (past every provider's short cache, so nothing warm is lost) it is
+	 * compacted to a short handoff note, so a message after a gap is cheap on any provider. maxTokens caps a long
+	 * burst. Older detail comes back through history search.
 	 */
 	context: { restAfterMinutes: number; maxTokens: number };
 };
@@ -30,8 +33,7 @@ export const DEFAULTS: Settings = {
 	sandbox: { kind: "none" },
 	spendCapUsd: 20,
 	telegram: {},
-	// Just under the 1h prompt cache ("long" retention).
-	context: { restAfterMinutes: 55, maxTokens: 40_000 },
+	context: { restAfterMinutes: 15, maxTokens: 40_000 },
 };
 
 export class SettingsFile {

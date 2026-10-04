@@ -8,6 +8,13 @@ import type { SettingsFile } from "../settings.ts";
 const context = BACKGROUND_CONTEXT;
 const LIMIT = 4096;
 
+/** "Sat 4 Oct 14:05": from the message's own date, so a redelivery stamps it the same way. */
+export function stamp(at: number, timeZone?: string): string {
+	const parts = new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(at);
+	const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+	return `${part("weekday")} ${part("day")} ${part("month")} ${part("hour")}:${part("minute")}`;
+}
+
 export function startTelegram(options: { token: string; thread: MainThread; settings: SettingsFile; log?: (line: string) => void }): Bot {
 	const { thread, settings } = options;
 	const log = options.log ?? ((line: string) => console.log(line));
@@ -45,7 +52,8 @@ export function startTelegram(options: { token: string; thread: MainThread; sett
 		}
 		const target = { chatId: ctx.chat.id, messageId: ctx.message.message_id };
 		const requestId = `tg:${target.chatId}:${target.messageId}`;
-		void thread.applySettings(settings.get(), context).then(() => deliver(requestId, ctx.message.text, target, true)).catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
+		const content = `[${stamp(ctx.message.date * 1000, settings.get().timezone)}] ${ctx.message.text}`;
+		void thread.applySettings(settings.get(), context).then(() => deliver(requestId, content, target, true)).catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
 	});
 
 	// Answers admitted before the last restart and never delivered.
