@@ -1,8 +1,13 @@
-// Memory: a portrait of the user — a few simple facts and, mostly, the nuances. One markdown file in the home
-// repo that the user can read and edit; the agent records into it when something is worth keeping.
+// Memory: the agent's own memory of the user and his world — one free-form markdown document it organizes itself
+// (who he is, how he works, what he's in the middle of, people, plans, seasons: whatever is worth knowing). The user
+// can read and edit it. It changes through small edits, from `remember` in conversation and from reflection after
+// each slice, never by wholesale rewrite; every change is logged (and committed when the home is a git repo).
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+/** One change to memory: add a line, or replace an exact passage (an empty `with` removes it). */
+export type MemoryEdit = { add: string } | { replace: string; with: string };
 
 export class Portrait {
 	readonly path: string;
@@ -32,6 +37,24 @@ export class Portrait {
 		writeFileSync(this.path, `${next}\n`);
 		this.commit(replaces === undefined ? `remember: ${note}` : `correct: ${note || "(forget)"}`);
 		return next;
+	}
+
+	/** Apply edits that still fit the current text; returns the ones applied. Each is logged for the weekly check-in. */
+	apply(edits: readonly MemoryEdit[], source: string, now = Date.now()): MemoryEdit[] {
+		const applied: MemoryEdit[] = [];
+		for (const edit of edits) {
+			try {
+				if ("add" in edit) {
+					if (edit.add.trim() === "" || this.read().includes(edit.add.trim())) continue;
+					this.remember(edit.add);
+				} else this.remember(edit.with, edit.replace);
+				applied.push(edit);
+				appendFileSync(join(this.home, "memory-changes.jsonl"), `${JSON.stringify({ at: new Date(now).toISOString(), source, ...edit })}\n`);
+			} catch {
+				// The passage changed since the edit was proposed: skip it rather than guess.
+			}
+		}
+		return applied;
 	}
 
 	/** Best effort: when the home directory is a git repo, every change is a commit the user can read or revert. */

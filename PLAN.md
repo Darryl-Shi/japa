@@ -17,7 +17,9 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 
 **What it knows and does**
 
-- **Memory:** a portrait of the user, meaning simple facts plus the nuances. The agent records into it when needed. What happened lives in the transcript, which history search can cite.
+- **Memory:** one free-form document, the agent's own memory of Darryl and his world, organised however serves it: who he is, how he works, what he's in the middle of, people, plans, seasons. There are no fixed categories.
+  - It changes only through small edits: `remember` during a conversation, plus a reflection at the end of each slice. That reflection marks things that stopped being true (past tense with when, or removed) instead of letting them silently expire. This is the lever StateMemBench says matters.
+  - Every change is logged for a weekly check-in. What happened stays in the transcript, which history search can cite.
 - **Skills:** how to get things done. Markdown, optionally bundled with a script that runs in the sandbox. The agent writes these freely and mentions it in one line.
 - **Behaviours:** when or whether to act. A sentence plus a trigger: *always*, *time*, or an *event* from an extension.
   - A behaviour that makes it do less applies immediately. One that gives it more autonomy needs the user to confirm.
@@ -90,7 +92,7 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
    - **The working set** (options, constraints, decisions, the last question) is written in the background by one cheap call over the departing slice only. It's versioned, so a late summary never overwrites a newer one, and Darryl's message never waits for it.
    - **The time goes in each message**, never in the prefix. Every answer logs the slice decision, cache reads/writes and cost.
 3. **Prompt sections.** Identity, the memory portrait, and (M2) the list of units. The prefix never contains anything that changes per message.
-4. **Memory.** `home/memory.md` with a `remember` tool, plus history search with citations (FTS5 over the transcript).
+4. **Memory.** `jarvis-home/memory.md`, kept by `remember` plus the end-of-slice reflection (the same background call that writes the working set), with every change logged to `memory-changes.jsonl`. History search with citations is FTS5 over the transcript and reports.
 5. **Backends (the agent's computers).** `Backend` is the single abstraction over infrastructure: `exec`, plus optional fast file paths, a screen, a view link for a human, and suspend.
    - Providers implement it: boat (built in), local (reference and tests), and anyone's own infrastructure through an extension. Settings map roles to providers: `machines.workbench` (its own machine, no secrets) and later `machines.desk` (a screen plus your logged-in browser).
    - Everything on top is a generic extension that never names a provider. Pi's bash/read/write/edit run *directly* on the workbench through `BackendExecutionEnv`, which builds Pi's whole `ExecutionEnv` on `exec`. It's verified to behave like Pi's own local environment by a differential test.

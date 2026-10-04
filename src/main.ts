@@ -40,7 +40,7 @@ const workbenchConfig = settings.get().machines.workbench;
 const workbench = workbenchConfig === undefined ? undefined : await providers.open("workbench", workbenchConfig);
 if (workbench !== undefined) console.log(`workbench: ${workbench.id}`);
 
-const state = { openItems: new OpenItems(join(dataDir, "open-items.json")), workingSet: new WorkingSetFile(join(dataDir, "working-set.json")) };
+const state = { openItems: new OpenItems(join(dataDir, "open-items.json")), workingSet: new WorkingSetFile(join(dataDir, "working-set.json")), memory: portrait };
 const stateTools = stateExtension(state);
 const delegation = delegationExtension({
 	openItems: state.openItems,

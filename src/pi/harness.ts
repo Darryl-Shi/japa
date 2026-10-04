@@ -17,10 +17,11 @@ import {
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { Portrait } from "../core/portrait.ts";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
 import { Outbox, type Origin, type OutboxMessage } from "./delegation.ts";
-import { summarizeSlice, transcriptText } from "./state.ts";
+import { reflectOnSlice, transcriptText } from "./state.ts";
 
 /** Where an answer goes once it exists. Written before submitting, so a restart can still deliver it. */
 export type ReplyTarget = { chatId: number; messageId: number };
@@ -60,6 +61,9 @@ export type Arrival = {
 	newTopic?: boolean;
 };
 
+/** What a slice starts from and what reflection keeps current. */
+export type SliceState = { openItems: OpenItems; workingSet: WorkingSetFile; memory?: Portrait };
+
 /** When the current slice started; a reply to anything older anchors a new one. */
 const Slice = defineDoc<{ startedAt: number }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
 
@@ -69,8 +73,6 @@ export const REPORT = "jarvis.report";
 const RECENT_MESSAGES = 6;
 const RECENT_CHARS = 4000;
 const MESSAGE_CHARS = 800;
-/** A departing slice smaller than this is already covered by the recent messages; no summary call. */
-const SUMMARIZE_ABOVE_TOKENS = 1500;
 
 const textOf = (message: Message) =>
 	typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
@@ -80,7 +82,7 @@ export class MainThread {
 	readonly root: Conversation;
 	private readonly models: Models;
 	private readonly settings: () => Settings;
-	private readonly state: { openItems: OpenItems; workingSet: WorkingSetFile } | undefined;
+	private readonly state: SliceState | undefined;
 	private readonly log: (line: string) => void;
 	private readonly background = new Set<Promise<void>>();
 	private inFlight = 0;
@@ -90,7 +92,7 @@ export class MainThread {
 		root: Conversation;
 		models: Models;
 		settings: () => Settings;
-		state: { openItems: OpenItems; workingSet: WorkingSetFile } | undefined;
+		state: SliceState | undefined;
 		log: (line: string) => void;
 	}) {
 		this.harness = options.harness;
@@ -111,7 +113,7 @@ export class MainThread {
 			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
 			env?: () => ExecutionEnv;
 			/** Open items and working set a new slice starts from. */
-			state?: { openItems: OpenItems; workingSet: WorkingSetFile };
+			state?: SliceState;
 			/** Per-answer slice, cost and cache numbers, for tuning the boundaries from real use. */
 			log?: (line: string) => void;
 		},
@@ -212,7 +214,8 @@ export class MainThread {
 		await this.root.commit(async (tx) => {
 			(await tx.doc(Slice)).startedAt = Date.now();
 		}, context);
-		if (this.state !== undefined && Math.ceil(departing.length / 4) > SUMMARIZE_ABOVE_TOKENS) this.inBackground(this.writeWorkingSet(version, departing));
+		// Reflect on any slice where Darryl said something: even one line ("in Tokyo till the 14th") can matter.
+		if (this.state !== undefined && messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing));
 	}
 
 	private async handoff(arrival: Arrival, context: Context): Promise<string> {
@@ -242,11 +245,21 @@ export class MainThread {
 		return parts.join("\n");
 	}
 
-	private async writeWorkingSet(version: number, departing: string): Promise<void> {
-		const workingSet = this.state?.workingSet;
-		if (workingSet === undefined) return;
-		const text = await summarizeSlice(this.models, this.settings().model, workingSet.read()?.text, departing);
-		if (text !== undefined && workingSet.write({ version, text })) this.log(`working set updated from slice ${version}`);
+	/** Reflection on a departing slice: a new working set (versioned) and small edits to memory. */
+	private async reflect(version: number, departing: string): Promise<void> {
+		const state = this.state;
+		if (state === undefined) return;
+		const reflection = await reflectOnSlice(this.models, this.settings().model, {
+			workingSet: state.workingSet.read()?.text,
+			memory: state.memory?.read() ?? "",
+			openItems: state.openItems.projection(),
+			conversation: departing,
+			today: new Date().toISOString().slice(0, 10),
+		});
+		if (reflection === undefined) return;
+		if (reflection.workingSet !== undefined && state.workingSet.write({ version, text: reflection.workingSet })) this.log(`working set updated from slice ${version}`);
+		const applied = state.memory?.apply(reflection.memoryEdits, "reflection") ?? [];
+		if (applied.length > 0) this.log(`memory: ${applied.length} edit(s) from reflection`);
 	}
 
 	private inBackground(work: Promise<void>): void {

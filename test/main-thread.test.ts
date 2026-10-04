@@ -57,9 +57,9 @@ async function sliceHarness(context_: { idleMinutes: number; sliceTokens: number
 	const summaries: string[] = [];
 	const respond: FauxResponseFactory = (request) => {
 		const sent = JSON.stringify(request);
-		if (sent.includes("<previous>")) {
+		if (sent.includes("<previous_working_set>")) {
 			summaries.push(sent);
-			return fauxAssistantMessage("WORKING SET: Option B chosen; waiting on Sam.");
+			return fauxAssistantMessage(JSON.stringify({ working_set: "WORKING SET: Option B chosen; waiting on Sam.", memory_edits: [] }));
 		}
 		return fauxAssistantMessage(replies.shift() ?? "ok");
 	};

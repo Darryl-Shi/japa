@@ -7,10 +7,12 @@ import type { History, HistoryLine } from "../core/history.ts";
 import type { Portrait } from "../core/portrait.ts";
 
 const GUIDE = [
-	"<memory> is your portrait of Darryl: a few facts and, mostly, the nuances of how he is. When you learn something",
-	"worth keeping across months, call remember, then say it in one line at the end of your reply: \"Noted: …\". Don't",
-	"record what happened (history search finds that), how-to steps, or anything temporary. For anything from earlier",
-	"conversations, call search_history and cite the date, e.g. \"(from our Sep 12 chat)\".",
+	"<memory> is your own memory of Darryl and his world, organized however serves you: who he is and how he works,",
+	"what he's in the middle of, people, plans, this week or this season — whatever you'd want to know weeks from now.",
+	"When he tells you something worth keeping, call remember and end your reply with one line: \"Noted: …\". Write dates",
+	"into the text (\"until Oct 14\", \"since early Sept\"), and when something stops being true, correct it rather than",
+	"adding a contradiction. Memory is also kept up in the background after each stretch of conversation. For anything",
+	"said before, call search_history and cite the date, e.g. \"(from our Sep 12 chat)\".",
 ].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
@@ -23,11 +25,11 @@ export function memoryExtension(options: { portrait: Portrait; history: History;
 		tools: [
 			defineTool({
 				name: "remember",
-				description: "Record a fact or nuance about Darryl in your portrait of him, or correct one. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
+				description: "Add something to your memory, or correct it. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
 				parameters: Type.Object({ note: Type.String(), replaces: Type.Optional(Type.String()) }),
 				execute: async (args) => {
-					portrait.remember(args.note, args.replaces);
-					return text("Saved.");
+					const edit = args.replaces === undefined ? { add: args.note } : { replace: args.replaces, with: args.note };
+					return text(portrait.apply([edit], "conversation").length > 0 ? "Saved." : args.replaces === undefined ? "Already in memory." : "That text isn't in memory; read <memory> and quote it exactly.");
 				},
 			}),
 			defineTool({

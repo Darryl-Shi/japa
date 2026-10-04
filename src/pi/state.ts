@@ -4,6 +4,7 @@
 import type { Message, Models } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
+import type { MemoryEdit } from "../core/portrait.ts";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { ModelChoice } from "../settings.ts";
 
@@ -51,14 +52,20 @@ export function stateExtension(options: { openItems: OpenItems; workingSet: Work
 	});
 }
 
-const SUMMARY_PROMPT = [
-	"You keep the working set for a chief of staff's chat with Darryl. Given the previous working set and the latest",
-	"stretch of conversation, write the new working set: where the current topic stands — options on the table (and",
-	"ones rejected), constraints, decisions made, and the last open question. Keep what still matters from the",
-	"previous one; drop what's finished. No timestamps, no narrative of who said what. Under 120 words.",
+const REFLECT_PROMPT = [
+	"You are the reflective side of Darryl's chief of staff. A stretch of conversation just ended. Return JSON only:",
+	'{"working_set": string, "memory_edits": [{"add": string} | {"replace": string, "with": string}]}.',
+	"working_set: where the latest topic stands — options on the table (and ones rejected), constraints, decisions, the",
+	"last open question. Keep what still matters from the previous working set; drop what's finished. Under 120 words.",
+	"memory_edits: small changes to your memory of Darryl and his world, organized however serves you — anything you'd",
+	"want to know in days, weeks or months: who he is, how he works, what he's in the middle of, people, plans, seasons.",
+	"Write dates into the text. When something in memory is no longer true, replace it (e.g. past tense with when it",
+	"ended) or remove it (replace with \"\"); `replace` must quote memory exactly. Only what the conversation supports;",
+	"no how-to steps or rules (skills and behaviours hold those), nothing only relevant today, nothing already there.",
+	"Keep memory under about 600 words: merge and compress when it grows. Most stretches need no edits: return [].",
 ].join(" ");
 
-/** Serialize a slice's conversation as plain text for the summarizer. Tool traffic is cut short. */
+/** Serialize a slice's conversation as plain text for reflection. Tool traffic is cut short. */
 export function transcriptText(messages: readonly Message[]): string {
 	return messages
 		.flatMap((message) => {
@@ -71,14 +78,41 @@ export function transcriptText(messages: readonly Message[]): string {
 		.join("\n");
 }
 
-/** One cheap call over the departing slice only, never the whole history. */
-export async function summarizeSlice(models: Models, choice: ModelChoice, previous: string | undefined, conversation: string): Promise<string | undefined> {
+export type Reflection = { workingSet?: string; memoryEdits: MemoryEdit[] };
+
+/** One cheap call over the departing slice only (never the whole history): the new working set and memory edits. */
+export async function reflectOnSlice(
+	models: Models,
+	choice: ModelChoice,
+	input: { workingSet: string | undefined; memory: string; openItems: string | undefined; conversation: string; today: string },
+): Promise<Reflection | undefined> {
 	const model = models.getModel(choice.provider, choice.modelId);
 	if (model === undefined) return undefined;
-	const answer = await models.completeSimple(model, {
-		systemPrompt: SUMMARY_PROMPT,
-		messages: [{ role: "user", content: `<previous>\n${previous ?? "(none)"}\n</previous>\n<conversation>\n${conversation}\n</conversation>`, timestamp: Date.now() }],
-	});
+	const content = [
+		`<today>${input.today}</today>`,
+		`<memory>\n${input.memory || "(empty)"}\n</memory>`,
+		`<open_items>\n${input.openItems ?? "(none)"}\n</open_items>`,
+		`<previous_working_set>\n${input.workingSet ?? "(none)"}\n</previous_working_set>`,
+		`<conversation>\n${input.conversation}\n</conversation>`,
+	].join("\n");
+	const answer = await models.completeSimple(model, { systemPrompt: REFLECT_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
 	if (answer.stopReason === "error") return undefined;
-	return answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("").trim() || undefined;
+	const raw = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+	const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
+	try {
+		const parsed = JSON.parse(json) as { working_set?: unknown; memory_edits?: unknown };
+		const edits = Array.isArray(parsed.memory_edits) ? parsed.memory_edits : [];
+		return {
+			...(typeof parsed.working_set === "string" && parsed.working_set.trim() !== "" ? { workingSet: parsed.working_set.trim() } : {}),
+			memoryEdits: edits.flatMap((edit): MemoryEdit[] => {
+				if (typeof edit !== "object" || edit === null) return [];
+				const { add, replace, with: replacement } = edit as Record<string, unknown>;
+				if (typeof add === "string") return [{ add }];
+				if (typeof replace === "string" && typeof replacement === "string") return [{ replace, with: replacement }];
+				return [];
+			}),
+		};
+	} catch {
+		return undefined;
+	}
 }
