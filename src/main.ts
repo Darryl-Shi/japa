@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { boatProvider } from "./backends/boat.ts";
 import { localProvider } from "./backends/local.ts";
+import { Inbox } from "./channels/inbox.ts";
 import { SettingsMenu } from "./channels/settings-menu.ts";
 import { startTelegram } from "./channels/telegram.ts";
 import { Approvals } from "./core/approvals.ts";
@@ -131,15 +132,14 @@ const thread: MainThread = await MainThread.open(
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (token === undefined) throw new Error("Set TELEGRAM_BOT_TOKEN (from @BotFather).");
 const menu = new SettingsMenu({ settings, secrets, extensions, modelExists: (choice) => models.getModel(choice.provider, choice.modelId) !== undefined });
-const telegram = startTelegram({ token, thread, settings, menu, approvals });
+const telegram = startTelegram({ token, inbox: new Inbox({ platform: "telegram", thread, settings }), settings, menu, approvals });
 
 // The user's tap on an approval goes back to whoever asked: the chief of staff as a message from them, a job agent
 // as a new run of its job.
 const tell = async (request: ReturnType<Approvals["all"]>[number], decision: "approve" | "deny" | "always") => {
 	const text = decisionText(request, decision);
 	if (request.conversationId === String(thread.root.id)) {
-		const chatId = settings.get().telegram.ownerChatId;
-		if (chatId !== undefined) void telegram.tell(`approval:${request.id}`, text, { chatId, messageId: request.messageId ?? 0 });
+		void telegram.tell(`approval:${request.id}`, text, { chatId: 0, messageId: request.messageId ?? 0 });
 	} else await team.resume(thread.root, request.conversationId, text, context);
 	approvals.update(request.id, { told: true });
 };

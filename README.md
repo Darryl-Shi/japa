@@ -12,19 +12,23 @@ export TELEGRAM_BOT_TOKEN=...                                       # from @BotF
 npm start
 ```
 
-Send `/whoami` to the bot, then put that ID into `data/settings.json`:
+Send `/whoami` to the bot in a private chat, then put the ID it gives you on the allowlist in `data/settings.json`:
 
 ```json
-{ "telegram": { "ownerChatId": 123456789 } }
+{ "allowlist": { "telegram": [123456789] } }
 ```
+
+The allowlist is a hard gate: anyone not on it is refused before anything runs, an empty list lets no one in, and only private chats count. It can only be edited in that file (not in `/settings`, and the agent has no tool for it). The first ID is where the agent sends its own messages. Every messaging channel goes through the same gate (`src/channels/inbox.ts`), with its own list per platform.
 
 Memory, the agent's own notes about you, lives in `~/jarvis-home/memory.md` (set `JARVIS_HOME` to put it elsewhere). It's yours to read and edit, and if that directory is a git repo, every change the agent makes becomes a commit. Search over everything said before is in `data/history.sqlite`, and it can be rebuilt from the transcript.
 
 The agent's own computer (the workbench) is configured in `data/settings.json`. For boat.dev, set `BOAT_API_KEY` and use:
 
 ```json
-{ "machines": { "workbench": { "provider": "boat", "type": "small", "screen": true } } }
+{ "machines": { "workbench": { "provider": "boat", "type": "small", "idleSeconds": 7200, "screen": true } } }
 ```
+
+`idleSeconds` puts the machine to sleep after that long unused: every command pushes boat's auto-stop deadline back, so it never stops mid-work, and the next command wakes it with the same disk. Free-trial accounts require it (at most 7200).
 
 `screen: true` lets the agent see and use the machine's desktop as well. The machine is created on first start (with none of your boat account's secrets), remembered in `data/boat-machines.json`, and resumed whenever it's needed. For local development, use `{ "provider": "local", "home": "data/machines/workbench" }`.
 

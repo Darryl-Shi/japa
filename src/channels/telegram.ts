@@ -1,10 +1,11 @@
-// Telegram in and out: one DM with the owner, long polling (no public endpoint), each answer sent as a reply to
+// Telegram in and out: one private chat with the user (only people on the allowlist get past the first middleware), long polling (no public endpoint), each answer sent as a reply to
 // the message that asked for it.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
 import type { ApprovalRequest, Approvals, Decision } from "../core/approvals.ts";
-import type { Arrival, MainThread, ReplyTarget } from "../pi/harness.ts";
+import type { Arrival, ReplyTarget } from "../pi/harness.ts";
 import type { SettingsFile } from "../settings.ts";
+import type { Inbox } from "./inbox.ts";
 import type { Button, Prompt, SettingsMenu, View } from "./settings-menu.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -27,15 +28,28 @@ const keyboard = (buttons: Button[][]) => ({ inline_keyboard: buttons.map((row) 
 
 export function startTelegram(options: {
 	token: string;
-	thread: MainThread;
+	/** The only way in: the allowlist is checked before anything else runs. */
+	inbox: Inbox;
 	settings: SettingsFile;
 	menu?: SettingsMenu;
 	approvals?: Approvals;
 	log?: (line: string) => void;
 }): Telegram {
-	const { thread, settings, menu, approvals } = options;
+	const { inbox, settings, menu, approvals } = options;
+	const thread = inbox.main;
 	const log = options.log ?? ((line: string) => console.log(line));
 	const bot = new Bot(options.token);
+	/** The user's private chat (in Telegram its id is their user id). */
+	const ownerChat = () => (inbox.owner() === undefined ? undefined : Number(inbox.owner()));
+
+	// The hard allowlist, first: updates from anyone else, or from any chat but a private one, stop here. With no one on
+	// the list yet, /whoami tells a person their own id, and nothing else.
+	bot.use(async (ctx, next) => {
+		if (ctx.chat?.type === "private" && inbox.admits(ctx.from?.id)) return next();
+		if (inbox.allowed().length === 0 && ctx.chat?.type === "private" && ctx.message?.text?.startsWith("/whoami") === true) {
+			await ctx.reply(`Your Telegram user id is ${ctx.from?.id}. Put it in "allowlist": { "telegram": [...] } in data/settings.json.`);
+		}
+	});
 
 	/** Send, split to Telegram's limit; resolves with the last message's id. Silent unless `buzz`. */
 	const send = async (chatId: number, text: string, replyTo?: number, buzz = true): Promise<number> => {
@@ -50,12 +64,13 @@ export function startTelegram(options: {
 		return last;
 	};
 
-	const deliver = async (requestId: string, content: string, target: ReplyTarget, admit: boolean, arrival: Arrival = {}) => {
+	/** `from`: the sender, for a new message; undefined to redeliver one admitted before a restart. */
+	const deliver = async (requestId: string, content: string, target: ReplyTarget, from: number | string | undefined, arrival: Arrival = {}) => {
 		const started = Date.now();
 		const typing = setInterval(() => void bot.api.sendChatAction(target.chatId, "typing").catch(() => {}), 4000);
 		void bot.api.sendChatAction(target.chatId, "typing").catch(() => {});
 		try {
-			const answer = admit ? await thread.ask(requestId, content, target, context, arrival) : await thread.answer(requestId, content, context);
+			const answer = from !== undefined ? await inbox.ask(from, requestId, content, target, context, arrival) : await thread.answer(requestId, content, context);
 			await send(target.chatId, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, target.messageId);
 			await thread.delivered(requestId, context);
 			log(`${requestId} answered in ${Date.now() - started}ms`);
@@ -64,9 +79,7 @@ export function startTelegram(options: {
 		}
 	};
 
-	bot.command("whoami", (ctx) => ctx.reply(`chat id ${ctx.chat.id}`));
-
-	const isOwner = (chatId: number | undefined) => chatId !== undefined && chatId === settings.get().telegram.ownerChatId;
+	bot.command("whoami", (ctx) => ctx.reply(`Your Telegram user id is ${ctx.from?.id}; you're on the allowlist.`));
 
 	// /settings: a menu of buttons. A field that needs a value asks for it; the reply to that question sets it.
 	const prompts = new Map<number, Prompt>();
@@ -75,13 +88,13 @@ export function startTelegram(options: {
 		else await bot.api.sendMessage(chatId, view.text, { reply_markup: keyboard(view.buttons) });
 	};
 	bot.command("settings", async (ctx) => {
-		if (menu !== undefined && isOwner(ctx.chat.id)) await showView(ctx.chat.id, menu.main());
+		if (menu !== undefined) await showView(ctx.chat.id, menu.main());
 	});
 
 	bot.on("callback_query:data", async (ctx) => {
 		const chatId = ctx.chat?.id;
 		const messageId = ctx.callbackQuery.message?.message_id;
-		if (!isOwner(chatId) || chatId === undefined || messageId === undefined) return void (await ctx.answerCallbackQuery());
+		if (chatId === undefined || messageId === undefined) return void (await ctx.answerCallbackQuery());
 		const data = ctx.callbackQuery.data;
 		if (data.startsWith("st:") && menu !== undefined) {
 			const next = menu.press(data);
@@ -106,10 +119,6 @@ export function startTelegram(options: {
 	});
 
 	bot.on("message:text", async (ctx) => {
-		if (!isOwner(ctx.chat.id)) {
-			log(`ignored message from chat ${ctx.chat.id}`);
-			return;
-		}
 		const prompt = ctx.message.reply_to_message === undefined ? undefined : prompts.get(ctx.message.reply_to_message.message_id);
 		if (prompt !== undefined && menu !== undefined) {
 			const result = menu.answer(prompt, ctx.message.text);
@@ -139,27 +148,27 @@ export function startTelegram(options: {
 		const content = `[${stamp(ctx.message.date * 1000, settings.get().timezone)}] ${text}`;
 		void thread
 			.applySettings(settings.get(), context)
-			.then(() => deliver(requestId, content, target, true, arrival))
+			.then(() => deliver(requestId, content, target, ctx.from.id, arrival))
 			.catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
 	});
 
 	// Answers admitted before the last restart and never delivered.
 	void thread.pending(context).then((pending) => {
 		for (const { requestId, content, chatId, messageId } of pending) {
-			void deliver(requestId, content, { chatId, messageId }, false).catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
+			void deliver(requestId, content, { chatId, messageId }, undefined).catch((error: unknown) => log(`${requestId} failed: ${String(error)}`));
 		}
 	});
 
 	// Reports and other messages from background work: replies to the message that asked, silent unless they need the user.
 	void thread.deliverOutbox(async (message) => {
-		const chatId = message.replyTo?.chatId ?? settings.get().telegram.ownerChatId;
+		const chatId = message.replyTo?.chatId ?? ownerChat();
 		if (chatId === undefined) return undefined;
 		return send(chatId, message.text, message.replyTo?.messageId, message.buzz);
 	}, context);
 
 	// Approval requests: a message with buttons, sent once (again after a restart if it never went out).
 	const ask = async (request: ApprovalRequest) => {
-		const chatId = settings.get().telegram.ownerChatId;
+		const chatId = ownerChat();
 		if (chatId === undefined || approvals === undefined || request.messageId !== undefined || request.status !== "pending") return;
 		const sent = await bot.api.sendMessage(chatId, approvalText(request), {
 			reply_markup: keyboard([[{ text: "Approve", data: `ap:${request.id}:y` }, { text: "Deny", data: `ap:${request.id}:n` }], [{ text: `Always: ${request.rule}`.slice(0, 60), data: `ap:${request.id}:a` }]]),
@@ -174,7 +183,10 @@ export function startTelegram(options: {
 	bot.catch((error) => log(`telegram: ${String(error.error)}`));
 	void bot.start({ onStart: (me) => log(`telegram: polling as @${me.username}`) });
 	return {
-		tell: (requestId, text, target) => deliver(requestId, `[${stamp(Date.now(), settings.get().timezone)}] ${text}`, target, true),
+		tell: async (requestId, text, target) => {
+			const owner = inbox.owner();
+			if (owner !== undefined) await deliver(requestId, `[${stamp(Date.now(), settings.get().timezone)}] ${text}`, { ...target, chatId: target.chatId || Number(owner) }, owner);
+		},
 		stop: () => bot.stop(),
 	};
 }

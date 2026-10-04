@@ -42,6 +42,7 @@ test("the agent's own bash/write/read act directly on the workbench backend", as
 function fakeBoat(machine: LocalBackend) {
 	let state = "archived";
 	const calls: string[] = [];
+	const bodies: Array<{ call: string; body: Record<string, unknown> }> = [];
 	const processes = new Map<number, { running: boolean; exitCode: number | null; log: string }>();
 	const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 	const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
@@ -49,6 +50,8 @@ function fakeBoat(machine: LocalBackend) {
 		const method = init?.method ?? "GET";
 		const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
 		calls.push(`${method} ${path}`);
+		bodies.push({ call: `${method} ${path}`, body });
+		if (method === "PATCH" && path === "/sandboxes/bx_aaaaaaaa") return json({ ok: true, sandbox: { id: "bx_aaaaaaaa", state } });
 		if (method === "POST" && path === "/sandboxes") return json({ ok: true, sandbox: { id: "bx_aaaaaaaa", state: "provisioning" } }, 202);
 		if (method === "GET" && path === "/sandboxes/bx_aaaaaaaa") {
 			if (state === "provisioning" || state === "resuming") state = "idle";
@@ -85,7 +88,7 @@ function fakeBoat(machine: LocalBackend) {
 		if (method === "POST" && path.endsWith("/desktop")) return json({ ok: true, desktopUrl: "https://desktop.example/vnc.html?_token=x" });
 		return json({ ok: false, code: "not_found" }, 404);
 	}) as typeof fetch;
-	return { fetchImpl, calls, setState: (next: string) => (state = next) };
+	return { fetchImpl, calls, bodies, setState: (next: string) => (state = next) };
 }
 
 test("boat provider: creates a no-env machine once, streams commands, resumes a stopped machine, runs long commands detached", async () => {
@@ -119,5 +122,25 @@ test("boat provider: creates a no-env machine once, streams commands, resumes a 
 	await provider.open("workbench", { provider: "boat" });
 	assert.equal(boat.calls.filter((call) => call === "POST /sandboxes").length, 1);
 	assert.equal(await backend.viewUrl?.(), "https://desktop.example/vnc.html?_token=x");
+	await rm(dataDir, { recursive: true, force: true });
+});
+
+test("boat provider: with idleSeconds the machine sleeps only after that long unused (each use pushes the deadline back)", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const boat = fakeBoat(new LocalBackend(join(dataDir, "machine")));
+	const backend = await boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl, touchEveryMs: 300 }).open("workbench", { provider: "boat", idleSeconds: 7200 });
+	assert.deepEqual(boat.bodies.find((request) => request.call === "POST /sandboxes")?.body, { type: "small", ttlSeconds: 7200, noEnv: true });
+	const touches = () => boat.bodies.filter((request) => request.call === "PATCH /sandboxes/bx_aaaaaaaa").map((request) => request.body);
+	await backend.exec("true");
+	assert.deepEqual(touches(), [], "just woken: the deadline is already fresh");
+	await new Promise((resolve) => setTimeout(resolve, 350));
+	await backend.exec("true");
+	await backend.exec("true");
+	assert.deepEqual(touches(), [{ ttlSeconds: 7200 }], "pushed back on use, at most once per interval");
+	await backend.exec("sleep 1.5", { cwd: "/tmp" });
+	assert.ok(touches().length >= 3, `and while a long command runs (${touches().length})`);
+	await backend.suspend?.();
+	await backend.exec("true");
+	assert.deepEqual(boat.bodies.find((request) => request.call.endsWith("/resume"))?.body, { ttlSeconds: 7200 }, "a resumed machine keeps sleeping when idle");
 	await rm(dataDir, { recursive: true, force: true });
 });

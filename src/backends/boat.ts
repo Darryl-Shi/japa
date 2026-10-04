@@ -10,6 +10,8 @@ const HOME = "/home/user";
 /** boat's synchronous command limit. */
 const SYNC_LIMIT_S = 600;
 const READY = new Set(["ready", "idle", "running"]);
+/** How often the sleep deadline is pushed back while the machine is in use. */
+const TOUCH_EVERY_MS = 5 * 60_000;
 
 type BoatError = { status: number; code?: string; retryable?: boolean; message?: string };
 
@@ -49,11 +51,30 @@ export class BoatBackend implements Backend {
 	readonly home = HOME;
 	readonly sandboxId: string;
 	private readonly api: BoatApi;
+	/** Sleep (archive) after this long unused; undefined: never. */
+	private readonly idleSeconds: number | undefined;
+	private readonly touchEveryMs: number;
+	private touchedAt = 0;
 
-	constructor(api: BoatApi, sandboxId: string) {
+	constructor(api: BoatApi, sandboxId: string, idleSeconds?: number, touchEveryMs = TOUCH_EVERY_MS) {
 		this.api = api;
 		this.sandboxId = sandboxId;
 		this.id = `boat:${sandboxId}`;
+		this.idleSeconds = idleSeconds;
+		this.touchEveryMs = touchEveryMs;
+	}
+
+	/**
+	 * boat only has a fixed auto-stop deadline, but setting the TTL again restarts it from now. So the deadline is
+	 * pushed back whenever the machine is used (and every few minutes while a command runs): it sleeps after
+	 * `idleSeconds` without use, never in the middle of work.
+	 */
+	private touch(): void {
+		if (this.idleSeconds === undefined || Date.now() - this.touchedAt < this.touchEveryMs) return;
+		this.touchedAt = Date.now();
+		void this.api.json("PATCH", `/sandboxes/${this.sandboxId}`, { ttlSeconds: this.idleSeconds }).catch(() => {
+			this.touchedAt = 0; // try again next time
+		});
 	}
 
 	private state(): Promise<string> {
@@ -64,13 +85,15 @@ export class BoatBackend implements Backend {
 	async ensureRunning(signal?: AbortSignal): Promise<void> {
 		let state = await this.state();
 		if (state === "archived" || state === "error") {
-			await this.api.json("POST", `/sandboxes/${this.sandboxId}/resume`, { ttlSeconds: null }, signal);
+			await this.api.json("POST", `/sandboxes/${this.sandboxId}/resume`, { ttlSeconds: this.idleSeconds ?? null }, signal);
+			this.touchedAt = Number.POSITIVE_INFINITY; // the resume set a fresh deadline
 		}
 		for (const started = Date.now(); !READY.has(state); state = await this.state()) {
 			if (Date.now() - started > 180_000) throw new Error(`boat machine ${this.sandboxId} not ready (${state})`);
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 			signal?.throwIfAborted();
 		}
+		if (this.touchedAt === Number.POSITIVE_INFINITY) this.touchedAt = Date.now();
 	}
 
 	async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -80,13 +103,17 @@ export class BoatBackend implements Backend {
 			.join("");
 		const full = `cd ${q(cwd)} && ${exports}${command}`;
 		const seconds = options.timeoutMs === undefined ? SYNC_LIMIT_S : Math.ceil(options.timeoutMs / 1000);
+		this.touch();
+		const keepAwake = setInterval(() => this.touch(), this.touchEveryMs);
 		try {
 			return seconds > SYNC_LIMIT_S ? await this.execDetached(full, seconds, options) : await this.execStreamed(full, seconds, options);
 		} catch (error) {
 			// A stopped machine: resume it once and run again. A command that may already be running is never retried.
 			if ((error as BoatError).code !== "sandbox_not_ready") throw error;
 			await this.ensureRunning(options.signal);
-			return seconds > SYNC_LIMIT_S ? this.execDetached(full, seconds, options) : this.execStreamed(full, seconds, options);
+			return seconds > SYNC_LIMIT_S ? await this.execDetached(full, seconds, options) : await this.execStreamed(full, seconds, options);
+		} finally {
+			clearInterval(keepAwake);
 		}
 	}
 
@@ -152,28 +179,28 @@ export class BoatBackend implements Backend {
 }
 
 /**
- * Config per role: `sandboxId` to use an existing machine, else one is created (`type`, default "small"; `ttlSeconds`,
- * default none) and its
- * id remembered in `stateFile`, so the same machine — and everything on it — comes back next time.
+ * Config per role: `sandboxId` to use an existing machine, else one is created (`type`, default "small") and its id
+ * remembered in `stateFile`, so the same machine — and everything on it — comes back next time. `idleSeconds`: sleep
+ * after that long unused (free trials require ≤ 7200); it wakes, same disk, on the next command.
  */
-export function boatProvider(options: { apiKey: string; stateFile: string; fetch?: typeof fetch }): BackendProvider {
+export function boatProvider(options: { apiKey: string; stateFile: string; fetch?: typeof fetch; touchEveryMs?: number }): BackendProvider {
 	const api = new BoatApi(options.apiKey, options.fetch);
 	const remembered = (): Record<string, string> => (existsSync(options.stateFile) ? (JSON.parse(readFileSync(options.stateFile, "utf8")) as Record<string, string>) : {});
 	return {
 		name: "boat",
 		async open(role, config) {
+			const idleSeconds = typeof config.idleSeconds === "number" ? config.idleSeconds : undefined;
 			let sandboxId = typeof config.sandboxId === "string" ? config.sandboxId : remembered()[role];
 			if (sandboxId === undefined) {
 				const created = await api.json<{ sandbox: { id: string } }>("POST", "/sandboxes", {
 					type: typeof config.type === "string" ? config.type : "small",
-					// Auto-stop (archive) after this long; it resumes on the next command. Free trials require ≤ 7200.
-					ttlSeconds: typeof config.ttlSeconds === "number" ? config.ttlSeconds : null,
+					ttlSeconds: idleSeconds ?? null,
 					noEnv: true,
 				});
 				sandboxId = created.sandbox.id;
 				writeFileSync(options.stateFile, `${JSON.stringify({ ...remembered(), [role]: sandboxId }, null, "\t")}\n`);
 			}
-			const backend = new BoatBackend(api, sandboxId);
+			const backend = new BoatBackend(api, sandboxId, idleSeconds, options.touchEveryMs);
 			await backend.ensureRunning();
 			return backend;
 		},

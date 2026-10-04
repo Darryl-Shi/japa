@@ -22,7 +22,12 @@ export type Settings = {
 	machines: { workbench?: MachineConfig; desk?: MachineConfig };
 	/** Who the agent works for. Optional; the agent also learns about them in memory. */
 	user?: { name?: string };
-	telegram: { ownerChatId?: number };
+	/**
+	 * The hard user whitelist: per messaging platform, the user ids that may talk to the agent. Everyone else is
+	 * refused before anything runs; an empty list lets no one in. The first id is where the agent's own messages go.
+	 * Edited only here (not in /settings, and no tool can change it).
+	 */
+	allowlist: Record<string, Array<string | number>>;
 	/** IANA zone for the time stamped on each message; default: the machine's. */
 	timezone?: string;
 	/**
@@ -46,7 +51,7 @@ export const DEFAULTS: Settings = {
 		strong: { provider: "anthropic", modelId: "claude-opus-5-5" },
 	},
 	machines: {},
-	telegram: {},
+	allowlist: {},
 	context: { idleMinutes: 10, sliceTokens: 8000 },
 	extensions: {},
 };

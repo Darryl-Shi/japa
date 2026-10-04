@@ -36,6 +36,8 @@ A personal chief of staff on [Pi Durable](https://github.com/earendil-works/pi/t
 
 **Messaging UX**
 
+- **A hard user whitelist.** Every messaging channel reaches the agent only through an `Inbox`, which refuses anyone not on that platform's `allowlist` before anything runs (Telegram: private chats only). An empty list lets no one in. The list is edited only in `settings.json`: not in `/settings`, and no tool changes it. Any messaging extension (WhatsApp, email, voice) must take its messages through an Inbox.
+
 - Telegram: one DM. Results come back as replies to the message that asked.
 - Before anything that sends, spends, deletes, deploys or changes accounts, the user is asked with [Approve] [Deny] [Always: <kind of action>] buttons.
 - Interrupt only when necessary. Everything else arrives silently or in a digest.
@@ -99,7 +101,7 @@ home/                  (default ~/jarvis-home, a separate git repo) memory, skil
 3. **Prompt sections.** Identity, the memory portrait, and (M2) the list of units. The prefix never contains anything that changes per message.
 4. **Memory.** `jarvis-home/memory.md`, kept by `remember` plus the end-of-slice reflection (the same background call that writes the working set), with every change logged to `memory-changes.jsonl`. History search with citations is FTS5 over the transcript and reports.
 5. **Backends (the agent's computers).** `Backend` is the single abstraction over infrastructure: `exec`, plus optional fast file paths, a screen, a view link for a human, and suspend.
-   - Providers implement it: boat (built in), local (reference and tests), and anyone's own infrastructure through an extension. Settings map roles to providers: `machines.workbench` (its own machine, no secrets) and later `machines.desk` (a screen plus your logged-in browser).
+   - Providers implement it: boat (built in; `idleSeconds` sleeps the machine after that long unused, by pushing boat's auto-stop deadline back on every use, and the next command wakes it with the same disk), local (reference and tests), and anyone's own infrastructure through an extension. Settings map roles to providers: `machines.workbench` (its own machine, no secrets) and later `machines.desk` (a screen plus your logged-in browser).
    - Everything on top is a generic extension that never names a provider. Pi's bash/read/write/edit run *directly* on the workbench through `BackendExecutionEnv`, which builds Pi's whole `ExecutionEnv` on `exec`. It's verified to behave like Pi's own local environment by a differential test.
    - The `computer` tool (screenshot, click, type, key, scroll, drag, share_screen) drives a machine's display. It uses the backend's native screen API if it has one, otherwise X over `exec` (xdotool, plus ImageMagick or ffmpeg). Screenshots are downscaled to 1280 wide and clicks are scaled back. `share_screen` gives the user a watch/take-over link.
 6. **Delegation: one chief of staff and its team.** The user only ever talks to the chief of staff.
