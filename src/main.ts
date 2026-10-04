@@ -15,6 +15,7 @@ import { Portrait } from "./core/portrait.ts";
 import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { FileCredentialStore } from "./credentials.ts";
 import { BackendExecutionEnv } from "./pi/backend-env.ts";
+import { computerExtension } from "./pi/computer.ts";
 import { MainThread } from "./pi/harness.ts";
 import { indexHistory, memoryExtension } from "./pi/memory.ts";
 import { shellExtension } from "./pi/shell.ts";
@@ -44,7 +45,12 @@ const thread: MainThread = await MainThread.open(
 		dataDir,
 		models,
 		settings: () => settings.get(),
-		extensions: [memory, stateExtension(state), ...(workbench === undefined ? [] : [shellExtension()])],
+		extensions: [
+			memory,
+			stateExtension(state),
+			...(workbench === undefined ? [] : [shellExtension()]),
+			...(workbench === undefined || workbenchConfig?.screen !== true ? [] : [computerExtension({ backend: workbench })]),
+		],
 		...(workbench === undefined ? {} : { env: () => new BackendExecutionEnv(workbench) }),
 		state,
 		log: console.log,

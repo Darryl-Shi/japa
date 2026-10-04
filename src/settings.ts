@@ -4,7 +4,8 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type ModelChoice = { provider: string; modelId: string };
-export type MachineConfig = { provider: string; [option: string]: unknown };
+/** `screen: true` gives the agent the computer tool on that machine's display. Other options go to the provider. */
+export type MachineConfig = { provider: string; screen?: boolean; [option: string]: unknown };
 
 export type Settings = {
 	/** The main thread: fast, answers directly. */

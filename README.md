@@ -23,10 +23,10 @@ Memory, a short portrait of you, lives in `~/jarvis-home/memory.md` (set `JARVIS
 The agent's own computer (the workbench) is configured in `data/settings.json`. For boat.dev, set `BOAT_API_KEY` and use:
 
 ```json
-{ "machines": { "workbench": { "provider": "boat", "type": "small" } } }
+{ "machines": { "workbench": { "provider": "boat", "type": "small", "screen": true } } }
 ```
 
-The machine is created on first start (with none of your boat account's secrets), remembered in `data/boat-machines.json`, and resumed whenever it's needed. For local development, use `{ "provider": "local", "home": "data/machines/workbench" }`.
+`screen: true` lets the agent see and use the machine's desktop as well. The machine is created on first start (with none of your boat account's secrets), remembered in `data/boat-machines.json`, and resumed whenever it's needed. For local development, use `{ "provider": "local", "home": "data/machines/workbench" }`.
 
 Settings are read again on every message, so there's no need to restart. Models are `model` (the main thread) and `delegateModel`, each written as `{ "provider": "...", "modelId": "..." }`.
 
