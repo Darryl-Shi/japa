@@ -13,15 +13,18 @@ Tests reach japa the way a user's code would. A test's agent gets a home of its 
 ```
 src/
   main.ts          the default extensions, and start
-  japa.ts          the core, assembled; builds the Host and the agent's computer (this machine, in its home)
-  core/            our formats and services: messages, UI cards, schedules, approvals, memory, state (no Pi imports)
+  japa.ts          the core, assembled: what extensions are given (pi's API), and the agent's computer (this
+                   machine, in its home)
+  core/            our formats and services: messages, UI cards and dialogs, approvals, memory, state (no Pi imports)
   pi/              Pi adapters and the built-in extensions
-                   extension.ts: the one unit type and the Host · harness.ts: the main thread · inputs.ts: addressed
-                   inputs · delegation.ts: the team · triggers.ts · installer.ts: extensions from chat
-                   memory.ts · approvals.ts · web.ts · computer.ts · screen.ts: the built-in extensions, one file each
+                   extension.ts: pi's ExtensionAPI, on Pi Durable · harness.ts: the main thread · inputs.ts:
+                   addressed inputs · delegation.ts: the team · computer.ts, skills.ts, history.ts: the rest of the
+                   core · installer.ts: extensions from chat
+                   memory.ts · approvals.ts · web.ts · screen.ts: the built-in extensions, one file each
   commands/        japa's /settings (with pi's /model and /thinking) and /jobs, and pi's /login, /logout and /session:
                    cards on the UI, on whichever channel is open
   channels/        the Inbox (allowlist gate), and Telegram
+skills/            the skills japa ships with (extending-japa: how it extends itself)
 docs/              these pages
 ```
 

@@ -35,7 +35,7 @@ Just message it. A few commands help:
 
 | Command | What it does |
 |---|---|
-| `/settings` | Choose models, set your name and time zone, and switch abilities on or off, all with buttons |
+| `/settings` | Choose models, set your name and time zone, and switch extensions on or off, all with buttons |
 | `/model`, `/thinking` | Which model the chief of staff and its jobs use, and how hard each one thinks |
 | `/login`, `/logout` | Connect an AI model provider, or disconnect one |
 | `/session` | What it has spent so far, by job |
@@ -47,7 +47,7 @@ Just message it. A few commands help:
 - **Only you get in.** People not on its allowlist are turned away before anything runs, and the assistant can't change that list.
 - **Your keys stay in japa's files.** Its commands don't get them in their environment; a key one needs is passed to that command alone. Its shell is on the same machine, though, which is why it should have a machine of its own.
 - **New abilities need your yes.** Anything it builds for itself is checked first, then waits for your tap. Once installed, it works exactly like a built-in ability, with the same access, so only install what you'd trust.
-- **You decide what matters.** Consequential actions wait for your tap. "Always" permissions come only from you, and you can remove them in `/settings`.
+- **You decide what matters.** Consequential actions wait for your tap. "Always" permissions come only from you, and you can remove them with `/approvals`.
 
 ## Learn more
 

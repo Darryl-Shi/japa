@@ -1,13 +1,10 @@
-// Memory as an extension: the agent's memory of the user in the system prompt, cited search over everything said
-// before, and, when an exchange with the user ends, a reflection that keeps memory current and short. `remember` is for
-// when the user asks. Turned off, all of it stops: no section, no tools, no edits. The formats live in src/core.
-import type { Context } from "@earendil-works/chord";
+// Memory as an extension: the agent's memory of the user in the chief of staff's prompt, and, when an exchange with
+// the user ends, a reflection that keeps memory current and short. `remember` is for when the user asks. Turned off,
+// all of it stops: no section, no tool, no edits. The formats live in src/core.
 import { type Models, Type } from "@earendil-works/pi-ai";
-import { type Conversation, defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
-import type { History, HistoryLine, HistoryHit } from "../core/history.ts";
 import { type MemoryEdit, type MemoryFile, wordCount } from "../core/memory.ts";
 import type { ModelChoice } from "../settings.ts";
-import type { ExchangeEnd, Host, JapaExtension } from "./extension.ts";
+import type { ExchangeEnd, ExtensionFactory } from "./extension.ts";
 import { reasoningOf } from "./models.ts";
 import { parseJson } from "./state.ts";
 
@@ -30,49 +27,10 @@ const reflectPrompt = (words: number, limit: number) =>
 		"Most exchanges need no edits: return []. Never more than a few.",
 	].join(" ");
 
-/** Its settings when settings.json says nothing. */
+/** Its options when settings.json (extensions.memory) says nothing: how long memory may get, in words. */
 export const DEFAULTS = { words: 300 };
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
-
-/**
- * The tools and sections: `search` finds earlier lines of the main conversation (the core keeps that record); `words`
- * is how long memory may get.
- */
-export function memoryTools(options: { memory: MemoryFile; search: (query: string, context: Context) => Promise<HistoryHit[]>; words?: () => number }): Extension {
-	const { memory } = options;
-	return defineExtension({
-		name: "memory",
-		sections: [section("memory_guide", () => GUIDE, { tag: false }), section("memory", () => memory.read() || undefined)],
-		tools: [
-			defineTool({
-				name: "remember",
-				description: "When the user asks: add something to your memory, or correct it. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
-				parameters: Type.Object({ note: Type.String(), replaces: Type.Optional(Type.String()) }),
-				execute: async (args) => {
-					const current = memory.read();
-					if (args.replaces === undefined && current.includes(args.note.trim())) return text("Already in memory.");
-					if (args.replaces !== undefined && !current.includes(args.replaces)) return text("That text isn't in memory; read <memory> and quote it exactly.");
-					const edit = args.replaces === undefined ? { add: args.note } : { replace: args.replaces, with: args.note };
-					const words = options.words?.();
-					if (memory.apply([edit], "conversation", words === undefined ? {} : { words }).length > 0) return text("Saved.");
-					return text(`Memory is full (${wordCount(current)} of ${words} words): make room first by merging or removing something (remember with \`replaces\`).`);
-				},
-			}),
-			defineTool({
-				name: "search_history",
-				description: "Full-text search over everything said in earlier conversations with the user. Returns dated snippets; cite the date.",
-				parameters: Type.Object({ query: Type.String({ description: "Distinctive words likely to appear in the messages" }) }),
-				replay: "safe",
-				execute: async (args, _api, context) => {
-					const hits = await options.search(args.query, context);
-					if (hits.length === 0) return text("No matches.");
-					return text(hits.map((hit) => `${new Date(hit.at).toISOString().slice(0, 16).replace("T", " ")} ${hit.role === "user" ? "User" : "You"}: ${hit.snippet}`).join("\n"));
-				},
-			}),
-		],
-	});
-}
 
 /** One cheap call over the exchange that ended: small edits to memory, if any. */
 export async function reflectOnMemory(models: Models, choice: ModelChoice | undefined, input: { memory: string; words: number } & ExchangeEnd): Promise<MemoryEdit[]> {
@@ -97,42 +55,39 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice | unde
 	});
 }
 
-export function memoryExtension(host: Host, memory: MemoryFile): JapaExtension {
-	const words = () => Number(host.settings.options("memory", DEFAULTS).words) || DEFAULTS.words;
-	return {
-		...memoryTools({ memory, search: (query, context) => host.searchHistory(query, context), words }),
-		title: "Memory",
-		about: `Its memory of you (${memory.path}, yours to edit), kept short and current after each exchange, and search over everything said before.`,
-		for: "chief",
-		settings: [{ key: "words", label: "Memory size (words)", kind: "number" }],
-		defaults: DEFAULTS,
-		safeTools: ["remember", "search_history"],
-		onExchangeEnd: async (exchange) => {
-			const edits = await reflectOnMemory(host.models, host.settings.get().model, { memory: memory.read(), words: words(), ...exchange });
-			const applied = memory.apply(edits, "reflection", { words: words() });
-			if (applied.length > 0) host.log(`memory: ${applied.length} edit(s) from reflection`);
-		},
-	};
-}
+/** `log`: the core's log. */
+export const memoryExtension =
+	(memory: MemoryFile, log: (line: string) => void = () => {}): ExtensionFactory =>
+	(pi) => {
+		const words = () => Number(pi.getSettings().extensions.memory?.words) || DEFAULTS.words;
 
-/** Index transcript entries the search has not seen yet. Compacted entries stay in storage, so they are found too. */
-export async function indexHistory(conversation: Conversation, history: History, context: Context): Promise<void> {
-	const after = history.lastEntry();
-	const lines: HistoryLine[] = [];
-	let newest = after;
-	let cursor: Parameters<Conversation["entries"]>[2];
-	do {
-		const page = await conversation.entries({ minEntryId: (after + 1) as never }, 200, cursor, context);
-		for (const entry of page.items) {
-			newest = Math.max(newest, entry.id);
-			if (entry.kind !== "pi.user" && entry.kind !== "pi.assistant") continue;
-			for (const message of entry.model ?? []) {
-				if (message.role !== "user" && message.role !== "assistant") continue;
-				const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
-				if (content.trim() !== "") lines.push({ entry: entry.id, at: message.timestamp, role: message.role, text: content });
-			}
-		}
-		cursor = page.next;
-	} while (cursor !== undefined);
-	if (newest > after) history.add(lines, newest);
-}
+		pi.on("before_agent_start", (event, ctx) => {
+			if (ctx.agent !== "chief") return;
+			event.systemPromptOptions.sections.memory_guide = GUIDE;
+			const remembered = memory.read();
+			if (remembered !== "") event.systemPromptOptions.sections.memory = remembered;
+		});
+
+		pi.registerTool({
+			name: "remember",
+			label: "Remember",
+			description: "When the user asks: add something to your memory, or correct it. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
+			parameters: Type.Object({ note: Type.String(), replaces: Type.Optional(Type.String()) }),
+			// Only its own memory of the user.
+			annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+			execute: async (_id, args) => {
+				const current = memory.read();
+				if (args.replaces === undefined && current.includes(args.note.trim())) return text("Already in memory.");
+				if (args.replaces !== undefined && !current.includes(args.replaces)) return text("That text isn't in memory; read <memory> and quote it exactly.");
+				const edit = args.replaces === undefined ? { add: args.note } : { replace: args.replaces, with: args.note };
+				if (memory.apply([edit], "conversation", { words: words() }).length > 0) return text("Saved.");
+				return text(`Memory is full (${wordCount(current)} of ${words()} words): make room first by merging or removing something (remember with \`replaces\`).`);
+			},
+		});
+
+		pi.on("exchange_end", async (exchange, ctx) => {
+			const edits = await reflectOnMemory(ctx.modelRegistry, pi.getSettings().model, { memory: memory.read(), words: words(), ...exchange });
+			const applied = memory.apply(edits, "reflection", { words: words() });
+			if (applied.length > 0) log(`memory: ${applied.length} edit(s) from reflection`);
+		});
+	};

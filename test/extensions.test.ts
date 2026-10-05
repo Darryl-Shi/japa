@@ -6,32 +6,27 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Approvals } from "../src/core/approvals.ts";
 import { approvalsExtension } from "../src/pi/approvals.ts";
-import type { Channel, JapaExtension } from "../src/pi/extension.ts";
+import type { Channel, ExtensionFactory } from "../src/pi/extension.ts";
 import { webExtension } from "../src/pi/web.ts";
 import { agent, call, context, say, sleep } from "./helpers.ts";
 
-/** A tool that acts on the world, counting its runs. */
-function emailExtension(sent: string[]): JapaExtension {
-	const extension = defineExtension({
-		name: "email",
-		tools: [
-			defineTool({
-				name: "send_email",
-				description: "Send an email.",
-				parameters: Type.Object({ to: Type.String(), body: Type.String() }),
-				execute: async (args) => {
-					sent.push(`${args.to}: ${args.body}`);
-					return { content: [{ type: "text", text: "Email sent." }] };
-				},
-			}),
-			defineTool({ name: "list_inbox", description: "List the inbox.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "3 unread." }] }) }),
-		],
-	});
-	return { ...extension, title: "Email", about: "" };
-}
+/** A tool that acts on the world, counting its runs, and one that reads it. */
+const emailExtension =
+	(sent: string[]): ExtensionFactory =>
+	(pi) => {
+		pi.registerTool({
+			name: "send_email",
+			description: "Send an email.",
+			parameters: Type.Object({ to: Type.String(), body: Type.String() }),
+			execute: async (_id, args) => {
+				sent.push(`${args.to}: ${args.body}`);
+				return { content: [{ type: "text", text: "Email sent." }] };
+			},
+		});
+		pi.registerTool({ name: "list_inbox", description: "List the inbox.", parameters: Type.Object({}), annotations: { readOnlyHint: true }, execute: async () => ({ content: [{ type: "text", text: "3 unread." }] }) });
+	};
 
 const isReview = (request: string) => request.includes("You review one action");
 
@@ -39,7 +34,7 @@ test("approvals: a consequential call waits for the user's tap on a card, then g
 	const emails: string[] = [];
 	const store = new Approvals(join(tmpdir(), `approvals-${process.pid}-1.json`), join(tmpdir(), `audit-${process.pid}-1.jsonl`));
 	const h = await agent({
-		extensions: (host) => [approvalsExtension(host, store), emailExtension(emails)],
+		extensions: { approvals: approvalsExtension(store), email: emailExtension(emails) },
 		script: (turn) => {
 			if (isReview(turn.request)) return say(JSON.stringify({ ask: turn.request.includes("send_email"), summary: "Email Bob the draft", rule: "Email people on the user's behalf" }));
 			if (turn.text.includes("check my inbox")) return call("list_inbox", {});
@@ -63,10 +58,10 @@ test("approvals: a consequential call waits for the user's tap on a card, then g
 	assert.match(card.card.text, /^Approve\? Email Bob the draft/);
 	assert.deepEqual(card.card.buttons?.flat().map((button) => button.text), ["Approve", "Deny", "Always: Email people on the user's behalf"]);
 
-	await h.host.ui.press(card.card.buttons![0]![0]!.data, card.ref);
+	await h.runtime.ui.press(card.card.buttons![0]![0]!.data, card.ref);
 	await h.until(() => h.cards.some((shown) => shown.card.text === "Sent to Bob."), "the answer after approval");
-	assert.match(h.cards[1]!.card.text, /^Approved\./, "the card now shows the decision");
-	assert.deepEqual(h.cards.find((shown) => shown.card.text === "Sent to Bob.")?.card.replyTo, card.ref, "the answer is threaded under the card");
+	assert.match(h.cards[1]!.card.text, /\n✓ Approve$/, "the card now shows the decision");
+	assert.deepEqual(h.cards[1]!.replaced, card.ref, "in place");
 	assert.deepEqual(emails, ["bob: Draft attached."]);
 	const audit = (await readFile(join(tmpdir(), `audit-${process.pid}-1.jsonl`), "utf8")).trim().split("\n").map((line) => JSON.parse(line).verdict);
 	assert.deepEqual(audit, ["allowed", "asked", "approve", "ran-approved"]);
@@ -78,7 +73,7 @@ test("approvals: a review that fails is tried again, so a provider's hiccup does
 	const store = new Approvals(join(tmpdir(), `approvals-${process.pid}-3.json`), join(tmpdir(), `audit-${process.pid}-3.jsonl`));
 	let reviews = 0;
 	const h = await agent({
-		extensions: (host) => [approvalsExtension(host, store), emailExtension(emails)],
+		extensions: { approvals: approvalsExtension(store), email: emailExtension(emails) },
 		script: (turn) => {
 			if (isReview(turn.request)) {
 				reviews++;
@@ -100,7 +95,7 @@ test("approvals: a job agent waiting on the user is held (not reported as gone q
 	const emails: string[] = [];
 	const store = new Approvals(join(tmpdir(), `approvals-${process.pid}-2.json`), join(tmpdir(), `audit-${process.pid}-2.jsonl`));
 	const h = await agent({
-		extensions: (host) => [approvalsExtension(host, store), emailExtension(emails)],
+		extensions: { approvals: approvalsExtension(store), email: emailExtension(emails) },
 		script: (turn) => {
 			if (isReview(turn.request)) return say(JSON.stringify({ ask: true, summary: "Email the venue", rule: "Email venues" }));
 			if (turn.job !== undefined) {
@@ -122,7 +117,7 @@ test("approvals: a job agent waiting on the user is held (not reported as gone q
 	const early = h.turns.filter((turn) => turn.job === undefined && turn.text.startsWith("[Report from job")).map((turn) => turn.text);
 	assert.deepEqual(early, [], "no automatic report while it waits on the user");
 
-	await h.host.ui.press(h.cards[0]!.card.buttons![0]![0]!.data, h.cards[0]!.ref);
+	await h.runtime.ui.press(h.cards[0]!.card.buttons![0]![0]!.data, h.cards[0]!.ref);
 	await h.until(() => h.turns.some((turn) => turn.job === undefined && turn.text.startsWith('[Report from job t1 "Booking" — done]')), "the job's report");
 	assert.deepEqual(emails, ["venue: Booking for 12."]);
 	await h.done();
@@ -138,7 +133,7 @@ test("web: one search sends the objective and all queries in fast mode, and rend
 		return new Response(JSON.stringify({ results, errors: [] }), { status: 200 });
 	}) as typeof fetch;
 	const h = await agent({
-		extensions: (host) => [webExtension(host, { fetch: fakeFetch })],
+		extensions: { web: webExtension({ fetch: fakeFetch }) },
 		script: (turn) => {
 			if (turn.text.includes("look it up")) return call("web_search", { objective: "Find alpha", queries: ["alpha", "alpha fact"] });
 			if (turn.text.includes("No Parallel API key")) return say("No key.");
@@ -155,16 +150,21 @@ test("web: one search sends the objective and all queries in fast mode, and rend
 	await h.done();
 });
 
-test("settings: /settings is a card; extensions turn on and off (tools follow, start/stop run), options and secrets are set by reply; the last channel stays on", async () => {
+test("settings: /settings is a card where extensions turn on and off (tools and commands follow, start and stop run); an extension's own options are its command's; the last channel stays on", async () => {
 	const lifecycle: string[] = [];
 	const h = await agent({
-		extensions: (host) => [
-			{ ...webExtension(host), start: () => void lifecycle.push("web on"), stop: () => void lifecycle.push("web off") },
-			emailExtension([]),
-		],
+		extensions: {
+			web: (pi) => {
+				webExtension()(pi);
+				pi.on("session_start", () => void lifecycle.push("web on"));
+				pi.on("session_shutdown", () => void lifecycle.push("web off"));
+			},
+			email: emailExtension([]),
+		},
 		script: () => say("ok"),
 	});
-	const ui = h.host.ui;
+	const ui = h.runtime.ui;
+	const at = { channel: "test", chatId: "7", messageId: "1" };
 	const tools = async () => (await h.thread.root.agent(context)).tools.map((tool) => tool.name);
 	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
 	const press = (label: string) => {
@@ -178,54 +178,50 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	assert.deepEqual(
 		ui.commands(),
 		[
-			{ name: "settings", description: "Models, extensions and their options" },
+			{ name: "settings", description: "Models, and which extensions are on" },
 			{ name: "model", description: "The models it and its jobs use" },
 			{ name: "thinking", description: "How hard each model thinks" },
 			{ name: "login", description: "Log in to a model provider" },
 			{ name: "logout", description: "Log out of a model provider" },
 			{ name: "jobs", description: "What the team is working on" },
 			{ name: "session", description: "What it has spent, by job" },
+			{ name: "web", description: "Web search: its Parallel API key" },
 		],
-		"advertised, with what they do",
+		"advertised, with what they do, an extension's own among them",
 	);
-	assert.equal(await ui.run("settings", { channel: "test", chatId: "7", messageId: "1" }), true);
-	assert.deepEqual(labels(), ["General", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
+	assert.equal(await ui.run("settings", at), true);
+	assert.deepEqual(labels(), ["General", "✅ test-channel", "✅ web (/web)", "✅ email"]);
 	assert.ok((await tools()).includes("web_search"));
 
-	await press("✅ Web (Parallel)");
-	assert.deepEqual(labels().slice(2, 3), ["⬜ Web (Parallel)"]);
+	await press("✅ web (/web)");
+	assert.deepEqual(labels().slice(2, 3), ["⬜ web (/web)"]);
 	assert.ok(!(await tools()).includes("web_search"), "turned off: gone from the chief of staff's tools");
+	assert.ok(!ui.commands().some((command) => command.name === "web"), "and its command");
 	assert.deepEqual(lifecycle, ["web on", "web off"], "and stopped");
-	await press("✅ Test channel");
+	await press("✅ test-channel");
 	assert.match(h.cards.at(-1)!.card.text, /only channel/);
-	assert.deepEqual(labels().slice(1, 2), ["✅ Test channel"], "the last channel can't be turned off");
+	assert.deepEqual(labels().slice(1, 2), ["✅ test-channel"], "the last channel can't be turned off");
+	await press("⬜ web (/web)");
+	assert.deepEqual(lifecycle, ["web on", "web off", "web on"]);
 
-	await press("⚙");
-	assert.deepEqual(labels(), ["Search mode: fast ▸", "Results per search: 8", "Parallel API key: not set", "« Back"]);
-	await press("Search mode: fast ▸");
-	assert.equal(h.settings.options("web", {}).mode, "turbo", "a choice cycles");
+	// Its key, through its own command: pi's dialogs, drawn as cards.
+	const running = ui.run("web", at);
+	await h.until(() => h.cards.at(-1)!.card.buttons?.flat().some((button) => button.text === "Parallel API key: not set") === true, "the web's own menu");
 	await press("Parallel API key: not set");
-	const prompt = h.cards.at(-1)!.card;
-	assert.ok(prompt.ask?.secret === true);
-	const menu = h.cards.at(-2)!.ref;
-	await ui.reply(prompt.ask!.data, "pk-live", { channel: "test", chatId: "7", messageId: "99" }, h.cards.at(-1)!.ref);
+	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the question for the key");
+	const prompt = h.cards.at(-1)!;
+	assert.ok(prompt.card.ask?.secret === true, "asked for as a secret");
+	await ui.reply(prompt.card.ask!.data, "pk-live", { channel: "test", chatId: "7", messageId: "99" }, prompt.ref);
+	await running;
 	assert.equal(h.secrets.get("web.apiKey"), "pk-live");
-	// Answered: the question says so, and the menu it came from shows the value, in place (no new menu).
-	assert.deepEqual(h.cards.at(-2)!, { card: { text: "Parallel API key: saved." }, ref: h.cards.at(-3)!.ref, replaced: h.cards.at(-3)!.ref });
-	assert.deepEqual(h.cards.at(-1)!.replaced, menu);
-	assert.ok(labels().includes("Parallel API key: set"));
-	// A value that won't do is asked for again, saying why.
-	await press("Results per search: 8");
-	await ui.reply(h.cards.at(-1)!.card.ask!.data, "lots", { channel: "test", chatId: "7", messageId: "100" }, h.cards.at(-1)!.ref);
-	assert.match(h.cards.at(-1)!.card.text, /^That's not a number\. Send the new value for "Results per search"/);
-	await ui.reply(h.cards.at(-1)!.card.ask!.data, "5", { channel: "test", chatId: "7", messageId: "101" }, h.cards.at(-1)!.ref);
-	assert.equal(h.settings.options("web", {}).maxResults, 5);
-	assert.deepEqual(h.cards.at(-1)!.replaced, menu, "the same menu, updated");
+	assert.equal(h.cards.at(-1)!.card.text, "Parallel API key saved.");
+	await ui.reply(prompt.card.ask!.data, "again", { channel: "test", chatId: "7", messageId: "100" }, prompt.ref);
+	assert.equal(h.cards.at(-1)!.card.text, "That's no longer waiting.", "answered once");
 	assert.ok(!JSON.stringify(h.settings.get()).includes("pk-live"), "secrets never land in settings.json");
 	assert.ok(!JSON.stringify(h.cards.map((shown) => shown.card)).includes("allowlist"), "the allowlist isn't in the menu");
 
 	// A model is picked from the models pi can use, not typed.
-	await ui.run("settings", { channel: "test", chatId: "7", messageId: "1" });
+	await ui.run("settings", at);
 	await press("General");
 	await press("Models ▸");
 	await press("Chief of staff: faux/faux-1");
@@ -249,20 +245,17 @@ test("channels: the core opens each with its inbox and shows cards on it while i
 		close: () => void events.push(`${platform} closed`),
 	});
 	const h = await agent({
-		extensions: () => [
-			{ name: "other", title: "Other", about: "", channel: other("other") },
-			{ name: "broken", title: "Broken", about: "", channel: other("broken", true) },
-		],
+		extensions: { other: (pi) => pi.registerChannel(other("other")), broken: (pi) => pi.registerChannel(other("broken", true)) },
 		script: () => say("ok"),
 	});
 	assert.deepEqual(events, ["other open, gate for other"]);
-	await h.host.ui.show({ text: "hello", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
-	await h.host.ui.show({ text: "lost", replyTo: { channel: "broken", chatId: "1", messageId: "9" } });
+	await h.runtime.ui.show({ text: "hello", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
+	await h.runtime.ui.show({ text: "lost", replyTo: { channel: "broken", chatId: "1", messageId: "9" } });
 	assert.deepEqual(events.slice(1), ["other shows hello"], "threaded on its own channel; the broken one gets nothing");
 
 	h.settings.update({ extensions: { other: { enabled: false } } });
 	await h.japa.apply(context);
-	await h.host.ui.show({ text: "again", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
+	await h.runtime.ui.show({ text: "again", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
 	assert.deepEqual(events.slice(2), ["other closed"], "off: closed, and its cards go to a channel that's on");
 	assert.equal(h.cards.at(-1)!.card.text, "again");
 	await h.done();
@@ -271,9 +264,12 @@ test("channels: the core opens each with its inbox and shows cards on it while i
 test("problems: an extension that fails to start is reported to the chief of staff once, not just logged, and its answer reaches the user", async () => {
 	let fail = true;
 	const h = await agent({
-		extensions: () => [{ name: "flaky", title: "Flaky", about: "", start: () => {
-			if (fail) throw new Error("Cannot find package 'left-pad'");
-		} }],
+		extensions: {
+			flaky: (pi) =>
+				pi.on("session_start", () => {
+					if (fail) throw new Error("Cannot find package 'left-pad'");
+				}),
+		},
 		script: (turn) => (turn.text.startsWith("[Problem with extension flaky]") ? say("Flaky didn't start (a missing package); I'll have it fixed.") : say("ok")),
 	});
 	await h.until(() => h.cards.some((card) => card.card.text.startsWith("Flaky didn't start")), "the chief of staff's word on it");
@@ -299,7 +295,6 @@ test("problems: an extension that fails to start is reported to the chief of sta
 
 test("jobs: /jobs lists what the team is working on, shows a job's detail and recent activity; one that has reported can be closed", async () => {
 	const h = await agent({
-		extensions: () => [],
 		script: async (turn) => {
 			if (turn.job !== undefined) {
 				if (turn.text.includes("Compare fares")) return call("report", { kind: "decision needed", text: "Two airlines checked. Window or aisle?" });
@@ -312,7 +307,7 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 			return say("Noted.");
 		},
 	});
-	const ui = h.host.ui;
+	const ui = h.runtime.ui;
 	const at = { channel: "test", chatId: "7", messageId: "1" };
 	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
 	const press = (label: string) => {
@@ -368,7 +363,6 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 test("messages: an answer goes back the way its input came, once; message_job reaches the job, never the user", async () => {
 	let job = "";
 	const h = await agent({
-		extensions: () => [],
 		script: (turn) => {
 			if (turn.job !== undefined) {
 				if (turn.text.includes("From the chief of staff: Check May 3 too.")) return call("report", { kind: "done", text: "May 3 is cheaper." });
@@ -399,7 +393,7 @@ test("modalities: a photo is shown to a model that takes images and kept on its 
 	const home = join(dataDir, "machine");
 	const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
 	const voice = Uint8Array.from({ length: 3000 }, (_, i) => i % 251);
-	const h = await agent({ home, dataDir, extensions: () => [], script: () => say("Got it.") });
+	const h = await agent({ home, dataDir, script: () => say("Got it.") });
 	assert.deepEqual(
 		await h.ask("1", { text: "[Mon 10:00] what's this, and transcribe the note", attachments: [{ name: "photo.png", mimeType: "image/png", data: png }, { name: "voice.ogg", mimeType: "audio/ogg", data: voice }] }),
 		{ text: "Got it." },
@@ -421,7 +415,6 @@ test("login: /login runs a provider's own login from chat; then its models are o
 		throw new Error("not in this test");
 	};
 	const h = await agent({
-		extensions: () => [],
 		providers: [
 			createProvider({
 				id: "dyn",
@@ -434,7 +427,7 @@ test("login: /login runs a provider's own login from chat; then its models are o
 		],
 		script: () => say("ok"),
 	});
-	const ui = h.host.ui;
+	const ui = h.runtime.ui;
 	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
 	const press = (label: string) => {
 		const last = h.cards.at(-1)!;
@@ -464,20 +457,19 @@ test("login: /login runs a provider's own login from chat; then its models are o
 	await press("✕ Dyn");
 	await press("Yes, log out");
 	assert.equal(h.cards.at(-1)!.card.text, "Logged out of Dyn.");
-	assert.equal(await h.host.models.checkAuth("dyn"), undefined, "its credential is gone");
+	assert.equal(await h.runtime.models.checkAuth("dyn"), undefined, "its credential is gone");
 	await h.done();
 });
 
 test("thinking: each model slot has its own level, from the ones its model supports; the chief of staff and its jobs think at theirs", async () => {
 	const h = await agent({
-		extensions: () => [],
 		script: (turn) => {
 			if (turn.job === undefined && turn.text.includes("start it")) return call("delegate", { title: "Dig", brief: "Dig in." });
 			if (turn.job !== undefined && turn.text.includes("Dig in")) return call("report", { kind: "done", text: "Dug." });
 			return say("ok");
 		},
 	});
-	const ui = h.host.ui;
+	const ui = h.runtime.ui;
 	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
 	const press = (label: string) => {
 		const last = h.cards.at(-1)!;
@@ -505,32 +497,46 @@ test("thinking: each model slot has its own level, from the ones its model suppo
 	await h.done();
 });
 
-test("triggers: a time trigger wakes the chief of staff on schedule (durably), an event trigger when emitted; off means no more", async () => {
+test("an extension wakes the chief of staff by itself (on its own schedule), and its answer reaches the user; off, it stops", async () => {
 	const h = await agent({
-		extensions: () => [
-			{ name: "pinger", title: "Pinger", about: "", triggers: [{ name: "tick", when: { every: "1s" }, prompt: "Check the oven." }, { name: "mail", when: { event: "mail.arrived" }, prompt: "New mail; decide if it matters." }] },
-		],
-		script: (turn) => (turn.text.startsWith("[Trigger") ? say(`About: ${turn.text.slice(0, 60)}`) : say("ok")),
+		extensions: {
+			pinger: (pi) => {
+				let timer: ReturnType<typeof setInterval> | undefined;
+				pi.on("session_start", () => void (timer = setInterval(() => pi.sendUserMessage("Check the oven."), 300)));
+				pi.on("session_shutdown", () => clearInterval(timer));
+			},
+		},
+		script: (turn) => (turn.text.endsWith("Check the oven.") ? say(`About: ${turn.text}`) : say("ok")),
 	});
-	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Trigger pinger/tick,") && turn.text.endsWith("] Check the oven.")), "the time trigger");
-	await h.until(() => h.cards.some((shown) => shown.card.text.startsWith("About: [Trigger pinger/tick")), "the chief of staff's message about it");
-	h.host.emit("mail.arrived", "From: Sam — Re: launch");
-	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Trigger pinger/mail,") && turn.text.endsWith("decide if it matters.\nFrom: Sam — Re: launch")), "the event trigger");
-
-	h.settings.setOption("pinger", "enabled", false);
+	await h.until(() => h.cards.some((shown) => /^About: \[.+\] Check the oven\.$/.test(shown.card.text)), "the chief of staff's word on it");
+	h.settings.update({ extensions: { pinger: { enabled: false } } });
 	await h.japa.apply(context);
-	await sleep(1300);
-	const ticks = h.turns.filter((turn) => turn.text.startsWith("[Trigger pinger/tick")).length;
-	await sleep(1300);
-	assert.equal(h.turns.filter((turn) => turn.text.startsWith("[Trigger pinger/tick")).length, ticks, "turned off: no more ticks");
+	await h.thread.settled();
+	const ticks = h.turns.filter((turn) => turn.text.endsWith("Check the oven.")).length;
+	await sleep(700);
+	assert.equal(h.turns.filter((turn) => turn.text.endsWith("Check the oven.")).length, ticks, "turned off: no more");
 	await h.done();
 });
 
-test("prompt: the chief of staff gets its role and how it extends itself, naming no channel or setup; job agents don't", async () => {
+test("prompt: the chief of staff gets its role and how it extends itself, naming no channel or setup; job agents get its skills and standing instructions, and what an extension gives the chief alone they don't", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
+	const home = join(dataDir, "machine");
+	// What the agent added to itself, in pi's places in its home: a standing instruction and a skill.
+	await mkdir(join(home, ".pi", "agent", "skills", "packing"), { recursive: true });
+	await writeFile(join(home, ".pi", "agent", "AGENTS.md"), "Sign off every report with the date.\n");
+	await writeFile(join(home, ".pi", "agent", "skills", "packing", "SKILL.md"), "---\nname: packing\ndescription: How the user likes a trip packed.\n---\nRoll, don't fold.\n");
 	const h = await agent({
-		extensions: () => [emailExtension([])],
+		home,
+		dataDir,
+		extensions: {
+			email: emailExtension([]),
+			note: (pi) =>
+				pi.on("before_agent_start", (event, ctx) => {
+					if (ctx.agent === "chief") event.systemPromptOptions.sections.note = "A note for the chief of staff alone.";
+				}),
+		},
 		script: (turn) => {
-			if (turn.job !== undefined) return call("report", { summary: "Done." });
+			if (turn.job !== undefined) return call("report", { kind: "done", text: "Done." });
 			if (turn.text.includes("hand it off")) return call("delegate", { title: "Errand", brief: "Do the errand." });
 			return say("ok");
 		},
@@ -540,24 +546,26 @@ test("prompt: the chief of staff gets its role and how it extends itself, naming
 	const chief = h.turns.find((turn) => turn.job === undefined)!.request;
 	assert.match(chief, /Your role is to answer, decide, delegate, and synthesize/);
 	assert.match(chief, /You are built to be customized/);
-	assert.match(chief, /clone .* on your computer/, "the how-to is in install_extension's description");
+	assert.match(chief, /<name>extending-japa<\/name>/, "the skill that says how");
+	assert.match(chief, /extending-japa skill/, "install_extension points to it");
+	assert.match(chief, /<note>\\nA note for the chief of staff alone\.\\n<\/note>/);
 	assert.doesNotMatch(chief, /Telegram|faux-1/, "no channel or setup named");
 	const job = h.turns.find((turn) => turn.job !== undefined)!.request;
 	assert.ok(!job.includes("You are built to be customized") && !job.includes("Your role is to answer"), "job agents aren't the chief of staff");
+	assert.ok(!job.includes("A note for the chief of staff alone"), "an extension tells them apart by ctx.agent");
+	for (const request of [chief, job]) {
+		assert.match(request, /Sign off every report with the date\./, "standing instructions, for everyone");
+		assert.match(request, /<name>packing<\/name>\\n\s*<description>How the user likes a trip packed\.<\/description>/, "and its skills");
+	}
 	await h.done();
 });
 
 /** An extension as a job would write it on its computer: one file, values imported only from packages. */
 const greetSource = (version: string) => `import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { Host, JapaExtension } from "../src/pi/extension.ts";
+import type { ExtensionAPI } from "../src/pi/extension.ts";
 
-export default function (host: Host): JapaExtension {
-	const extension = defineExtension({
-		name: "greet",
-		tools: [defineTool({ name: "greet", description: "Say hi.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "Hi from greet ${version}" }] }) })],
-	});
-	return { ...extension, title: "Greet", about: "Says hi.", for: "chief" };
+export default function (pi: ExtensionAPI) {
+	pi.registerTool({ name: "greet", description: "Say hi.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "Hi from greet ${version}" }] }) });
 }
 `;
 
@@ -574,7 +582,7 @@ test("installer: an extension written on its computer is checked, installed from
 		if (turn.text.startsWith("Hi from greet")) return say(turn.text);
 		return say("ok");
 	};
-	const h = await agent({ home, dataDir, extensions: () => [], script });
+	const h = await agent({ home, dataDir, script });
 	const install = async (id: string) => {
 		const before = h.cards.length;
 		assert.deepEqual(await h.ask(id, "[Mon 10:00] install greet"), { text: "I've asked you." });
@@ -583,7 +591,7 @@ test("installer: an extension written on its computer is checked, installed from
 		assert.match(card.card.text, /^Install extension\? greet/);
 		assert.match(card.card.text, /It runs inside the agent, with its settings and keys\./);
 		assert.doesNotMatch(card.card.text, /npm packages/, "it uses only what japa has");
-		await h.host.ui.press(card.card.buttons![0]![0]!.data, card.ref);
+		await h.runtime.ui.press(card.card.buttons![0]![0]!.data, card.ref);
 		await h.until(() => h.cards.slice(before).some((shown) => shown.card.text === "Greet is on."), "the chief of staff hearing it's installed");
 	};
 
@@ -599,7 +607,7 @@ test("installer: an extension written on its computer is checked, installed from
 	assert.equal((await readdir(join(dataDir, "extensions", "greet"))).length, 1, "the old version is gone");
 
 	await h.japa.close(context);
-	const again = await agent({ home, dataDir, extensions: () => [], script });
+	const again = await agent({ home, dataDir, script });
 	assert.deepEqual(await again.ask("5", "[Mon 10:05] say hi"), { text: "Hi from greet v2" }, "loaded again at start");
 	await again.done();
 });
@@ -616,32 +624,25 @@ test("installer: a directory with its own npm package and files of its own insta
 	await writeFile(join(code, "words.ts"), 'export const word = "hello";\n');
 	await writeFile(
 		join(code, "index.ts"),
-		`import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+		`import { Type } from "@earendil-works/pi-ai";
 import { shout } from "shout";
 import { word } from "./words.ts";
 
-export default function () {
-	const extension = defineExtension({
-		name: "shouter",
-		tools: [defineTool({ name: "shout", description: "Shout.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: shout(word) }] }) })],
-	});
-	return { ...extension, title: "Shouter", about: "Shouts." };
+export default function (pi) {
+	pi.registerTool({ name: "shout", description: "Shout.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: shout(word) }] }) });
 }
 `,
 	);
-	// Installed before, in the layouts of earlier versions: one file, and code/ beside what a sandbox kept, in the shape
-	// from before an extension was a Pi extension itself (the Pi extensions each agent gets).
+	// Installed before, in the layouts of earlier versions: one file, and code/ beside what a sandbox kept; and one in an
+	// older shape (a factory returning an extension), which the chief of staff hears about.
 	await mkdir(join(dataDir, "extensions", "old", "code"), { recursive: true });
 	await writeFile(join(dataDir, "extensions", "greet.ts"), greetSource("old"));
-	const oldShape = greetSource("sandboxed").replaceAll("greet", "old").replace("return { ...extension,", 'return { name: "old", chief: [extension],');
-	assert.ok(oldShape.includes("chief: [extension]"));
-	await writeFile(join(dataDir, "extensions", "old", "code", "old.ts"), oldShape);
+	await writeFile(join(dataDir, "extensions", "old", "code", "old.ts"), greetSource("sandboxed").replaceAll("greet", "old"));
 	await writeFile(join(dataDir, "extensions", "old", "manifest.json"), "{}");
+	await writeFile(join(dataDir, "extensions", "legacy.ts"), 'export default function () {\n\treturn { name: "legacy", title: "Legacy", about: "" };\n}\n');
 	const h = await agent({
 		home,
 		dataDir,
-		extensions: () => [],
 		script: (turn) => {
 			if (turn.text.includes("install it")) return call("install_extension", { path: code, name: "shouter", summary: "Shouts." });
 			if (turn.text.startsWith("Checking it")) return say("Checking.");
@@ -649,18 +650,21 @@ export default function () {
 			if (turn.text.includes("shout now")) return call("shout", {});
 			if (turn.text.includes("greet now")) return call("greet", {});
 			if (turn.text.includes("old now")) return call("old", {});
+			if (turn.text.startsWith("[Problem with extension legacy]")) return say(turn.text);
 			return say(turn.text.split("\n")[0]!);
 		},
 	});
 	assert.deepEqual(await h.ask("1", "[Mon 10:00] greet now"), { text: "Hi from greet old" }, "one file, moved into place");
 	assert.deepEqual(await h.ask("2", "[Mon 10:00] old now"), { text: "Hi from old sandboxed" }, "a sandbox's code/, moved into place");
 	assert.ok(!existsSync(join(dataDir, "extensions", "old", "manifest.json")), "what a sandbox kept is gone");
+	await h.until(() => h.cards.some((shown) => shown.card.text.startsWith("[Problem with extension legacy]")), "the chief of staff hearing of the older shape");
+	assert.match(h.cards.find((shown) => shown.card.text.startsWith("[Problem with extension legacy]"))!.card.text, /older shape .* \(pi\) => \{ pi\.registerTool/);
 
 	await h.ask("3", "[Mon 10:01] install it");
 	await h.until(() => h.cards.some((shown) => shown.card.buttons !== undefined), "the install card");
 	const card = h.cards.find((shown) => shown.card.buttons !== undefined)!;
 	assert.match(card.card.text, /Its own npm packages: shout\./);
-	await h.host.ui.press(card.card.buttons![0]![0]!.data, card.ref);
+	await h.runtime.ui.press(card.card.buttons![0]![0]!.data, card.ref);
 	await h.until(() => h.cards.some((shown) => shown.card.text === "On."), "it being on");
 	assert.deepEqual(await h.ask("4", "[Mon 10:02] shout now"), { text: "HELLO!" });
 	await h.done();
@@ -675,7 +679,7 @@ test("installer: the user saying no installs nothing, and a built-in can't be re
 	const h = await agent({
 		home,
 		dataDir,
-		extensions: (host) => [webExtension(host)],
+		extensions: { web: webExtension() },
 		script: (turn) => {
 			if (turn.text.includes("install greet")) return call("install_extension", { path: file, name: "greet", summary: "Says hi." });
 			if (turn.text.includes("replace web")) return call("install_extension", { path: file, name: "web", summary: "A new web." });
@@ -687,7 +691,7 @@ test("installer: the user saying no installs nothing, and a built-in can't be re
 	await h.ask("1", "[Mon 10:00] install greet");
 	await h.until(() => h.cards.some((shown) => shown.card.buttons !== undefined), "the install card");
 	const card = h.cards.find((shown) => shown.card.buttons !== undefined)!;
-	await h.host.ui.press(card.card.buttons![0]![1]!.data, card.ref);
+	await h.runtime.ui.press(card.card.buttons![0]![1]!.data, card.ref);
 	await h.until(() => h.cards.some((shown) => shown.card.text === "Okay, not installed."), "the chief of staff hearing no");
 	assert.equal(h.japa.extensions.get("greet"), undefined);
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] replace web"), { text: '"web" is built in; pick another name.' });
@@ -711,7 +715,6 @@ export const x = 1;
 	const h = await agent({
 		home,
 		dataDir,
-		extensions: () => [],
 		script: (turn) => {
 			if (turn.text.includes("install it")) return call("install_extension", { path: "bad", name: "bad", summary: "Bad." });
 			if (turn.text.startsWith("Checking it")) return say("Checking.");

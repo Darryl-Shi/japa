@@ -1,19 +1,10 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
-import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { screenTools, xdotoolCommand } from "../src/pi/screen.ts";
-import { MainThread } from "../src/pi/harness.ts";
-import { DEFAULTS } from "../src/settings.ts";
+import { screenExtension, xdotoolCommand } from "../src/pi/screen.ts";
+import { agent, call, say } from "./helpers.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -41,29 +32,25 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		t.skip("Xvfb not available");
 		return;
 	}
-	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
-	await mkdir(join(dataDir, "machine"));
 	const commands: string[] = [];
-	// Its computer, with every command it runs recorded.
-	const computer = new (class extends NodeExecutionEnv {
-		override exec(command: string, options: ShellExecOptions | undefined, callContext: Context) {
-			commands.push(command);
-			return super.exec(command, options, callContext);
-		}
-	})({ cwd: join(dataDir, "machine") });
-	const faux = fauxProvider();
-	const models = createModels();
-	models.setProvider(faux.provider);
-	faux.setResponses([
-		fauxAssistantMessage(fauxToolCall("computer", { action: "screenshot" }), { stopReason: "toolUse" }),
-		fauxAssistantMessage(fauxToolCall("computer", { action: "click", x: 640, y: 360 }), { stopReason: "toolUse" }),
-		fauxAssistantMessage("Looked."),
-	]);
-	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
-	const thread = await MainThread.open({ dataDir, models, settings, installed: [screenTools({ display: ":97" })], env: () => computer }, context);
+	let clicked = false;
+	const h = await agent({
+		extensions: {
+			// The screen as it is, with every command it runs on the machine recorded on the way.
+			screen: (pi) => screenExtension({ display: ":97", hasDisplay: true })({ ...pi, exec: (command, args, options) => (commands.push(args.join(" ")), pi.exec(command, args, options)) }),
+		},
+		script: (turn) => {
+			if (turn.text.includes("look at the screen")) return call("computer", { action: "screenshot" });
+			if (turn.text.startsWith("Screen (") && !clicked) {
+				clicked = true;
+				return call("computer", { action: "click", x: 640, y: 360 });
+			}
+			return say("Looked.");
+		},
+	});
 	try {
-		await thread.ask("1", "look at the screen", { channel: "test", chatId: "1", messageId: "1" }, context);
-		const results = (await thread.root.context(context)).messages.filter((message): message is ToolResultMessage => message.role === "toolResult");
+		await h.ask("1", "look at the screen");
+		const results = (await h.thread.root.context(context)).messages.filter((message): message is ToolResultMessage => message.role === "toolResult");
 		const image = results[0]?.content.find((part) => part.type === "image");
 		assert.ok(image !== undefined && image.type === "image", "the screenshot came back as an image");
 		assert.deepEqual(pngSize(image.data), { width: 1280, height: 720 });
@@ -72,8 +59,7 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		assert.match(click ?? "", /xdotool is not installed/);
 		assert.ok(commands.some((command) => command.includes("xdotool mousemove 960 540 click 1")), "640,360 in the 1280-wide shot is 960,540 on the 1920-wide screen");
 	} finally {
-		await thread.close(context);
+		await h.done();
 		xvfb?.kill();
-		await rm(dataDir, { recursive: true, force: true });
 	}
 });

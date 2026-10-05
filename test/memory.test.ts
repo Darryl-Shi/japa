@@ -4,17 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { History } from "../src/core/history.ts";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { MemoryFile } from "../src/core/memory.ts";
-import { MainThread } from "../src/pi/harness.ts";
-import { indexHistory, memoryExtension, memoryTools } from "../src/pi/memory.ts";
-import { agent } from "./helpers.ts";
-import { DEFAULTS } from "../src/settings.ts";
+import { memoryExtension } from "../src/pi/memory.ts";
+import { agent, call, say } from "./helpers.ts";
 
 const context = BACKGROUND_CONTEXT;
-const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
 
 test("the memory records, corrects and forgets", async () => {
 	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
@@ -42,53 +37,33 @@ test("memory stays within its size: past the limit, only what makes room gets in
 });
 
 test("the agent remembers into its prompt and finds earlier slices in history, with dates", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
-	const history = new History(join(dataDir, "history.sqlite"));
 	const memory = new MemoryFile(home);
-	let thread: MainThread | undefined;
-	const tools = memoryTools({
-		memory,
-		search: async (query, callContext) => {
-			await indexHistory(thread!.root, history, callContext);
-			return history.search(query);
+	const h = await agent({
+		extensions: { memory: memoryExtension(memory) },
+		script: (turn) => {
+			if (turn.request.includes("reflective side")) return fauxAssistantMessage(JSON.stringify({ memory_edits: [] }));
+			if (turn.text.includes("Remember that my sister")) return call("remember", { note: "Sister: Mia" });
+			if (turn.text === "Saved.") return say("Got it: your sister is Mia.");
+			if (turn.text.includes("What did we decide on pricing?")) return say("Pricing stays at $29 until launch.");
+			if (turn.text.includes("Tell me something long.")) return say("filler ".repeat(5000));
+			if (turn.text.includes("Remind me about pricing?")) return call("search_history", { query: "pricing launch" });
+			if (turn.text.includes("«Pricing»")) return say("Hold at $29 until launch (from our earlier chat).");
+			return say("?");
 		},
 	});
-
-	const faux = fauxProvider();
-	const models = createModels();
-	models.setProvider(faux.provider);
-	const script = [
-		fauxAssistantMessage(fauxToolCall("remember", { note: "Sister: Mia" }), { stopReason: "toolUse" }),
-		fauxAssistantMessage("Got it: your sister is Mia."),
-		fauxAssistantMessage("Pricing stays at $29 until launch."),
-		fauxAssistantMessage("filler ".repeat(5000)),
-		fauxAssistantMessage(fauxToolCall("search_history", { query: "pricing launch" }), { stopReason: "toolUse" }),
-		fauxAssistantMessage("Hold at $29 until launch (from our earlier chat)."),
-	];
-	const respond: FauxResponseFactory = (request) =>
-		JSON.stringify(request).includes("<conversation>") ? fauxAssistantMessage("Handoff: nothing open.") : (script.shift() ?? fauxAssistantMessage("?"));
-	faux.setResponses(Array.from({ length: 12 }, () => respond));
-
-	thread = await MainThread.open({ dataDir, models, settings, installed: [tools] }, context);
-	const target = { channel: "test", chatId: "1", messageId: "1" };
-	await thread.ask("1", "Remember that my sister is Mia.", target, context);
+	await h.ask("1", "Remember that my sister is Mia.");
 	assert.equal(memory.read(), "- Sister: Mia");
 
-	await thread.ask("2", "What did we decide on pricing?", target, context);
-	await thread.ask("2b", "Tell me something long.", target, context);
+	await h.ask("2", "What did we decide on pricing?", 2);
+	await h.ask("2b", "Tell me something long.", 3);
 
 	// A new slice: the earlier entries leave the model's context but stay searchable.
-	assert.deepEqual(await thread.ask("3", "Remind me about pricing?", target, context, { newTopic: true }), {
-		text: "Hold at $29 until launch (from our earlier chat).",
-	});
-	const after = JSON.stringify((await thread.root.context(context)).messages);
-	assert.ok(after.includes("Sister: Mia"), "the memory is in the system prompt after compaction");
-	assert.match(after, /\d{4}-\d{2}-\d{2} \d{2}:\d{2} You: «Pricing» stays at \$29 until «launch»/);
-
-	await thread.close(context);
-	history.close();
-	await rm(dataDir, { recursive: true, force: true });
+	assert.deepEqual(await h.ask("3", "Remind me about pricing?", 4, { newTopic: true }), { text: "Hold at $29 until launch (from our earlier chat)." });
+	const last = h.turns.at(-1)!;
+	assert.ok(last.request.includes("Sister: Mia"), "the memory is in the system prompt after the new slice");
+	assert.match(last.text, /\d{4}-\d{2}-\d{2} \d{2}:\d{2} You: «Pricing» stays at \$29 until «launch»/);
+	await h.done();
 	await rm(home, { recursive: true, force: true });
 });
 
@@ -102,7 +77,7 @@ test("reflection (the memory extension's exchange-end hook) keeps memory current
 		[{ add: "Should never be written." }],
 	];
 	const h = await agent({
-		extensions: (host) => [memoryExtension(host, memory)],
+		extensions: { memory: memoryExtension(memory) },
 		script: (turn) => (turn.request.includes("reflective side") ? fauxAssistantMessage(JSON.stringify({ memory_edits: reflections.shift() })) : fauxAssistantMessage("ok")),
 	});
 
@@ -136,7 +111,7 @@ test("reflection waits for the exchange to end: a slice cut for size isn't one, 
 	const asked: string[] = [];
 	const h = await agent({
 		settings: { context: { idleMinutes: 60, sliceTokens: 200 } },
-		extensions: (host) => [memoryExtension(host, memory)],
+		extensions: { memory: memoryExtension(memory) },
 		script: (turn) => {
 			if (!turn.request.includes("reflective side")) return fauxAssistantMessage("ok");
 			asked.push(turn.request);

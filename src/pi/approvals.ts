@@ -1,19 +1,20 @@
-// Approvals as an extension: a hook before every tool call. In smart mode (the default) a fast model reviews each call
-// that acts on the machine or beyond (only tools touching the agent's own state are safe) and asks the user only for what matters: sending as them, spending, deleting, deploying,
-// changing accounts. The call is blocked, not held: the agent ends its turn, the user taps a button, and the decision
-// comes back as a message; an approved call then goes through exactly once. A job waiting on a decision is held, so
-// its run ending isn't taken as its report. Standing permissions come only from the user (the "Always" button) and can be
-// removed in /settings. The card is channel-neutral: whichever channel is on shows it.
+// Approvals as an extension: a tool_call handler before every tool call. In smart mode (the default) a fast model
+// reviews each call and asks the user only for what matters: sending as them, spending, deleting, deploying, changing
+// accounts. Only tools that say they stay in the agent's own world (pi's openWorldHint: false: its memory, open items,
+// jobs) skip the review; files, the shell and the web are reviewed. A call that needs the user is blocked and its agent
+// waits (pi's `terminate`): the user picks on a dialog, and the decision comes back to it as a message; an approved call
+// then goes through exactly once. Standing permissions come only from the user ("Always") and are removed with
+// /approvals. Requests are kept in a file, so one still waiting after a restart is asked again.
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Models, ToolCall } from "@earendil-works/pi-ai";
-import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
 import { type ApprovalRequest, type Approvals, canonical, type Decision } from "../core/approvals.ts";
-import type { Card } from "../core/ui.ts";
-import type { Host, JapaExtension } from "./extension.ts";
 import type { ModelChoice } from "../settings.ts";
+import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "./extension.ts";
 import { reasoningOf } from "./models.ts";
 import { parseJson } from "./state.ts";
 
-const DEFAULTS = { mode: "smart", permissions: [] as string[] };
+type Options = { mode: "smart" | "always"; permissions: string[] };
 
 const REVIEW_PROMPT = [
 	"You review one action an AI assistant is about to take for the user, and decide whether the user must approve it first.",
@@ -25,15 +26,17 @@ const REVIEW_PROMPT = [
 	"searching, browsing, fetching and drafting, and anything on the assistant's own computer, where its commands and",
 	"files run: creating, overwriting or deleting files at any path there (~, /home/..., /tmp, relative paths), cloning,",
 	"installing, building, running tests and scripts. That computer is its own, so nothing there needs asking, except the",
-	"assistant's own code and data (the paths below): they hold its keys and settings, so reading or changing anything",
-	"there needs asking. If it's unclear whether something is the user's or the assistant's, it's the assistant's,",
+	"assistant's own code and data (the paths below): changing anything in either needs asking, and so does reading its",
+	"data, which holds its keys and settings; reading its code doesn't. If it's unclear whether something is the user's or the assistant's, it's the assistant's,",
 	"unless the action names one of the user's accounts or services. Allow whatever a standing permission below covers.",
 	"Return JSON only:",
 	'{"ask": boolean, "summary": "what it would do, in a few plain words for the user", "rule": "the general kind of action, as a standing permission would name it"}',
 ].join(" ");
 
-type Verdict = { ask: boolean; summary: string; rule: string };
+/** Where japa's own code and data are on its computer. */
+export type Own = { code: readonly string[]; data: readonly string[] };
 
+type Verdict = { ask: boolean; summary: string; rule: string };
 
 /**
  * Ask the reviewing models in turn (each up to twice, since a provider can fail now and then) until one gives a
@@ -44,12 +47,13 @@ export async function review(
 	models: Models,
 	choices: readonly (ModelChoice | undefined)[],
 	call: ToolCall,
-	given: { permissions: readonly string[]; own: readonly string[] },
+	given: { permissions: readonly string[]; own: Own },
 	log: (line: string) => void = () => {},
 ): Promise<Verdict> {
 	const { permissions } = given;
 	const content = [
-		`<own_code_and_data>\n${given.own.join("\n") || "(none)"}\n</own_code_and_data>`,
+		`<own_code>\n${given.own.code.join("\n") || "(none)"}\n</own_code>`,
+		`<own_data>\n${given.own.data.join("\n") || "(none)"}\n</own_data>`,
 		`<standing_permissions>\n${permissions.join("\n") || "(none)"}\n</standing_permissions>`,
 		`<action tool="${call.name}">\n${JSON.stringify(call.arguments).slice(0, 4000)}\n</action>`,
 	].join("\n");
@@ -81,100 +85,103 @@ export async function review(
 
 export const APPROVAL_PREFIX = "[Approval ";
 
-/** The card that asks the user: what it would do, and the call itself. */
-export function approvalCard(request: ApprovalRequest, decision?: Decision): Card {
+/** The dialog that asks the user: what it would do, and the call itself. */
+export function approvalTitle(request: ApprovalRequest): string {
 	const args = request.args.length > 600 ? `${request.args.slice(0, 600)}…` : request.args;
-	const head = decision === undefined ? "Approve?" : decision === "deny" ? "Denied." : decision === "always" ? "Approved (and always from now on)." : "Approved.";
+	return `Approve? ${request.summary}\n\n${request.tool} ${args}`;
+}
+
+/** Its mode and standing permissions: its own file (what settings.json said, before there was one). */
+function optionsFile(pi: ExtensionAPI) {
+	const path = join(pi.dataDir, "approvals-options.json");
+	const read = (): Options => {
+		const saved = (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : pi.getSettings().extensions.approvals) as Partial<Options> | undefined;
+		return { mode: saved?.mode === "always" ? "always" : "smart", permissions: Array.isArray(saved?.permissions) ? saved.permissions.map(String) : [] };
+	};
 	return {
-		text: `${head} ${request.summary}\n\n${request.tool} ${args}`,
-		...(decision === undefined
-			? { buttons: [[{ text: "Approve", data: `approvals:${request.id}:y` }, { text: "Deny", data: `approvals:${request.id}:n` }], [{ text: `Always: ${request.rule}`.slice(0, 60), data: `approvals:${request.id}:a` }]] }
-			: {}),
+		read,
+		write: (change: Partial<Options>) => {
+			writeFileSync(`${path}.tmp`, `${JSON.stringify({ ...read(), ...change }, null, "\t")}\n`);
+			renameSync(`${path}.tmp`, path);
+		},
 	};
 }
 
 /** `own`: where japa's own code and data are on its computer, which no action touches without asking. */
-export function approvalsExtension(host: Host, approvals: Approvals, own: readonly string[] = []): JapaExtension {
-	const { settings } = host;
+export const approvalsExtension =
+	(approvals: Approvals, own: Own = { code: [], data: [] }, log: (line: string) => void = () => {}): ExtensionFactory =>
+	(pi) => {
+		const options = optionsFile(pi);
 
-	const show = async (request: ApprovalRequest) => {
-		const card = await host.ui.show(approvalCard(request));
-		if (card !== undefined) approvals.update(request.id, { card });
-	};
+		/** Tell whoever asked, once: their conversation gets the decision as a message. */
+		const tell = (request: ApprovalRequest, decision: Decision) => {
+			pi.sendUserMessage(decisionText(request, decision), { to: request.conversationId });
+			approvals.update(request.id, { told: true });
+		};
 
-	/** Tell whoever asked, once: the chief of staff as a message from the user, a job agent as a new run of its job. */
-	const tell = async (request: ApprovalRequest, decision: Decision) => {
-		await host.wake(request.conversationId, decisionText(request, decision), { id: `approval:${request.id}`, from: "approvals", ...(request.card === undefined ? {} : { replyTo: request.card }) });
-		approvals.update(request.id, { told: true });
-		host.holds.remove(request.conversationId, request.id);
-	};
+		const ask = async (request: ApprovalRequest, ctx: ExtensionContext) => {
+			const offered = ["Approve", "Deny", `Always: ${request.rule}`.slice(0, 60)];
+			const choice = await ctx.ui.select(approvalTitle(request), offered);
+			if (choice === undefined) return;
+			const decision: Decision = choice === offered[0] ? "approve" : choice === offered[2] ? "always" : "deny";
+			const decided = approvals.decide(request.id, decision);
+			if (decided === undefined) return;
+			if (decision === "always") options.write({ permissions: [...options.read().permissions, decided.rule] });
+			tell(decided, decision);
+		};
 
-	host.ui.handle("approvals", {
-		press: async (payload, ref) => {
-			const [id = "", choice] = payload.split(":");
-			const decision: Decision = choice === "y" ? "approve" : choice === "a" ? "always" : "deny";
-			const request = approvals.decide(id, decision);
-			if (request === undefined) return;
-			await host.ui.show(approvalCard(request, decision), ref);
-			if (decision === "always") {
-				const { permissions } = settings.options("approvals", DEFAULTS);
-				settings.setOption("approvals", "permissions", [...(Array.isArray(permissions) ? permissions : []), request.rule]);
+		pi.on("tool_call", async (event, ctx) => {
+			const conversationId = ctx.conversationId;
+			if (conversationId === undefined) return;
+			if (pi.getAllTools().find((tool) => tool.name === event.toolName)?.annotations?.openWorldHint === false) return;
+			const args = canonical(event.input);
+			if (approvals.consume(conversationId, event.toolName, args) !== undefined) return;
+			const { mode, permissions } = options.read();
+			const settings = pi.getSettings();
+			const call: ToolCall = { type: "toolCall", id: event.toolCallId, name: event.toolName, arguments: event.input as ToolCall["arguments"] };
+			const verdict =
+				mode === "always" ? { ask: true, summary: event.toolName, rule: `Use ${event.toolName}` } : await review(ctx.modelRegistry, [settings.jobModels.fast, settings.model], call, { permissions, own }, log);
+			if (!verdict.ask) {
+				approvals.audit({ conversationId, tool: event.toolName, args, verdict: "allowed", summary: verdict.summary });
+				return;
 			}
-			await tell(request, decision);
-		},
-	});
+			// Once per call: the same call again (its task retried) finds the same request, already asked.
+			const asked = approvals.all().some((request) => request.taskId === event.toolCallId);
+			const request = approvals.request({ taskId: event.toolCallId, conversationId, tool: event.toolName, args, summary: verdict.summary, rule: verdict.rule });
+			if (!asked) void ask(request, ctx).catch((error: unknown) => log(`approval ${request.id}: ${String(error)}`));
+			return {
+				block: true,
+				terminate: true,
+				reason: `Needs the user's approval (${request.id}: ${request.summary}). They've been asked. Don't retry or work around it: end your turn with a short note. Their decision will come to you as a message starting "${APPROVAL_PREFIX}${request.id}".`,
+			};
+		});
 
-	const extension = defineExtension({
-		name: "approvals",
-		hooks: [
-			hook(ToolTask, {
-				beforeTool: async (call, api) => {
-					if (host.safeTools().has(call.name)) return undefined;
-					const args = canonical(call.arguments);
-					const conversationId = String(api.conversationId);
-					if (approvals.consume(conversationId, call.name, args) !== undefined) return undefined;
-					const { mode, permissions } = settings.options("approvals", DEFAULTS);
-					const all = settings.get();
-					const verdict =
-						mode === "always"
-							? { ask: true, summary: call.name, rule: `Use ${call.name}` }
-							: await review(host.models, [all.jobModels.fast, all.model], call, { permissions: Array.isArray(permissions) ? permissions.map(String) : [], own }, host.log);
-					if (!verdict.ask) {
-						approvals.audit({ conversationId, tool: call.name, args, verdict: "allowed", summary: verdict.summary });
-						return undefined;
-					}
-					const request = approvals.request({ taskId: String(api.taskId), conversationId, tool: call.name, args, summary: verdict.summary, rule: verdict.rule });
-					host.holds.add(conversationId, request.id);
-					if (request.card === undefined) void show(request).catch((error: unknown) => host.log(`approval ${request.id}: ${String(error)}`));
-					return {
-						block: `Needs the user's approval (${request.id}: ${request.summary}). They've been asked with buttons. Don't retry or work around it: end your turn with a short note. Their decision will come to you as a message starting "${APPROVAL_PREFIX}${request.id}".`,
-					};
-				},
-			}),
-		],
-	});
+		pi.registerCommand("approvals", {
+			description: "How actions are approved, and standing permissions",
+			handler: async (_args, ctx) => {
+				for (;;) {
+					const { mode, permissions } = options.read();
+					const modeOption = mode === "smart" ? "Mode: smart (a fast model decides what to ask)" : "Mode: always (every action is asked)";
+					const choice = await ctx.ui.select("Approvals: before anything that sends, spends, deletes, deploys or changes accounts, you're asked. Tap the mode to change it, a permission to remove it.", [
+						modeOption,
+						...permissions.map((permission) => `✕ ${permission}`),
+						"Done",
+					]);
+					if (choice === undefined || choice === "Done") return ctx.ui.notify("Approvals saved.");
+					if (choice === modeOption) options.write({ mode: mode === "smart" ? "always" : "smart" });
+					else options.write({ permissions: permissions.filter((permission) => `✕ ${permission}` !== choice) });
+				}
+			},
+		});
 
-	return {
-		...extension,
-		title: "Approvals",
-		about: "Before anything that sends, spends, deletes, deploys or changes accounts, you're asked with buttons. Smart: a fast model decides what needs asking. Always: every action outside the safe ones.",
-		settings: [
-			{ key: "mode", label: "Mode", kind: "choice", options: ["smart", "always"] },
-			{ key: "permissions", label: "Standing permissions", kind: "list" },
-		],
-		defaults: DEFAULTS,
-		// After a restart: still waiting on the user (hold the job; show the card if it never went out), or decided but
-		// never told.
-		start: async () => {
+		// After a restart: still waiting on the user (asked again), or decided but never told.
+		pi.on("session_start", (_event, ctx) => {
 			for (const request of approvals.all()) {
-				if (request.status === "pending") {
-					host.holds.add(request.conversationId, request.id);
-					if (request.card === undefined) await show(request);
-				} else if (request.told !== true) await tell(request, request.status === "denied" ? "deny" : "approve");
+				if (request.status === "pending") void ask(request, ctx).catch((error: unknown) => log(`approval ${request.id}: ${String(error)}`));
+				else if (request.told !== true) tell(request, request.status === "denied" ? "deny" : "approve");
 			}
-		},
+		});
 	};
-}
 
 /** What the agent is told when the user decides. */
 export function decisionText(request: { id: string; tool: string; summary: string; rule: string }, decision: Decision): string {

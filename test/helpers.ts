@@ -13,7 +13,7 @@ import type { Incoming } from "../src/core/message.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
 import { SecretsFile } from "../src/credentials.ts";
 import { type Japa, startJapa } from "../src/japa.ts";
-import type { Host, JapaExtension } from "../src/pi/extension.ts";
+import type { ExtensionFactory } from "../src/pi/extension.ts";
 import type { Arrival } from "../src/pi/harness.ts";
 import { SettingsFile } from "../src/settings.ts";
 
@@ -36,7 +36,8 @@ function lastText(request: PiContext): string {
 }
 
 export async function agent(options: {
-	extensions: (host: Host) => JapaExtension[];
+	/** By name, as main.ts gives them. */
+	extensions?: Readonly<Record<string, ExtensionFactory>>;
 	script: (turn: Turn) => AssistantMessage | Promise<AssistantMessage>;
 	/** The agent's home on this machine; default: a new directory. */
 	home?: string;
@@ -82,14 +83,11 @@ export async function agent(options: {
 			settings,
 			secrets,
 			models,
-			extensions: (host) => [
+			extensions: {
 				// A stand-in channel, on the same adapter as any: messages go in through the inbox it's opened with, and cards
 				// are shown by recording them.
-				{
-					name: "test-channel",
-					title: "Test channel",
-					about: "",
-					channel: {
+				"test-channel": (pi) =>
+					pi.registerChannel({
 						platform: "test",
 						open: ({ inbox }) => void (gate = inbox),
 						show: async (card, replace) => {
@@ -98,10 +96,9 @@ export async function agent(options: {
 							return ref;
 						},
 						close: () => void (gate = undefined),
-					},
-				},
-				...options.extensions(host),
-			],
+					}),
+				...options.extensions,
+			},
 		},
 		context,
 	);
@@ -112,7 +109,7 @@ export async function agent(options: {
 	return {
 		japa,
 		thread: japa.thread,
-		host: japa.host,
+		runtime: japa.runtime,
 		settings,
 		secrets,
 		turns,

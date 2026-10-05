@@ -1,11 +1,11 @@
 // Extensions installed from chat, hot. A job writes one on the agent's computer: a TypeScript module (one file, or a
-// directory with a package.json for its own npm packages) whose default export makes a JapaExtension (a Pi extension
-// with japa's fields) from the Host, the same shape as the built-in ones, and it runs the same way: inside this process, with the Host, keys included.
-// So only the user's tap installs it, every time, whatever the approvals mode. install_extension copies it here and
-// checks it without running it (where it starts, its imports, its own packages installed without their scripts);
-// one that wouldn't load goes back to the agent with why, and the user isn't asked. On Install it's loaded and on
-// from the next message, with no restart; the chief of staff hears how it went. At start, what was installed before
-// loads again. A new version replaces the old one in place.
+// directory with a package.json for its own npm packages) whose default export is a pi extension factory, (pi) => {...},
+// the same shape as the built-in ones, and it runs the same way: inside this process, keys included. So only the
+// user's tap installs it, every time, whatever the approvals mode. install_extension copies it here and checks it
+// without running it (where it starts, its imports, its own packages installed without their scripts); one that
+// wouldn't load goes back to the agent with why, and the user isn't asked. On Install it's loaded and on from the next
+// message, with no restart; the chief of staff hears how it went. At start, what was installed before loads again. A
+// new version replaces the old one in place. How to write one is the extending-japa skill.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
@@ -14,35 +14,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
-import type { Card } from "../core/ui.ts";
-import type { ExtensionSet, Host, JapaExtension } from "./extension.ts";
+import type { Card, CardRef, UI } from "../core/ui.ts";
+import type { ExtensionFactory, ExtensionSet, Loaded } from "./extension.ts";
 
 export const EXTENSION_PREFIX = "[Extension ";
 const NAME = /^[a-z][a-z0-9-]{0,39}$/;
 const CODE_DIR = resolve(import.meta.dirname, "../..");
 /** Its size, at most (node_modules and .git aside). */
 const LIMIT = 48 * 1024 * 1024;
-
-function origin(): string {
-	try {
-		return execFileSync("git", ["-C", CODE_DIR, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "the agent's repo";
-	} catch {
-		return "the agent's repo";
-	}
-}
-
-/** How to write one: what a job's brief must say. In the tool description, read when it's needed, not every turn. */
-const guide = (repo: string) =>
-	[
-		"A job writes it; its brief must say: clone",
-		`${repo} into a directory of its own on your computer and npm ci; the contract is src/pi/extension.ts, src/pi/web.ts is an example; write one`,
-		"file (or a directory with a package.json for its own npm packages) whose default export is (host: Host) => JapaExtension;",
-		"types only with `import type`; it's a Pi extension (tools, sections, hooks) named as installed, for you and job",
-		'agents unless `for` says one; a key goes in a secret settings field the user sets in /settings, read with',
-		'host.secrets.get("<name>.<key>"), never in the code; a messaging channel goes in `channel` (opened with its inbox,',
-		"shows cards); npm run check passes. It runs inside the agent, like the built-in ones. Not a Pi coding-agent",
-		"extension. It's checked before the user is asked, and a problem comes back to you.",
-	].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -144,27 +123,11 @@ export function problems(code: string, entry: string): string[] {
 	return found;
 }
 
-/** Import its entry and make its extension. Each version has its own directory, so nothing comes from an older one. */
-export async function loadExtension(path: string, host: Host): Promise<JapaExtension> {
+/** Import its entry: its default export, the factory. Each version has its own directory, so nothing comes from an older one. */
+async function factoryAt(path: string): Promise<ExtensionFactory> {
 	const module = (await import(pathToFileURL(path).href)) as { default?: unknown };
-	if (typeof module.default !== "function") throw new Error("its default export must be a function: (host) => extension");
-	const entry = (await module.default(host)) as JapaExtension & { chief?: readonly Extension[]; jobs?: readonly Extension[] };
-	if (typeof entry !== "object" || entry === null || typeof entry.name !== "string" || typeof entry.title !== "string" || typeof entry.about !== "string") {
-		throw new Error("the extension needs a name, title and about");
-	}
-	if (entry.chief === undefined && entry.jobs === undefined) return entry;
-	// Written before an extension was a Pi extension itself, with the Pi extensions each agent got: read as one.
-	const { chief = [], jobs = [], ...rest } = entry;
-	const parts = [...new Set([...chief, ...jobs])];
-	return {
-		...rest,
-		tools: parts.flatMap((part) => part.tools ?? []),
-		sections: parts.flatMap((part) => part.sections ?? []),
-		hooks: parts.flatMap((part) => part.hooks ?? []),
-		wraps: parts.flatMap((part) => part.wraps ?? []),
-		tasks: parts.flatMap((part) => part.tasks ?? []),
-		...(jobs.length === 0 ? { for: "chief" as const } : chief.length === 0 ? { for: "jobs" as const } : {}),
-	};
+	if (typeof module.default !== "function") throw new Error("its default export must be a function: (pi) => { ... }");
+	return module.default as ExtensionFactory;
 }
 
 /** Web addresses in its code, for the card. */
@@ -178,11 +141,16 @@ export type Installer = {
 	/** install_extension and remove_extension, for the chief of staff. */
 	extension: Extension;
 	/** The ones installed before, loaded again at start; a broken one is the chief of staff's news, and skipped. */
-	loadInstalled(): Promise<JapaExtension[]>;
+	loadInstalled(): Promise<Loaded[]>;
 };
 
 export function installer(options: {
-	host: Host;
+	ui: UI;
+	/** Tell the chief of staff (once per `id`), threaded under `replyTo`. */
+	tell: (text: string, id: string, replyTo?: CardRef) => Promise<void>;
+	/** Run its factory: what it registers. */
+	load: (name: string, factory: ExtensionFactory) => Promise<Loaded>;
+	log: (line: string) => void;
 	dataDir: string;
 	/** The agent's home: where a relative path it gives is from. */
 	home: string;
@@ -194,8 +162,7 @@ export function installer(options: {
 	problem: (about: string, text: string | undefined) => void;
 	context: Context;
 }): Installer {
-	const { host, registry } = options;
-	const repo = origin();
+	const { ui, registry } = options;
 	// data/extensions/<name>/<version>/: its code (and its own node_modules). Version ids sort by time.
 	const dir = resolve(options.dataDir, "extensions");
 	const pendingDir = join(dir, ".pending");
@@ -210,8 +177,8 @@ export function installer(options: {
 	};
 
 	/** Put it in the registry and the set, replacing an older version in place. */
-	const activate = async (entry: JapaExtension) => {
-		registry.install(entry);
+	const activate = async (entry: Loaded) => {
+		registry.install(entry.durable);
 		await options.extensions().put(entry);
 		installed.add(entry.name);
 		await options.apply(options.context);
@@ -229,8 +196,7 @@ export function installer(options: {
 		...(decided === undefined ? { buttons: [[{ text: "Install", data: `extensions:${pending.id}:y` }, { text: "Don't install", data: `extensions:${pending.id}:n` }]] } : {}),
 	});
 
-	const tell = (pending: Pending, message: string, replyTo?: Parameters<Host["wake"]>[2]["replyTo"]) =>
-		host.wake(host.chiefId(), `${EXTENSION_PREFIX}${pending.name}] ${message}`, { id: `extension:${pending.id}`, from: "installer", ...(replyTo === undefined ? {} : { replyTo }) });
+	const tell = (pending: Pending, message: string, replyTo?: CardRef) => options.tell(`${EXTENSION_PREFIX}${pending.name}] ${message}`, `extension:${pending.id}`, replyTo);
 
 	/** Check it without running it and, if it would load, ask the user; if not, the agent hears why. */
 	const check = async (pending: Pending) => {
@@ -247,14 +213,14 @@ export function installer(options: {
 				.reduce((sum, file) => sum + readFileSync(join(at, file), "utf8").split("\n").length, 0);
 			Object.assign(pending, { entry, lines, packages, hosts: hostsIn(at) });
 			writeFileSync(join(pendingDir, `${pending.id}.json`), JSON.stringify(pending));
-			await host.ui.show(card(pending));
+			await ui.show(card(pending));
 		} catch (error) {
 			rmSync(at, { recursive: true, force: true });
 			await tell(pending, `It wouldn't load, so the user wasn't asked:\n${message(error)}\nFix it (in a job, against a clone of the repo, until npm run check passes), then install again.`);
 		}
 	};
 
-	host.ui.handle("extensions", {
+	ui.handle("extensions", {
 		press: async (payload, ref) => {
 			const [id = "", choice] = payload.split(":");
 			const meta = join(pendingDir, `${id}.json`);
@@ -264,7 +230,7 @@ export function installer(options: {
 			const staged = join(pendingDir, id);
 			if (choice !== "y") {
 				rmSync(staged, { recursive: true, force: true });
-				await host.ui.show(card(pending, "Not installed:"), ref);
+				await ui.show(card(pending, "Not installed:"), ref);
 				await tell(pending, "The user chose not to install it.", ref);
 				return;
 			}
@@ -272,19 +238,18 @@ export function installer(options: {
 			try {
 				mkdirSync(dirname(target), { recursive: true });
 				renameSync(staged, target);
-				const entry = await loadExtension(join(target, pending.entry!), host);
-				if (entry.name !== pending.name) throw new Error(`it calls itself "${entry.name}", not "${pending.name}"`);
+				const entry = await options.load(pending.name, await factoryAt(join(target, pending.entry!)));
 				await activate(entry);
 				for (const other of versions(pending.name)) if (other !== id) rmSync(join(dir, pending.name, other), { recursive: true, force: true });
-				await host.ui.show(card(pending, "Installed:"), ref);
+				await ui.show(card(pending, "Installed:"), ref);
 				// One that failed to start is reported as a problem, with why; that's the chief of staff's news.
 				if (options.extensions().failure(entry.name) !== undefined) return;
-				const tools = (entry.tools ?? []).map((tool) => tool.name);
-				const where = entry.for === "chief" ? "you" : entry.for === "jobs" ? "job agents" : "you and job agents";
-				await tell(pending, `Installed and on from now for ${where}.${tools.length === 0 ? "" : ` Tools: ${tools.join(", ")}.`}${entry.settings?.length ? " Its settings are in /settings." : ""}`, ref);
+				const tools = entry.tools.map((tool) => tool.name);
+				const commands = [...entry.commands.keys()].map((name) => `/${name}`);
+				await tell(pending, `Installed and on from now.${tools.length === 0 ? "" : ` Tools: ${tools.join(", ")}.`}${commands.length === 0 ? "" : ` Commands for the user: ${commands.join(", ")}.`}`, ref);
 			} catch (error) {
 				rmSync(target, { recursive: true, force: true });
-				await host.ui.show(card(pending, "Failed to install:"), ref);
+				await ui.show(card(pending, "Failed to install:"), ref);
 				await tell(pending, `The user approved it, but it failed to load: ${message(error)}. Nothing changed.`, ref);
 			}
 		},
@@ -296,16 +261,17 @@ export function installer(options: {
 			section(
 				"extending",
 				() =>
-					"You are built to be customized: beyond your core (this conversation, open items, the team, triggers), everything you can do is an extension the user turns on or off in /settings. Your settings are theirs: don't change them. You can add extensions yourself: have a job write one, then install_extension; it's on from the next message once the user approves. Never say something is installed before you hear it is.",
+					"You are built to be customized: beyond your core (this conversation, open items, the team), everything you can do is an extension the user turns on or off in /settings. Your settings are theirs: don't change them. You can extend yourself, with an extension, a skill or a standing instruction: the extending-japa skill says how. Never say something is installed before you hear it is.",
 			),
 		],
 		tools: [
 			defineTool({
 				name: "install_extension",
-				description: `Install an extension written on your computer into yourself, hot: it's checked, then the user is asked with buttons, and on Install it's on from the next message. A new version of an installed one replaces it. ${guide(repo)}`,
+				description:
+	"Install an extension written on your computer into yourself, hot: it's checked, then the user is asked with buttons, and on Install it's on from the next message. A new version of an installed one replaces it. How to write one: the extending-japa skill (a job writing it reads it too).",
 				parameters: Type.Object({
 					path: Type.String({ description: "The .ts file, or its directory (with a package.json)" }),
-					name: Type.String({ description: "The extension's name (lowercase-with-dashes), as in the code" }),
+					name: Type.String({ description: "Its name (lowercase-with-dashes): its settings, keys and files go by it" }),
 					summary: Type.String({ description: "For the user: what it does and what it reaches, in a sentence or two" }),
 				}),
 				execute: async (args) => {
@@ -333,7 +299,7 @@ export function installer(options: {
 					if (!installed.has(args.name)) return text(`"${args.name}" wasn't installed from chat.`);
 					const set = options.extensions();
 					const entry = set.get(args.name);
-					if (entry !== undefined) registry.uninstall(entry);
+					if (entry !== undefined) registry.uninstall(entry.durable);
 					await set.remove(args.name);
 					installed.delete(args.name);
 					rmSync(join(dir, args.name), { recursive: true, force: true });
@@ -382,18 +348,17 @@ export function installer(options: {
 			if (!existsSync(dir)) return [];
 			migrate();
 			prepare();
-			const entries: JapaExtension[] = [];
+			const entries: Loaded[] = [];
 			for (const name of readdirSync(dir).filter((each) => NAME.test(each)).sort()) {
 				const version = versions(name).at(-1);
 				if (version === undefined) continue;
 				try {
 					const at = join(dir, name, version);
-					const entry = await loadExtension(join(at, entryOf(at)), host);
-					if (entry.name !== name) throw new Error(`it calls itself "${entry.name}"`);
+					const entry = await options.load(name, await factoryAt(join(at, entryOf(at))));
 					entries.push(entry);
 					installed.add(entry.name);
 				} catch (error) {
-					host.log(`extension ${name}: not loaded: ${message(error)}`);
+					options.log(`extension ${name}: not loaded: ${message(error)}`);
 					options.problem(`extension ${name}`, `it no longer loads: ${message(error)}`);
 				}
 			}

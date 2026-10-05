@@ -10,17 +10,25 @@ path. (The user's words; what follows is what they mean here.)
 ## One core, one unit, one adapter per thing japa is built from
 
 The core is what japa *is*, and can't be turned off: the main thread (the chief of staff), open items, the team of job
-agents, triggers, the UI and its commands, and the installer. Everything else is an extension, and there is exactly
-one kind: `JapaExtension` (`src/pi/extension.ts`), made from the `Host` and hooked in only through it.
+agents, the agent's computer, skills and standing instructions, the UI and its commands, and the installer.
+Everything else is an extension, and an extension is a pi extension: a factory given pi's `ExtensionAPI`
+(`src/pi/extension.ts`), with pi's names and meanings, so pi's docs apply. japa implements that API on Pi Durable.
 
 The things japa is built from each have one generic, typed adapter in the core, and every implementation goes through
 it, the built-in ones included:
 
-- a **capability** is a `JapaExtension` made from the `Host` (`src/pi/extension.ts`): a Pi extension, plus the fields
-  japa's own flow needs (who gets it, its settings, its safe tools, its exchange end, its triggers, its lifecycle);
-- a **channel** is a `Channel` in an extension's `channel` (`src/pi/extension.ts`), opened with its platform's `Inbox`
-  (the allowlist gate) and the `UI`;
-- a **model provider** is a pi-ai `Provider` on the core's `Models`, its credential in pi's `auth.json` (`/login`).
+- a **capability** is what an extension registers on pi's API: tools (`registerTool`, with pi's annotations),
+  commands (`registerCommand`, with `ctx.ui`'s dialogs), and handlers for pi's events (`session_start`,
+  `before_agent_start`, `tool_call`, ...);
+- a **channel** is a `Channel` an extension registers (`registerChannel`), opened with its platform's `Inbox` (the
+  allowlist gate) and the `UI`;
+- a **model provider** is a pi-ai `Provider` (`registerProvider`, as in pi) on the core's `Models`, its credential in
+  pi's `auth.json` (`/login`).
+
+What pi's API already expresses needs nothing new: an extension's settings are its own command, which tools skip
+review is a tool's own annotation, chief or job is `ctx.agent`, and a schedule is a timer it sets in `session_start`.
+Where japa is built from something pi isn't (a channel, the end of an exchange, more than one agent, keys that aren't
+model credentials), it's in the same API, as one more method or event, never a second kind of unit.
 
 The core opens a channel while its extension is on, and shows cards on it, and closes it when it's off.
 docs/architecture.md has the full table.
@@ -30,9 +38,9 @@ computer. Its tools run there through Pi's own local environment, in the agent's
 laptop, a server, a VM) is the installer's business, not the code's.
 
 The adapter is where the type is enforced, so a provider can't half-implement the contract, and nothing reaches around
-it: the Host has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
+it: the API has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
 adapter stays generic: shell, files and the screen only use the call's environment (`api.env`); `/login` and the model
-picker only use `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
+picker only use `Models`; `/settings` and dialogs only show cards on the `UI`. None of them names an implementation.
 
 Because built-ins use the same path, a default has no privilege an installed extension lacks: the user can replace any
 of them. For example, Telegram used to attach itself to the UI and fetch its own inbox; now it declares a `Channel` and
@@ -63,7 +71,7 @@ offered. A new command is one or the other; a japa invention that wraps pi is ne
 
 - **Values** come from settings, secrets, pi's credential store, or live state. That means no keys, models, hosts or
   names in code or prompts. No default models: the user picks from what they've logged in to.
-- **Locations** come from where things actually are: `JAPA_DATA` (`host.dataDir` for an extension's own files), the
+- **Locations** come from where things actually are: `JAPA_DATA` (`pi.dataDir` for an extension's own files), the
   code's own directory (`import.meta.dirname`), the agent's `home` (the home directory of the user japa runs as).
   Never a fixed directory like `~/jarvis-home` or `/tmp/japa`.
 - **Formats** don't bake in one implementation. A `CardRef` carries the channel's own ids as strings, because every
@@ -77,19 +85,18 @@ what it knows, or one or two quick tool calls. Everything else is a job, so the 
 Prompts say "the user" and "the conversation". They name no channel, no provider and no machine, and never the
 owner's name (that comes from settings); a person is "they". The base prompt stays small:
 - each slice starts from state (open items, the working set, the last few messages), not from replayed history;
-- a how-to goes where it's read when needed (the extension guide is in `install_extension`'s description), not into
-  every turn.
+- a how-to is a skill, read when needed (how japa extends itself is `skills/extending-japa`), not in every turn.
 
 ## Trust lines
 
 - Secrets never go in code or `settings.json`. Model credentials live in pi's `auth.json`, through `/login`. Extension keys
-  live in `secrets.json`, through a secret settings field.
+  live in `secrets.json`, through `pi.secrets` (set by the extension's own command).
 - Secrets never go in a command's environment. japa's own keys are taken out of the environment its commands run in;
   a key a command needs is passed to that one command.
 - There is one machine. The agent's shell, files and screen are the machine japa runs on, as the user japa runs as, so
   nothing but review stands between them and japa's own files: every action is reviewed, and only effects beyond the
-  machine, or on japa's own code and data, wait for the user.
-- Every extension runs inside japa with the Host, keys included, built-in or installed from chat, with no
+  machine, changes to japa's own code or data, or reading its data, wait for the user.
+- Every extension runs inside japa with the same API, keys included, built-in or installed from chat, with no
   restrictions a built-in doesn't have. So the user approves every install with a card, whatever the approvals mode,
   and the code is checked before they're asked.
 - The allowlist is edited only in `settings.json`; no tool of japa's changes it.

@@ -1,8 +1,8 @@
 // Start the agent: the core (src/japa.ts) plus the default extensions, on this machine, which is its computer: its
 // tools run here, from the home directory of the user it runs as. Everything it keeps is in one data directory
 // (JAPA_DATA, default ./data): settings.json (live, also edited through /settings; the allowlist only here), auth.json
-// (model credentials, set with /login), secrets.json (extension keys, set from /settings or the environment), and
-// memory/ (its memory of the user: yours to read and edit, a git repo when it is one).
+// (model credentials, set with /login), secrets.json (extension keys, each set through its extension's command or the
+// environment), and memory/ (its memory of the user: yours to read and edit, a git repo when it is one).
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,7 +16,6 @@ import { startJapa } from "./japa.ts";
 import { approvalsExtension } from "./pi/approvals.ts";
 import { memoryExtension } from "./pi/memory.ts";
 import { screenExtension } from "./pi/screen.ts";
-import { computerExtension } from "./pi/computer.ts";
 import { webExtension } from "./pi/web.ts";
 import { SettingsFile } from "./settings.ts";
 
@@ -24,10 +23,9 @@ const context = BACKGROUND_CONTEXT;
 const dataDir = resolve(process.env.JAPA_DATA ?? "data");
 mkdirSync(dataDir, { recursive: true });
 const settings = new SettingsFile(dataDir);
+const log = (line: string) => console.log(line);
 // The X display its screen is on: the one it's given, else the first one's, if the machine has a desktop.
 const display = process.env.DISPLAY ?? ":0";
-// Its own code and data, on the machine its tools run on.
-const own = [resolve(import.meta.dirname, ".."), dataDir];
 
 const japa = await startJapa(
 	{
@@ -36,15 +34,16 @@ const japa = await startJapa(
 		settings,
 		secrets: new SecretsFile(join(dataDir, "secrets.json")),
 		models: builtinModels({ credentials: new FileCredentialStore(join(dataDir, "auth.json")) }),
-		// The default extensions, each of which can be turned off in /settings.
-		extensions: (host) => [
-			telegramExtension(host),
-			memoryExtension(host, new MemoryFile(join(dataDir, "memory"))),
-			approvalsExtension(host, new Approvals(join(dataDir, "approvals.json"), join(dataDir, "audit.jsonl")), own),
-			webExtension(host),
-			computerExtension(own),
-			screenExtension({ display, hasDisplay: existsSync(`/tmp/.X11-unix/X${display.replace(/^.*:(\d+).*$/, "$1")}`) }),
-		],
+		// The default extensions, by name, each of which can be turned off in /settings.
+		extensions: {
+			telegram: telegramExtension(log),
+			memory: memoryExtension(new MemoryFile(join(dataDir, "memory")), log),
+			// Its own code and data, on the machine its tools run on.
+			approvals: approvalsExtension(new Approvals(join(dataDir, "approvals.json"), join(dataDir, "audit.jsonl")), { code: [resolve(import.meta.dirname, "..")], data: [dataDir] }, log),
+			web: webExtension(),
+			screen: screenExtension({ display, hasDisplay: existsSync(`/tmp/.X11-unix/X${display.replace(/^.*:(\d+).*$/, "$1")}`) }),
+		},
+		log,
 	},
 	context,
 );

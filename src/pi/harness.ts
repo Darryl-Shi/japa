@@ -28,7 +28,6 @@ import { Address, claim, Outbox, type OutboxMessage } from "./inputs.ts";
 import type { ExchangeEnd } from "./extension.ts";
 import { modelRef, thinkingOf } from "./models.ts";
 import { summarizeSlice, transcriptText } from "./state.ts";
-import { TRIGGER_PREFIX } from "./triggers.ts";
 
 /**
  * A message admitted and where its answer goes (none: the channel's default chat). Written before submitting, so a
@@ -323,7 +322,7 @@ export class MainThread {
 				const said = textOf(message);
 				// A turn that only called tools says nothing worth recalling.
 				if (said.trim() === "") continue;
-				const who = message.role === "assistant" ? "You" : said.startsWith(REPORT_PREFIX) ? "Team" : said.startsWith(TRIGGER_PREFIX) ? "Trigger" : "User";
+				const who = message.role === "assistant" ? "You" : said.startsWith(REPORT_PREFIX) ? "Team" : "User";
 				const line = `${who}: ${said.slice(0, MESSAGE_CHARS)}`;
 				if (recent.length >= RECENT_MESSAGES || used + line.length > RECENT_CHARS) break scan;
 				recent.unshift(line);
