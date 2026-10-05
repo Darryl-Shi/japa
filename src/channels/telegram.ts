@@ -5,10 +5,12 @@
 // extension a card belongs to.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
+import type { Message } from "grammy/types";
 import { stamp } from "../core/schedule.ts";
+import type { Attachment } from "../core/message.ts";
 import type { Button, Card, CardRef, Command } from "../core/ui.ts";
 import type { Channel, Host, JapaExtension } from "../pi/extension.ts";
-import type { Arrival } from "../pi/harness.ts";
+import type { Answer, Arrival } from "../pi/harness.ts";
 
 const context = BACKGROUND_CONTEXT;
 const LIMIT = 4096;
@@ -51,14 +53,13 @@ export function telegramExtension(host: Host): JapaExtension {
 			return last;
 		};
 
-		/** Answer a message (`from`: newly admitted; none: admitted before a restart), as a reply to it when there is one. */
-		const deliver = async (requestId: string, content: string, chatId: number, messageId: number | undefined, from: number | undefined, arrival: Arrival = {}) => {
+		/** Get a message's answer (new, or admitted before a restart) and send it, as a reply to it when there is one. */
+		const deliver = async (requestId: string, get: () => Promise<Answer>, chatId: number, messageId: number | undefined) => {
 			const started = Date.now();
 			const typing = setInterval(() => void live.api.sendChatAction(chatId, "typing").catch(() => {}), 4000);
 			void live.api.sendChatAction(chatId, "typing").catch(() => {});
 			try {
-				const answer =
-					from !== undefined ? await inbox.ask(from, requestId, content, ref(chatId, messageId ?? 0), context, arrival) : await inbox.answer(requestId, content, context);
+				const answer = await get();
 				await send(chatId, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, messageId);
 				await inbox.delivered(requestId, context);
 				host.log(`${requestId} answered in ${Date.now() - started}ms`);
@@ -84,6 +85,51 @@ export function telegramExtension(host: Host): JapaExtension {
 			if (message !== undefined) await ui.press(ctx.callbackQuery.data, ref(message.chat.id, message.message_id));
 		});
 
+		/** A message on its way to the agent: /new, what it replies to, the time it was sent; answered as a reply to it. */
+		const arrive = async (message: Message, said: string, attachments: Attachment[]) => {
+			let text = said;
+			const replied = message.reply_to_message;
+			const arrival: Arrival = {};
+			// "/new" (optionally followed by the message) starts the model on a fresh slice.
+			const fresh = /^\/new(?:@\w+)?(?:\s+|$)/.exec(text);
+			if (fresh !== null) {
+				arrival.newTopic = true;
+				text = text.slice(fresh[0].length);
+				if (text.trim() === "" && attachments.length === 0) {
+					await live.api.sendMessage(message.chat.id, "Fresh start.", { reply_parameters: { message_id: message.message_id } });
+					text = "(New topic.)";
+				}
+			}
+			if (replied !== undefined && (replied.text ?? replied.caption) !== undefined) {
+				arrival.replyTo = { messageId: String(replied.message_id), text: replied.text ?? replied.caption ?? "", at: replied.date * 1000 };
+			}
+			const requestId = `tg:${message.chat.id}:${message.message_id}`;
+			const content = `[${stamp(message.date * 1000, host.settings.get().timezone)}] ${text}`;
+			const from = message.from?.id ?? message.chat.id;
+			const answer = () => inbox.ask(from, requestId, { text: content, attachments }, ref(message.chat.id, message.message_id), context, arrival);
+			void deliver(requestId, answer, message.chat.id, message.message_id).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
+		};
+
+		/** A file in a message, as Telegram describes it: what to download, and what to call it. */
+		const fileOf = (message: Message): { id: string; name: string; mimeType: string } | undefined => {
+			const photo = message.photo?.at(-1);
+			if (photo !== undefined) return { id: photo.file_id, name: "photo.jpg", mimeType: "image/jpeg" };
+			if (message.voice !== undefined) return { id: message.voice.file_id, name: "voice.ogg", mimeType: message.voice.mime_type ?? "audio/ogg" };
+			if (message.audio !== undefined) return { id: message.audio.file_id, name: message.audio.file_name ?? "audio", mimeType: message.audio.mime_type ?? "audio/mpeg" };
+			if (message.video !== undefined) return { id: message.video.file_id, name: message.video.file_name ?? "video.mp4", mimeType: message.video.mime_type ?? "video/mp4" };
+			if (message.video_note !== undefined) return { id: message.video_note.file_id, name: "video-note.mp4", mimeType: "video/mp4" };
+			if (message.document !== undefined) return { id: message.document.file_id, name: message.document.file_name ?? "file", mimeType: message.document.mime_type ?? "application/octet-stream" };
+			return undefined;
+		};
+
+		const download = async (fileId: string): Promise<Uint8Array> => {
+			const file = await live.api.getFile(fileId);
+			if (file.file_path === undefined) throw new Error("Telegram gave no file to download");
+			const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+			if (!response.ok) throw new Error(`download failed (${response.status})`);
+			return new Uint8Array(await response.arrayBuffer());
+		};
+
 		live.on("message:text", async (ctx) => {
 			const here = ref(ctx.chat.id, ctx.message.message_id);
 			const replied = ctx.message.reply_to_message;
@@ -95,25 +141,26 @@ export function telegramExtension(host: Host): JapaExtension {
 			}
 			const command = /^\/(\w+)(?:@\w+)?\s*$/.exec(ctx.message.text)?.[1];
 			if (command !== undefined && command !== "new" && (await ui.run(command, here))) return;
+			await arrive(ctx.message, ctx.message.text, []);
+		});
 
-			let text = ctx.message.text;
-			const arrival: Arrival = {};
-			// "/new" (optionally followed by the message) starts the model on a fresh slice.
-			const fresh = /^\/new(?:@\w+)?(?:\s+|$)/.exec(text);
-			if (fresh !== null) {
-				arrival.newTopic = true;
-				text = text.slice(fresh[0].length);
-				if (text.trim() === "") {
-					await ctx.reply("Fresh start.", { reply_parameters: { message_id: ctx.message.message_id } });
-					text = "(New topic.)";
+		// Photos, voice notes, audio, video and documents (with their caption), and places: any modality reaches the agent.
+		live.on(["message:photo", "message:voice", "message:audio", "message:video", "message:video_note", "message:document"], async (ctx) => {
+			const file = fileOf(ctx.message);
+			let text = ctx.message.caption ?? "";
+			const attachments: Attachment[] = [];
+			if (file !== undefined) {
+				try {
+					attachments.push({ name: file.name, mimeType: file.mimeType, data: await download(file.id) });
+				} catch (error) {
+					text = `${text}\n[Sent ${file.name} (${file.mimeType}), but it couldn't be fetched: ${error instanceof Error ? error.message : String(error)}]`.trim();
 				}
 			}
-			if (replied !== undefined && (replied.text ?? replied.caption) !== undefined) {
-				arrival.replyTo = { messageId: String(replied.message_id), text: replied.text ?? replied.caption ?? "", at: replied.date * 1000 };
-			}
-			const requestId = `tg:${ctx.chat.id}:${ctx.message.message_id}`;
-			const content = `[${stamp(ctx.message.date * 1000, host.settings.get().timezone)}] ${text}`;
-			void deliver(requestId, content, ctx.chat.id, ctx.message.message_id, ctx.from.id, arrival).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
+			await arrive(ctx.message, text, attachments);
+		});
+		live.on("message:location", async (ctx) => {
+			const { latitude, longitude } = ctx.message.location;
+			await arrive(ctx.message, `[Location: ${latitude}, ${longitude}]`, []);
 		});
 
 		// Cards from any extension (and the agent's own messages): to the user's private chat, whose id is their user id.
@@ -156,7 +203,7 @@ export function telegramExtension(host: Host): JapaExtension {
 		for (const { requestId, content, chatId, messageId } of await inbox.pending(context)) {
 			const to = chatId ?? inbox.owner();
 			if (to === undefined) continue;
-			void deliver(requestId, content, Number(to), messageId === undefined ? undefined : Number(messageId), undefined).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
+			void deliver(requestId, () => inbox.answer(requestId, content, context), Number(to), messageId === undefined ? undefined : Number(messageId)).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
 		}
 
 		live.catch((error) => host.log(`telegram: ${String(error.error)}`));

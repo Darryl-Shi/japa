@@ -10,6 +10,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Inbox } from "../src/channels/inbox.ts";
 import type { Backend } from "../src/core/backend.ts";
+import type { Incoming } from "../src/core/message.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
 import { SecretsFile } from "../src/credentials.ts";
 import { type Japa, startJapa } from "../src/japa.ts";
@@ -112,10 +113,10 @@ export async function agent(options: {
 		cards,
 		dataDir,
 		until,
-		/** A message from the user on the test channel. */
-		ask: (id: string, text: string, messageId = 1, arrival?: Arrival) => {
+		/** A message from the user on the test channel: text, or text and files. */
+		ask: (id: string, message: string | Incoming, messageId = 1, arrival?: Arrival) => {
 			assert.ok(gate !== undefined, "the test channel isn't open");
-			return gate.ask(7, id, text, target(messageId), context, arrival);
+			return gate.ask(7, id, typeof message === "string" ? { text: message } : message, target(messageId), context, arrival);
 		},
 		done: async () => {
 			await japa.close(context);

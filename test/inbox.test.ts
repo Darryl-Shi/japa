@@ -26,8 +26,8 @@ test("the allowlist: no one gets in until listed, only listed users after, and t
 	assert.equal(inbox.admits(undefined), false);
 	assert.equal(inbox.owner(), "42");
 	assert.equal(new Inbox({ platform: "whatsapp", thread: () => thread, settings }).admits(42), false, "lists are per platform");
-	assert.deepEqual(await inbox.ask(42, "r1", "hello", target, BACKGROUND_CONTEXT), { text: "hi" });
-	await assert.rejects(inbox.ask(43, "r2", "hello", target, BACKGROUND_CONTEXT), NotAllowed, "the thread itself is gated too");
+	assert.deepEqual(await inbox.ask(42, "r1", { text: "hello" }, target, BACKGROUND_CONTEXT), { text: "hi" });
+	await assert.rejects(inbox.ask(43, "r2", { text: "hello" }, target, BACKGROUND_CONTEXT), NotAllowed, "the thread itself is gated too");
 	assert.deepEqual(asked, ["r1"]);
 	assert.equal(refused.length, 3);
 	await rm(dataDir, { recursive: true, force: true });

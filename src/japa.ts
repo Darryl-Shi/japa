@@ -16,6 +16,7 @@ import { stamp } from "./core/schedule.ts";
 import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { Holds, UI } from "./core/ui.ts";
 import type { SecretsFile } from "./credentials.ts";
+import { toInput } from "./pi/attachments.ts";
 import { BackendExecutionEnv } from "./pi/backend-env.ts";
 import { delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JapaExtension } from "./pi/extension.ts";
@@ -90,7 +91,19 @@ export async function startJapa(
 	const inbox = (platform: string): Inbox => {
 		let found = inboxes.get(platform);
 		if (found === undefined) {
-			found = new Inbox({ platform, thread: main, settings, log, prepare: (callContext) => japa.apply(callContext) });
+			found = new Inbox({
+				platform,
+				thread: main,
+				settings,
+				log,
+				prepare: (callContext) => japa.apply(callContext),
+				// Files go on the workbench; images are shown to the chief of staff too when its model takes them.
+				receive: (message) => {
+					const choice = settings.get().model;
+					const model = choice === undefined ? undefined : models.getModel(choice.provider, choice.modelId);
+					return toInput(message, { workbench: workbench(), seesImages: model?.input.includes("image") === true });
+				},
+			});
 			inboxes.set(platform, found);
 		}
 		return found;

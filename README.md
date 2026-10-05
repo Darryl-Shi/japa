@@ -75,7 +75,7 @@ What's built on each adapter is generic and never names an implementation:
 
 ### One message, end to end
 
-1. **In.** The channel (Telegram, by default) passes your message to its Inbox, which refuses anyone not on the allowlist. The message is saved before anything runs, so if the process dies, the answer still goes out after the restart.
+1. **In.** The channel (Telegram, by default) passes your message to its Inbox, which refuses anyone not on the allowlist. A message is text plus any files: photos, voice notes, audio, video, documents. Every file is put on the workbench under `~/inbox`, and the message says where, so the chief of staff or a job can work with it. A photo is also shown to the model directly when the model takes images. The message is saved before anything runs, so if the process dies, the answer still goes out after the restart.
 2. **A slice.** The chief of staff doesn't carry the whole history. A new slice starts from **state** rather than from history: open items, a short working set, and the last few messages. A new slice begins when any of these happens:
    - you've been quiet for a while;
    - the context would grow too large;
@@ -197,7 +197,7 @@ npm run check     # type-check
 src/
   main.ts          the default extensions, and start
   japa.ts          the core, assembled; builds the Host and opens the workbench through its provider
-  core/            our formats and services: UI cards, schedules, approvals, memory, state (no Pi imports)
+  core/            our formats and services: messages, UI cards, schedules, approvals, memory, state (no Pi imports)
   pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host; installer.ts: extensions from chat)
   channels/        the Inbox (allowlist gate), /settings, /login, /jobs, Telegram
   backends/        machine providers, as extensions: boat, local

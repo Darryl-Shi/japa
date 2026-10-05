@@ -1,9 +1,11 @@
 // The hard user whitelist. Every messaging channel, whichever extension provides it, reaches the agent
 // only through an Inbox, and an Inbox refuses anyone not on the platform's list in settings.allowlist. An empty list
 // lets no one in. The list lives only in data/settings.json: not in /settings, and no tool can change it, so neither
-// a message nor the agent itself can widen it. A channel is opened with its platform's Inbox by the core (the Channel adapter), never the
-// main thread.
+// a message nor the agent itself can widen it. A channel is opened with its platform's Inbox by the core (the Channel
+// adapter), never the main thread. A message comes in as text and any files (Incoming); the core decides what the
+// model sees of them.
 import type { Context } from "@earendil-works/chord";
+import type { Content, Incoming } from "../core/message.ts";
 import type { CardRef } from "../core/ui.ts";
 import type { Answer, Arrival, MainThread } from "../pi/harness.ts";
 import type { SettingsFile } from "../settings.ts";
@@ -15,6 +17,7 @@ export class Inbox {
 	private readonly thread: () => MainThread;
 	private readonly settings: SettingsFile;
 	private readonly prepare: (context: Context) => Promise<void>;
+	private readonly receive: (message: Incoming) => Promise<Content>;
 	private readonly log: (line: string) => void;
 
 	constructor(options: {
@@ -23,12 +26,15 @@ export class Inbox {
 		settings: SettingsFile;
 		/** Before each new message: follow the settings (model, extensions turned on or off). */
 		prepare?: (context: Context) => Promise<void>;
+		/** What the model gets from a message with files (default: the text alone). */
+		receive?: (message: Incoming) => Promise<Content>;
 		log?: (line: string) => void;
 	}) {
 		this.platform = options.platform;
 		this.thread = options.thread;
 		this.settings = options.settings;
 		this.prepare = options.prepare ?? (async () => {});
+		this.receive = options.receive ?? (async (message) => message.text);
 		this.log = options.log ?? ((line) => console.log(line));
 	}
 
@@ -50,10 +56,10 @@ export class Inbox {
 	}
 
 	/** A message from someone on the list; checked again here, so a channel can't skip the gate. */
-	async ask(from: string | number, requestId: string, content: string, reply: CardRef, context: Context, arrival?: Arrival): Promise<Answer> {
+	async ask(from: string | number, requestId: string, message: Incoming, reply: CardRef, context: Context, arrival?: Arrival): Promise<Answer> {
 		if (!this.allowed().includes(String(from))) throw new NotAllowed(`${this.platform} user ${from} is not on the allowlist`);
 		await this.prepare(context);
-		return this.thread().ask(requestId, content, reply, context, arrival);
+		return this.thread().ask(requestId, await this.receive(message), reply, context, arrival);
 	}
 
 	/** Messages admitted before a restart whose answers were never delivered: this channel's, and any with no channel. */
@@ -62,7 +68,7 @@ export class Inbox {
 	}
 
 	/** The answer to an admitted message (after a restart: no new admission, so no gate). */
-	answer(requestId: string, content: string, context: Context): Promise<Answer> {
+	answer(requestId: string, content: Content, context: Context): Promise<Answer> {
 		return this.thread().answer(requestId, content, context);
 	}
 

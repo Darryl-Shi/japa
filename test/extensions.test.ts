@@ -338,6 +338,32 @@ test("messages: message_user while replying to the user is refused (no double me
 	await h.done();
 });
 
+test("modalities: a photo is shown to a model that takes images and kept on the workbench; a voice note is kept there with its path; without a workbench, the agent is told", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
+	const machine = new LocalBackend(join(dataDir, "machine"));
+	const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64"));
+	const voice = Uint8Array.from({ length: 3000 }, (_, i) => i % 251);
+	const h = await agent({ workbench: machine, extensions: () => [], script: () => say("Got it.") });
+	assert.deepEqual(
+		await h.ask("1", { text: "[Mon 10:00] what's this, and transcribe the note", attachments: [{ name: "photo.png", mimeType: "image/png", data: png }, { name: "voice.ogg", mimeType: "audio/ogg", data: voice }] }),
+		{ text: "Got it." },
+	);
+	const request = h.turns.at(-1)!.request;
+	assert.match(request, /"type":"image","data":"iVBORw0KGgo/, "the photo itself, for the model to see");
+	const photo = /\[Attached: photo\.png \(image\/png, 1 KB\), shown here; on your computer at ~\/(inbox\/[\w.-]+)\]/.exec(request);
+	const note = /\[Attached: voice\.ogg \(audio\/ogg, 3 KB\); on your computer at ~\/(inbox\/[\w.-]+)\]/.exec(request);
+	assert.ok(photo !== null && note !== null, "each file's path is in the message");
+	assert.deepEqual(new Uint8Array(await readFile(join(machine.home, photo[1]!))), png, "byte for byte");
+	assert.deepEqual(new Uint8Array(await readFile(join(machine.home, note[1]!))), voice);
+	await h.done();
+	await rm(dataDir, { recursive: true, force: true });
+
+	const bare = await agent({ extensions: () => [], script: () => say("Noted.") });
+	await bare.ask("1", { text: "[Mon 10:01] here", attachments: [{ name: "voice.ogg", mimeType: "audio/ogg", data: voice }] });
+	assert.match(bare.turns.at(-1)!.request, /\[Attached: voice\.ogg \(audio\/ogg, 3 KB\); there's no computer to keep it on\]/);
+	await bare.done();
+});
+
 test("login: /login runs a provider's own login from chat, here one an extension adds; then its models are offered", async () => {
 	const big = { id: "dyn-big", name: "Dyn Big", api: "openai-completions" as const, provider: "dyn", baseUrl: "http://dyn.invalid", input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 };
 	const unused = () => {

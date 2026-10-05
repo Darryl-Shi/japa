@@ -21,6 +21,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
+import type { Content } from "../core/message.ts";
 import type { CardRef } from "../core/ui.ts";
 import { Outbox, type OutboxMessage, REPORT_PREFIX } from "./delegation.ts";
 import type { SliceEnd } from "./extension.ts";
@@ -31,7 +32,8 @@ import { TRIGGER_PREFIX } from "./triggers.ts";
  * A message admitted and where its answer goes (none: the channel's default chat). Written before submitting, so a
  * restart can still deliver it.
  */
-type PendingReply = Partial<CardRef> & { content: string };
+/** What the user sent (text, or text and images), kept until its answer is delivered. */
+type PendingReply = Partial<CardRef> & { content: Content };
 
 const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
 	kind: "jarvis.pending-replies",
@@ -200,7 +202,7 @@ export class MainThread {
 	}
 
 	/** Submit a message from a channel and resolve with its answer. Idempotent per requestId. */
-	async ask(requestId: string, content: string, reply: CardRef | undefined, context: Context, arrival: Arrival = {}): Promise<Answer> {
+	async ask(requestId: string, content: Content, reply: CardRef | undefined, context: Context, arrival: Arrival = {}): Promise<Answer> {
 		await this.root.commit(async (tx) => {
 			(await tx.doc(PendingReplies)).byRequest[requestId] = { ...reply, content };
 		}, context);
@@ -213,10 +215,10 @@ export class MainThread {
 		return Object.entries(doc?.byRequest ?? {}).map(([requestId, pending]) => ({ requestId, ...pending }));
 	}
 
-	async answer(requestId: string, content: string, context: Context, arrival: Arrival = {}): Promise<Answer> {
+	async answer(requestId: string, content: Content, context: Context, arrival: Arrival = {}): Promise<Answer> {
 		if (this.settings().model === undefined) return { error: "no model chosen yet: log in to a provider with /login, then pick a model in /settings" };
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
-		const boundary = existing === undefined ? await this.boundary(content, arrival, context) : undefined;
+		const boundary = existing === undefined ? await this.boundary(typeof content === "string" ? content : textOf({ role: "user", content, timestamp: 0 }), arrival, context) : undefined;
 		if (boundary !== undefined) await this.startSlice(arrival, context);
 		// Recorded after the boundary decision, which measures the gap since the previous message.
 		if (existing === undefined) {
