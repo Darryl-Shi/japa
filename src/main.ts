@@ -26,6 +26,8 @@ mkdirSync(dataDir, { recursive: true });
 const settings = new SettingsFile(dataDir);
 // The X display its screen is on: the one it's given, else the first one's, if the machine has a desktop.
 const display = process.env.DISPLAY ?? ":0";
+// Its own code and data, on the machine its tools run on.
+const own = [resolve(import.meta.dirname, ".."), dataDir];
 
 const japa = await startJapa(
 	{
@@ -38,9 +40,9 @@ const japa = await startJapa(
 		extensions: (host) => [
 			telegramExtension(host),
 			memoryExtension(host, new MemoryFile(join(dataDir, "memory"))),
-			approvalsExtension(host, new Approvals(join(dataDir, "approvals.json"), join(dataDir, "audit.jsonl"))),
+			approvalsExtension(host, new Approvals(join(dataDir, "approvals.json"), join(dataDir, "audit.jsonl")), own),
 			webExtension(host),
-			computerExtension([resolve(import.meta.dirname, ".."), dataDir]),
+			computerExtension(own),
 			screenExtension({ display, hasDisplay: existsSync(`/tmp/.X11-unix/X${display.replace(/^.*:(\d+).*$/, "$1")}`) }),
 		],
 	},

@@ -22,9 +22,11 @@ const REVIEW_PROMPT = [
 	"change accounts, permissions or security settings. Everything else goes ahead without asking. That includes reading,",
 	"searching, browsing, fetching and drafting, and anything on the assistant's own computer, where its commands and",
 	"files run: creating, overwriting or deleting files at any path there (~, /home/..., /tmp, relative paths), cloning,",
-	"installing, building, running tests and scripts. That computer is its own, so nothing there needs asking. If it's",
-	"unclear whether something is the user's or the assistant's, it's the assistant's, unless the action names one of the",
-	"user's accounts or services. Allow whatever a standing permission below covers. Return JSON only:",
+	"installing, building, running tests and scripts. That computer is its own, so nothing there needs asking, except the",
+	"assistant's own code and data (the paths below): they hold its keys and settings, so reading or changing anything",
+	"there needs asking. If it's unclear whether something is the user's or the assistant's, it's the assistant's,",
+	"unless the action names one of the user's accounts or services. Allow whatever a standing permission below covers.",
+	"Return JSON only:",
 	'{"ask": boolean, "summary": "what it would do, in a few plain words for the user", "rule": "the general kind of action, as a standing permission would name it"}',
 ].join(" ");
 
@@ -37,8 +39,16 @@ type ModelChoice = { provider: string; modelId: string };
  * verdict. Only when none does is the user asked, saying the review failed. Exported for checking the prompt against
  * real models.
  */
-export async function review(models: Models, choices: readonly (ModelChoice | undefined)[], call: ToolCall, permissions: readonly string[], log: (line: string) => void = () => {}): Promise<Verdict> {
+export async function review(
+	models: Models,
+	choices: readonly (ModelChoice | undefined)[],
+	call: ToolCall,
+	given: { permissions: readonly string[]; own: readonly string[] },
+	log: (line: string) => void = () => {},
+): Promise<Verdict> {
+	const { permissions } = given;
 	const content = [
+		`<own_code_and_data>\n${given.own.join("\n") || "(none)"}\n</own_code_and_data>`,
 		`<standing_permissions>\n${permissions.join("\n") || "(none)"}\n</standing_permissions>`,
 		`<action tool="${call.name}">\n${JSON.stringify(call.arguments).slice(0, 4000)}\n</action>`,
 	].join("\n");
@@ -82,7 +92,8 @@ export function approvalCard(request: ApprovalRequest, decision?: Decision): Car
 	};
 }
 
-export function approvalsExtension(host: Host, approvals: Approvals): JapaExtension {
+/** `own`: where japa's own code and data are on its computer, which no action touches without asking. */
+export function approvalsExtension(host: Host, approvals: Approvals, own: readonly string[] = []): JapaExtension {
 	const { settings } = host;
 
 	const show = async (request: ApprovalRequest) => {
@@ -126,7 +137,7 @@ export function approvalsExtension(host: Host, approvals: Approvals): JapaExtens
 					const verdict =
 						mode === "always"
 							? { ask: true, summary: call.name, rule: `Use ${call.name}` }
-							: await review(host.models, [all.jobModels.fast, all.model], call, Array.isArray(permissions) ? permissions.map(String) : [], host.log);
+							: await review(host.models, [all.jobModels.fast, all.model], call, { permissions: Array.isArray(permissions) ? permissions.map(String) : [], own }, host.log);
 					if (!verdict.ask) {
 						approvals.audit({ conversationId, tool: call.name, args, verdict: "allowed", summary: verdict.summary });
 						return undefined;

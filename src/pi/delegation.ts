@@ -280,7 +280,7 @@ export function delegationExtensions(options: {
 		tools: [
 			defineTool({
 				name: "delegate",
-				description: "Start a job: self-contained work (research, multi-step tasks, anything over a minute or two) for a job agent with its own computer. Returns at once. The brief must stand alone: the agent sees nothing of this conversation.",
+				description: "Start a job: self-contained work (research, multi-step tasks, anything over a minute or two) for a job agent, in a conversation of its own on your computer. Returns at once. The brief must stand alone: the agent sees nothing of this conversation.",
 				parameters: Type.Object({
 					title: Type.String({ description: "A few words" }),
 					brief: Type.String({ description: "Goal, context, constraints, what to report back" }),

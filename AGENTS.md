@@ -82,7 +82,7 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
   a key a command needs is passed to that one command.
 - There is one machine. The agent's shell, files and screen are the machine japa runs on, as the user japa runs as, so
   nothing but review stands between them and japa's own files: every action is reviewed, and only effects beyond the
-  machine wait for the user.
+  machine, or on japa's own code and data, wait for the user.
 - Every extension runs inside japa with the Host, keys included, built-in or installed from chat, with no
   restrictions a built-in doesn't have. So the user approves every install with a card, whatever the approvals mode,
   and the code is checked before they're asked.

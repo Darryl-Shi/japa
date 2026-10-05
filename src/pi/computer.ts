@@ -14,7 +14,7 @@ export function computerExtension(own: readonly string[]): JapaExtension {
 					(input) =>
 						input.env === undefined
 							? undefined
-							: `You have your own Linux computer: the one you run on. bash, read, write and edit act on it directly. Working directory: ${input.env.cwd}. Your own code and data are on it too (${own.join(", ")}): leave them alone; you change yourself only with install_extension. Use it yourself only for a quick command or two; real work on it is a job.`,
+							: `You have your own computer: the one you run on. bash, read, write and edit act on it directly. Working directory: ${input.env.cwd}. Your own code and data are on it too (${own.join(", ")}): leave them alone; you change yourself only through install_extension.`,
 				),
 			],
 			tools: [createBashTool(), createReadTool(), createWriteTool(), createEditTool()],

@@ -70,7 +70,7 @@ What's built on each adapter is generic and never names an implementation:
    - your decision comes back to it as a message;
    - an approved call then goes through exactly once.
 
-   Work on its own computer goes ahead. If the review fails, it's retried, then retried with the main model, before you're asked. Every reviewed call goes to `audit.jsonl`.
+   Work on its own computer goes ahead, except on japa's own code and data (its keys and settings are there), which waits for you too. If the review fails, it's retried, then retried with the main model, before you're asked. Every reviewed call goes to `audit.jsonl`.
 6. **Back to you.** A report wakes the chief of staff, not you. The chief checks it, can redirect the job, and connects it with what it knows. Its reply is what you hear, threaded under your original message. A reply to progress reports alone stays with it. A job closes when it reports done, and asking for more of it opens it again, with everything it knew.
 7. **On its own.** Triggers wake the chief without you, on a schedule ("08:00 on weekdays", "every 15m") or on an event. As with reports, what it replies reaches you. Triggers are durable, so a schedule survives restarts.
 

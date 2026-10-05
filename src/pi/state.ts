@@ -11,7 +11,7 @@ const GUIDE = [
 	"<open_items> lists what is still open: tasks in flight, things waiting on the user, promises you made. When you",
 	"promise something, ask them something that needs an answer, or start work that will report back, call track; when",
 	"it's done or answered, call resolve. <working_set> is where the last topic stood. Earlier turns are not in your",
-	"context: if they refer to something you can't see, call search_history; if it's still ambiguous and matters, ask.",
+	"context: if they refer to something you can't see, look it up; if it's still ambiguous and matters, ask.",
 ].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
