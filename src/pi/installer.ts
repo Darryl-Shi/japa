@@ -31,8 +31,8 @@ function origin(): string {
 const guide = (repo: string) =>
 	[
 		"A job writes it; its brief must say: clone",
-		`${repo} on the workbench and npm ci; the contract is src/pi/extension.ts, src/pi/web.ts is an example; write`,
-		"src/ext/<name>.ts, one file whose default export is (host: Host) => JarvisExtension; import values only from packages",
+		`${repo} on the workbench and npm ci; the contract is src/pi/extension.ts, src/pi/web.ts is an example; write one`,
+		"file anywhere npm run check covers, whose default export is (host: Host) => JarvisExtension; import values only from packages",
 		"(@earendil-works/pi-ai, @earendil-works/pi-durable, node:*), types only with `import type`; a key goes in a secret",
 		'settings field the user sets in /settings, read with host.secrets.get("<name>.<key>"), never in the code; a model',
 		"provider is an extension whose start() calls host.models.setProvider; npm run check passes. Not a Pi coding-agent",
