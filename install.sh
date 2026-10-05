@@ -108,7 +108,7 @@ export PATH
 note "node $("$NODE" --version)"
 
 say "Installing dependencies"
-npm ci --omit=dev --no-audit --no-fund --loglevel=error
+npm ci --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error
 
 # --- First install: keys and settings, all in data/ (gitignored, readable only by you) --------------------------------
 
