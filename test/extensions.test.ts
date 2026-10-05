@@ -260,3 +260,82 @@ test("setup: the chief of staff is told how it's set up from live state; job age
 	assert.ok(!h.turns.find((turn) => turn.job !== undefined)!.request.includes("You are japa"), "job agents aren't told");
 	await h.done();
 });
+
+/** An extension as a job would write it on the workbench: one file, values imported only from packages. */
+const greetSource = (version: string) => `import { Type } from "@earendil-works/pi-ai";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import type { Host, JarvisExtension } from "../src/pi/extension.ts";
+
+export default function (host: Host): JarvisExtension {
+	const extension = defineExtension({
+		name: "ext.greet",
+		tools: [defineTool({ name: "greet", description: "Say hi.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "Hi from greet ${version}" }] }) })],
+	});
+	return { name: "greet", title: "Greet", about: "Says hi.", chief: [extension] };
+}
+`;
+
+test("installer: an extension written on the workbench is installed from chat on the user's tap, hot, replaced in place, and back after a restart", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const workbench = new LocalBackend(join(dataDir, "machine"));
+	const file = join(workbench.home, "greet.ts");
+	const script = (turn: { text: string }) => {
+		if (turn.text.includes("install greet")) return call("install_extension", { path: file, name: "greet", summary: "Says hi." });
+		if (turn.text.startsWith("Asked the user")) return say("I've asked you.");
+		if (turn.text.includes("[Extension greet]")) return say(turn.text.includes("Installed") ? "Greet is on." : `Not installed: ${turn.text}`);
+		if (turn.text.includes("say hi")) return call("greet", {});
+		if (turn.text.startsWith("Hi from greet")) return say(turn.text);
+		return say("ok");
+	};
+	const h = await agent({ workbench, dataDir, extensions: () => [], script });
+	const install = async (id: string) => {
+		const before = h.cards.length;
+		assert.deepEqual(await h.ask(id, "[Mon 10:00] install greet"), { text: "I've asked you." });
+		await h.until(() => h.cards.slice(before).some((shown) => shown.card.buttons !== undefined), "the install card");
+		const card = h.cards.slice(before).find((shown) => shown.card.buttons !== undefined)!;
+		assert.match(card.card.text, /^Install extension\? greet/);
+		await h.host.ui.press(card.card.buttons![0]![0]!.data, card.ref);
+		await h.until(() => h.cards.slice(before).some((shown) => shown.card.text === "Greet is on."), "the chief of staff hearing it's installed");
+	};
+
+	await writeFile(file, greetSource("v1"));
+	assert.ok(!(await h.ask("0", "[Mon 09:59] say hi").then((answer) => JSON.stringify(answer))).includes("Hi from"), "not there before");
+	await install("1");
+	assert.deepEqual(await h.ask("2", "[Mon 10:01] say hi"), { text: "Hi from greet v1" });
+	assert.ok(h.jarvis.extensions.get("greet"), "it shows in /settings like any other");
+
+	await writeFile(file, greetSource("v2"));
+	await install("3");
+	assert.deepEqual(await h.ask("4", "[Mon 10:03] say hi"), { text: "Hi from greet v2" }, "a new version replaces the old one, no restart");
+
+	await h.jarvis.close(context);
+	const again = await agent({ workbench, dataDir, extensions: () => [], script });
+	assert.deepEqual(await again.ask("5", "[Mon 10:05] say hi"), { text: "Hi from greet v2" }, "loaded again at start");
+	await again.done();
+});
+
+test("installer: the user saying no installs nothing, and a built-in can't be replaced from chat", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const workbench = new LocalBackend(join(dataDir, "machine"));
+	const file = join(workbench.home, "greet.ts");
+	await writeFile(file, greetSource("v1"));
+	const h = await agent({
+		workbench,
+		dataDir,
+		extensions: (host) => [webExtension(host)],
+		script: (turn) => {
+			if (turn.text.includes("install greet")) return call("install_extension", { path: file, name: "greet", summary: "Says hi." });
+			if (turn.text.includes("replace web")) return call("install_extension", { path: file, name: "web", summary: "A new web." });
+			if (turn.text.startsWith("Asked the user")) return say("I've asked you.");
+			if (turn.text.includes("[Extension greet]")) return say(turn.text.includes("chose not") ? "Okay, not installed." : "?");
+			return say(turn.text);
+		},
+	});
+	await h.ask("1", "[Mon 10:00] install greet");
+	const card = h.cards.find((shown) => shown.card.buttons !== undefined)!;
+	await h.host.ui.press(card.card.buttons![0]![1]!.data, card.ref);
+	await h.until(() => h.cards.some((shown) => shown.card.text === "Okay, not installed."), "the chief of staff hearing no");
+	assert.equal(h.jarvis.extensions.get("greet"), undefined);
+	assert.deepEqual(await h.ask("2", "[Mon 10:01] replace web"), { text: '"web" is built in; pick another name.' });
+	await h.done();
+});

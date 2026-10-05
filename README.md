@@ -124,7 +124,12 @@ An extension can also:
 - start and stop as it's switched (`start`/`stop`);
 - show cards and handle their buttons (`host.ui`);
 - wake an agent (`host.wake`) or raise an event that fires triggers (`host.emit`);
-- be a messaging channel (`channel`). A channel reaches the agent only through `host.inbox(platform)`, so it gets the allowlist for free.
+- be a messaging channel (`channel`). A channel reaches the agent only through `host.inbox(platform)`, so it gets the allowlist for free;
+- add a model provider (`host.models.setProvider` in `start`).
+
+### Extensions from chat
+
+The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file whose default export is `(host: Host) => JarvisExtension`, importing values only from packages. Then the chief of staff calls `install_extension`, and you get a card with Install and Don't install buttons, every time, whatever the approvals mode, because the code runs inside the agent with its keys. When you tap Install it's loaded, saved to `data/extensions/`, and on from your next message, with no restart. Installing a new version replaces the old one in place, and installed extensions load again at start. `remove_extension` takes one out.
 
 The only other configurable abstraction is the **backend**, meaning which machine is the workbench. It's infrastructure, not a capability, so it's set in `machines.workbench` in `data/settings.json`:
 - `boat`: built in;
@@ -167,7 +172,7 @@ src/
   main.ts          the default extensions, and start
   jarvis.ts        the core, assembled; builds the Host
   core/            our formats and services: UI cards, schedules, approvals, memory, state (no Pi imports)
-  pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host)
+  pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host; installer.ts: extensions from chat)
   channels/        the Inbox (allowlist gate), /settings, Telegram
   backends/        workbench providers: boat, local
 ```
@@ -184,5 +189,5 @@ The bar is daily use, compared with the agent it replaces:
 
 What comes next:
 - **Habits.** Email and calendar as extensions, skills (remembered how-tos), behaviours (extensions with triggers), and digests instead of interruptions.
-- **It extends itself.** The agent builds its own extensions, which run outside the harness, are proven, then switched on in `/settings`. The first test is WhatsApp.
+- **It extends itself, further.** Extensions from chat are hot-loaded now; next is running them outside the harness process. The first test is WhatsApp.
 - **Voice.**

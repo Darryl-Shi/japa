@@ -13,6 +13,7 @@ import {
 	LiveDoc,
 	defineExtension,
 	Harness,
+	type Registry,
 	section,
 	type Storage,
 } from "@earendil-works/pi-durable";
@@ -127,6 +128,8 @@ export class MainThread {
 			settings: () => Settings;
 			/** Every Pi extension any agent may use (the chief of staff's, job agents'). */
 			installed?: readonly Extension[];
+			/** Where they're installed; pass one to install more while running. */
+			registry?: Registry;
 			/** The ones the chief of staff has right now; re-read with the settings, so a toggle applies on the next message. */
 			selected?: () => readonly Extension[];
 			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
@@ -140,7 +143,7 @@ export class MainThread {
 		},
 		context: Context,
 	): Promise<MainThread> {
-		const registry = createRegistry();
+		const registry = options.registry ?? createRegistry();
 		const core = coreExtension(options.settings);
 		registry.install(core);
 		for (const extension of options.installed ?? []) registry.install(extension);

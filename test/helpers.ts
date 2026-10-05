@@ -35,8 +35,10 @@ export async function agent(options: {
 	script: (turn: Turn) => AssistantMessage | Promise<AssistantMessage>;
 	workbench?: Backend;
 	settings?: Parameters<SettingsFile["update"]>[0];
+	/** Reuse one (a restart); default: a new one. */
+	dataDir?: string;
 }) {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "jarvis-")));
 	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-fast" }] });
 	const models = createModels();
 	models.setProvider(faux.provider);

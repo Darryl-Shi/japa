@@ -4,8 +4,8 @@
 // end, its triggers, its lifecycle. Channels are extensions too, and reach the agent only through an Inbox.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import type { Models } from "@earendil-works/pi-ai";
-import type { Storage } from "@earendil-works/pi-durable";
+import type { MutableModels } from "@earendil-works/pi-ai";
+import { createRegistry, type Storage } from "@earendil-works/pi-durable";
 import { Inbox } from "./channels/inbox.ts";
 import { SettingsMenu } from "./channels/settings-menu.ts";
 import type { Backend } from "./core/backend.ts";
@@ -18,6 +18,7 @@ import { BackendExecutionEnv } from "./pi/backend-env.ts";
 import { type Delegation, delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JarvisExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
+import { installer } from "./pi/installer.ts";
 import { indexHistory } from "./pi/memory.ts";
 import { setupExtension } from "./pi/setup.ts";
 import { stateExtension } from "./pi/state.ts";
@@ -25,7 +26,7 @@ import { triggers } from "./pi/triggers.ts";
 import type { SettingsFile } from "./settings.ts";
 
 /** Tools of the core that never need approval. */
-const CORE_SAFE = ["track", "resolve", "list_open_items", "delegate", "check_job", "cancel_job", "conclude_job", "message_user", "report", "subagent"];
+const CORE_SAFE = ["track", "resolve", "list_open_items", "delegate", "check_job", "cancel_job", "conclude_job", "message_user", "report", "subagent", "install_extension", "remove_extension"];
 
 export type Jarvis = {
 	thread: MainThread;
@@ -42,7 +43,7 @@ export async function startJarvis(
 		dataDir: string;
 		settings: SettingsFile;
 		secrets: SecretsFile;
-		models: Models;
+		models: MutableModels;
 		workbench?: Backend;
 		/** Default: SQLite in dataDir. */
 		storage?: Storage;
@@ -105,19 +106,22 @@ export async function startJarvis(
 		openItems: state.openItems,
 		settings: () => settings.get(),
 		origin: (callContext) => main().origin(callContext),
-		withhold: () => [main().core, setup, stateTools, team.chief, schedule.extension, ...extensions!.withheldFromJobs()],
+		withhold: () => [main().core, setup, stateTools, team.chief, schedule.extension, installs.extension, ...extensions!.withheldFromJobs()],
 		waitingOnUser: (conversationId) => holds.has(String(conversationId)),
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
-	const set = new ExtensionSet(options.extensions(host), settings, log);
+	const registry = createRegistry();
+	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => jarvis.apply(callContext), context });
+	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, log);
 	extensions = set;
-	const core = [setup, stateTools, team.chief, schedule.extension];
+	const core = [setup, stateTools, team.chief, schedule.extension, installs.extension];
 
 	thread = await MainThread.open(
 		{
 			dataDir,
 			...(options.storage === undefined ? {} : { storage: options.storage }),
 			models,
+			registry,
 			settings: () => settings.get(),
 			installed: [...core, team.job, team.helper, ...set.installed()],
 			selected: () => [...core, ...set.forChief()],

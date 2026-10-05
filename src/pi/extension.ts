@@ -5,7 +5,7 @@
 // and what runs while it's on. The only other configured abstraction is the backend (which computer): infrastructure,
 // not a capability. The core (the main thread, open items, the team) is not an extension and can't be turned off.
 import type { Context } from "@earendil-works/chord";
-import type { Models } from "@earendil-works/pi-ai";
+import type { MutableModels } from "@earendil-works/pi-ai";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { Inbox } from "../channels/inbox.ts";
 import type { Backend } from "../core/backend.ts";
@@ -41,7 +41,8 @@ export type Trigger = { name: string; when: When; prompt: string };
 export type Host = {
 	settings: SettingsFile;
 	secrets: SecretsFile;
-	models: Models;
+	/** Extensions can add a model provider (setProvider), e.g. one the built-ins lack. */
+	models: MutableModels;
 	/** The agent's computer, when one is configured. */
 	workbench: Backend | undefined;
 	ui: UI;
@@ -93,15 +94,39 @@ export type JarvisExtension = {
 
 /** The installed extensions, which of them are on, and their lifecycles. */
 export class ExtensionSet {
-	readonly entries: readonly JarvisExtension[];
+	private list: JarvisExtension[];
 	private readonly settings: SettingsFile;
 	private readonly running = new Set<string>();
 	private readonly log: (line: string) => void;
 
 	constructor(entries: readonly JarvisExtension[], settings: SettingsFile, log: (line: string) => void = (line) => console.log(line)) {
-		this.entries = entries;
+		this.list = [...entries];
 		this.settings = settings;
 		this.log = log;
+	}
+
+	get entries(): readonly JarvisExtension[] {
+		return this.list;
+	}
+
+	/** Add an extension, or replace the one with its name (stopped first; sync starts the new one). Returns the old one. */
+	async put(entry: JarvisExtension): Promise<JarvisExtension | undefined> {
+		const old = this.get(entry.name);
+		if (old !== undefined) await this.remove(old.name);
+		this.list = [...this.list, entry];
+		return old;
+	}
+
+	/** Stop it if it's running and forget it. */
+	async remove(name: string): Promise<void> {
+		const entry = this.get(name);
+		if (entry === undefined) return;
+		if (this.running.delete(name)) {
+			await Promise.resolve()
+				.then(() => entry.stop?.())
+				.catch((error: unknown) => this.log(`${name}: stop: ${String(error)}`));
+		}
+		this.list = this.list.filter((other) => other !== entry);
 	}
 
 	enabled(entry: JarvisExtension): boolean {
