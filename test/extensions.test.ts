@@ -183,6 +183,7 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	};
 
 	assert.deepEqual(lifecycle, ["web on"], "started at startup");
+	assert.deepEqual(ui.commands(), [{ name: "settings", description: "Models, extensions and their options" }], "advertised, with what it does");
 	assert.equal(await ui.run("settings", { channel: "test", chatId: 7, messageId: 1 }), true);
 	assert.deepEqual(labels(), ["General", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
 	assert.ok((await tools()).includes("web_search"));

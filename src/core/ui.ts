@@ -29,10 +29,14 @@ export type CardHandler = {
 	reply?: (payload: string, text: string, ref: CardRef) => void | Promise<void>;
 };
 
+/** A slash command, as a channel advertises it (e.g. Telegram's command menu). */
+export type Command = { name: string; description: string };
+
 export class UI {
 	private readonly surfaces = new Map<string, Surface>();
 	private readonly handlers = new Map<string, CardHandler>();
-	private readonly commands = new Map<string, (at: CardRef) => void | Promise<void>>();
+	private readonly registered = new Map<string, Command & { run: (at: CardRef) => void | Promise<void> }>();
+	private readonly listeners = new Set<() => void>();
 	private readonly log: (line: string) => void;
 
 	constructor(log: (line: string) => void = (line) => console.log(line)) {
@@ -52,9 +56,21 @@ export class UI {
 		this.handlers.set(owner, handler);
 	}
 
-	/** A slash command a channel passes here instead of to the agent (e.g. /settings). */
-	command(name: string, run: (at: CardRef) => void | Promise<void>): void {
-		this.commands.set(name, run);
+	/** A slash command a channel passes here instead of to the agent (e.g. /settings), and advertises. */
+	command(name: string, description: string, run: (at: CardRef) => void | Promise<void>): void {
+		this.registered.set(name, { name, description, run });
+		for (const listener of this.listeners) listener();
+	}
+
+	/** Every registered command, for a channel to advertise. */
+	commands(): Command[] {
+		return [...this.registered.values()].map(({ name, description }) => ({ name, description }));
+	}
+
+	/** Called whenever a command is added; returns a function that stops listening. */
+	onCommands(listener: () => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
 	}
 
 	/** Show a card on the channel it threads under or replaces, else the first one attached. Undefined: no channel. */
@@ -78,9 +94,9 @@ export class UI {
 
 	/** Run a command if one is registered under that name; false means it's an ordinary message. */
 	async run(name: string, at: CardRef): Promise<boolean> {
-		const run = this.commands.get(name);
-		if (run === undefined) return false;
-		await run(at);
+		const command = this.registered.get(name);
+		if (command === undefined) return false;
+		await command.run(at);
 		return true;
 	}
 }

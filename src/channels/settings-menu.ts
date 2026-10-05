@@ -49,7 +49,7 @@ export class SettingsMenu {
 
 	/** Show it through the UI: /settings opens it, its buttons and replies come back here. */
 	attach(ui: UI): void {
-		ui.command("settings", async (at) => void (await ui.show({ ...this.main(), replyTo: at })));
+		ui.command("settings", "Models, extensions and their options", async (at) => void (await ui.show({ ...this.main(), replyTo: at })));
 		ui.handle("settings", {
 			press: async (payload, ref) => {
 				const next = this.press(payload);

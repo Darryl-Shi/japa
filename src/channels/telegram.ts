@@ -5,7 +5,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
 import { stamp } from "../core/schedule.ts";
-import type { Button, Card, CardRef } from "../core/ui.ts";
+import type { Button, Card, CardRef, Command } from "../core/ui.ts";
 import type { Host, JarvisExtension } from "../pi/extension.ts";
 import type { Arrival, ReplyTarget } from "../pi/harness.ts";
 
@@ -13,10 +13,17 @@ const context = BACKGROUND_CONTEXT;
 const LIMIT = 4096;
 const PLATFORM = "telegram";
 
+/** Commands Telegram handles itself, advertised alongside everyone else's. */
+const OWN: Command[] = [
+	{ name: "new", description: "Start a fresh topic (optionally followed by your message)" },
+	{ name: "whoami", description: "Your Telegram user id" },
+];
+
 const keyboard = (buttons: Button[][]) => ({ inline_keyboard: buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) });
 
 export function telegramExtension(host: Host): JarvisExtension {
 	let bot: Bot | undefined;
+	let stopAdvertising: (() => void) | undefined;
 
 	const start = async () => {
 		const token = host.secrets.get("telegram.token", "TELEGRAM_BOT_TOKEN");
@@ -129,6 +136,21 @@ export function telegramExtension(host: Host): JarvisExtension {
 			},
 		});
 
+		// The command menu: every command registered with the UI (by any extension) plus Telegram's own, kept current as
+		// extensions add theirs. Telegram allows lowercase names of up to 32 characters.
+		let advertising = Promise.resolve();
+		const advertise = () => {
+			const commands = [...host.ui.commands(), ...OWN]
+				.filter((command) => /^[a-z0-9_]{1,32}$/.test(command.name))
+				.map((command) => ({ command: command.name, description: command.description.slice(0, 256) || command.name }));
+			advertising = advertising
+				.then(() => live.api.setMyCommands(commands, { scope: { type: "all_private_chats" } }))
+				.then(() => void 0)
+				.catch((error: unknown) => host.log(`telegram: couldn't set the command menu: ${String(error)}`));
+		};
+		stopAdvertising = host.ui.onCommands(advertise);
+		advertise();
+
 		// Answers admitted before the last restart and never delivered.
 		for (const { requestId, content, chatId, messageId } of await inbox.pending(context)) {
 			void deliver(requestId, content, { chatId, messageId, channel: PLATFORM }, undefined).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
@@ -146,6 +168,7 @@ export function telegramExtension(host: Host): JarvisExtension {
 		settings: [{ key: "token", label: "Bot token (from @BotFather)", kind: "secret", env: "TELEGRAM_BOT_TOKEN" }],
 		start,
 		stop: async () => {
+			stopAdvertising?.();
 			host.ui.detach(PLATFORM);
 			await bot?.stop();
 			bot = undefined;
