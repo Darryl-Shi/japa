@@ -30,7 +30,8 @@ export function workbenchExtensions(host: Pick<Host, "workbench">, options: { sc
 			name: "computer",
 			title: "Computer",
 			about: "Shell and files on its own machine, which holds none of your secrets. It starts when needed and sleeps when idle.",
-			safeTools: ["read"],
+			// They only ever touch the workbench's own files: its sandbox, nothing of the user's.
+			safeTools: ["read", "write", "edit"],
 			chief: [shell],
 			jobs: [shell],
 		},

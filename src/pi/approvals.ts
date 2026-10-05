@@ -15,11 +15,16 @@ const DEFAULTS = { mode: "smart", permissions: [] as string[] };
 
 const REVIEW_PROMPT = [
 	"You review one action an AI assistant is about to take for the user, and decide whether the user must approve it first.",
-	"Ask when it would: send, post or reply to other people or anywhere public, as the user or on their behalf; spend or",
-	"commit money; delete or overwrite something of the user's (not the assistant's own scratch work); deploy, publish or",
-	"change something live; change accounts, permissions or security settings; or anything else that matters and can't be",
-	"undone. Allow reading, searching, browsing, drafting, and work on the assistant's own computer (its files, code,",
-	"installs, test runs, coding agents), which holds none of the user's accounts or secrets. Allow whatever a standing",
+	"Almost everything should go ahead: the user wants to be asked only about actions with an effect beyond the",
+	"assistant's own computer that they'd want a say in. Ask when it would: send, post or reply to other people or",
+	"anywhere public, as the user or on their behalf; spend or commit money; delete or change the user's own things (their",
+	"email, calendar, documents, accounts, repositories elsewhere); push, deploy or publish, or change something live;",
+	"change accounts, permissions or security settings. Everything else goes ahead without asking. That includes reading,",
+	"searching, browsing, fetching and drafting, and anything on the assistant's own computer, where its commands and",
+	"files run: creating, overwriting or deleting files at any path there (~, /home/..., /tmp, relative paths), cloning,",
+	"installing, building, running tests, scripts and coding agents. That computer is its sandbox and holds none of the",
+	"user's accounts, so nothing there needs asking. If it's unclear whether something is the user's or the assistant's,",
+	"it's the assistant's, unless the action names one of the user's accounts or services. Allow whatever a standing",
 	"permission below covers. Return JSON only:",
 	'{"ask": boolean, "summary": "what it would do, in a few plain words for the user", "rule": "the general kind of action, as a standing permission would name it"}',
 ].join(" ");
