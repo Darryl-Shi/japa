@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | b
 
 It asks for:
 - a Telegram bot token, from [@BotFather](https://t.me/BotFather);
-- an AI model provider (Anthropic, OpenAI, Google, OpenRouter, Z.ai and others), with an API key or a subscription login;
+- optionally an AI model provider (Anthropic, OpenAI, Google, OpenRouter, Z.ai and others), with an API key or a subscription login; or log in later with `/login`;
 - your name and time zone;
 - optionally a [Parallel](https://parallel.ai) key, for web search.
 

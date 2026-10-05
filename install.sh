@@ -9,7 +9,8 @@
 # update: it pulls the latest code, reinstalls dependencies, keeps your settings, keys and data (moving any from older
 # layouts), and restarts the service.
 #
-# This sets up the defaults: Telegram as the channel, one pi-ai model provider, and optionally Parallel for web search.
+# This sets up the defaults: Telegram as the channel, optionally one pi-ai model provider (or log in later with /login),
+# and optionally Parallel for web search.
 # Everything else (other providers through /login, other channels as extensions) is done from chat. Every question can
 # be answered ahead of time through the environment:
 #   TELEGRAM_BOT_TOKEN, JAPA_TELEGRAM_ID   the bot, and your own Telegram user id (the allowlist)
@@ -142,7 +143,7 @@ if [ -f "$DATA/jarvis.log" ] && [ ! -e "$DATA/japa.log" ]; then mv "$DATA/jarvis
 # --- First install: keys and settings ----------------------------------------------------------------------------------
 
 if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
-	[ -n "$TTY" ] || [ -n "${JAPA_PROVIDER:-}" ] || die "no terminal to ask on: set the answers in the environment"
+	[ -n "$TTY" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}${JAPA_PROVIDER:-}" ] || die "no terminal to ask on: set the answers in the environment"
 
 	say "Telegram (the default channel)"
 	note "Create a bot with @BotFather and paste its token. Empty: no Telegram (bring another channel as an extension)."
@@ -158,33 +159,35 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 		console.log(getBuiltinProviders().join(" "));
 	')"
 	note "Any pi-ai provider: $providers"
-	note "(More, and other logins, later with /login.)"
+	note "Empty: none yet; log in with /login in chat and pick models in /settings. (More, and other logins, there too.)"
 	ask JAPA_PROVIDER "Provider"
-	models="$("$NODE" --input-type=module -e '
-		import { getBuiltinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-		const provider = process.argv[1];
-		if (!getBuiltinProviders().includes(provider)) process.exit(1);
-		console.log(getBuiltinModels(provider).map((model) => model.id).join(" "));
-	' "$JAPA_PROVIDER")" || die "unknown provider: $JAPA_PROVIDER"
-	note "Its models: $models"
-	ask JAPA_MODEL "Main model (the chief of staff)"
-	ask JAPA_FAST_MODEL "Fast model (approvals, summaries)" "$JAPA_MODEL"
-	for model in "$JAPA_MODEL" "$JAPA_FAST_MODEL"; do
-		[[ " $models " == *" $model "* ]] || die "$JAPA_PROVIDER has no model $model"
-	done
-	ask JAPA_MODEL_KEY "$JAPA_PROVIDER API key (empty: log in with a subscription instead)" "" secret
-	if [ -n "$JAPA_MODEL_KEY" ]; then
-		JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL_KEY="$JAPA_MODEL_KEY" "$NODE" -e '
-			const { existsSync, readFileSync, writeFileSync } = require("node:fs");
-			const file = `${process.env.JAPA_DATA}/auth.json`;
-			const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-			all[process.env.JAPA_PROVIDER] = { type: "api_key", key: process.env.JAPA_MODEL_KEY };
-			writeFileSync(file, JSON.stringify(all, null, "\t") + "\n", { mode: 0o600 });
-		'
-	else
-		[ -n "$TTY" ] || die "set JAPA_MODEL_KEY for an unattended install"
-		(cd "$DATA" && "$DIR/node_modules/.bin/pi-ai" login "$JAPA_PROVIDER" <"$TTY")
-		[ -f "$DATA/auth.json" ] || die "no login saved"
+	if [ -n "$JAPA_PROVIDER" ]; then
+		models="$("$NODE" --input-type=module -e '
+			import { getBuiltinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+			const provider = process.argv[1];
+			if (!getBuiltinProviders().includes(provider)) process.exit(1);
+			console.log(getBuiltinModels(provider).map((model) => model.id).join(" "));
+		' "$JAPA_PROVIDER")" || die "unknown provider: $JAPA_PROVIDER"
+		note "Its models: $models"
+		ask JAPA_MODEL "Main model (the chief of staff)"
+		ask JAPA_FAST_MODEL "Fast model (approvals, summaries)" "$JAPA_MODEL"
+		for model in "$JAPA_MODEL" "$JAPA_FAST_MODEL"; do
+			[[ " $models " == *" $model "* ]] || die "$JAPA_PROVIDER has no model $model"
+		done
+		ask JAPA_MODEL_KEY "$JAPA_PROVIDER API key (empty: log in with a subscription instead)" "" secret
+		if [ -n "$JAPA_MODEL_KEY" ]; then
+			JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL_KEY="$JAPA_MODEL_KEY" "$NODE" -e '
+				const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+				const file = `${process.env.JAPA_DATA}/auth.json`;
+				const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+				all[process.env.JAPA_PROVIDER] = { type: "api_key", key: process.env.JAPA_MODEL_KEY };
+				writeFileSync(file, JSON.stringify(all, null, "\t") + "\n", { mode: 0o600 });
+			'
+		else
+			[ -n "$TTY" ] || die "set JAPA_MODEL_KEY for an unattended install"
+			(cd "$DATA" && "$DIR/node_modules/.bin/pi-ai" login "$JAPA_PROVIDER" <"$TTY")
+			[ -f "$DATA/auth.json" ] || die "no login saved"
+		fi
 	fi
 
 	say "You"
@@ -210,13 +213,15 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 		const env = process.env;
 		const file = `${env.JAPA_DATA}/settings.json`;
 		const settings = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-		const choice = (modelId) => ({ provider: env.JAPA_PROVIDER, modelId });
-		const sees = (modelId) => getBuiltinModel(env.JAPA_PROVIDER, modelId)?.input?.includes("image");
-		settings.model = choice(env.JAPA_MODEL);
-		settings.delegateModel = choice(env.JAPA_MODEL);
-		settings.jobModels = { fast: choice(env.JAPA_FAST_MODEL), strong: choice(env.JAPA_MODEL) };
-		const vision = [env.JAPA_MODEL, env.JAPA_FAST_MODEL].find(sees);
-		if (vision !== undefined) settings.jobModels.vision = choice(vision);
+		if (env.JAPA_PROVIDER) {
+			const choice = (modelId) => ({ provider: env.JAPA_PROVIDER, modelId });
+			const sees = (modelId) => getBuiltinModel(env.JAPA_PROVIDER, modelId)?.input?.includes("image");
+			settings.model = choice(env.JAPA_MODEL);
+			settings.delegateModel = choice(env.JAPA_MODEL);
+			settings.jobModels = { fast: choice(env.JAPA_FAST_MODEL), strong: choice(env.JAPA_MODEL) };
+			const vision = [env.JAPA_MODEL, env.JAPA_FAST_MODEL].find(sees);
+			if (vision !== undefined) settings.jobModels.vision = choice(vision);
+		}
 		if (env.JAPA_NAME) settings.user = { ...settings.user, name: env.JAPA_NAME };
 		if (env.JAPA_TIMEZONE) settings.timezone = env.JAPA_TIMEZONE;
 		settings.allowlist ??= {};
