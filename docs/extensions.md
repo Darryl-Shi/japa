@@ -28,13 +28,12 @@ export default function weather(host: Host): JapaExtension {
       { key: "key", label: "Weather API key", kind: "secret" },  // read with host.secrets.get("weather.key")
     ],
     defaults: { city: "Singapore" },
-    safeTools: ["forecast"],                                     // never needs approval
     triggers: [{ name: "morning", when: { at: "07:30" }, prompt: "Check today's forecast; tell me only if it matters." }],
   };
 }
 ```
 
-It's for the chief of staff and job agents both, unless `for` says `"chief"` or `"jobs"`. An extension can also:
+It's for the chief of staff and job agents both, unless `for` says `"chief"` or `"jobs"`. Every call of its tools is reviewed before it runs (see [Approvals](security.md)), unless it lists them in `safeTools`: only for tools that touch nothing but the agent's own state, the way `remember` does. A tool that reads or writes files, or reaches the web, is reviewed. An extension can also:
 - run work when an exchange with the user ends (`onExchangeEnd`): they went quiet, sent `/new`, or went back to an earlier message;
 - start and stop as it's switched on and off (`start`/`stop`);
 - show cards and handle their buttons (`host.ui`);

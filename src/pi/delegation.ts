@@ -8,7 +8,7 @@
 // it again. A job agent that ends its run without reporting has its last words reported as done for it.
 import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, type Message, type ModelThinkingLevel, Type } from "@earendil-works/pi-ai";
-import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
 import type { CardRef } from "../core/ui.ts";
 import type { ModelChoice } from "../settings.ts";
@@ -38,6 +38,10 @@ type Job = {
 export type JobSummary = Pick<Job, "id" | "title" | "depth" | "status" | "startedAt" | "lastReportAt"> & { model: string };
 /** What a job is doing: its subagents, and the tail of its own conversation. */
 export type JobDetail = JobSummary & { subagents: JobSummary[]; recent: string[]; lastActiveAt?: number };
+/** What a conversation has spent, every model and tool it used. */
+export type Spend = { tokens: number; cost: number };
+/** A job's spend, its subagents' included. */
+export type JobSpend = JobSummary & Spend;
 /** Where the jobs live: the root conversation (their record) and the harness (their conversations). */
 export type Team = { root: Conversation; harness: { conversation(id: ConversationId, context: Context): Promise<Conversation | undefined> } };
 
@@ -50,6 +54,11 @@ const summary = (job: Job, finished: boolean): JobSummary => ({
 	...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
 	...(job.lastReportAt === undefined ? {} : { lastReportAt: job.lastReportAt }),
 });
+
+function spent(...ledgers: readonly Readonly<UsageState>[]): Spend {
+	const all = ledgers.flatMap((ledger) => [...Object.values(ledger.models), ...Object.values(ledger.tools)]);
+	return { tokens: all.reduce((sum, usage) => sum + usage.totalTokens, 0), cost: all.reduce((sum, usage) => sum + usage.cost.total, 0) };
+}
 
 const line = (text: string, max: number) => {
 	const flat = text.replace(/\s+/g, " ").trim();
@@ -180,6 +189,8 @@ export type Delegation = {
 	list: (team: Team, context: Context) => Promise<JobSummary[]>;
 	/** One job in detail, or undefined if there's none by that id. */
 	detail: (team: Team, id: string, context: Context) => Promise<JobDetail | undefined>;
+	/** What the session has spent: by the chief of staff, and by each job (most first). */
+	spend: (team: Team, context: Context) => Promise<{ chief: Spend; jobs: JobSpend[] }>;
 	/** Stop a job and its subagents, as cancel_job does. False if it isn't open. */
 	cancel: (team: Team, id: string, reason: string, context: Context) => Promise<boolean>;
 	/** Close a job that's done with (its open item). False if it isn't open. */
@@ -390,6 +401,20 @@ export function delegationExtensions(options: {
 		};
 	};
 
+	// pi's own ledger of each conversation's spend (pi.usage), read through the root conversation.
+	const spend = (team: Team, context: Context) =>
+		team.root.commit(async (tx) => {
+			const jobs = Object.values(JSON.parse(JSON.stringify((await tx.doc(Jobs)).jobs)) as Record<string, Job>);
+			const ledger = async (id: ConversationId) => JSON.parse(JSON.stringify(await tx.doc(UsageDoc, id))) as UsageState;
+			const chief = spent(await ledger(team.root.id));
+			const byJob: JobSpend[] = [];
+			for (const job of jobs.filter((each) => each.depth === 1)) {
+				const family = jobs.filter((each) => each.id === job.id || each.id.startsWith(`${job.id}.`));
+				byJob.push({ ...summary(job, finished(job)), ...spent(...(await Promise.all(family.map((each) => ledger(each.conversationId))))) });
+			}
+			return { chief, jobs: byJob.sort((a, b) => b.cost - a.cost) };
+		}, context);
+
 	const cancel = async (team: Team, id: string, reason: string, context: Context) => {
 		const jobs = await read(team.root, context);
 		const found = jobs[id];
@@ -413,5 +438,5 @@ export function delegationExtensions(options: {
 			return true;
 		}, context);
 
-	return { chief, job, helper, resume, list, detail, cancel, close };
+	return { chief, job, helper, resume, list, detail, spend, cancel, close };
 }

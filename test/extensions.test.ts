@@ -30,7 +30,7 @@ function emailExtension(sent: string[]): JapaExtension {
 			defineTool({ name: "list_inbox", description: "List the inbox.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "3 unread." }] }) }),
 		],
 	});
-	return { ...extension, title: "Email", about: "", safeTools: ["list_inbox"] };
+	return { ...extension, title: "Email", about: "" };
 }
 
 const isReview = (request: string) => request.includes("You review one action");
@@ -52,7 +52,9 @@ test("approvals: a consequential call waits for the user's tap on a card, then g
 		},
 	});
 	assert.deepEqual(await h.ask("1", "[Mon 10:00] check my inbox"), { text: "Three unread." });
-	assert.ok(!h.turns.some((turn) => isReview(turn.request)), "a safe tool is never reviewed");
+	// Reading reaches beyond the machine too, so it's reviewed, and goes ahead without asking.
+	assert.ok(h.turns.some((turn) => isReview(turn.request) && turn.request.includes("list_inbox")), "every tool that acts is reviewed");
+	assert.equal(h.cards.length, 0);
 
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] email bob the draft", 2), { text: "I've asked you to approve it." });
 	assert.equal(emails.length, 0, "nothing was sent before approval");
@@ -67,7 +69,7 @@ test("approvals: a consequential call waits for the user's tap on a card, then g
 	assert.deepEqual(h.cards.find((shown) => shown.card.text === "Sent to Bob.")?.card.replyTo, card.ref, "the answer is threaded under the card");
 	assert.deepEqual(emails, ["bob: Draft attached."]);
 	const audit = (await readFile(join(tmpdir(), `audit-${process.pid}-1.jsonl`), "utf8")).trim().split("\n").map((line) => JSON.parse(line).verdict);
-	assert.deepEqual(audit, ["asked", "approve", "ran-approved"]);
+	assert.deepEqual(audit, ["allowed", "asked", "approve", "ran-approved"]);
 	await h.done();
 });
 
@@ -182,6 +184,7 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 			{ name: "login", description: "Log in to a model provider" },
 			{ name: "logout", description: "Log out of a model provider" },
 			{ name: "jobs", description: "What the team is working on" },
+			{ name: "session", description: "What it has spent, by job" },
 		],
 		"advertised, with what they do",
 	);
@@ -337,6 +340,16 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 	await press("« Jobs");
 	assert.equal(h.cards.at(-1)!.card.text, "No jobs running.");
 	assert.ok(labels().includes("Finished (2)"));
+
+	// /session: what it has spent, by job (pi's ledger of each job's conversation), the chief of staff's in one line.
+	await ui.run("session", at);
+	const spend = h.cards.at(-1)!.card.text.split("\n");
+	assert.match(spend[0]!, /^Spent so far: \$0\.00, [1-9]\d*k? tokens\.$/);
+	assert.equal(spend[1], "By job:");
+	const job = (title: string) => spend.slice(2, 4).find((each) => each.startsWith(`• ${title} (`));
+	assert.match(job("Flights to Tokyo")!, /: \$0\.00, [1-9]\d*k? tokens$/);
+	assert.match(job("Hotel")!, /: \$0\.00, \d+k? tokens$/, "cancelled mid-turn: what it finished");
+	assert.match(spend[4]!, /^Chief of staff: \$0\.00, [1-9]\d*k? tokens$/);
 	await h.done();
 });
 

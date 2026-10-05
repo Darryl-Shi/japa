@@ -33,7 +33,7 @@ japa has a **core**, which is what japa is and can't be turned off. Everything e
 - **Open items** are the record of what's been promised, asked or is in progress. With a short working set, they are what each slice starts from.
 - **The team** (`src/pi/delegation.ts`) is one job agent per job, with subagents if a job needs them.
 - **Triggers** wake the chief on a schedule or on an event.
-- **The UI** (`src/core/ui.ts`) shows channel-neutral cards with buttons, and runs japa's commands (`/settings`, `/jobs`) and pi's (`/login`, `/logout`, `/model`, `/thinking`).
+- **The UI** (`src/core/ui.ts`) shows channel-neutral cards with buttons, and runs japa's commands (`/settings`, `/jobs`) and pi's (`/login`, `/logout`, `/model`, `/thinking`, and `/session`: spend by job, from pi's own ledger).
 - **The installer** (`src/pi/installer.ts`) adds extensions from chat.
 
 ## Adapters
@@ -64,7 +64,7 @@ What's built on each adapter is generic and never names an implementation:
    The departing slice updates the working set in the background, so your message never waits. Every boundary but the size one also ends an **exchange**: extensions hear about it then (memory reflects on it), over all the slices it took. History search brings back anything older.
 3. **Answer, or delegate.** By itself the chief does only the very simple: an answer it knows, or a quick tool call or two. Everything else goes to `delegate`, which starts a job agent in its own conversation, with its own model. The chief replies at once, and the chat is free again.
 4. **Work.** A job agent has web search and fetch, bash and files, the screen, and whatever extensions give job agents. It can split work across subagents, and decides when to `report`. If it ends its run without a report, its last words count as its report.
-5. **Approval.** Every tool call passes the Approvals hook first, where a fast model reviews it. Anything that sends as you, spends, deletes your things, deploys or changes accounts is **blocked, not held**:
+5. **Approval.** Every tool call that acts, on the machine (files included) or beyond it, passes the Approvals hook first, where a fast model reviews it. Only tools that touch nothing but the agent's own state (memory, open items, jobs) skip it. Anything that sends as you, spends, deletes your things, deploys or changes accounts is **blocked, not held**:
    - you get **Approve / Deny / Always** buttons;
    - the agent ends its turn;
    - your decision comes back to it as a message;

@@ -91,6 +91,5 @@ export function webExtension(host: Pick<Host, "settings" | "secrets">, options: 
 			{ key: "apiKey", label: "Parallel API key", kind: "secret", env: "PARALLEL_API_KEY" },
 		],
 		defaults: DEFAULTS,
-		safeTools: ["web_search", "web_fetch"],
 	};
 }

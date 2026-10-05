@@ -82,7 +82,7 @@ export type Host = {
 	holds: Holds;
 	/** Fire the event triggers listening for `event`. */
 	emit(event: string, detail?: string): void;
-	/** Tools that never need approval (every extension's safeTools, and the core's). */
+	/** Tools that only touch the agent's own state, so they're never reviewed (every extension's safeTools, and the core's). */
 	safeTools(): ReadonlySet<string>;
 	log(line: string): void;
 };
@@ -96,7 +96,10 @@ export type JapaExtension = Extension & {
 	settings?: readonly Field[];
 	/** Values of its settings when settings.json says nothing. */
 	defaults?: Readonly<Record<string, unknown>>;
-	/** Tools that only read or only touch the agent's own state; approvals never stop them. */
+	/**
+	 * Tools that only touch the agent's own state (its memory, open items, jobs), so approvals never review them. A tool
+	 * that acts on the machine (files included) or reaches beyond it is reviewed, however harmless.
+	 */
 	safeTools?: readonly string[];
 	/** Only the chief of staff, or only job agents (and their subagents); both unless it says. */
 	for?: "chief" | "jobs";

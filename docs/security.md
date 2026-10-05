@@ -20,6 +20,6 @@ japa's runtime keeps three things nobody else holds: the state of every conversa
 
 ## Actions
 
-- Every tool call is reviewed first. Anything that sends as you, spends, deletes your things, deploys or changes accounts waits for your Approve, Deny or Always.
+- Every tool call that acts is reviewed first: on the machine (reading and writing files included) or beyond it (the web included). Only tools that touch nothing but the agent's own state (its memory, open items and jobs) skip it. Anything that sends as you, spends, deletes your things, deploys or changes accounts waits for your Approve, Deny or Always.
 - Standing permissions come only from your "Always" taps, and can be removed in `/settings`.
 - Every reviewed call is written to `audit.jsonl`.

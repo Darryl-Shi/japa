@@ -53,8 +53,9 @@ was a core page and refresh calls for that case. If a fix names one provider or 
 
 The UI's commands are of two kinds, and nothing in between. japa's own are for its own flow: `/settings`, `/jobs`,
 `/new`. pi's are pi's commands, offered in chat when the user needs one and has no other way to reach it there (no
-terminal): `/login`, `/logout`, `/model`, `/thinking`. They keep pi's names and meaning, and are thin over pi's own API
-(`Models`, a conversation's model and thinking level). A pi command that only makes sense in a terminal (`/hotkeys`,
+terminal): `/login`, `/logout`, `/model`, `/thinking`, `/session`. They keep pi's names and meaning, and are thin over
+pi's own API (`Models`, a conversation's model, thinking level and usage). Where japa's design differs, the command
+follows it: `/session` is by job, since jobs do the work. A pi command that only makes sense in a terminal (`/hotkeys`,
 `/quit`) or against japa's design (`/tree`, `/fork`, `/compact`: japa is one conversation, worked in slices) isn't
 offered. A new command is one or the other; a japa invention that wraps pi is neither.
 

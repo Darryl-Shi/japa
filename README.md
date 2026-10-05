@@ -38,6 +38,7 @@ Just message it. A few commands help:
 | `/settings` | Choose models, set your name and time zone, and switch abilities on or off, all with buttons |
 | `/model`, `/thinking` | Which model the chief of staff and its jobs use, and how hard each one thinks |
 | `/login`, `/logout` | Connect an AI model provider, or disconnect one |
+| `/session` | What it has spent so far, by job |
 | `/jobs` | See what the team is working on, and close or cancel a job |
 | `/new` | Start a fresh topic |
 

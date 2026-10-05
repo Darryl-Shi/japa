@@ -1,9 +1,9 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
-// conversation, the UI with its commands (japa's /settings and /jobs, and pi's /login, /logout, /model and /thinking),
-// and the installer. None of these can be turned off. Everything
-// else is an extension, made from the Host this builds, and hooked in only through it: which agents get it, its
-// settings, its safe tools, its exchange end, its triggers, its lifecycle, and the channel it adds through the core's
-// adapter. The agent's computer is the machine this runs on: its tools run here, in `home`.
+// conversation, the UI with its commands (japa's /settings and /jobs, and pi's /login, /logout, /model, /thinking and
+// /session), and the installer. None of these can be turned off. Everything else is an extension, made from the Host
+// this builds, and hooked in only through it: which agents get it, its settings, its safe tools, its exchange end, its
+// triggers, its lifecycle, and the channel it adds through the core's adapter. The agent's computer is the machine this
+// runs on: its tools run here, in `home`.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { getSupportedThinkingLevels, type MutableModels } from "@earendil-works/pi-ai";
@@ -11,6 +11,7 @@ import { createRegistry, type Storage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Inbox } from "./channels/inbox.ts";
 import { attachJobs } from "./commands/jobs.ts";
+import { attachSession } from "./commands/session.ts";
 import { attachLogin } from "./commands/login.ts";
 import { SettingsMenu } from "./commands/settings.ts";
 import { History } from "./core/history.ts";
@@ -203,6 +204,7 @@ export async function startJapa(
 		cancel: (id) => team.cancel(main(), id, "by the user, from /jobs", context),
 		close: (id) => team.close(main(), id, "closed by the user, from /jobs", context),
 	});
+	attachSession(ui, () => team.spend(main(), context));
 	// What the chief of staff sends on its own (results, questions, news) goes out as cards on whichever channel is on.
 	await thread.deliverOutbox(async (message) => {
 		return (await ui.show({ text: message.text, buzz: message.buzz, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) }))?.messageId;

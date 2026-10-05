@@ -1,5 +1,5 @@
 // Approvals as an extension: a hook before every tool call. In smart mode (the default) a fast model reviews each call
-// that isn't marked safe and asks the user only for what matters: sending as them, spending, deleting, deploying,
+// that acts on the machine or beyond (only tools touching the agent's own state are safe) and asks the user only for what matters: sending as them, spending, deleting, deploying,
 // changing accounts. The call is blocked, not held: the agent ends its turn, the user taps a button, and the decision
 // comes back as a message; an approved call then goes through exactly once. A job waiting on a decision is held, so
 // its run ending isn't taken as its report. Standing permissions come only from the user (the "Always" button) and can be

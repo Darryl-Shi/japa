@@ -21,7 +21,5 @@ export function computerExtension(own: readonly string[]): JapaExtension {
 		}),
 		title: "Computer",
 		about: "Shell and files on the machine it runs on.",
-		// They only touch files on its own computer.
-		safeTools: ["read", "write", "edit"],
 	};
 }
