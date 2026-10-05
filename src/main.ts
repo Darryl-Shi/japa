@@ -40,6 +40,8 @@ const japa = await startJapa(
 			...workbenchExtensions(host, { screen: settings.get().machines.workbench?.screen === true }),
 			codingAgentExtension(CLAUDE_CODE, host),
 			codingAgentExtension(CODEX, host),
+			boatExtension(host),
+			localExtension(host),
 		],
 	},
 	context,

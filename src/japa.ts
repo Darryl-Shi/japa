@@ -1,5 +1,5 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
-// conversation, the UI with /settings and /login, and the installer. None of these can be turned off. Everything else is an extension, made from the
+// conversation, the UI with /settings, /login and /jobs, and the installer. None of these can be turned off. Everything else is an extension, made from the
 // Host this builds, and hooked in only through it: what it gives each agent, its settings, its safe tools, its slice
 // end, its triggers, its lifecycle, and the channels, model providers and machines it adds through the core's adapters.
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { createRegistry, type Storage } from "@earendil-works/pi-durable";
 import { Inbox } from "./channels/inbox.ts";
+import { attachJobs } from "./channels/jobs.ts";
 import { attachLogin } from "./channels/login.ts";
 import { SettingsMenu } from "./channels/settings-menu.ts";
 import type { Backend } from "./core/backend.ts";
@@ -16,7 +17,7 @@ import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { Holds, UI } from "./core/ui.ts";
 import type { SecretsFile } from "./credentials.ts";
 import { BackendExecutionEnv } from "./pi/backend-env.ts";
-import { type Delegation, delegationExtensions } from "./pi/delegation.ts";
+import { delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JapaExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
 import { installer } from "./pi/installer.ts";
@@ -185,6 +186,11 @@ export async function startJapa(
 		changed: () => japa.apply(context),
 	}).attach(ui);
 	attachLogin(ui, models);
+	attachJobs(ui, {
+		list: () => team.list(main(), context),
+		detail: (id) => team.detail(main(), id, context),
+		cancel: (id) => team.cancel(main(), id, "by the user, from /jobs", context),
+	});
 	// What the chief of staff sends on its own (results, questions, news) goes out as cards on whichever channel is on.
 	await thread.deliverOutbox(async (message) => {
 		return (await ui.show({ text: message.text, buzz: message.buzz, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) }))?.messageId;

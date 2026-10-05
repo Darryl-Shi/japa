@@ -10,9 +10,9 @@ path. (The user's words; what follows is what they mean here.)
 ## One core, one unit, one adapter per thing japa is built from
 
 The core is what japa *is*, and can't be turned off: the main thread (the chief of staff), open items, the team of job
-agents, triggers, the UI and its commands (`/settings`, `/login`), and the installer. Everything else is an extension,
-and there is exactly one kind: `JapaExtension` (`src/pi/extension.ts`), made from the `Host` and hooked in only
-through it.
+agents, triggers, the UI and its commands (`/settings`, `/login`, `/jobs`), and the installer. Everything else is an
+extension, and there is exactly one kind: `JapaExtension` (`src/pi/extension.ts`), made from the `Host` and hooked in
+only through it.
 
 The things japa is built from each have one generic, typed adapter in the core, and every implementation goes through
 it, the built-in ones included:

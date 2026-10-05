@@ -4,7 +4,7 @@
 // staff, which synthesizes and decides what the user hears (message_user). Jobs never vanish: only the chief of staff
 // concludes one, once the user has accepted or dropped it, and a job agent that goes quiet is reported automatically.
 import type { Context } from "@earendil-works/chord";
-import { type AssistantMessage, Type } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Message, Type } from "@earendil-works/pi-ai";
 import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
 import type { CardRef } from "../core/ui.ts";
@@ -30,8 +30,49 @@ type Job = {
 	model: ModelChoice;
 	origin?: CardRef;
 	status: "working" | "reported" | "concluded" | "cancelled";
+	/** Absent on jobs started before it was recorded. */
+	startedAt?: number;
 	lastReportAt?: number;
 };
+
+/** A job as the user sees it (/jobs). */
+export type JobSummary = Pick<Job, "id" | "title" | "depth" | "status" | "startedAt" | "lastReportAt"> & { model: string };
+/** What a job is doing: its subagents, and the tail of its own conversation. */
+export type JobDetail = JobSummary & { subagents: JobSummary[]; recent: string[]; lastActiveAt?: number };
+/** Where the jobs live: the root conversation (their record) and the harness (their conversations). */
+export type Team = { root: Conversation; harness: { conversation(id: ConversationId, context: Context): Promise<Conversation | undefined> } };
+
+const summary = (job: Job): JobSummary => ({
+	id: job.id,
+	title: job.title,
+	depth: job.depth,
+	status: job.status,
+	model: `${job.model.provider}/${job.model.modelId}`,
+	...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
+	...(job.lastReportAt === undefined ? {} : { lastReportAt: job.lastReportAt }),
+});
+
+const line = (text: string, max: number) => {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
+
+/** A few lines on what a conversation has been doing lately: what it was told, said, and ran. */
+function recentActivity(messages: readonly Message[], count: number): string[] {
+	const lines: string[] = [];
+	for (const message of messages) {
+		if (message.role === "user") {
+			const text = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" ");
+			if (text.trim() !== "") lines.push(`← ${line(text, 140)}`);
+		} else if (message.role === "assistant") {
+			for (const part of message.content) {
+				if (part.type === "text" && part.text.trim() !== "") lines.push(line(part.text, 160));
+				if (part.type === "toolCall") lines.push(`→ ${part.name} ${line(JSON.stringify(part.arguments), 90)}`);
+			}
+		}
+	}
+	return lines.slice(-count);
+}
 const Jobs = defineDoc<{ jobs: Record<string, Job> }>({ kind: "jarvis.jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
 
 /** The prefix of a report as it reaches its parent, so the main thread can tell reports from the user. */
@@ -120,6 +161,12 @@ export type Delegation = {
 	helper: Extension;
 	/** Send a message to a job (e.g. the user's decision on its approval); it's seen through like any other run. */
 	resume: (root: Conversation, conversationId: string, message: string, context: Context) => Promise<boolean>;
+	/** Every job and subagent, newest first, for the user to look over. */
+	list: (team: Team, context: Context) => Promise<JobSummary[]>;
+	/** One job in detail, or undefined if there's none by that id. */
+	detail: (team: Team, id: string, context: Context) => Promise<JobDetail | undefined>;
+	/** Stop a job and its subagents, as cancel_job does. False if it isn't open. */
+	cancel: (team: Team, id: string, reason: string, context: Context) => Promise<boolean>;
 };
 
 export function delegationExtensions(options: {
@@ -140,7 +187,7 @@ export function delegationExtensions(options: {
 		const anchor = await tx.createTask(Anchor, null, background);
 		const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
 		await configure(tx, conversation.id, { model: job.model, extensions: { remove: [...withhold] }, instructions: `Your job (${job.id}): "${job.title}".` });
-		(await tx.doc(Jobs)).jobs[job.id] = { ...job, conversationId: conversation.id, status: "working" };
+		(await tx.doc(Jobs)).jobs[job.id] = { ...job, conversationId: conversation.id, status: "working", startedAt: Date.now() };
 		await tx.createTask(Run, { jobId: job.id, message: brief, startedAt: Date.now() }, background);
 	};
 
@@ -243,13 +290,7 @@ export function delegationExtensions(options: {
 					const jobs = (await api.snapshot(Jobs, context))?.jobs ?? {};
 					const found = jobs[args.id];
 					if (found === undefined) return reply(`No job ${args.id}.`);
-					const family = Object.values(jobs).filter((each) => each.id === found.id || each.id.startsWith(`${found.id}.`));
-					await api.commit(async (tx) => {
-						const all = (await tx.doc(Jobs)).jobs;
-						for (const each of family) if (all[each.id] !== undefined) all[each.id]!.status = "cancelled";
-					}, context);
-					for (const each of family) await (await api.conversation(each.conversationId, context))?.abort(context);
-					openItems.close(found.id, `cancelled${args.reason === undefined ? "" : `: ${args.reason}`}`);
+					await stop(found, jobs, (change) => api.commit(change, context), (id) => api.conversation(id, context), args.reason, context);
 					return reply(`Cancelled ${found.id}.`);
 				},
 			}),
@@ -287,6 +328,55 @@ export function delegationExtensions(options: {
 		],
 	});
 
+	/** Cancel a job and its subagents: marked cancelled, their conversations aborted, its open item closed. */
+	async function stop(
+		found: Job,
+		jobs: Record<string, Job>,
+		commit: (change: (tx: Tx) => Promise<void>) => Promise<void>,
+		conversation: (id: ConversationId) => Promise<Pick<Conversation, "abort"> | undefined>,
+		reason: string | undefined,
+		context: Context,
+	): Promise<void> {
+		const family = Object.values(jobs).filter((each) => each.id === found.id || each.id.startsWith(`${found.id}.`));
+		await commit(async (tx) => {
+			const all = (await tx.doc(Jobs)).jobs;
+			for (const each of family) if (all[each.id] !== undefined) all[each.id]!.status = "cancelled";
+		});
+		for (const each of family) await (await conversation(each.conversationId))?.abort(context);
+		openItems.close(found.id, `cancelled${reason === undefined ? "" : `: ${reason}`}`);
+	}
+
+	/** The jobs as recorded, read through the root conversation (a read-only commit). */
+	const read = (root: Conversation, context: Context) => root.commit(async (tx) => JSON.parse(JSON.stringify((await tx.doc(Jobs)).jobs)) as Record<string, Job>, context);
+	const open = (job: Job) => job.status === "working" || job.status === "reported";
+
+	const list = async (team: Team, context: Context) =>
+		Object.values(await read(team.root, context))
+			.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))
+			.map(summary);
+
+	const detail = async (team: Team, id: string, context: Context): Promise<JobDetail | undefined> => {
+		const jobs = await read(team.root, context);
+		const found = jobs[id];
+		if (found === undefined) return undefined;
+		const messages = (await (await team.harness.conversation(found.conversationId, context))?.context(context))?.messages ?? [];
+		const lastActiveAt = messages.at(-1)?.timestamp;
+		return {
+			...summary(found),
+			subagents: Object.values(jobs).filter((each) => each.parentConversationId === found.conversationId).map(summary),
+			recent: recentActivity(messages, 8),
+			...(lastActiveAt === undefined ? {} : { lastActiveAt }),
+		};
+	};
+
+	const cancel = async (team: Team, id: string, reason: string, context: Context) => {
+		const jobs = await read(team.root, context);
+		const found = jobs[id];
+		if (found === undefined || !open(found)) return false;
+		await stop(found, jobs, (change) => team.root.commit(change, context), (conversationId) => team.harness.conversation(conversationId, context), reason, context);
+		return true;
+	};
+
 	const resume = async (root: Conversation, conversationId: string, message: string, context: Context) =>
 		root.commit(async (tx) => {
 			const found = Object.values((await tx.doc(Jobs)).jobs).find((candidate) => String(candidate.conversationId) === conversationId);
@@ -295,5 +385,5 @@ export function delegationExtensions(options: {
 			return true;
 		}, context);
 
-	return { chief, job, helper, resume };
+	return { chief, job, helper, resume, list, detail, cancel };
 }

@@ -193,6 +193,7 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 		[
 			{ name: "settings", description: "Models, extensions and their options" },
 			{ name: "login", description: "Log in to a model provider" },
+			{ name: "jobs", description: "What the team is working on" },
 		],
 		"advertised, with what they do",
 	);
@@ -260,6 +261,53 @@ test("channels: the core opens each with its inbox and shows cards on it while i
 	await h.host.ui.show({ text: "again", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
 	assert.deepEqual(events.slice(2), ["other closed"], "off: closed, and its cards go to a channel that's on");
 	assert.equal(h.cards.at(-1)!.card.text, "again");
+	await h.done();
+});
+
+test("jobs: /jobs lists what the team is working on, shows a job's detail and recent activity, and cancels it on a confirmed tap", async () => {
+	const h = await agent({
+		extensions: () => [],
+		script: (turn) => {
+			if (turn.job !== undefined) {
+				if (turn.text.includes("Compare fares")) return call("report", { kind: "progress", text: "Two airlines checked." });
+				return say("Carrying on.");
+			}
+			if (turn.text.includes("look into flights")) return call("delegate", { title: "Flights to Tokyo", brief: "Compare fares for May." });
+			if (turn.text.startsWith("Started job")) return say("On it.");
+			return say("Noted.");
+		},
+	});
+	const ui = h.host.ui;
+	const at = { channel: "test", chatId: "7", messageId: "1" };
+	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
+	const press = (label: string) => {
+		const last = h.cards.at(-1)!;
+		const button = last.card.buttons!.flat().find((candidate) => candidate.text === label);
+		assert.ok(button !== undefined, `no button "${label}" in ${labels().join(" | ")}`);
+		return ui.press(button.data, last.ref);
+	};
+
+	await ui.run("jobs", at);
+	assert.equal(h.cards.at(-1)!.card.text, "No jobs running.");
+
+	assert.deepEqual(await h.ask("1", "[Mon 10:00] look into flights"), { text: "On it." });
+	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Report from job")), "the job's progress report");
+	await ui.run("jobs", at);
+	assert.match(h.cards.at(-1)!.card.text, /^Jobs running:\n• Flights to Tokyo \(\w+\): reported, waiting on the chief of staff, started just now$/);
+	await press("Flights to Tokyo");
+	const detail = h.cards.at(-1)!.card.text;
+	assert.match(detail, /Model: faux\/faux-1/);
+	assert.match(detail, /← .*Compare fares for May\./, "what it was told");
+	assert.match(detail, /→ report \{"kind":"progress","text":"Two airlines checked\."\}/, "what it ran");
+
+	await press("Cancel job");
+	assert.match(h.cards.at(-1)!.card.text, /^Cancel job \w+ and its subagents\?$/);
+	await press("Yes, cancel it");
+	assert.match(h.cards.at(-1)!.card.text, /^Cancelled\.\n\nFlights to Tokyo .*\nStatus: cancelled/);
+	assert.ok(!labels().includes("Cancel job"), "nothing left to cancel");
+	await press("« Jobs");
+	assert.equal(h.cards.at(-1)!.card.text, "No jobs running.");
+	assert.ok(labels().includes("Finished (1)"));
 	await h.done();
 });
 

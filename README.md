@@ -31,7 +31,7 @@ Run the same command again to update; it also moves data from older layouts. For
  (allowlist)        │       │  delegate / check_job / conclude_job          message_user ─► UI ─┼─► cards back
                     │       ▼                                                                    │   on the channel
                     │  Team: one job agent per job ──── report ──► back to the chief of staff    │
-                    │  Open items · Triggers · UI cards · /settings · /login                     │
+                    │  Open items · Triggers · UI cards · /settings · /login · /jobs             │
                     │  Adapters: channels · model providers · machines                           │
                     └───────────────▲─────────────────────────────────────────────▲──────────────┘
                                     │ the Host: settings, secrets, models, workbench,│
@@ -50,7 +50,7 @@ Run the same command again to update; it also moves data from older layouts. For
 - **open items,** the record of what's been promised, asked or is in progress;
 - **the team** of job agents;
 - **triggers;**
-- **the UI**, with `/settings` and `/login`;
+- **the UI**, with `/settings`, `/login` and `/jobs` (what the team is working on: each job's status, model, recent activity, and a Cancel button);
 - **the installer,** which adds extensions from chat.
 
 **Everything else is an extension.** There is one kind, `JapaExtension` in `src/pi/extension.ts`. It's made from the **Host**, which is everything an extension may use: settings, secrets, the data directory, models, the workbench, UI cards, `wake`, holds, `emit` and history search. It never touches the main thread directly; even a channel's messages come in through an adapter.
@@ -199,7 +199,7 @@ src/
   japa.ts          the core, assembled; builds the Host and opens the workbench through its provider
   core/            our formats and services: UI cards, schedules, approvals, memory, state (no Pi imports)
   pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host; installer.ts: extensions from chat)
-  channels/        the Inbox (allowlist gate), /settings, /login, Telegram
+  channels/        the Inbox (allowlist gate), /settings, /login, /jobs, Telegram
   backends/        machine providers, as extensions: boat, local
 ```
 
