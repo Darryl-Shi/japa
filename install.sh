@@ -206,8 +206,8 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 	umask 022
 	chmod 600 "$DATA/.env"
 
-	JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL="$JAPA_MODEL" JAPA_FAST_MODEL="$JAPA_FAST_MODEL" JAPA_NAME="$JAPA_NAME" \
-		JAPA_TIMEZONE="$JAPA_TIMEZONE" JAPA_TELEGRAM_ID="$JAPA_TELEGRAM_ID" "$NODE" --input-type=module -e '
+	JAPA_PROVIDER="${JAPA_PROVIDER:-}" JAPA_MODEL="${JAPA_MODEL:-}" JAPA_FAST_MODEL="${JAPA_FAST_MODEL:-}" JAPA_NAME="${JAPA_NAME:-}" \
+		JAPA_TIMEZONE="${JAPA_TIMEZONE:-}" JAPA_TELEGRAM_ID="${JAPA_TELEGRAM_ID:-}" "$NODE" --input-type=module -e '
 		import { existsSync, readFileSync, writeFileSync } from "node:fs";
 		import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 		const env = process.env;
