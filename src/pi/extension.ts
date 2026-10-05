@@ -124,6 +124,8 @@ export class ExtensionSet {
 	private readonly settings: SettingsFile;
 	private readonly adapters: Adapters;
 	private readonly running = new Set<string>();
+	/** Why each one that's on isn't working, if it isn't (its last failure to start). */
+	private readonly failures = new Map<string, string>();
 	/** Channels that opened, so only those are shown on and closed. */
 	private readonly open = new Set<Channel>();
 	private readonly log: (line: string) => void;
@@ -167,10 +169,15 @@ export class ExtensionSet {
 		return this.entries.find((entry) => entry.name === name);
 	}
 
-	/** Why it can't be turned off, if it can't. */
+	/** Why it's on but not working, if it isn't. */
+	failure(name: string): string | undefined {
+		return this.failures.get(name);
+	}
+
+	/** Why it can't be turned off, if it can't: it's the only channel that's actually open. */
 	cannotTurnOff(entry: JapaExtension): string | undefined {
-		if (entry.channel === undefined || !this.enabled(entry)) return undefined;
-		return this.on().some((other) => other !== entry && other.channel !== undefined) ? undefined : "It's the only channel you can reach me on.";
+		if (entry.channel === undefined || !this.open.has(entry.channel)) return undefined;
+		return [...this.open].some((channel) => channel !== entry.channel) ? undefined : "It's the only channel you can reach me on.";
 	}
 
 	/** Every Pi extension, once each, for the registry. */
@@ -188,8 +195,9 @@ export class ExtensionSet {
 		return this.installed().filter((extension) => !jobs.has(extension));
 	}
 
+	/** Only from the extensions that are on: one turned off vouches for nothing. */
 	safeTools(): string[] {
-		return this.entries.flatMap((entry) => entry.safeTools ?? []);
+		return this.on().flatMap((entry) => entry.safeTools ?? []);
 	}
 
 	/** Triggers of the extensions that are on, keyed "<extension>/<trigger>". */
@@ -224,8 +232,13 @@ export class ExtensionSet {
 		for (const entry of this.entries) if (this.running.delete(entry.name)) await this.stop(entry);
 	}
 
+	/**
+	 * Start it; a failure is a problem for whoever can fix it (the adapters' `problem`: the chief of staff hears it),
+	 * not just a line in the log.
+	 */
 	private async start(entry: JapaExtension): Promise<void> {
 		const { models, ui, inbox } = this.adapters;
+		const problems: string[] = [];
 		for (const provider of entry.providers ?? []) {
 			models.setProvider(provider);
 			// A provider that fetches its model list gets it now (with the credential from /login), not on first use.
@@ -241,12 +254,21 @@ export class ExtensionSet {
 				this.open.add(channel);
 				ui.attach({ channel: channel.platform, show: (card, replace) => channel.show(card, replace) });
 			} catch (error) {
-				this.log(`${entry.name}: open: ${error instanceof Error ? error.message : String(error)}`);
+				problems.push(`its channel didn't open: ${message(error)}`);
 			}
 		}
 		await Promise.resolve()
 			.then(() => entry.start?.())
-			.catch((error: unknown) => this.log(`${entry.name}: start: ${String(error)}`));
+			.catch((error: unknown) => problems.push(`it didn't start: ${message(error)}`));
+		if (problems.length === 0) {
+			this.failures.delete(entry.name);
+			this.adapters.problem(entry, undefined);
+			return;
+		}
+		const text = problems.join("; ");
+		this.log(`${entry.name}: ${text}`);
+		this.failures.set(entry.name, text);
+		this.adapters.problem(entry, text);
 	}
 
 	private async stop(entry: JapaExtension): Promise<void> {
@@ -261,10 +283,16 @@ export class ExtensionSet {
 				.catch((error: unknown) => this.log(`${entry.name}: close: ${String(error)}`));
 		}
 		for (const provider of entry.providers ?? []) this.adapters.models.deleteProvider(provider.id);
+		this.failures.delete(entry.name);
 	}
 }
 
-/** The core's side of the adapters: where providers are registered, channels shown, and messages let in. */
-export type Adapters = { models: MutableModels; ui: UI; inbox(platform: string): Inbox };
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * The core's side of the adapters: where providers are registered, channels shown, messages let in, and problems
+ * reported (undefined: it works now).
+ */
+export type Adapters = { models: MutableModels; ui: UI; inbox(platform: string): Inbox; problem(entry: JapaExtension, text: string | undefined): void };
 
 const unique = (extensions: readonly Extension[]) => [...new Set(extensions)];

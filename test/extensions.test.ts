@@ -288,6 +288,35 @@ test("channels: the core opens each with its inbox and shows cards on it while i
 	await h.done();
 });
 
+test("problems: an extension that fails to start is reported to the chief of staff once, not just logged, and its answer reaches the user", async () => {
+	let fail = true;
+	const h = await agent({
+		extensions: () => [{ name: "flaky", title: "Flaky", about: "", start: () => {
+			if (fail) throw new Error("Cannot find package 'left-pad'");
+		} }],
+		script: (turn) => (turn.text.startsWith("[Problem with extension flaky]") ? say("Flaky didn't start (a missing package); I'll have it fixed.") : say("ok")),
+	});
+	await h.until(() => h.cards.some((card) => card.card.text.startsWith("Flaky didn't start")), "the chief of staff's word on it");
+	const problems = () => h.turns.filter((turn) => turn.text.startsWith("[Problem with extension flaky]"));
+	assert.match(problems()[0]!.text, /it didn't start: Cannot find package 'left-pad'$/);
+	assert.equal(h.japa.extensions.failure("flaky"), "it didn't start: Cannot find package 'left-pad'");
+
+	// The same problem again (turned off and on) isn't news; working again clears it, so a new failure would be.
+	h.settings.update({ extensions: { flaky: { enabled: false } } });
+	await h.japa.apply(context);
+	h.settings.update({ extensions: { flaky: { enabled: true } } });
+	await h.japa.apply(context);
+	await sleep(300);
+	assert.equal(problems().length, 1, "heard once");
+	fail = false;
+	h.settings.update({ extensions: { flaky: { enabled: false } } });
+	await h.japa.apply(context);
+	h.settings.update({ extensions: { flaky: { enabled: true } } });
+	await h.japa.apply(context);
+	assert.equal(h.japa.extensions.failure("flaky"), undefined, "working now");
+	await h.done();
+});
+
 test("jobs: /jobs lists what the team is working on, shows a job's detail and recent activity; one that has reported can be closed", async () => {
 	const h = await agent({
 		extensions: () => [],

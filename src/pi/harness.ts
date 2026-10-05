@@ -274,7 +274,8 @@ export class MainThread {
 		const heardAt = (await this.harness.snapshot(Heard, context))?.at ?? 0;
 		const anchoredHere = arrival.replyTo !== undefined;
 		if (!anchoredHere && heardAt > 0 && Date.now() - heardAt >= limits.idleMinutes * 60_000) return "idle";
-		const projected = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + Math.ceil(content.length / 4);
+		// The conversation's own size: the system sections (open items, working set, guides) are there in every slice.
+		const projected = conversation.reduce((sum, message) => sum + estimateMessageTokens(message), 0) + Math.ceil(content.length / 4);
 		if (projected > limits.sliceTokens) return "size";
 		return undefined;
 	}

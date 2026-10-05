@@ -106,6 +106,8 @@ export function installer(options: {
 	registry: Registry;
 	/** Apply the change: the chief of staff's extensions, what's started, triggers. */
 	apply: (context: Context) => Promise<void>;
+	/** A problem the chief of staff should hear (an installed extension that no longer loads). */
+	problem: (about: string, text: string | undefined) => void;
 	context: Context;
 }): Installer {
 	const { host, registry } = options;
@@ -183,6 +185,8 @@ export function installer(options: {
 				await activate(entry);
 				renameSync(staged, join(dir, `${pending.name}.ts`));
 				await host.ui.show(card(pending, source, "Installed:"), ref);
+				// One that failed to start is reported as a problem, with why; that's the chief of staff's news.
+				if (options.extensions().failure(entry.name) !== undefined) return;
 				const tools = piExtensions(entry).flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
 				const where = [entry.chief?.length ? "you" : "", entry.jobs?.length ? "job agents" : ""].filter(Boolean).join(" and ");
 				await tell(pending, `Installed and on from now${where === "" ? "" : ` for ${where}`}.${tools.length === 0 ? "" : ` Tools: ${tools.join(", ")}.`}${entry.settings?.length ? " Its settings are in /settings." : ""}`, ref);
@@ -262,7 +266,9 @@ export function installer(options: {
 					entries.push(entry);
 					installed.add(entry.name);
 				} catch (error) {
-					host.log(`extension ${file}: not loaded: ${error instanceof Error ? error.message : String(error)}`);
+					const why = error instanceof Error ? error.message : String(error);
+					host.log(`extension ${file}: not loaded: ${why}`);
+					options.problem(`extension ${file.replace(/\.ts$/, "")}`, `it no longer loads: ${why}`);
 				}
 			}
 			return entries;

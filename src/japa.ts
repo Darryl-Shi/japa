@@ -22,7 +22,7 @@ import { delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JapaExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
 import { installer } from "./pi/installer.ts";
-import { address } from "./pi/inputs.ts";
+import { address, problem } from "./pi/inputs.ts";
 import { indexHistory } from "./pi/memory.ts";
 import { stateExtension } from "./pi/state.ts";
 import { triggers } from "./pi/triggers.ts";
@@ -148,8 +148,20 @@ export async function startJapa(
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
 	const registry = createRegistry();
-	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => japa.apply(callContext), context });
-	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, { models, ui, inbox }, log);
+	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => japa.apply(callContext), problem: (about, text) => report(about, text), context });
+	/** A problem with something japa runs: the chief of staff hears it once, and can have it fixed. Kept until it's open. */
+	const early: Array<[string, string | undefined]> = [];
+	const report = (about: string, text: string | undefined) => {
+		if (thread === undefined) return void early.push([about, text]);
+		const root = thread.root;
+		void root.commit((tx) => problem(tx, root.id, about, text), context).catch((error: unknown) => log(`problem with ${about}: ${String(error)}`));
+	};
+	const set = new ExtensionSet(
+		[...options.extensions(host), ...(await installs.loadInstalled())],
+		settings,
+		{ models, ui, inbox, problem: (entry, text) => report(`extension ${entry.name}`, text) },
+		log,
+	);
 	extensions = set;
 	const core = [stateTools, team.chief, schedule.extension, installs.extension];
 	const coreTools = [...core, team.job, team.helper].flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
@@ -173,6 +185,8 @@ export async function startJapa(
 		},
 		context,
 	);
+
+	for (const [about, text] of early.splice(0)) report(about, text);
 
 	const japa: Japa = {
 		thread,
