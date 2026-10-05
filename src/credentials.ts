@@ -1,5 +1,5 @@
 // Model credentials (API keys, Claude/ChatGPT subscription OAuth) in data/auth.json, the same shape pi uses.
-// Only the harness reads this file; the sandbox never sees it.
+// Only the harness reads this file; the workbench never sees it.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 

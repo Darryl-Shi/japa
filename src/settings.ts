@@ -1,5 +1,5 @@
 // Live settings: data/settings.json, re-read whenever the file changes. Secrets never live here: model credentials
-// are in data/auth.json, extension secrets in data/secrets.json, the bot token in the environment.
+// are in auth.json, extension secrets (a channel's token among them) in secrets.json, all in the same data directory.
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 

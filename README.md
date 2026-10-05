@@ -19,7 +19,7 @@ The script sets up the defaults. It asks for:
 - optionally a [boat.dev](https://boat.dev) key, for the agent's own computer;
 - optionally a [Parallel](https://parallel.ai) key, for web search.
 
-It brings its own Node 24 if the machine has none and runs the agent as a systemd service. At the end it asks you to send `/whoami` to your bot, and puts you on the allowlist.
+It brings its own Node 24 if the machine has none and runs the agent as a systemd service. At the end, if you gave a bot, it asks you to send it `/whoami` and puts you on the allowlist.
 
 Run the same command again to update; it also moves data from older layouts. For an unattended install, every answer can come from the environment instead (see the top of `install.sh`).
 
@@ -50,7 +50,8 @@ Run the same command again to update; it also moves data from older layouts. For
 - **open items,** the record of what's been promised, asked or is in progress;
 - **the team** of job agents;
 - **triggers;**
-- **the UI** and `/settings`.
+- **the UI**, with `/settings` and `/login`;
+- **the installer,** which adds extensions from chat.
 
 **Everything else is an extension.** Each extension is built from one shape, `JapaExtension` in `src/pi/extension.ts`, and is hooked in only through the **Host**. It never touches the main thread directly.
 
@@ -71,7 +72,7 @@ The core registers them while their extension is on and drops them when it's off
    - you reply to something from an earlier slice.
 
    The departing slice is summarised and reflected on in the background, so your message never waits. History search brings back anything older.
-3. **Answer, or delegate.** Quick things it answers directly. Longer work goes to `delegate`, which starts a job agent in its own conversation, with its own model, on the workbench. The chief of staff replies at once ("on it"), and the chat is free again.
+3. **Answer, or delegate.** By itself it does only the very simple: an answer it knows, or a quick tool call or two. Everything else goes to `delegate`, which starts a job agent in its own conversation, with its own model, on the workbench. The chief of staff replies at once ("on it"), and the chat is free again.
 4. **Work.** The job agent has these tools:
    - web search and fetch;
    - bash and files;
@@ -85,17 +86,17 @@ The core registers them while their extension is on and drops them when it's off
    - your decision comes back to it as a message;
    - an approved call then goes through exactly once.
 
-   Every reviewed call is written to `data/audit.jsonl`.
+   Every reviewed call is written to `audit.jsonl`.
 6. **Back to you.** A report wakes the chief of staff, not you. It checks the report, can question or redirect the job, connects it with what it knows, and decides what you hear: now, silently, or not yet. Results arrive threaded under your original message. A job stays open until you accept or drop it.
 7. **On its own.** Triggers wake the chief of staff without you, on a schedule ("08:00 on weekdays", "every 15m") or on an event. They're durable, so a sleeping schedule survives restarts.
 
 ### Memory
 
-Memory is one free-form document, `data/memory/memory.md`, holding what the agent knows about you and your world. It changes only through small edits, never wholesale rewrites:
+Memory is one free-form document, `memory/memory.md` in the data directory, holding what the agent knows about you and your world. It changes only through small edits, never wholesale rewrites:
 - `remember` during a conversation;
 - a reflection at the end of each slice, which also marks things that stopped being true.
 
-The directory is a git repo, so every change is a commit you can read and undo. Everything said before is searchable (`data/history.sqlite`, rebuilt from the transcript if lost).
+The directory is a git repo, so every change is a commit you can read and undo. Everything said before is searchable (`history.sqlite`, rebuilt from the transcript if lost).
 
 ### Default extensions
 
@@ -140,9 +141,9 @@ An extension can also:
 
 ### Extensions from chat
 
-The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file whose default export is `(host: Host) => JapaExtension`, importing values only from packages. Then the chief of staff calls `install_extension`, and you get a card with Install and Don't install buttons, every time, whatever the approvals mode, because the code runs inside the agent with its keys. When you tap Install it's loaded, saved to `data/extensions/`, and on from your next message, with no restart. Installing a new version replaces the old one in place, and installed extensions load again at start. `remove_extension` takes one out.
+The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file whose default export is `(host: Host) => JapaExtension`, importing values only from packages. Then the chief of staff calls `install_extension`, and you get a card with Install and Don't install buttons, every time, whatever the approvals mode, because the code runs inside the agent with its keys. When you tap Install it's loaded, saved to `extensions/` in the data directory, and on from your next message, with no restart. Installing a new version replaces the old one in place, and installed extensions load again at start. `remove_extension` takes one out.
 
-Which machine is the workbench is set in `machines.workbench` in `data/settings.json`, by the name of a machine provider:
+Which machine is the workbench is set in `machines.workbench` in `settings.json`, by the name of a machine provider:
 - `boat`: boat.dev;
 - `local`: this machine, for development;
 - any provider an installed extension declares.
@@ -151,7 +152,7 @@ It's opened when first needed and again when that setting changes.
 
 ## Configuration
 
-Send `/settings` in chat. It's a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to the bot's question, and that message is then deleted. Changes apply immediately. `/login` logs in to a model provider, with an API key or the provider's own account login, and offers its models in `/settings`.
+Send `/settings` in chat. It's a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to its question, and that message is then deleted. Changes apply immediately. `/login` logs in to a model provider, with an API key or the provider's own account login, and offers its models in `/settings`.
 
 Everything it keeps is in one directory, `JAPA_DATA` (default `data/` in the checkout; gitignored, readable only by you):
 
@@ -159,19 +160,19 @@ Everything it keeps is in one directory, `JAPA_DATA` (default `data/` in the che
 |---|---|
 | `settings.json` | settings, re-read on change. The **allowlist** is edited only here: per platform, the user ids that may talk to the agent. An empty list lets no one in. |
 | `auth.json` | model credentials (API keys or subscription logins) |
-| `secrets.json`, `.env` | extension keys and the bot token. Environment variables also work: `TELEGRAM_BOT_TOKEN`, `BOAT_API_KEY`, `PARALLEL_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `CODEX_API_KEY` |
+| `secrets.json`, `.env` | extension keys, as `<extension>.<key>` (Telegram's bot token is one). An extension's secret field can name an environment variable to fall back on; the defaults use `TELEGRAM_BOT_TOKEN`, `BOAT_API_KEY`, `PARALLEL_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `CODEX_API_KEY` |
 | `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
 | `memory/` | its memory of you, a git repo |
 | `extensions/` | extensions installed from chat |
 | `audit.jsonl`, `japa.log` | every reviewed action; the log |
 
-**The workbench** on boat.dev is set with `{ "provider": "boat", "type": "small", "screen": true, "idleSeconds": 7200 }`. It sleeps after `idleSeconds` unused, and each command pushes that deadline back. The next command wakes it with the same disk.
+**The workbench** on boat.dev is set with `{ "provider": "boat", "type": "small", "screen": true, "idleSeconds": 7200 }`, and its key in `/settings` → boat.dev. It sleeps after `idleSeconds` unused, and each command pushes that deadline back. The next command wakes it with the same disk.
 
 ## Security
 
 - **Only the allowlist gets in.** Every channel goes through the same gate, and the agent has no tool to change the list.
 - **Secrets never live on the workbench.** Model credentials and keys stay in the harness. A key a coding agent needs is passed to that one command's environment.
-- **Agent code never runs in the harness.** Shell, files and coding agents run on the workbench. Without one, the agent has no shell at all.
+- **Agent code never runs in the harness.** Shell, files and coding agents run on the workbench. Without one, the agent has no shell at all. The one exception is an extension, which runs inside japa with its keys, so only your tap installs one, after the file has been checked.
 - **Consequential actions need you,** through Approvals. Standing permissions come only from your "Always" taps and can be removed in `/settings`.
 
 ## Development

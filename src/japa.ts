@@ -1,5 +1,5 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
-// conversation, the UI and /settings. None of these can be turned off. Everything else is an extension, made from the
+// conversation, the UI with /settings and /login, and the installer. None of these can be turned off. Everything else is an extension, made from the
 // Host this builds, and hooked in only through it: what it gives each agent, its settings, its safe tools, its slice
 // end, its triggers, its lifecycle, and the channels, model providers and machines it adds through the core's adapters.
 import { join } from "node:path";

@@ -76,7 +76,7 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
   because renaming them would orphan state already saved. Records saved before a format change are read leniently:
   numeric message ids still match.
 - **The installer is the migration.** Re-running it updates the code and moves anything in an older layout (memory,
-  log, env) into place, so a deploy is always: push, then re-run the installer.
+  log) into place, so a deploy is always: push, then re-run the installer.
 - **Pi is experimental.** Only `src/pi` imports Pi; our own formats live in `src/core`.
 
 ## Checking your work

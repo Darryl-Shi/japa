@@ -1,6 +1,6 @@
-// boat.dev as a machine provider ("boat" in machines.workbench): a persistent Linux VM per role. The agent never sees any of this — to it, the
-// machine is just its computer. The API key stays in the harness; the machine is created no-env so none of the
-// account's secrets reach it. Files and installed packages persist across stop/resume.
+// boat.dev as a machine provider ("boat" in machines.workbench): a persistent Linux VM per role. The agent never
+// sees any of this — to it, the machine is just its computer. The API key stays in the harness; the machine is
+// created no-env so none of the account's secrets reach it. Files and installed packages persist across stop/resume.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { type Backend, type ExecOptions, type ExecResult, shellQuote as q } from "../core/backend.ts";

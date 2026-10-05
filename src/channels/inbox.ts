@@ -1,4 +1,4 @@
-// The hard user whitelist. Every messaging channel (Telegram now; WhatsApp, email, voice later) reaches the agent
+// The hard user whitelist. Every messaging channel, whichever extension provides it, reaches the agent
 // only through an Inbox, and an Inbox refuses anyone not on the platform's list in settings.allowlist. An empty list
 // lets no one in. The list lives only in data/settings.json: not in /settings, and no tool can change it, so neither
 // a message nor the agent itself can widen it. Channels are extensions, and the Host gives them an Inbox, never the
