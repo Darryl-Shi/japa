@@ -9,7 +9,7 @@ japa's runtime keeps three things nobody else holds: the state of every conversa
 
 ## Keys
 
-- Model credentials live in `auth.json`, set with `/login`. Extension keys live in `secrets.json`, set with a secret field in `/settings`. Neither is in code or `settings.json`.
+- Model credentials live in pi's `auth.json`, written by the installer or pi's own login. Extension keys live in `secrets.json`, set with a secret field in `/settings`. Neither is in code or `settings.json`.
 - The agent's commands don't get japa's keys in their environment. A key a command needs is passed to that one command.
 
 ## Code japa didn't ship

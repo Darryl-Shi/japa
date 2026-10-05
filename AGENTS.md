@@ -10,7 +10,7 @@ path. (The user's words; what follows is what they mean here.)
 ## One core, one unit, one adapter per thing japa is built from
 
 The core is what japa *is*, and can't be turned off: the main thread (the chief of staff), open items, the team of job
-agents, triggers, the UI and its commands (`/settings`, `/login`, `/jobs`), and the installer. Everything else is an
+agents, triggers, the UI and its commands (`/settings`, `/jobs`), and the installer. Everything else is an
 extension, and there is exactly one kind: `JapaExtension` (`src/pi/extension.ts`), made from the `Host` and hooked in
 only through it.
 
@@ -21,7 +21,7 @@ it, the built-in ones included:
   japa's own flow needs (who gets it, its settings, its safe tools, its exchange end, its triggers, its lifecycle);
 - a **channel** is a `Channel` in an extension's `channel` (`src/pi/extension.ts`), opened with its platform's `Inbox`
   (the allowlist gate) and the `UI`;
-- a **model provider** is a pi-ai `Provider` on the core's `Models`, its credential from `/login`.
+- a **model provider** is a pi-ai `Provider` on the core's `Models`, its credential in pi's `auth.json`.
 
 The core opens a channel while its extension is on, and shows cards on it, and closes it when it's off.
 docs/architecture.md has the full table.
@@ -32,8 +32,8 @@ laptop, a server, a VM) is the installer's business, not the code's.
 
 The adapter is where the type is enforced, so a provider can't half-implement the contract, and nothing reaches around
 it: the Host has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
-adapter stays generic: shell, files and the screen only use the call's environment (`api.env`); `/login` and the model
-picker only use `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
+adapter stays generic: shell, files and the screen only use the call's environment (`api.env`); the model picker only
+uses `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
 
 Because built-ins use the same path, a default has no privilege an installed extension lacks: the user can replace any
 of them. For example, Telegram used to attach itself to the UI and fetch its own inbox; now it declares a `Channel` and
@@ -48,9 +48,10 @@ option nobody asked for. A deleted speculative feature costs nothing; a kept one
 
 Behaviour that belongs to one provider or channel stays in that extension. The core changes only for a
 mechanism every implementation shares. When the Sudocode provider's models didn't show in `/settings`, the wrong fix
-was a core page and refresh calls for that case. The right fix was `/login` (any provider's own login, kept where pi
-keeps credentials) loading a provider's model list once it's logged in to. If a fix names one provider, it doesn't
-belong in the core.
+was a core page and refresh calls for that case. If a fix names one provider or channel, it doesn't belong in the core.
+
+Nor does japa wrap what pi already does. Model credentials are pi's: its `auth.json`, written by the installer or by
+pi's own login. A `/login` command was one such wrapper, a level of abstraction nothing else in japa has, so it's gone.
 
 ## Nothing hardcoded, nothing assumed
 
@@ -75,7 +76,7 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
 
 ## Trust lines
 
-- Secrets never go in code or `settings.json`. Model credentials live in `auth.json`, through `/login`. Extension keys
+- Secrets never go in code or `settings.json`. Model credentials live in pi's `auth.json`. Extension keys
   live in `secrets.json`, through a secret settings field.
 - Secrets never go in a command's environment. japa's own keys are taken out of the environment its commands run in;
   a key a command needs is passed to that one command.

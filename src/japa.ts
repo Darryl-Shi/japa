@@ -1,5 +1,5 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
-// conversation, the UI with /settings, /login and /jobs, and the installer. None of these can be turned off. Everything
+// conversation, the UI with /settings and /jobs, and the installer. None of these can be turned off. Everything
 // else is an extension, made from the Host this builds, and hooked in only through it: which agents get it, its
 // settings, its safe tools, its exchange end, its triggers, its lifecycle, and the channel it adds through the core's
 // adapter. The agent's computer is the machine this runs on: its tools run here, in `home`.
@@ -10,7 +10,6 @@ import { createRegistry, type Storage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Inbox } from "./channels/inbox.ts";
 import { attachJobs } from "./commands/jobs.ts";
-import { attachLogin } from "./commands/login.ts";
 import { SettingsMenu } from "./commands/settings.ts";
 import { History } from "./core/history.ts";
 import { stamp } from "./core/schedule.ts";
@@ -189,7 +188,6 @@ export async function startJapa(
 			(await models.getAvailable()).map((model) => ({ provider: model.provider, id: model.id, name: model.name, vision: model.input.includes("image") })),
 		changed: () => japa.apply(context),
 	}).attach(ui);
-	attachLogin(ui, models);
 	attachJobs(ui, {
 		list: () => team.list(main(), context),
 		detail: (id) => team.detail(main(), id, context),

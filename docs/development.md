@@ -19,7 +19,7 @@ src/
                    extension.ts: the one unit type and the Host · harness.ts: the main thread · inputs.ts: addressed
                    inputs · delegation.ts: the team · triggers.ts · installer.ts: extensions from chat
                    memory.ts · approvals.ts · web.ts · computer.ts · screen.ts: the built-in extensions, one file each
-  commands/        /settings, /login, /jobs: cards on the UI, on whichever channel is open
+  commands/        /settings, /jobs: cards on the UI, on whichever channel is open
   channels/        the Inbox (allowlist gate), and Telegram
 docs/              these pages
 ```

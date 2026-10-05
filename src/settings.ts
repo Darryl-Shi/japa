@@ -8,7 +8,7 @@ export type ModelChoice = { provider: string; modelId: string };
 export type Settings = {
 	/**
 	 * The chief of staff: judgment and synthesis, kept fast by small contexts rather than a small model. No default:
-	 * it's one of the models the user has logged in to (/login), chosen in /settings.
+	 * it's one of the models of a provider with a key in auth.json, chosen in /settings.
 	 */
 	model?: ModelChoice;
 	/** A job's model when the chief of staff doesn't pick one; default: the chief of staff's. */

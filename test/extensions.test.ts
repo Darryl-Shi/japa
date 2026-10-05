@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Approvals } from "../src/core/approvals.ts";
@@ -177,7 +177,6 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 		ui.commands(),
 		[
 			{ name: "settings", description: "Models, extensions and their options" },
-			{ name: "login", description: "Log in to a model provider" },
 			{ name: "jobs", description: "What the team is working on" },
 		],
 		"advertised, with what they do",
@@ -383,52 +382,6 @@ test("modalities: a photo is shown to a model that takes images and kept on its 
 	assert.ok(photo[1]!.startsWith(join(home, "inbox")), "in inbox/ under its home");
 	assert.deepEqual(new Uint8Array(await readFile(photo[1]!)), png, "byte for byte");
 	assert.deepEqual(new Uint8Array(await readFile(note[1]!)), voice);
-	await h.done();
-});
-
-test("login: /login runs a provider's own login from chat; then its models are offered", async () => {
-	const big = { id: "dyn-big", name: "Dyn Big", api: "openai-completions" as const, provider: "dyn", baseUrl: "http://dyn.invalid", input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 };
-	const unused = () => {
-		throw new Error("not in this test");
-	};
-	const h = await agent({
-		extensions: () => [],
-		providers: [
-			createProvider({
-				id: "dyn",
-				name: "Dyn",
-				auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
-				models: [],
-				fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
-				api: { stream: unused, streamSimple: unused },
-			}),
-		],
-		script: () => say("ok"),
-	});
-	const ui = h.host.ui;
-	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
-	const press = (label: string) => {
-		const last = h.cards.at(-1)!;
-		const button = last.card.buttons!.flat().find((candidate) => candidate.text === label);
-		assert.ok(button !== undefined, `no button "${label}" in ${labels().join(" | ")}`);
-		return ui.press(button.data, last.ref);
-	};
-	const at = { channel: "test", chatId: "7", messageId: "1" };
-
-	await ui.run("login", at);
-	assert.ok(labels().includes("Dyn"), "offered, without a tick");
-	const pressed = press("Dyn");
-	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the provider's own prompt for its key");
-	assert.equal(h.cards.at(-1)!.card.ask!.secret, true, "asked for as a secret");
-	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: "7", messageId: "99" });
-	await pressed;
-	assert.equal(h.cards.at(-1)!.card.text, "Logged in to Dyn.");
-
-	await ui.run("settings", at);
-	await press("General");
-	await press("Chief of staff model: faux/faux-1");
-	await press("dyn (1)");
-	assert.ok(labels().includes("Dyn Big"), "its models are in the picker");
 	await h.done();
 });
 

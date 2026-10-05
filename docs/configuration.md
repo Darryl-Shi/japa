@@ -3,7 +3,6 @@
 ## From chat
 
 - `/settings` is a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to its question, and that message is then deleted. Changes apply immediately.
-- `/login` logs in to a model provider, with an API key or the provider's own account login, and offers its models in `/settings`.
 
 ## Where data lives
 
@@ -12,7 +11,7 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 | File | Holds |
 |---|---|
 | `settings.json` | settings, re-read when the file changes. The **allowlist** is edited only here: per platform, the user ids that may talk to the agent. An empty list lets no one in. |
-| `auth.json` | model credentials (API keys or subscription logins) |
+| `auth.json` | model credentials (API keys or subscription logins), pi's own format: written by the installer, or by pi's login (`node_modules/.bin/pi-ai login <provider>`, run in this directory) |
 | `secrets.json`, `.env` | extension keys, as `<extension>.<key>` (Telegram's bot token is one). An extension's secret field can name an environment variable to fall back on; the defaults use `TELEGRAM_BOT_TOKEN` and `PARALLEL_API_KEY`. Variables named this way are taken out of the environment the agent's commands run in |
 | `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
 | `memory/` | its memory of you, a git repo |

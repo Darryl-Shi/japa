@@ -225,7 +225,7 @@ export class MainThread {
 	}
 
 	async answer(requestId: string, content: Content, context: Context, arrival: Arrival = {}): Promise<Answer> {
-		if (this.settings().model === undefined) return { error: "no model chosen yet: log in to a provider with /login, then pick a model in /settings" };
+		if (this.settings().model === undefined) return { error: "no model chosen yet: pick one in /settings (from the providers with a key in auth.json)" };
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
 		const boundary = existing === undefined ? await this.boundary(typeof content === "string" ? content : textOf({ role: "user", content, timestamp: 0 }), arrival, context) : undefined;
 		if (boundary !== undefined) await this.startSlice(boundary, arrival, context);
