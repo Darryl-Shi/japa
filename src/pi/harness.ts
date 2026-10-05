@@ -351,6 +351,13 @@ export class MainThread {
 		return { channel: target.channel ?? "", chatId: String(target.chatId), messageId: String(target.messageId) };
 	}
 
+	/** Queue a message for the user; the outbox delivers it. The id makes queuing it twice harmless. */
+	async send(id: string, message: OutboxMessage, context: Context): Promise<void> {
+		await this.root.commit(async (tx) => {
+			(await tx.doc(Outbox)).messages[id] = message;
+		}, context);
+	}
+
 	/**
 	 * Deliver the outbox (messages the chief of staff sends on its own: results, questions, news) through a channel, now
 	 * and whenever something is added. The open item learns the sent message's id, so a reply to it finds the job.

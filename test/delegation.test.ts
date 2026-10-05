@@ -51,6 +51,7 @@ async function setup(script: (turn: Turn) => AssistantMessage | Promise<Assistan
 		openItems: state.openItems,
 		settings: () => ({ delegateModel: { provider: "faux", modelId: "faux-1" }, jobModels: { fast: { provider: "faux", modelId: "faux-fast" } } }),
 		origin: (callContext) => thread!.origin(callContext),
+		send: (id, message, callContext) => thread!.send(id, message, callContext),
 		withhold: () => [thread!.core, stateTools, team.chief],
 	});
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" }, context: { idleMinutes: 60, sliceTokens: 1_000_000 } });
@@ -108,17 +109,44 @@ test("a job reports to the chief of staff, who decides what the user hears; repo
 	await h.done();
 });
 
-test("a job agent that ends without reporting is reported automatically", async () => {
+test("the chief of staff's reply to a report reaches the user, under their request; a reply to progress alone stays with it", async () => {
 	const h = await setup((turn) => {
-		if (turn.role === "job") return say("I looked; nothing matches.");
-		if (turn.text.includes("look for")) return call("delegate", { title: "Search", brief: "Look for a match." });
+		if (turn.role === "job") {
+			if (turn.text.startsWith("Find the")) return call("report", { kind: "progress", text: "Checked two sources so far." });
+			if (turn.text === "Reported.") return say("Canberra, since 1913.");
+			return say("ok");
+		}
+		if (turn.text.includes("capital")) return call("delegate", { title: "Capital", brief: "Find the capital of Australia." });
+		if (turn.text.startsWith("Started job")) return say("On it.");
+		if (turn.text.includes("— progress]")) return say("Still checking.");
+		if (turn.text.includes("— done]")) return say("It's Canberra, the capital since 1913.");
+		return say("ok");
+	});
+	await h.thread.ask("tg:1:3", "[Mon 10:00] what's the capital of Australia?", target(3), context);
+	await h.until(() => h.sent.length === 1, "the answer");
+	assert.deepEqual(h.sent, [{ text: "It's Canberra, the capital since 1913.", buzz: true, replyTo: { channel: "test", chatId: "1", messageId: "3" }, itemId: "t1" }], "only the reply to the result was sent");
+	assert.ok(h.turns.some((turn) => turn.role === "chief" && turn.text === '[Report from job t1 "Capital" — done] Canberra, since 1913.'), "a job that ends without reporting has its last words reported as done");
+	assert.equal(h.state.openItems.open().length, 0, "which closes it");
+	await h.done();
+});
+
+test("a subagent's report runs its job again, and the job's last words then reach the chief of staff", async () => {
+	const h = await setup((turn) => {
+		if (turn.role === "subagent") return say("A costs $10.");
+		if (turn.role === "job") {
+			if (turn.text.startsWith("Price A")) return call("subagent", { title: "Price A", brief: "Find the price of A." });
+			if (turn.text.startsWith("Started subagent")) return say("Waiting for the price.");
+			if (turn.text.startsWith("[Report from job t1.1")) return say("A is $10.");
+			return say("ok");
+		}
+		if (turn.text.includes("price of A")) return call("delegate", { title: "Price", brief: "Price A." });
 		if (turn.text.startsWith("Started job")) return say("On it.");
 		return say("(noted)");
 	});
-	await h.thread.ask("tg:1:1", "[Mon 10:00] look for it", target(1), context);
-	await h.until(() => h.turns.some((turn) => turn.role === "chief" && turn.text.startsWith("[Report from job t1")), "the automatic report");
-	const report = h.turns.find((turn) => turn.role === "chief" && turn.text.startsWith("[Report from job t1"));
-	assert.equal(report?.text, '[Report from job t1 "Search" — automatic] Went quiet without reporting. Its last words: I looked; nothing matches.');
+	await h.thread.ask("tg:1:1", "[Mon 10:00] what's the price of A?", target(1), context);
+	await h.until(() => h.turns.some((turn) => turn.role === "chief" && turn.text.startsWith("[Report from job t1 ")), "the job's report");
+	const reports = h.turns.filter((turn) => turn.role === "chief" && turn.text.startsWith("[Report from job"));
+	assert.deepEqual(reports.map((turn) => turn.text), ['[Report from job t1 "Price" — done] A is $10.'], "not reported while it waited on its subagent, and then once");
 	await h.done();
 });
 

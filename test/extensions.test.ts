@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { LocalBackend } from "../src/backends/local.ts";
 import { Approvals } from "../src/core/approvals.ts";
@@ -69,6 +70,29 @@ test("approvals: a consequential call waits for the user's tap on a card, then g
 	assert.deepEqual(emails, ["bob: Draft attached."]);
 	const audit = (await readFile(join(tmpdir(), `audit-${process.pid}-1.jsonl`), "utf8")).trim().split("\n").map((line) => JSON.parse(line).verdict);
 	assert.deepEqual(audit, ["asked", "approve", "ran-approved"]);
+	await h.done();
+});
+
+test("approvals: a review that fails is tried again, so a provider's hiccup doesn't ask the user about a benign call", async () => {
+	const emails: string[] = [];
+	const store = new Approvals(join(tmpdir(), `approvals-${process.pid}-3.json`), join(tmpdir(), `audit-${process.pid}-3.jsonl`));
+	let reviews = 0;
+	const h = await agent({
+		extensions: (host) => [approvalsExtension(host, store), emailExtension(emails)],
+		script: (turn) => {
+			if (isReview(turn.request)) {
+				reviews++;
+				return reviews === 1 ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded" }) : say(JSON.stringify({ ask: false, summary: "Email a note to self", rule: "Email self" }));
+			}
+			if (turn.text.includes("note to self")) return call("send_email", { to: "me", body: "Remember the milk." });
+			if (turn.text === "Email sent.") return say("Noted.");
+			return say("ok");
+		},
+	});
+	assert.deepEqual(await h.ask("1", "[Mon 10:00] email me a note to self"), { text: "Noted." });
+	assert.equal(reviews, 2, "the failed review was tried again");
+	assert.equal(h.cards.length, 0, "and the user wasn't asked");
+	assert.deepEqual(emails, ["me: Remember the milk."]);
 	await h.done();
 });
 
@@ -267,10 +291,11 @@ test("channels: the core opens each with its inbox and shows cards on it while i
 test("jobs: /jobs lists what the team is working on, shows a job's detail and recent activity; one that has reported can be closed", async () => {
 	const h = await agent({
 		extensions: () => [],
-		script: (turn) => {
+		script: async (turn) => {
 			if (turn.job !== undefined) {
-				if (turn.text.includes("Compare fares")) return call("report", { kind: "progress", text: "Two airlines checked." });
-				return say("Carrying on.");
+				if (turn.text.includes("Compare fares")) return call("report", { kind: "decision needed", text: "Two airlines checked. Window or aisle?" });
+				if (turn.text.includes("Shinjuku")) await new Promise((resolve) => turn.signal?.addEventListener("abort", resolve)); // working till cancelled
+				return say("Waiting for the answer.");
 			}
 			if (turn.text.includes("look into flights")) return call("delegate", { title: "Flights to Tokyo", brief: "Compare fares for May." });
 			if (turn.text.includes("find a hotel")) return call("delegate", { title: "Hotel", brief: "Find a hotel in Shinjuku." });
@@ -292,14 +317,14 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 	assert.equal(h.cards.at(-1)!.card.text, "No jobs running.");
 
 	assert.deepEqual(await h.ask("1", "[Mon 10:00] look into flights"), { text: "On it." });
-	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Report from job")), "the job's progress report");
+	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Report from job")), "the job's question");
 	await ui.run("jobs", at);
 	assert.match(h.cards.at(-1)!.card.text, /^Jobs running:\n• Flights to Tokyo \(\w+\): reported, waiting on the chief of staff, started just now$/);
 	await press("Flights to Tokyo");
 	const detail = h.cards.at(-1)!.card.text;
 	assert.match(detail, /Model: faux\/faux-1/);
 	assert.match(detail, /← .*Compare fares for May\./, "what it was told");
-	assert.match(detail, /→ report \{"kind":"progress","text":"Two airlines checked\."\}/, "what it ran");
+	assert.match(detail, /→ report \{"kind":"decision needed","text":"Two airlines checked\. Window or aisle\?"\}/, "what it ran");
 
 	assert.ok(!labels().includes("Cancel job"), "it isn't working: it has reported");
 	await press("Close job");
@@ -308,7 +333,7 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 
 	// A job still working (it hasn't reported) is cancelled instead, after a confirming tap.
 	await h.ask("2", "[Mon 10:02] find a hotel");
-	await h.until(() => h.turns.some((turn) => turn.text.includes("automatic]")), "the hotel job going quiet");
+	await h.until(() => h.turns.some((turn) => turn.text.includes("Shinjuku")), "the hotel job at work");
 	await ui.run("jobs", at);
 	await press("Hotel");
 	await press("Cancel job");
@@ -336,7 +361,7 @@ test("messages: message_user while replying to the user is refused (no double me
 				return call("message_user", { text: "Use the QR login instead.", urgency: "now", job });
 			}
 			if (turn.text.startsWith("Not sent")) return say("On it.");
-			if (turn.text.includes("automatic]")) return call("message_job", { id: job, text: "Check May 3 too." });
+			if (turn.text.includes("— done] Working on it.")) return call("message_job", { id: job, text: "Check May 3 too." });
 			return say("Noted.");
 		},
 	});

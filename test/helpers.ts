@@ -25,7 +25,7 @@ export const say = (text: string) => fauxAssistantMessage(text);
 export const target = (messageId: number) => ({ channel: "test", chatId: "1", messageId: String(messageId) });
 
 /** One model request: who it's from (the chief of staff, a job, or a background call) and the newest message it answers. */
-export type Turn = { text: string; job?: string; request: string };
+export type Turn = { text: string; job?: string; request: string; signal?: AbortSignal };
 
 function lastText(request: PiContext): string {
 	const last = [...request.messages].reverse().find((message) => message.role === "user" || message.role === "toolResult");
@@ -47,10 +47,10 @@ export async function agent(options: {
 	const models = createModels();
 	models.setProvider(faux.provider);
 	const turns: Turn[] = [];
-	const respond: FauxResponseFactory = async (request) => {
+	const respond: FauxResponseFactory = async (request, requestOptions) => {
 		const sent = JSON.stringify(request);
 		if (sent.includes("You keep the working set")) return say(JSON.stringify({ working_set: "" }));
-		const turn: Turn = { text: lastText(request), request: sent, ...(/Your job \(([\w.]+)\)/.exec(sent) === null ? {} : { job: /Your job \(([\w.]+)\)/.exec(sent)![1]! }) };
+		const turn: Turn = { text: lastText(request), request: sent, ...(requestOptions?.signal === undefined ? {} : { signal: requestOptions.signal }), ...(/Your job \(([\w.]+)\)/.exec(sent) === null ? {} : { job: /Your job \(([\w.]+)\)/.exec(sent)![1]! }) };
 		turns.push(turn);
 		return options.script(turn);
 	};

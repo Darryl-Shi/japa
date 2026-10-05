@@ -2,7 +2,7 @@
 // that isn't marked safe and asks the user only for what matters: sending as them, spending, deleting, deploying,
 // changing accounts. The call is blocked, not held: the agent ends its turn, the user taps a button, and the decision
 // comes back as a message; an approved call then goes through exactly once. A job waiting on a decision is held, so
-// it isn't reported as gone quiet. Standing permissions come only from the user (the "Always" button) and can be
+// its run ending isn't taken as its report. Standing permissions come only from the user (the "Always" button) and can be
 // removed in /settings. The card is channel-neutral: whichever channel is on shows it.
 import type { Models, ToolCall } from "@earendil-works/pi-ai";
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
@@ -31,23 +31,42 @@ const REVIEW_PROMPT = [
 
 type Verdict = { ask: boolean; summary: string; rule: string };
 
-/** Exported for checking the prompt against real models. */
-export async function review(models: Models, model: { provider: string; modelId: string } | undefined, call: ToolCall, permissions: readonly string[]): Promise<Verdict> {
-	const fallback = { ask: true, summary: `${call.name}`, rule: `Use ${call.name}` };
-	const resolved = model === undefined ? undefined : models.getModel(model.provider, model.modelId);
-	if (resolved === undefined) return fallback;
+type ModelChoice = { provider: string; modelId: string };
+
+/**
+ * Ask the reviewing models in turn (each up to twice, since a provider can fail now and then) until one gives a
+ * verdict. Only when none does is the user asked, saying the review failed. Exported for checking the prompt against
+ * real models.
+ */
+export async function review(models: Models, choices: readonly (ModelChoice | undefined)[], call: ToolCall, permissions: readonly string[], log: (line: string) => void = () => {}): Promise<Verdict> {
 	const content = [
 		`<standing_permissions>\n${permissions.join("\n") || "(none)"}\n</standing_permissions>`,
 		`<action tool="${call.name}">\n${JSON.stringify(call.arguments).slice(0, 4000)}\n</action>`,
 	].join("\n");
-	try {
-		const answer = await models.completeSimple(resolved, { systemPrompt: REVIEW_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
-		const parsed = parseJson(answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""));
-		if (parsed === undefined) return fallback;
-		return { ask: parsed.ask !== false, summary: String(parsed.summary ?? fallback.summary), rule: String(parsed.rule ?? fallback.rule) };
-	} catch {
-		return fallback; // when in doubt, ask
+	const seen = new Set<string>();
+	for (const choice of choices) {
+		if (choice === undefined || seen.has(`${choice.provider}/${choice.modelId}`)) continue;
+		seen.add(`${choice.provider}/${choice.modelId}`);
+		const model = models.getModel(choice.provider, choice.modelId);
+		if (model === undefined) {
+			log(`approval review: no model ${choice.provider}/${choice.modelId}`);
+			continue;
+		}
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			try {
+				const answer = await models.completeSimple(model, { systemPrompt: REVIEW_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
+				const text = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+				const parsed = parseJson(text);
+				if (parsed !== undefined && typeof parsed.ask === "boolean") {
+					return { ask: parsed.ask, summary: String(parsed.summary ?? call.name), rule: String(parsed.rule ?? `Use ${call.name}`) };
+				}
+				log(`approval review of ${call.name} by ${model.id} failed: ${answer.stopReason === "error" ? answer.errorMessage : `no verdict in ${JSON.stringify(text.slice(0, 200))}`}`);
+			} catch (error) {
+				log(`approval review of ${call.name} by ${model.id} failed: ${String(error)}`);
+			}
+		}
 	}
+	return { ask: true, summary: `${call.name} (couldn't be reviewed automatically)`, rule: `Use ${call.name}` };
 }
 
 export const APPROVAL_PREFIX = "[Approval ";
@@ -108,7 +127,7 @@ export function approvalsExtension(host: Host, approvals: Approvals): JapaExtens
 					const verdict =
 						mode === "always"
 							? { ask: true, summary: call.name, rule: `Use ${call.name}` }
-							: await review(host.models, all.jobModels.fast ?? all.model, call, Array.isArray(permissions) ? permissions.map(String) : []);
+							: await review(host.models, [all.jobModels.fast, all.model], call, Array.isArray(permissions) ? permissions.map(String) : [], host.log);
 					if (!verdict.ask) {
 						approvals.audit({ conversationId, tool: call.name, args, verdict: "allowed", summary: verdict.summary });
 						return undefined;

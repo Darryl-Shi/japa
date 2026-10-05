@@ -142,6 +142,7 @@ export async function startJapa(
 		openItems: state.openItems,
 		settings: () => settings.get(),
 		origin: (callContext) => main().origin(callContext),
+		send: (id, message, callContext) => main().send(id, message, callContext),
 		withhold: () => [main().core, stateTools, team.chief, schedule.extension, installs.extension, ...extensions!.withheldFromJobs()],
 		waitingOnUser: (conversationId) => holds.has(String(conversationId)),
 	});

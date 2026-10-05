@@ -1,16 +1,17 @@
 // Delegation. The user only ever talks to the chief of staff (the main thread). The chief of staff hands work to a
 // job agent: one per job, with a model assigned to that job, its own small conversation, the same computer, and
 // subagents of its own when the work splits. The job agent decides when to report; a report wakes the chief of
-// staff, which synthesizes and decides what the user hears (message_user). A job is finished when its open item is
-// closed (the one record of that, for the chief of staff and /jobs alike): by itself when the job reports done, or by
-// the chief of staff or the user; more for a finished job (message_job) opens it again. A job agent that goes quiet is
-// reported automatically.
+// staff, which synthesizes, and what it replies is what the user hears (a reply to progress alone stays with it). A
+// job is finished when its open item is closed (the one record of that, for the chief of staff and /jobs alike): by
+// itself when the job reports done, or by the chief of staff or the user; more for a finished job (message_job) opens
+// it again. A job agent that ends its run without reporting has its last words reported as done for it.
 import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, type Message, Type } from "@earendil-works/pi-ai";
-import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
+import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, GenerationTask, hook, section, type Tx } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
 import type { CardRef } from "../core/ui.ts";
 import type { ModelChoice } from "../settings.ts";
+import { TRIGGER_PREFIX } from "./triggers.ts";
 
 /** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose one. */
 export type OutboxMessage = { text: string; replyTo?: CardRef; buzz: boolean; itemId?: string };
@@ -36,6 +37,8 @@ type Job = {
 	/** Absent on jobs started before it was recorded. */
 	startedAt?: number;
 	lastReportAt?: number;
+	/** Absent on reports made before it was recorded. */
+	lastReportKind?: Kind;
 };
 
 /** A job as the user sees it (/jobs). */
@@ -98,10 +101,19 @@ function reportText(job: Job, kind: string, text: string): string {
 	return `${REPORT_PREFIX}${job.id} "${job.title}" — ${kind}] ${text}`;
 }
 
-/** Send a message to a job and see it through; if the job agent ends its run without reporting, report for it. */
+type Kind = "done" | "stuck" | "decision needed" | "progress";
+/** Where a report is made from: a tool call or a task, each with its own commit. */
+type Via = { commit(change: (tx: Tx) => Promise<void>, context: Context): Promise<unknown>; conversation(id: ConversationId, context: Context): Promise<Pick<Conversation, "submit"> | undefined> };
+type Report = (job: Job, kind: Kind, text: string, requestId: string, via: Via, context: Context) => Promise<void>;
+
+/**
+ * Send a message to a job and see it through. If the job agent ends its run without reporting, its last words are its
+ * report (done), unless it's waiting: on its subagents, whose reports come back as runs of their own, or on the user.
+ */
 type RunInput = { jobId: string; message: string; startedAt: number };
-type RunState = { phase: "run" } | { phase: "report"; text?: string };
-const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean, finished: (job: Job) => boolean) => defineTask<RunInput, RunState, null>({
+/** A checkpoint saved before reports had a kind has only its text. */
+type RunState = { phase: "run" } | { phase: "report"; kind?: Kind; text?: string };
+const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean, finished: (job: Job) => boolean, report: Report) => defineTask<RunInput, RunState, null>({
 	name: "jarvis.job-run",
 	version: 1,
 	initial: () => ({ phase: "run" }),
@@ -111,24 +123,30 @@ const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean, fin
 			if (job === undefined) return void (await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context));
 			const conversation = (await runtime.conversation(job.conversationId, context))!;
 			const settled = await (await conversation.submit({ type: "input", content: task.input.message, requestId: `job-run:${task.id}`, whenBusy: "followUp" }, context)).wait(context);
-			const current = (await runtime.snapshot(Jobs, context))?.jobs[job.id];
-			let text: string | undefined;
-			if (current === undefined || finished(current)) text = undefined;
-			else if ((current?.lastReportAt ?? 0) >= task.input.startedAt) text = undefined; // it reported itself
-			else if (waitingOnUser(job.conversationId)) text = undefined; // paused on the user's approval, which resumes it
-			else if (settled.status === "unanswered") text = settled.reason === "aborted" ? undefined : `Failed: ${settled.reason}`;
+			const jobs = (await runtime.snapshot(Jobs, context))?.jobs ?? {};
+			const current = jobs[job.id];
+			const working = Object.values(jobs).some((sub) => sub.parentConversationId === job.conversationId && sub.status === "working" && !finished(sub));
+			let next: { kind: Kind; text: string } | undefined;
+			if (current === undefined || finished(current)) next = undefined;
+			else if ((current.lastReportAt ?? 0) >= task.input.startedAt && current.lastReportKind !== "progress") next = undefined; // it reported itself
+			else if (waitingOnUser(job.conversationId)) next = undefined; // paused on the user's approval, which resumes it
+			else if (working) next = undefined; // its subagents' reports will run it again
+			else if (settled.status === "unanswered") next = settled.reason === "aborted" ? undefined : { kind: "stuck", text: `Failed: ${settled.reason}` };
 			else if (settled.type === "input") {
 				const answer = (await runtime.context(job.conversationId, context)).entries.find((entry) => entry.id === settled.answer);
-				text = `Went quiet without reporting. Its last words: ${textOf(answer?.model?.[0] as AssistantMessage | undefined) || "(nothing)"}`;
+				next = { kind: "done", text: textOf(answer?.model?.[0] as AssistantMessage | undefined) || "(ended without a word)" };
 			}
-			await runtime.commit(() => ({ status: "running", checkpoint: { phase: "report", ...(text === undefined ? {} : { text }) } }), context);
+			await runtime.commit(() => ({ status: "running", checkpoint: { phase: "report", ...next } }), context);
 		},
 		report: async (task, runtime, context) => {
-			const text = task.state.checkpoint.text;
+			const { kind, text } = task.state.checkpoint;
 			const job = (await runtime.snapshot(Jobs, context))?.jobs[task.input.jobId];
 			if (text !== undefined && job !== undefined) {
-				const parent = await runtime.conversation(job.parentConversationId, context);
-				await parent?.submit({ type: "input", content: reportText(job, "automatic", text), requestId: `auto-report:${task.id}`, whenBusy: "followUp" }, context);
+				const via: Via = {
+					commit: (change, callContext) => runtime.commit(async (tx) => void (await change(tx)), callContext),
+					conversation: (id, callContext) => runtime.conversation(id, callContext),
+				};
+				await report(job, kind ?? (text.startsWith("Failed") ? "stuck" : "done"), text, `auto-report:${task.id}`, via, context);
 			}
 			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
 		},
@@ -136,18 +154,31 @@ const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean, fin
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
+/** What the chief of staff's run was answering: the inputs since its last answer, and whether it messaged the user. */
+function answering(messages: readonly Message[]): { inputs: string[]; messagedUser: boolean } {
+	const last = messages.findLastIndex((message) => message.role === "assistant" && message.stopReason !== "toolUse");
+	const run = messages.slice(last + 1);
+	return {
+		inputs: run.flatMap((message) => (message.role !== "user" ? [] : [typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("")])),
+		messagedUser: run.some((message) => message.role === "assistant" && message.content.some((part) => part.type === "toolCall" && part.name === "message_user")),
+	};
+}
+
+const REPORT_KIND = /^\[Report from job ([\w.]+) "[\s\S]*?" — (done|stuck|decision needed|progress|automatic)\]/;
+
 const CHIEF_GUIDE = [
 	"You run a team. delegate hands a self-contained job to a job agent (its own computer and model; pick a model",
 	"name only when the job needs it). Job agents can have tools you don't, such as coding agents: hand them coding work.",
-	"Job agents report back to you as messages starting with \"[Report from job\" —",
-	"those are your team, not the user, and your reply to them goes nowhere. On a report: check it, ask the job agent",
-	"more or redirect it (message_job) if it's thin or wrong, and connect it with other jobs and what you know of the",
-	"user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet. message_user",
-	"always goes to the user, never to a job; when you're replying to the user, just reply.",
-	"Don't break into an unrelated conversation with non-urgent news; mention it at a natural opening. A job stays",
-	"closes when its agent reports done; if the user wants more of it, message_job opens it again; cancel_job one that's",
-	"no longer wanted. delegate tracks the job itself: don't track it as well. Messages starting \"[Trigger\" are",
-	"your own schedule or an event, not the user: do what they ask and, as with reports, decide what the user hears.",
+	"Job agents report back to you as messages starting with \"[Report from job\": your team, not the user. On a",
+	"report: check it, ask the job agent more or redirect it (message_job) if it's thin or wrong, and connect it with",
+	"other jobs and what you know of the user. Then reply with what the user should hear: your reply to reports is sent",
+	"to them, under the request it answers, with a notification. A reply to progress reports alone stays with you, and",
+	"an empty reply sends nothing. For news that can wait, use message_user with urgency silent instead (then your",
+	"reply isn't sent as well), and don't break into an unrelated conversation with it; mention it at a natural",
+	"opening. message_user always goes to the user, never to a job. A job closes when its agent reports done; if the",
+	"user wants more of it, message_job opens it again; cancel_job one that's no longer wanted. delegate tracks the job",
+	"itself: don't track it as well. Messages starting \"[Trigger\" are your own schedule or an event, not the user: do",
+	"what they ask, and as with reports, your reply is sent to the user.",
 ].join(" ");
 
 const JOB_GUIDE = [
@@ -183,14 +214,37 @@ export function delegationExtensions(options: {
 	origin: (context: Context) => Promise<CardRef | undefined>;
 	/** What a new job agent must not have (the chief of staff's own extensions, anything turned off). */
 	withhold: () => readonly Extension[];
-	/** A job paused on something only the user can give (an approval) isn't reported as gone quiet. */
+	/** A job paused on something only the user can give (an approval) isn't reported for. */
 	waitingOnUser?: (conversationId: ConversationId) => boolean;
+	/** Queue a message for the user (the outbox), under an id that makes sending it twice harmless. */
+	send: (id: string, message: OutboxMessage, context: Context) => Promise<void>;
 }): Delegation {
 	const { openItems } = options;
+	/** The chief of staff's latest request, for what its answer was answering. */
+	let lastRequest: { taskId: string; messages: readonly Message[] } | undefined;
 	/** Finished: cancelled, or its open item (a subagent's: its job's) closed, which is the one record of that. */
 	const finished = (job: Job) =>
 		job.status === "cancelled" || job.status === "concluded" || openItems.all().find((item) => item.id === job.id.split(".")[0])?.closedAt !== undefined;
-	const Run = makeRun(options.waitingOnUser ?? (() => false), finished);
+	/**
+	 * A report: recorded on its job (done closes a job's open item, which finishes it), then sent to whoever gave the
+	 * job. To a job, as a run of it, so it's seen through; to the chief of staff, as a message.
+	 */
+	const report: Report = async (job, kind, text, requestId, via, context) => {
+		let parentJob: Job | undefined;
+		await via.commit(async (tx) => {
+			const jobs = (await tx.doc(Jobs)).jobs;
+			const stored = jobs[job.id];
+			if (stored !== undefined && stored.status === "working") stored.status = "reported";
+			if (stored !== undefined) Object.assign(stored, { lastReportAt: Date.now(), lastReportKind: kind });
+			parentJob = Object.values(jobs).find((candidate) => candidate.conversationId === job.parentConversationId);
+			if (parentJob !== undefined && !finished(parentJob)) await tx.createTask(Run, { jobId: parentJob.id, message: reportText(job, kind, text), startedAt: Date.now() }, background);
+		}, context);
+		if (kind === "done" && job.depth === 1) openItems.close(job.id, `done: ${line(text, 200)}`);
+		if (parentJob !== undefined) return;
+		const parent = await via.conversation(job.parentConversationId, context);
+		await parent?.submit({ type: "input", content: reportText(job, kind, text), requestId, whenBusy: "followUp" }, context);
+	};
+	const Run = makeRun(options.waitingOnUser ?? (() => false), finished, report);
 
 	/** Create a job's conversation and send it its brief, in one commit. */
 	const startJob = async (tx: Tx, job: Omit<Job, "conversationId" | "status">, brief: string, withhold: readonly Extension[]) => {
@@ -215,15 +269,7 @@ export function delegationExtensions(options: {
 				execute: async (args, api, context) => {
 					const job = Object.values((await api.snapshot(Jobs, context))?.jobs ?? {}).find((candidate) => candidate.conversationId === api.conversationId);
 					if (job === undefined) return reply("You're not on a job.");
-					await api.commit(async (tx) => {
-						const stored = (await tx.doc(Jobs)).jobs[job.id];
-						if (stored !== undefined && stored.status === "working") stored.status = "reported";
-						if (stored !== undefined) stored.lastReportAt = Date.now();
-					}, context);
-					// Done closes a job's open item, which is what finishes it; a subagent finishes with its job.
-					if (args.kind === "done" && job.depth === 1) openItems.close(job.id, `done: ${line(args.text, 200)}`);
-					const parent = await api.conversation(job.parentConversationId, context);
-					await parent?.submit({ type: "input", content: reportText(job, args.kind, args.text), requestId: `report:${api.taskId}`, whenBusy: "followUp" }, context);
+					await report(job, args.kind, args.text, `report:${api.taskId}`, api, context);
 					return reply("Reported.");
 				},
 			}),
@@ -244,7 +290,7 @@ export function delegationExtensions(options: {
 					if (parent === undefined) return reply("You're not on a job.");
 					const id = `${parent.id}.${Object.values(jobs).filter((candidate) => candidate.parentConversationId === api.conversationId).length + 1}`;
 					await api.commit((tx) => startJob(tx, { id, title: args.title, parentConversationId: api.conversationId, depth: 2, model: parent.model }, args.brief, [...options.withhold(), job]), context);
-					return reply(`Started subagent ${id}.`);
+					return reply(`Started subagent ${id}. Its report comes back to you as a message: end your turn to wait for it, or carry on with other work meanwhile.`);
 				},
 			}),
 		],
@@ -254,6 +300,25 @@ export function delegationExtensions(options: {
 		name: "jarvis.delegation",
 		tasks: [Anchor, Run],
 		sections: [section("team", () => CHIEF_GUIDE, { tag: false })],
+		hooks: [
+			// What the chief of staff replies to reports or a trigger (not to the user, whose answer the channel sends) is sent
+			// to the user, unless it was to progress alone, or it messaged the user itself, or said nothing.
+			hook(GenerationTask, {
+				beforeRequest: (request, api) => void (lastRequest = { taskId: String(api.taskId), messages: request.messages }),
+				onYield: async (answer, api, context) => {
+					const text = textOf(answer).trim();
+					if (text === "" || lastRequest?.taskId !== String(api.taskId)) return undefined;
+					const { inputs, messagedUser } = answering(lastRequest.messages);
+					if (messagedUser || inputs.length === 0 || !inputs.every((input) => input.startsWith(REPORT_PREFIX) || input.startsWith(TRIGGER_PREFIX))) return undefined;
+					const reports = inputs.map((input) => REPORT_KIND.exec(input)).filter((match) => match !== null);
+					const about = reports.filter((match) => match[2] !== "progress");
+					if (reports.length === inputs.length && about.length === 0) return undefined;
+					const job = about[0] === undefined ? undefined : (await api.snapshot(Jobs, context))?.jobs[about[0][1]!];
+					await options.send(`reply:${api.taskId}`, { text, buzz: true, ...(job?.origin === undefined ? {} : { replyTo: job.origin }), ...(job === undefined ? {} : { itemId: job.id }) }, context);
+					return undefined;
+				},
+			}),
+		],
 		tools: [
 			defineTool({
 				name: "delegate",
@@ -321,7 +386,7 @@ export function delegationExtensions(options: {
 			}),
 			defineTool({
 				name: "message_user",
-				description: "Send the user a message when you're not replying to them (after a report or a trigger): a result, a question, news. It goes to the user, never to a job (that's message_job). urgency now buzzes; silent arrives without a notification.",
+				description: "Send the user a message when you're not replying to them (after a report or a trigger): news that can wait (silent), or one of several messages. It goes to the user, never to a job (that's message_job). urgency now buzzes; silent arrives without a notification. Once you've used it, your reply isn't sent as well.",
 				parameters: Type.Object({
 					text: Type.String(),
 					urgency: Type.Union([Type.Literal("now"), Type.Literal("silent")]),

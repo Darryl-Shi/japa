@@ -90,16 +90,16 @@ What's built on each adapter is generic and never names an implementation:
    - the screen;
    - Claude Code or Codex for coding.
 
-   It can split work across subagents, and decides when to `report`.
+   It can split work across subagents, and decides when to `report`. If it ends its run without one, its last words are its report.
 5. **Approval.** Every tool call passes the Approvals hook first. A fast model reviews it. Anything that sends as you, spends, deletes your things, deploys or changes accounts is **blocked, not held**:
    - you get **Approve / Deny / Always** buttons;
    - the agent ends its turn;
    - your decision comes back to it as a message;
    - an approved call then goes through exactly once.
 
-   Every reviewed call is written to `audit.jsonl`.
-6. **Back to you.** A report wakes the chief of staff, not you. It checks the report, can question or redirect the job, connects it with what it knows, and decides what you hear: now, silently, or not yet. Results arrive threaded under your original message. A job closes when it reports done; asking for more of it opens it again, with everything it knew.
-7. **On its own.** Triggers wake the chief of staff without you, on a schedule ("08:00 on weekdays", "every 15m") or on an event. They're durable, so a sleeping schedule survives restarts.
+   Anything that only touches its own computer (reading, building, running tests, editing files there) goes ahead. If the review itself fails, it's tried again, then with the main model, before you're asked. Every reviewed call is written to `audit.jsonl`.
+6. **Back to you.** A report wakes the chief of staff, not you. It checks the report, can question or redirect the job, and connects it with what it knows. Then what it replies is what you hear, threaded under your original message (its reply to a progress report alone stays with it; news that can wait it sends silently). A job closes when it reports done; asking for more of it opens it again, with everything it knew.
+7. **On its own.** Triggers wake the chief of staff without you (and, as with reports, what it replies reaches you), on a schedule ("08:00 on weekdays", "every 15m") or on an event. They're durable, so a sleeping schedule survives restarts.
 
 ### Memory
 
