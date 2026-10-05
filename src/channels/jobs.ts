@@ -1,7 +1,7 @@
 // /jobs: the team at a glance, independent of the channel that shows it. The open jobs with their subagents, each a
 // button to its detail: status, model, when it started, last reported and was last active, and the last few things it
-// was told, said and ran. From there the user can refresh, or cancel a job (after a confirming tap); the chief of
-// staff sees it closed in its open items.
+// was told, said and ran. From there the user can refresh, close a job that has reported (it's done with), or cancel
+// one still working (after a confirming tap); the chief of staff sees it closed in its open items.
 import type { Button, Card, CardRef, UI } from "../core/ui.ts";
 import type { JobDetail, JobSummary } from "../pi/delegation.ts";
 
@@ -11,6 +11,7 @@ export type JobsSource = {
 	list(): Promise<JobSummary[]>;
 	detail(id: string): Promise<JobDetail | undefined>;
 	cancel(id: string): Promise<boolean>;
+	close(id: string): Promise<boolean>;
 };
 
 const open = (job: JobSummary) => job.status === "working" || job.status === "reported";
@@ -55,7 +56,8 @@ export function attachJobs(ui: UI, source: JobsSource): void {
 			...(job.subagents.length === 0 ? [] : ["Subagents:", ...job.subagents.map((sub) => `  ${sub.title} (${sub.id}): ${STATUS[sub.status]}`)]),
 			...(job.recent.length === 0 ? [] : ["Lately:", ...job.recent.map((line) => `  ${line}`)]),
 		].join("\n");
-		const rows: Button[][] = [[{ text: "↻ Refresh", data: `jobs:d:${job.id}` }, ...(open(job) && job.depth === 1 ? [{ text: "Cancel job", data: `jobs:c:${job.id}` }] : [])]];
+		const act: Button[] = !open(job) || job.depth !== 1 ? [] : job.status === "reported" ? [{ text: "Close job", data: `jobs:k:${job.id}` }] : [{ text: "Cancel job", data: `jobs:c:${job.id}` }];
+		const rows: Button[][] = [[{ text: "↻ Refresh", data: `jobs:d:${job.id}` }, ...act]];
 		rows.push([{ text: "« Jobs", data: "jobs:l" }]);
 		return { text, buttons: rows };
 	};
@@ -69,6 +71,11 @@ export function attachJobs(ui: UI, source: JobsSource): void {
 			if (action === "d") return void (await ui.show(await detail(id), ref));
 			if (action === "c") {
 				return void (await ui.show({ text: `Cancel job ${id} and its subagents?`, buttons: [[{ text: "Yes, cancel it", data: `jobs:x:${id}` }, { text: "No", data: `jobs:d:${id}` }]] }, ref));
+			}
+			if (action === "k") {
+				const closed = await source.close(id);
+				const card = await detail(id);
+				return void (await ui.show({ ...card, text: `${closed ? "Closed." : "It wasn't open."}\n\n${card.text}` }, ref));
 			}
 			if (action === "x") {
 				const cancelled = await source.cancel(id);

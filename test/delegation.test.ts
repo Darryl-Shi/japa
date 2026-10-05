@@ -77,28 +77,34 @@ async function setup(script: (turn: Turn) => AssistantMessage | Promise<Assistan
 
 const target = (messageId: number) => ({ channel: "test", chatId: "1", messageId: String(messageId) });
 
-test("a job reports to the chief of staff, who decides what the user hears; the job stays open until its item is resolved, which finishes it", async () => {
+test("a job reports to the chief of staff, who decides what the user hears; reporting done closes it, and more for it opens it again", async () => {
 	const h = await setup((turn) => {
-		if (turn.role === "job") return turn.text.startsWith("Find three") ? call("report", { kind: "done", text: "Three venues: A, B, C. B is closest." }) : say("ok");
+		if (turn.role === "job") {
+			if (turn.text.startsWith("Find three")) return call("report", { kind: "done", text: "Three venues: A, B, C. B is closest." });
+			if (turn.text.includes("parking at B")) return call("report", { kind: "done", text: "B has 40 spaces." });
+			return say("ok");
+		}
 		if (turn.text.includes("research the venue")) return call("delegate", { title: "Venue research", brief: "Find three venues near the office." });
 		if (turn.text.startsWith("Started job")) return say("On it.");
 		if (turn.text.startsWith("[Report from job t1")) return call("message_user", { text: "Venues: A, B, C. I'd pick B, it's closest.", urgency: "silent", job: "t1" });
 		if (turn.text === "Sent.") return say("(handled)");
-		if (turn.text.includes("go with B")) return call("resolve", { id: "t1", outcome: "B chosen" });
+		if (turn.text.includes("check parking")) return call("message_job", { id: "t1", text: "Also check parking at B." });
+		if (turn.text.startsWith("Sent to t1")) return say("Checking.");
 		return say("Done.");
 	});
 	assert.deepEqual(await h.thread.ask("tg:1:7", "[Mon 10:00] research the venue", target(7), context), { text: "On it." });
 	await h.until(() => h.sent.length === 1, "the chief of staff's message");
 	assert.deepEqual(h.sent[0], { text: "Venues: A, B, C. I'd pick B, it's closest.", buzz: false, replyTo: { channel: "test", chatId: "1", messageId: "7" }, itemId: "t1" });
 	assert.ok(h.turns.some((turn) => turn.role === "chief" && turn.text.startsWith('[Report from job t1 "Venue research" — done] Three venues')), "the report went to the chief of staff");
-	assert.equal(h.state.openItems.open().length, 1, "the job stays open until the user accepts it");
-	assert.equal((await h.team.list(h.thread, context))[0]?.status, "reported");
-
-	await h.thread.ask("tg:1:9", "[Mon 10:05] great, go with B", target(9), context);
-	assert.equal(h.state.openItems.open().length, 0);
-	assert.equal(h.state.openItems.forMessage("1000")?.outcome, "B chosen", "a reply to the result finds its job");
-	assert.equal((await h.team.list(h.thread, context))[0]?.status, "concluded", "resolving its item finished the job: one record");
+	assert.equal(h.state.openItems.open().length, 0, "reporting done closed it");
+	assert.equal(h.state.openItems.forMessage("1000")?.outcome, "done: Three venues: A, B, C. B is closest.", "a reply to the result finds its job");
+	assert.equal((await h.team.list(h.thread, context))[0]?.status, "concluded", "the open item is the one record: /jobs agrees");
 	assert.equal(await h.team.cancel(h.thread, "t1", "late", context), false, "nothing left to cancel");
+
+	assert.deepEqual(await h.thread.ask("tg:1:9", "[Mon 10:05] great, check parking there too", target(9), context), { text: "Checking." });
+	assert.equal(h.state.openItems.open().length, 1, "more for it opened it again");
+	await h.until(() => h.turns.some((turn) => turn.role === "chief" && turn.text.includes("B has 40 spaces")), "the second report");
+	assert.equal(h.state.openItems.open().length, 0, "and done closed it again");
 	await h.done();
 });
 

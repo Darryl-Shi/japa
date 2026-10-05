@@ -50,7 +50,7 @@ Run the same command again to update; it also moves data from older layouts. For
 - **open items,** the record of what's been promised, asked or is in progress;
 - **the team** of job agents;
 - **triggers;**
-- **the UI**, with `/settings`, `/login` and `/jobs` (what the team is working on: each job's status, model, recent activity, and a Cancel button);
+- **the UI**, with `/settings`, `/login` and `/jobs` (what the team is working on: each job's status, model and recent activity; Close for one that has reported, Cancel for one still working);
 - **the installer,** which adds extensions from chat.
 
 **Everything else is an extension.** There is one kind, `JapaExtension` in `src/pi/extension.ts`. It's made from the **Host**, which is everything an extension may use: settings, secrets, the data directory, models, the workbench, UI cards, `wake`, holds, `emit` and history search. It never touches the main thread directly; even a channel's messages come in through an adapter.
@@ -98,7 +98,7 @@ What's built on each adapter is generic and never names an implementation:
    - an approved call then goes through exactly once.
 
    Every reviewed call is written to `audit.jsonl`.
-6. **Back to you.** A report wakes the chief of staff, not you. It checks the report, can question or redirect the job, connects it with what it knows, and decides what you hear: now, silently, or not yet. Results arrive threaded under your original message. A job stays open until you accept or drop it.
+6. **Back to you.** A report wakes the chief of staff, not you. It checks the report, can question or redirect the job, connects it with what it knows, and decides what you hear: now, silently, or not yet. Results arrive threaded under your original message. A job closes when it reports done; asking for more of it opens it again, with everything it knew.
 7. **On its own.** Triggers wake the chief of staff without you, on a schedule ("08:00 on weekdays", "every 15m") or on an event. They're durable, so a sleeping schedule survives restarts.
 
 ### Memory

@@ -203,6 +203,7 @@ export async function startJapa(
 		list: () => team.list(main(), context),
 		detail: (id) => team.detail(main(), id, context),
 		cancel: (id) => team.cancel(main(), id, "by the user, from /jobs", context),
+		close: (id) => team.close(main(), id, "closed by the user, from /jobs", context),
 	});
 	// What the chief of staff sends on its own (results, questions, news) goes out as cards on whichever channel is on.
 	await thread.deliverOutbox(async (message) => {

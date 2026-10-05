@@ -72,6 +72,17 @@ export class OpenItems {
 		return item;
 	}
 
+	/** Open a closed item again (e.g. a finished job given more to do). False if it's gone. */
+	reopen(id: string): boolean {
+		const items = this.all();
+		const item = items.find((candidate) => candidate.id === id);
+		if (item === undefined) return false;
+		delete item.closedAt;
+		delete item.outcome;
+		save(this.path, items);
+		return true;
+	}
+
 	/** Remember another chat message that belongs to this item. */
 	link(id: string, messageId: string): void {
 		this.change(id, (item) => {

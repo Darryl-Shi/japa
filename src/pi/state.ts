@@ -28,13 +28,13 @@ export function stateExtension(options: { openItems: OpenItems; workingSet: Work
 		tools: [
 			defineTool({
 				name: "track",
-				description: "Add an open item: task (work in flight), waiting (a question or proposal waiting on the user), or promise (something you said you'd do).",
+				description: "Add an open item: task (work in flight), waiting (a question or proposal waiting on the user), or promise (something you said you'd do). Not for a job: delegate tracks it already.",
 				parameters: Type.Object({ kind: Type.Union([Type.Literal("task"), Type.Literal("waiting"), Type.Literal("promise")]), text: Type.String() }),
 				execute: async (args) => text(`Tracked as ${openItems.add(args.kind, args.text).id}.`),
 			}),
 			defineTool({
 				name: "resolve",
-				description: "Close an open item by id once it's done, answered, or no longer relevant. A job's item: once the user has accepted or dropped its result; that finishes the job.",
+				description: "Close an open item by id once it's done, answered, or no longer relevant. A job's item closes by itself when the job reports done.",
 				parameters: Type.Object({ id: Type.String(), outcome: Type.Optional(Type.String()) }),
 				execute: async (args) => {
 					openItems.close(args.id, args.outcome);

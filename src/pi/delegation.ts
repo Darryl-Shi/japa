@@ -1,9 +1,10 @@
 // Delegation. The user only ever talks to the chief of staff (the main thread). The chief of staff hands work to a
 // job agent: one per job, with a model assigned to that job, its own small conversation, the same computer, and
 // subagents of its own when the work splits. The job agent decides when to report; a report wakes the chief of
-// staff, which synthesizes and decides what the user hears (message_user). Jobs never vanish: a job is finished when
-// its open item is resolved (the one record of that, for the chief of staff and /jobs alike), once the user has
-// accepted or dropped the result, or when it's cancelled; a job agent that goes quiet is reported automatically.
+// staff, which synthesizes and decides what the user hears (message_user). A job is finished when its open item is
+// closed (the one record of that, for the chief of staff and /jobs alike): by itself when the job reports done, or by
+// the chief of staff or the user; more for a finished job (message_job) opens it again. A job agent that goes quiet is
+// reported automatically.
 import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, type Message, Type } from "@earendil-works/pi-ai";
 import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
@@ -144,7 +145,8 @@ const CHIEF_GUIDE = [
 	"user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet. message_user",
 	"always goes to the user, never to a job; when you're replying to the user, just reply.",
 	"Don't break into an unrelated conversation with non-urgent news; mention it at a natural opening. A job stays",
-	"open until the user has accepted the result or dropped it; only then resolve its open item. Messages starting \"[Trigger\" are",
+	"closes when its agent reports done; if the user wants more of it, message_job opens it again; cancel_job one that's",
+	"no longer wanted. delegate tracks the job itself: don't track it as well. Messages starting \"[Trigger\" are",
 	"your own schedule or an event, not the user: do what they ask and, as with reports, decide what the user hears.",
 ].join(" ");
 
@@ -170,6 +172,8 @@ export type Delegation = {
 	detail: (team: Team, id: string, context: Context) => Promise<JobDetail | undefined>;
 	/** Stop a job and its subagents, as cancel_job does. False if it isn't open. */
 	cancel: (team: Team, id: string, reason: string, context: Context) => Promise<boolean>;
+	/** Close a job that's done with (its open item). False if it isn't open. */
+	close: (team: Team, id: string, outcome: string, context: Context) => Promise<boolean>;
 };
 
 export function delegationExtensions(options: {
@@ -203,7 +207,7 @@ export function delegationExtensions(options: {
 		tools: [
 			defineTool({
 				name: "report",
-				description: "Report to whoever gave you this job: done, stuck, a decision needed, or a milestone. The job stays yours until they close it.",
+				description: "Report to whoever gave you this job: done (that closes the job), stuck, a decision needed, or a milestone.",
 				parameters: Type.Object({
 					kind: Type.Union([Type.Literal("done"), Type.Literal("stuck"), Type.Literal("decision needed"), Type.Literal("progress")]),
 					text: Type.String(),
@@ -216,6 +220,8 @@ export function delegationExtensions(options: {
 						if (stored !== undefined && stored.status === "working") stored.status = "reported";
 						if (stored !== undefined) stored.lastReportAt = Date.now();
 					}, context);
+					// Done closes a job's open item, which is what finishes it; a subagent finishes with its job.
+					if (args.kind === "done" && job.depth === 1) openItems.close(job.id, `done: ${line(args.text, 200)}`);
 					const parent = await api.conversation(job.parentConversationId, context);
 					await parent?.submit({ type: "input", content: reportText(job, args.kind, args.text), requestId: `report:${api.taskId}`, whenBusy: "followUp" }, context);
 					return reply("Reported.");
@@ -273,12 +279,17 @@ export function delegationExtensions(options: {
 			}),
 			defineTool({
 				name: "message_job",
-				description: "Tell a job's agent something: a question, a correction, new direction or information from the user. It answers with a report. Never seen by the user.",
+				description: "Tell a job's agent something: a question, a correction, new direction, more to do, or information from the user. It answers with a report. A finished job is opened again. Never seen by the user.",
 				parameters: Type.Object({ id: Type.String(), text: Type.String() }),
 				execute: async (args, api, context) => {
 					const found = (await api.snapshot(Jobs, context))?.jobs[args.id];
 					if (found === undefined) return reply(`No job ${args.id}.`);
-					if (finished(found)) return reply(`${found.id} is finished; start a new job instead.`);
+					if (found.status === "cancelled") return reply(`${found.id} was cancelled; start a new job instead.`);
+					if (finished(found) && !openItems.reopen(found.id.split(".")[0]!)) return reply(`${found.id} is long finished; start a new job instead.`);
+					await api.commit(async (tx) => {
+						const stored = (await tx.doc(Jobs)).jobs[found.id];
+						if (stored !== undefined) stored.status = "working";
+					}, context);
 					await api.commit((tx) => tx.createTask(Run, { jobId: found.id, message: `From the chief of staff: ${args.text}`, startedAt: Date.now() }, background), context);
 					return reply(`Sent to ${found.id}; its answer will come as a report.`);
 				},
@@ -384,6 +395,13 @@ export function delegationExtensions(options: {
 		return true;
 	};
 
+	const close = async (team: Team, id: string, outcome: string, context: Context) => {
+		const found = (await read(team.root, context))[id];
+		if (found === undefined || finished(found) || found.depth !== 1) return false;
+		openItems.close(found.id, outcome);
+		return true;
+	};
+
 	const resume = async (root: Conversation, conversationId: string, message: string, context: Context) =>
 		root.commit(async (tx) => {
 			const found = Object.values((await tx.doc(Jobs)).jobs).find((candidate) => String(candidate.conversationId) === conversationId);
@@ -392,5 +410,5 @@ export function delegationExtensions(options: {
 			return true;
 		}, context);
 
-	return { chief, job, helper, resume, list, detail, cancel };
+	return { chief, job, helper, resume, list, detail, cancel, close };
 }

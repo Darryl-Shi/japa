@@ -264,7 +264,7 @@ test("channels: the core opens each with its inbox and shows cards on it while i
 	await h.done();
 });
 
-test("jobs: /jobs lists what the team is working on, shows a job's detail and recent activity, and cancels it on a confirmed tap", async () => {
+test("jobs: /jobs lists what the team is working on, shows a job's detail and recent activity; one that has reported can be closed", async () => {
 	const h = await agent({
 		extensions: () => [],
 		script: (turn) => {
@@ -273,6 +273,7 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 				return say("Carrying on.");
 			}
 			if (turn.text.includes("look into flights")) return call("delegate", { title: "Flights to Tokyo", brief: "Compare fares for May." });
+			if (turn.text.includes("find a hotel")) return call("delegate", { title: "Hotel", brief: "Find a hotel in Shinjuku." });
 			if (turn.text.startsWith("Started job")) return say("On it.");
 			return say("Noted.");
 		},
@@ -300,14 +301,23 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 	assert.match(detail, /← .*Compare fares for May\./, "what it was told");
 	assert.match(detail, /→ report \{"kind":"progress","text":"Two airlines checked\."\}/, "what it ran");
 
+	assert.ok(!labels().includes("Cancel job"), "it isn't working: it has reported");
+	await press("Close job");
+	assert.match(h.cards.at(-1)!.card.text, /^Closed\.\n\nFlights to Tokyo .*\nStatus: concluded/);
+	assert.ok(!labels().includes("Close job"), "nothing left to close");
+
+	// A job still working (it hasn't reported) is cancelled instead, after a confirming tap.
+	await h.ask("2", "[Mon 10:02] find a hotel");
+	await h.until(() => h.turns.some((turn) => turn.text.includes("automatic]")), "the hotel job going quiet");
+	await ui.run("jobs", at);
+	await press("Hotel");
 	await press("Cancel job");
 	assert.match(h.cards.at(-1)!.card.text, /^Cancel job \w+ and its subagents\?$/);
 	await press("Yes, cancel it");
-	assert.match(h.cards.at(-1)!.card.text, /^Cancelled\.\n\nFlights to Tokyo .*\nStatus: cancelled/);
-	assert.ok(!labels().includes("Cancel job"), "nothing left to cancel");
+	assert.match(h.cards.at(-1)!.card.text, /^Cancelled\.\n\nHotel .*\nStatus: cancelled/);
 	await press("« Jobs");
 	assert.equal(h.cards.at(-1)!.card.text, "No jobs running.");
-	assert.ok(labels().includes("Finished (1)"));
+	assert.ok(labels().includes("Finished (2)"));
 	await h.done();
 });
 
