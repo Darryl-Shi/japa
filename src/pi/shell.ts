@@ -3,7 +3,7 @@
 import { defineExtension, type Extension, section } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { computerExtension } from "./computer.ts";
-import type { Host, JarvisExtension } from "./extension.ts";
+import type { Host, JapaExtension } from "./extension.ts";
 
 export function shellExtension(): Extension {
 	return defineExtension({
@@ -12,19 +12,19 @@ export function shellExtension(): Extension {
 			section(
 				"computer",
 				(input) =>
-					`You have your own Linux computer (no access to the user's accounts or secrets), separate from where you run: nothing you write there changes you. bash, read, write and edit act on it directly. Working directory: ${input.env?.cwd ?? "~"}. Use it yourself only for a quick command or two; real work on it is a job.`,
+					input.env === undefined
+						? undefined
+						: `You have your own Linux computer (no access to the user's accounts or secrets), separate from where you run: nothing you write there changes you. bash, read, write and edit act on it directly. Working directory: ${input.env?.cwd ?? "~"}. Use it yourself only for a quick command or two; real work on it is a job.`,
 			),
 		],
 		tools: [createBashTool(), createReadTool(), createWriteTool(), createEditTool()],
 	});
 }
 
-/** The workbench as two extensions: its shell and files, and its screen. None without a workbench. */
-export function workbenchExtensions(host: Pick<Host, "workbench">, options: { screen: boolean }): JarvisExtension[] {
-	const workbench = host.workbench;
-	if (workbench === undefined) return [];
+/** The workbench as two extensions: its shell and files, and its screen. Both say nothing while there's no workbench. */
+export function workbenchExtensions(host: Pick<Host, "workbench">, options: { screen: boolean }): JapaExtension[] {
 	const shell = shellExtension();
-	const screen = computerExtension({ backend: workbench });
+	const screen = computerExtension({ backend: () => host.workbench() });
 	return [
 		{
 			name: "computer",

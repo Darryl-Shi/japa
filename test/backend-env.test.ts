@@ -19,8 +19,8 @@ function shape<T>(result: Result<T, { code: string }>): unknown {
 }
 
 async function both(run: (env: ExecutionEnv, root: string) => Promise<unknown>) {
-	const nodeRoot = await mkdtemp(join(tmpdir(), "jarvis-node-"));
-	const backendRoot = await mkdtemp(join(tmpdir(), "jarvis-backend-"));
+	const nodeRoot = await mkdtemp(join(tmpdir(), "japa-node-"));
+	const backendRoot = await mkdtemp(join(tmpdir(), "japa-backend-"));
 	try {
 		const expected = await run(new NodeExecutionEnv({ cwd: nodeRoot }), nodeRoot);
 		const actual = await run(new BackendExecutionEnv(new LocalBackend(backendRoot)), backendRoot);
@@ -103,7 +103,7 @@ test("shell: exit codes, cwd, env, streaming, timeouts", () =>
 	}));
 
 test("shell: output past the spill limits is kept in a file the agent can read", async () => {
-	const root = await mkdtemp(join(tmpdir(), "jarvis-backend-"));
+	const root = await mkdtemp(join(tmpdir(), "japa-backend-"));
 	const env = new BackendExecutionEnv(new LocalBackend(root));
 	const result = await env.exec("seq 1 5000", { spill: { afterBytes: 1000, afterLines: 100 } }, context);
 	assert.ok(result.ok && result.value.spillPath !== undefined);

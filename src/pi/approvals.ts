@@ -8,7 +8,8 @@ import type { Models, ToolCall } from "@earendil-works/pi-ai";
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
 import { type ApprovalRequest, type Approvals, canonical, type Decision } from "../core/approvals.ts";
 import type { Card } from "../core/ui.ts";
-import type { Host, JarvisExtension } from "./extension.ts";
+import type { Host, JapaExtension } from "./extension.ts";
+import { parseJson } from "./state.ts";
 
 const DEFAULTS = { mode: "smart", permissions: [] as string[] };
 
@@ -25,9 +26,9 @@ const REVIEW_PROMPT = [
 
 type Verdict = { ask: boolean; summary: string; rule: string };
 
-async function review(models: Models, model: { provider: string; modelId: string }, call: ToolCall, permissions: readonly string[]): Promise<Verdict> {
+async function review(models: Models, model: { provider: string; modelId: string } | undefined, call: ToolCall, permissions: readonly string[]): Promise<Verdict> {
 	const fallback = { ask: true, summary: `${call.name}`, rule: `Use ${call.name}` };
-	const resolved = models.getModel(model.provider, model.modelId);
+	const resolved = model === undefined ? undefined : models.getModel(model.provider, model.modelId);
 	if (resolved === undefined) return fallback;
 	const content = [
 		`<standing_permissions>\n${permissions.join("\n") || "(none)"}\n</standing_permissions>`,
@@ -35,8 +36,8 @@ async function review(models: Models, model: { provider: string; modelId: string
 	].join("\n");
 	try {
 		const answer = await models.completeSimple(resolved, { systemPrompt: REVIEW_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
-		const raw = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
-		const parsed = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)) as Partial<Verdict>;
+		const parsed = parseJson(answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""));
+		if (parsed === undefined) return fallback;
 		return { ask: parsed.ask !== false, summary: String(parsed.summary ?? fallback.summary), rule: String(parsed.rule ?? fallback.rule) };
 	} catch {
 		return fallback; // when in doubt, ask
@@ -57,7 +58,7 @@ export function approvalCard(request: ApprovalRequest, decision?: Decision): Car
 	};
 }
 
-export function approvalsExtension(host: Host, approvals: Approvals): JarvisExtension {
+export function approvalsExtension(host: Host, approvals: Approvals): JapaExtension {
 	const { settings } = host;
 
 	const show = async (request: ApprovalRequest) => {

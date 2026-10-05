@@ -7,7 +7,7 @@ import { type Conversation, defineExtension, defineTool, type Extension, section
 import type { History, HistoryLine, HistoryHit } from "../core/history.ts";
 import type { MemoryEdit, Portrait } from "../core/portrait.ts";
 import type { ModelChoice } from "../settings.ts";
-import type { Host, JarvisExtension, SliceEnd } from "./extension.ts";
+import type { Host, JapaExtension, SliceEnd } from "./extension.ts";
 import { parseJson } from "./state.ts";
 
 const GUIDE = [
@@ -64,8 +64,8 @@ export function memoryTools(options: { portrait: Portrait; search: (query: strin
 }
 
 /** One cheap call over the departing slice: small edits to memory. */
-export async function reflectOnMemory(models: Models, choice: ModelChoice, input: { memory: string } & SliceEnd): Promise<MemoryEdit[]> {
-	const model = models.getModel(choice.provider, choice.modelId);
+export async function reflectOnMemory(models: Models, choice: ModelChoice | undefined, input: { memory: string } & SliceEnd): Promise<MemoryEdit[]> {
+	const model = choice === undefined ? undefined : models.getModel(choice.provider, choice.modelId);
 	if (model === undefined) return [];
 	const content = [
 		`<today>${input.today}</today>`,
@@ -86,7 +86,7 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice, input
 	});
 }
 
-export function memoryExtension(host: Host, portrait: Portrait): JarvisExtension {
+export function memoryExtension(host: Host, portrait: Portrait): JapaExtension {
 	return {
 		name: "memory",
 		title: "Memory",

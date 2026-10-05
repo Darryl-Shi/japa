@@ -1,14 +1,18 @@
 // The one unit. Everything beyond the core loop is an extension: memory, the computer and screen, the web, coding
-// agents, approvals, messaging channels, and later email, calendar, skills and behaviours. An extension is made from
-// the Host (everything it may use) and says what it gives the chief of staff and job agents, what it adds to
-// /settings, which of its tools are safe, what it does when a slice ends, when it wakes the chief of staff by itself,
-// and what runs while it's on. The only other configured abstraction is the backend (which computer): infrastructure,
-// not a capability. The core (the main thread, open items, the team) is not an extension and can't be turned off.
+// agents, approvals, messaging channels, model providers, machine providers, and whatever the user adds. An extension
+// is made from the Host (everything it may use) and says what it gives the chief of staff and job agents, what it adds
+// to /settings, which of its tools are safe, what it does when a slice ends, when it wakes the chief of staff by
+// itself, and what runs while it's on. The core (the main thread, open items, the team) is not an extension and can't
+// be turned off.
+//
+// What japa is built from has one typed adapter each, and every implementation goes through it, built-in or not: a
+// channel is a Surface on the UI plus an Inbox, a model provider is a pi-ai Provider in `providers`, a machine is an
+// OpenBackend in `backends`. The core registers them while the extension is on and unregisters them when it's off.
 import type { Context } from "@earendil-works/chord";
-import type { MutableModels } from "@earendil-works/pi-ai";
+import type { Models, MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { Inbox } from "../channels/inbox.ts";
-import type { Backend } from "../core/backend.ts";
+import type { Backend, OpenBackend } from "../core/backend.ts";
 import type { HistoryHit } from "../core/history.ts";
 import type { When } from "../core/schedule.ts";
 import type { CardRef, Holds, UI } from "../core/ui.ts";
@@ -41,10 +45,12 @@ export type Trigger = { name: string; when: When; prompt: string };
 export type Host = {
 	settings: SettingsFile;
 	secrets: SecretsFile;
-	/** Extensions can add a model provider (setProvider), e.g. one the built-ins lack. */
-	models: MutableModels;
-	/** The agent's computer, when one is configured. */
-	workbench: Backend | undefined;
+	/** Where an extension keeps its own files (the data directory; name them after the extension). */
+	dataDir: string;
+	/** The models pi can use. To add a provider, declare it in `providers`. */
+	models: Models;
+	/** The agent's computer: machines.workbench opened through its provider's backend. None when unset or unavailable. */
+	workbench(): Backend | undefined;
 	ui: UI;
 	/** The only way a channel reaches the agent; refuses anyone not on that platform's allowlist. */
 	inbox(platform: string): Inbox;
@@ -66,7 +72,7 @@ export type Host = {
 	log(line: string): void;
 };
 
-export type JarvisExtension = {
+export type JapaExtension = {
 	/** Its key in settings.extensions. */
 	name: string;
 	title: string;
@@ -85,6 +91,10 @@ export type JarvisExtension = {
 	/** When a slice of the main conversation ends (in the background; the user never waits for it). */
 	onSliceEnd?: (slice: SliceEnd) => Promise<void>;
 	triggers?: readonly Trigger[];
+	/** Model providers it adds: registered while it's on, their models loaded with the credential from /login. */
+	providers?: readonly Provider[];
+	/** Machine providers it adds, by the name settings use (machines.workbench.provider). */
+	backends?: Readonly<Record<string, OpenBackend>>;
 	/** A messaging channel for this platform (its allowlist is settings.allowlist[platform]). The last one can't be turned off. */
 	channel?: string;
 	/** While it's on: started when turned on (or at startup), stopped when turned off. */
@@ -94,23 +104,25 @@ export type JarvisExtension = {
 
 /** The installed extensions, which of them are on, and their lifecycles. */
 export class ExtensionSet {
-	private list: JarvisExtension[];
+	private list: JapaExtension[];
 	private readonly settings: SettingsFile;
+	private readonly models: MutableModels;
 	private readonly running = new Set<string>();
 	private readonly log: (line: string) => void;
 
-	constructor(entries: readonly JarvisExtension[], settings: SettingsFile, log: (line: string) => void = (line) => console.log(line)) {
+	constructor(entries: readonly JapaExtension[], settings: SettingsFile, models: MutableModels, log: (line: string) => void = (line) => console.log(line)) {
 		this.list = [...entries];
 		this.settings = settings;
+		this.models = models;
 		this.log = log;
 	}
 
-	get entries(): readonly JarvisExtension[] {
+	get entries(): readonly JapaExtension[] {
 		return this.list;
 	}
 
 	/** Add an extension, or replace the one with its name (stopped first; sync starts the new one). Returns the old one. */
-	async put(entry: JarvisExtension): Promise<JarvisExtension | undefined> {
+	async put(entry: JapaExtension): Promise<JapaExtension | undefined> {
 		const old = this.get(entry.name);
 		if (old !== undefined) await this.remove(old.name);
 		this.list = [...this.list, entry];
@@ -121,28 +133,24 @@ export class ExtensionSet {
 	async remove(name: string): Promise<void> {
 		const entry = this.get(name);
 		if (entry === undefined) return;
-		if (this.running.delete(name)) {
-			await Promise.resolve()
-				.then(() => entry.stop?.())
-				.catch((error: unknown) => this.log(`${name}: stop: ${String(error)}`));
-		}
+		if (this.running.delete(name)) await this.stop(entry);
 		this.list = this.list.filter((other) => other !== entry);
 	}
 
-	enabled(entry: JarvisExtension): boolean {
+	enabled(entry: JapaExtension): boolean {
 		return this.settings.get().extensions[entry.name]?.enabled ?? entry.enabledByDefault ?? true;
 	}
 
-	on(): JarvisExtension[] {
+	on(): JapaExtension[] {
 		return this.entries.filter((entry) => this.enabled(entry));
 	}
 
-	get(name: string): JarvisExtension | undefined {
+	get(name: string): JapaExtension | undefined {
 		return this.entries.find((entry) => entry.name === name);
 	}
 
 	/** Why it can't be turned off, if it can't. */
-	cannotTurnOff(entry: JarvisExtension): string | undefined {
+	cannotTurnOff(entry: JapaExtension): string | undefined {
 		if (entry.channel === undefined || !this.enabled(entry)) return undefined;
 		return this.on().some((other) => other !== entry && other.channel !== undefined) ? undefined : "It's the only channel you can reach me on.";
 	}
@@ -175,31 +183,48 @@ export class ExtensionSet {
 		await Promise.all(this.on().map((entry) => entry.onSliceEnd?.(slice).catch((error: unknown) => this.log(`${entry.name}: slice end: ${String(error)}`))));
 	}
 
+	/** The machine provider of that name, from the extensions that are on. */
+	backend(name: string): OpenBackend | undefined {
+		return this.on().find((entry) => entry.backends?.[name] !== undefined)?.backends?.[name];
+	}
+
 	/** Start what was turned on and stop what was turned off. */
 	async sync(): Promise<void> {
 		for (const entry of this.entries) {
 			const on = this.enabled(entry);
 			if (on && !this.running.has(entry.name)) {
 				this.running.add(entry.name);
-				await Promise.resolve()
-					.then(() => entry.start?.())
-					.catch((error: unknown) => this.log(`${entry.name}: start: ${String(error)}`));
+				await this.start(entry);
 			} else if (!on && this.running.has(entry.name)) {
 				this.running.delete(entry.name);
-				await Promise.resolve()
-					.then(() => entry.stop?.())
-					.catch((error: unknown) => this.log(`${entry.name}: stop: ${String(error)}`));
+				await this.stop(entry);
 			}
 		}
 	}
 
 	async stopAll(): Promise<void> {
-		for (const entry of this.entries) {
-			if (!this.running.delete(entry.name)) continue;
-			await Promise.resolve()
-				.then(() => entry.stop?.())
-				.catch(() => {});
+		for (const entry of this.entries) if (this.running.delete(entry.name)) await this.stop(entry);
+	}
+
+	private async start(entry: JapaExtension): Promise<void> {
+		for (const provider of entry.providers ?? []) {
+			this.models.setProvider(provider);
+			// A provider that fetches its model list gets it now (with the credential from /login), not on first use.
+			void this.models.refresh({ providers: [provider.id] }).then(
+				(result) => result.errors.forEach((error, id) => this.log(`${entry.name}: models of ${id}: ${error.message}`)),
+				(error: unknown) => this.log(`${entry.name}: models: ${String(error)}`),
+			);
 		}
+		await Promise.resolve()
+			.then(() => entry.start?.())
+			.catch((error: unknown) => this.log(`${entry.name}: start: ${String(error)}`));
+	}
+
+	private async stop(entry: JapaExtension): Promise<void> {
+		await Promise.resolve()
+			.then(() => entry.stop?.())
+			.catch((error: unknown) => this.log(`${entry.name}: stop: ${String(error)}`));
+		for (const provider of entry.providers ?? []) this.models.deleteProvider(provider.id);
 	}
 }
 

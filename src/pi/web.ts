@@ -2,7 +2,7 @@
 // extension; fast mode by default, the most accurate of the $1-per-1000 modes (~700ms).
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { Host, JarvisExtension } from "./extension.ts";
+import type { Host, JapaExtension } from "./extension.ts";
 
 const API = "https://api.parallel.ai/v1";
 const DEFAULTS = { mode: "fast", maxResults: 8 };
@@ -26,7 +26,7 @@ function render(pages: readonly Page[], full = false): string {
 	return out.trim();
 }
 
-export function webExtension(host: Pick<Host, "settings" | "secrets">, options: { fetch?: typeof fetch } = {}): JarvisExtension {
+export function webExtension(host: Pick<Host, "settings" | "secrets">, options: { fetch?: typeof fetch } = {}): JapaExtension {
 	const request = async (path: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> => {
 		const key = host.secrets.get("web.apiKey", "PARALLEL_API_KEY");
 		if (key === undefined) throw new Error("No Parallel API key: set one in /settings → Web.");

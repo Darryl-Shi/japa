@@ -9,13 +9,13 @@ import { LocalBackend } from "../src/backends/local.ts";
 import { Approvals } from "../src/core/approvals.ts";
 import { approvalsExtension } from "../src/pi/approvals.ts";
 import { CLAUDE_CODE, CODEX, codingAgentExtension } from "../src/pi/coding-agents.ts";
-import type { JarvisExtension } from "../src/pi/extension.ts";
+import type { JapaExtension } from "../src/pi/extension.ts";
 import { problems } from "../src/pi/installer.ts";
 import { webExtension } from "../src/pi/web.ts";
 import { agent, call, context, say, sleep } from "./helpers.ts";
 
 /** A tool that acts on the world, counting its runs. */
-function emailExtension(sent: string[]): JarvisExtension {
+function emailExtension(sent: string[]): JapaExtension {
 	const extension = defineExtension({
 		name: "test.email",
 		tools: [
@@ -132,7 +132,7 @@ test("web: one search sends the objective and all queries in fast mode, and rend
 });
 
 test("coding agents: Claude Code and Codex run on the workbench with the key passed to that run only, and sessions continue", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "jarvis-machine-"));
+	const dir = await mkdtemp(join(tmpdir(), "japa-machine-"));
 	const machine = new LocalBackend(join(dir, "machine"));
 	const bin = join(machine.home, ".local/bin");
 	await mkdir(bin, { recursive: true });
@@ -141,6 +141,9 @@ test("coding agents: Claude Code and Codex run on the workbench with the key pas
 	await writeFile(join(bin, "codex"), `#!/bin/bash\necho '{"type":"thread.started","thread_id":"th-9"}'\necho '{"type":"item.completed","item":{"type":"error","message":"config warning"}}'\necho "{\\"type\\":\\"item.completed\\",\\"item\\":{\\"type\\":\\"agent_message\\",\\"text\\":\\"codex key=$CODEX_API_KEY resume=$3\\"}}"\n`);
 	await chmod(join(bin, "claude"), 0o755);
 	await chmod(join(bin, "codex"), 0o755);
+	// Claude Code installs into ~/.local/bin (its command puts that on PATH); codex wherever npm puts globals, on PATH.
+	const path = process.env.PATH;
+	process.env.PATH = `${bin}:${path}`;
 	const h = await agent({
 		workbench: machine,
 		// Coding agents are for job agents; here the chief of staff gets them too.
@@ -160,6 +163,7 @@ test("coding agents: Claude Code and Codex run on the workbench with the key pas
 	assert.match(results[1]!, /^did: Fix the bug in repo token=tok-abc args=.*--dangerously-skip-permissions\n\n\(session s-123\)$/);
 	assert.match(results[2]!, /--resume s-123/);
 	assert.equal(results[3], "codex key=sk-codex resume=th-9\n\n(session th-9)");
+	process.env.PATH = path;
 	await h.done();
 	await rm(dir, { recursive: true, force: true });
 });
@@ -192,7 +196,7 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 		],
 		"advertised, with what they do",
 	);
-	assert.equal(await ui.run("settings", { channel: "test", chatId: 7, messageId: 1 }), true);
+	assert.equal(await ui.run("settings", { channel: "test", chatId: "7", messageId: "1" }), true);
 	assert.deepEqual(labels(), ["General", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
 	assert.ok((await tools()).includes("web_search"));
 
@@ -211,13 +215,13 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	await press("Parallel API key: not set");
 	const prompt = h.cards.at(-1)!.card;
 	assert.ok(prompt.ask?.secret === true);
-	await ui.reply(prompt.ask!.data, "pk-live", { channel: "test", chatId: 7, messageId: 99 });
+	await ui.reply(prompt.ask!.data, "pk-live", { channel: "test", chatId: "7", messageId: "99" });
 	assert.equal(h.secrets.get("web.apiKey"), "pk-live");
 	assert.ok(!JSON.stringify(h.settings.get()).includes("pk-live"), "secrets never land in settings.json");
 	assert.ok(!JSON.stringify(h.cards.map((shown) => shown.card)).includes("allowlist"), "the allowlist isn't in the menu");
 
 	// A model is picked from the models pi can use, not typed.
-	await ui.run("settings", { channel: "test", chatId: 7, messageId: 1 });
+	await ui.run("settings", { channel: "test", chatId: "7", messageId: "1" });
 	await press("General");
 	await press("Chief of staff model: faux/faux-1");
 	assert.deepEqual(labels(), ["✅ faux-1 👁", "faux-fast 👁", "⌨ Type an id", "« Back"], "one provider: straight to its models, the current one ticked");
@@ -234,22 +238,21 @@ test("login: /login runs a provider's own login from chat, here one an extension
 		throw new Error("not in this test");
 	};
 	const h = await agent({
-		extensions: (host) => [
+		extensions: () => [
 			{
 				name: "dyn",
 				title: "Dyn",
 				about: "",
-				start: () =>
-					host.models.setProvider(
-						createProvider({
-							id: "dyn",
-							name: "Dyn",
-							auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
-							models: [],
-							fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
-							api: { stream: unused, streamSimple: unused },
-						}),
-					),
+				providers: [
+					createProvider({
+						id: "dyn",
+						name: "Dyn",
+						auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
+						models: [],
+						fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
+						api: { stream: unused, streamSimple: unused },
+					}),
+				],
 			},
 		],
 		script: () => say("ok"),
@@ -262,14 +265,14 @@ test("login: /login runs a provider's own login from chat, here one an extension
 		assert.ok(button !== undefined, `no button "${label}" in ${labels().join(" | ")}`);
 		return ui.press(button.data, last.ref);
 	};
-	const at = { channel: "test", chatId: 7, messageId: 1 };
+	const at = { channel: "test", chatId: "7", messageId: "1" };
 
 	await ui.run("login", at);
 	assert.ok(labels().includes("Dyn"), "offered, without a tick");
 	const pressed = press("Dyn");
 	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the provider's own prompt for its key");
 	assert.equal(h.cards.at(-1)!.card.ask!.secret, true, "asked for as a secret");
-	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: 7, messageId: 99 });
+	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: "7", messageId: "99" });
 	await pressed;
 	assert.equal(h.cards.at(-1)!.card.text, "Logged in to Dyn.");
 
@@ -278,6 +281,10 @@ test("login: /login runs a provider's own login from chat, here one an extension
 	await press("Chief of staff model: faux/faux-1");
 	await press("dyn (1)");
 	assert.ok(labels().includes("Dyn Big"), "its models are in the picker");
+
+	h.settings.update({ extensions: { dyn: { enabled: false } } });
+	await h.japa.apply(context);
+	assert.equal(h.host.models.getProvider("dyn"), undefined, "off: its provider is gone");
 	await h.done();
 });
 
@@ -294,7 +301,7 @@ test("triggers: a time trigger wakes the chief of staff on schedule (durably), a
 	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Trigger pinger/mail,") && turn.text.endsWith("decide if it matters.\nFrom: Sam — Re: launch")), "the event trigger");
 
 	h.settings.setOption("pinger", "enabled", false);
-	await h.jarvis.apply(context);
+	await h.japa.apply(context);
 	await sleep(1300);
 	const ticks = h.turns.filter((turn) => turn.text.startsWith("[Trigger pinger/tick")).length;
 	await sleep(1300);
@@ -326,9 +333,9 @@ test("prompt: the chief of staff gets its role and how it extends itself, naming
 /** An extension as a job would write it on the workbench: one file, values imported only from packages. */
 const greetSource = (version: string) => `import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { Host, JarvisExtension } from "../src/pi/extension.ts";
+import type { Host, JapaExtension } from "../src/pi/extension.ts";
 
-export default function (host: Host): JarvisExtension {
+export default function (host: Host): JapaExtension {
 	const extension = defineExtension({
 		name: "ext.greet",
 		tools: [defineTool({ name: "greet", description: "Say hi.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "Hi from greet ${version}" }] }) })],
@@ -338,7 +345,7 @@ export default function (host: Host): JarvisExtension {
 `;
 
 test("installer: an extension written on the workbench is installed from chat on the user's tap, hot, replaced in place, and back after a restart", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const workbench = new LocalBackend(join(dataDir, "machine"));
 	const file = join(workbench.home, "greet.ts");
 	const script = (turn: { text: string }) => {
@@ -364,20 +371,20 @@ test("installer: an extension written on the workbench is installed from chat on
 	assert.ok(!(await h.ask("0", "[Mon 09:59] say hi").then((answer) => JSON.stringify(answer))).includes("Hi from"), "not there before");
 	await install("1");
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] say hi"), { text: "Hi from greet v1" });
-	assert.ok(h.jarvis.extensions.get("greet"), "it shows in /settings like any other");
+	assert.ok(h.japa.extensions.get("greet"), "it shows in /settings like any other");
 
 	await writeFile(file, greetSource("v2"));
 	await install("3");
 	assert.deepEqual(await h.ask("4", "[Mon 10:03] say hi"), { text: "Hi from greet v2" }, "a new version replaces the old one, no restart");
 
-	await h.jarvis.close(context);
+	await h.japa.close(context);
 	const again = await agent({ workbench, dataDir, extensions: () => [], script });
 	assert.deepEqual(await again.ask("5", "[Mon 10:05] say hi"), { text: "Hi from greet v2" }, "loaded again at start");
 	await again.done();
 });
 
 test("installer: the user saying no installs nothing, and a built-in can't be replaced from chat", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const workbench = new LocalBackend(join(dataDir, "machine"));
 	const file = join(workbench.home, "greet.ts");
 	await writeFile(file, greetSource("v1"));
@@ -397,7 +404,7 @@ test("installer: the user saying no installs nothing, and a built-in can't be re
 	const card = h.cards.find((shown) => shown.card.buttons !== undefined)!;
 	await h.host.ui.press(card.card.buttons![0]![1]!.data, card.ref);
 	await h.until(() => h.cards.some((shown) => shown.card.text === "Okay, not installed."), "the chief of staff hearing no");
-	assert.equal(h.jarvis.extensions.get("greet"), undefined);
+	assert.equal(h.japa.extensions.get("greet"), undefined);
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] replace web"), { text: '"web" is built in; pick another name.' });
 	await h.done();
 });
@@ -421,7 +428,7 @@ export default function (pi: ExtensionAPI) {}
 	assert.match(found[2]!, /"\.\/helper\.ts": it must be one file/);
 	assert.deepEqual(problems("export const x = 1;"), ["it has no default export"]);
 
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const workbench = new LocalBackend(join(dataDir, "machine"));
 	await writeFile(join(workbench.home, "bad.ts"), piStyle);
 	const h = await agent({

@@ -9,13 +9,13 @@ import type { MainThread } from "../src/pi/harness.ts";
 import { SettingsFile } from "../src/settings.ts";
 
 test("the allowlist: no one gets in until listed, only listed users after, and the first is where the agent writes", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const settings = new SettingsFile(dataDir);
 	const asked: string[] = [];
 	const thread = { ask: async (requestId: string) => (asked.push(requestId), { text: "hi" }) } as unknown as MainThread;
 	const refused: string[] = [];
 	const inbox = new Inbox({ platform: "telegram", thread: () => thread, settings, log: (line) => refused.push(line) });
-	const target = { chatId: 1, messageId: 1 };
+	const target = { channel: "test", chatId: "1", messageId: "1" };
 
 	assert.equal(inbox.admits(42), false, "an empty list lets no one in");
 	assert.equal(inbox.owner(), undefined);

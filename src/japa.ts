@@ -1,7 +1,7 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
 // conversation, the UI and /settings. None of these can be turned off. Everything else is an extension, made from the
 // Host this builds, and hooked in only through it: what it gives each agent, its settings, its safe tools, its slice
-// end, its triggers, its lifecycle. Channels are extensions too, and reach the agent only through an Inbox.
+// end, its triggers, its lifecycle, and the channels, model providers and machines it adds through the core's adapters.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -17,7 +17,7 @@ import { Holds, UI } from "./core/ui.ts";
 import type { SecretsFile } from "./credentials.ts";
 import { BackendExecutionEnv } from "./pi/backend-env.ts";
 import { type Delegation, delegationExtensions } from "./pi/delegation.ts";
-import { ExtensionSet, type Host, type JarvisExtension } from "./pi/extension.ts";
+import { ExtensionSet, type Host, type JapaExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
 import { installer } from "./pi/installer.ts";
 import { indexHistory } from "./pi/memory.ts";
@@ -25,34 +25,29 @@ import { stateExtension } from "./pi/state.ts";
 import { triggers } from "./pi/triggers.ts";
 import type { SettingsFile } from "./settings.ts";
 
-/** Tools of the core that never need approval. */
-const CORE_SAFE = ["track", "resolve", "list_open_items", "delegate", "check_job", "cancel_job", "conclude_job", "message_user", "report", "subagent", "install_extension", "remove_extension"];
-
-export type Jarvis = {
+export type Japa = {
 	thread: MainThread;
 	host: Host;
 	extensions: ExtensionSet;
-	team: Delegation;
 	/** Apply settings changes: the model, extensions started or stopped, schedules for new triggers. */
 	apply(context: Context): Promise<void>;
 	close(context: Context): Promise<void>;
 };
 
-export async function startJarvis(
+export async function startJapa(
 	options: {
 		dataDir: string;
 		settings: SettingsFile;
 		secrets: SecretsFile;
 		models: MutableModels;
-		workbench?: Backend;
 		/** Default: SQLite in dataDir. */
 		storage?: Storage;
-		extensions: (host: Host) => JarvisExtension[];
+		extensions: (host: Host) => JapaExtension[];
 		log?: (line: string) => void;
 	},
 	context: Context,
-): Promise<Jarvis> {
-	const { dataDir, settings, secrets, models, workbench } = options;
+): Promise<Japa> {
+	const { dataDir, settings, secrets, models } = options;
 	const log = options.log ?? ((line: string) => console.log(line));
 	const ui = new UI(log);
 	const holds = new Holds();
@@ -63,10 +58,37 @@ export async function startJarvis(
 	let extensions: ExtensionSet | undefined;
 	const main = () => thread!;
 
+	// The workbench, opened through the backend its settings name, from the extensions that are on; opened again when
+	// its settings change. Opening starts nothing remote.
+	let opened: { key: string; backend: Backend } | undefined;
+	let failed: string | undefined;
+	const workbench = (): Backend | undefined => {
+		const config = settings.get().machines.workbench;
+		if (config === undefined) return undefined;
+		const key = JSON.stringify(config);
+		if (opened?.key === key) return opened.backend;
+		const problem = (why: string) => {
+			if (failed !== why) log(`workbench: ${why}`);
+			failed = why;
+			return undefined;
+		};
+		const open = extensions?.backend(config.provider);
+		if (open === undefined) return problem(`no machine provider "${config.provider}" is on`);
+		try {
+			opened = { key, backend: open("workbench", config) };
+		} catch (error) {
+			return problem(error instanceof Error ? error.message : String(error));
+		}
+		failed = undefined;
+		log(`workbench: ${opened.backend.id} (starts on first use)`);
+		return opened.backend;
+	};
+
 	const inboxes = new Map<string, Inbox>();
 	const host: Host = {
 		settings,
 		secrets,
+		dataDir,
 		models,
 		workbench,
 		ui,
@@ -75,7 +97,7 @@ export async function startJarvis(
 		inbox: (platform) => {
 			let inbox = inboxes.get(platform);
 			if (inbox === undefined) {
-				inbox = new Inbox({ platform, thread: main, settings, log, prepare: (callContext) => jarvis.apply(callContext) });
+				inbox = new Inbox({ platform, thread: main, settings, log, prepare: (callContext) => japa.apply(callContext) });
 				inboxes.set(platform, inbox);
 			}
 			return inbox;
@@ -90,13 +112,13 @@ export async function startJarvis(
 				return;
 			}
 			// The chief of staff: as if from the user, answered where the card that prompted it is.
-			const target = { chatId: replyTo?.chatId ?? 0, messageId: replyTo?.messageId ?? 0, ...(replyTo === undefined ? {} : { channel: replyTo.channel }) };
-			const answer = await main().ask(id, `[${stamp(Date.now(), settings.get().timezone)}] ${text}`, target, context);
+			const answer = await main().ask(id, `[${stamp(Date.now(), settings.get().timezone)}] ${text}`, replyTo, context);
 			await ui.show({ text: "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, ...(replyTo === undefined ? {} : { replyTo }) });
 			await main().delivered(id, context);
 		},
 		emit: (event, detail) => void schedule.emit(main().root, event, detail, context).catch((error: unknown) => log(`trigger ${event}: ${String(error)}`)),
-		safeTools: () => new Set([...CORE_SAFE, ...(extensions?.safeTools() ?? [])]),
+		// The core's own tools only touch the agent's own state (installing an extension asks the user by itself).
+		safeTools: () => new Set([...coreTools, ...(extensions?.safeTools() ?? [])]),
 		chiefId: () => String(main().root.id),
 	};
 
@@ -110,10 +132,11 @@ export async function startJarvis(
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
 	const registry = createRegistry();
-	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => jarvis.apply(callContext), context });
-	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, log);
+	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => japa.apply(callContext), context });
+	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, models, log);
 	extensions = set;
 	const core = [stateTools, team.chief, schedule.extension, installs.extension];
+	const coreTools = [...core, team.job, team.helper].flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
 
 	thread = await MainThread.open(
 		{
@@ -124,7 +147,10 @@ export async function startJarvis(
 			settings: () => settings.get(),
 			installed: [...core, team.job, team.helper, ...set.installed()],
 			selected: () => [...core, ...set.forChief()],
-			...(workbench === undefined ? {} : { env: () => new BackendExecutionEnv(workbench) }),
+			env: () => {
+				const backend = workbench();
+				return backend === undefined ? undefined : new BackendExecutionEnv(backend);
+			},
 			state,
 			onSliceEnd: (slice) => set.sliceEnded(slice),
 			log,
@@ -132,11 +158,10 @@ export async function startJarvis(
 		context,
 	);
 
-	const jarvis: Jarvis = {
+	const japa: Japa = {
 		thread,
 		host,
 		extensions: set,
-		team,
 		apply: async (callContext) => {
 			await main().applySettings(settings.get(), callContext);
 			await set.sync();
@@ -156,14 +181,14 @@ export async function startJarvis(
 		modelExists: (choice) => models.getModel(choice.provider, choice.modelId) !== undefined,
 		available: async () =>
 			(await models.getAvailable()).map((model) => ({ provider: model.provider, id: model.id, name: model.name, vision: model.input.includes("image") })),
-		changed: () => jarvis.apply(context),
+		changed: () => japa.apply(context),
 	}).attach(ui);
 	attachLogin(ui, models);
 	// What the chief of staff sends on its own (results, questions, news) goes out as cards on whichever channel is on.
 	await thread.deliverOutbox(async (message) => {
-		const replyTo = message.replyTo === undefined ? undefined : { channel: message.replyTo.channel ?? "telegram", chatId: message.replyTo.chatId, messageId: message.replyTo.messageId };
-		return (await ui.show({ text: message.text, buzz: message.buzz, ...(replyTo === undefined ? {} : { replyTo }) }))?.messageId;
+		return (await ui.show({ text: message.text, buzz: message.buzz, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) }))?.messageId;
 	}, context);
-	await jarvis.apply(context);
-	return jarvis;
+	await japa.apply(context);
+	log("japa: ready");
+	return japa;
 }

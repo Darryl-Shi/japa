@@ -4,7 +4,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { shellQuote as q } from "../core/backend.ts";
-import type { Host, JarvisExtension } from "./extension.ts";
+import type { Host, JapaExtension } from "./extension.ts";
 
 const DEFAULTS = { model: "", timeoutMinutes: 60 };
 
@@ -38,7 +38,8 @@ export const CLAUDE_CODE: Engine = {
 	name: "claude-code",
 	title: "Claude Code",
 	tool: "claude_code",
-	install: "command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash >/dev/null 2>&1",
+	// Its installer puts it in ~/.local/bin, which a non-login shell may not have on PATH.
+	install: 'export PATH="$HOME/.local/bin:$PATH"; command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash >/dev/null 2>&1',
 	command: (task, model, session) =>
 		`IS_SANDBOX=1 claude -p ${q(task)} --output-format json --dangerously-skip-permissions${model === "" ? "" : ` --model ${q(model)}`}${session === undefined ? "" : ` --resume ${q(session)}`} </dev/null`,
 	secrets: [
@@ -79,7 +80,7 @@ export const CODEX: Engine = {
 	},
 };
 
-export function codingAgentExtension(engine: Engine, host: Pick<Host, "workbench" | "settings" | "secrets">): JarvisExtension {
+export function codingAgentExtension(engine: Engine, host: Pick<Host, "workbench" | "settings" | "secrets">): JapaExtension {
 	const extension = defineExtension({
 		name: `jarvis.${engine.name}`,
 		sections: [
@@ -96,11 +97,11 @@ export function codingAgentExtension(engine: Engine, host: Pick<Host, "workbench
 				description: `Run ${engine.title} on a coding task in a directory on your computer; returns its answer and a session id to continue.`,
 				parameters: Type.Object({
 					task: Type.String({ description: "The whole task: goal, constraints, how to check it's done" }),
-					dir: Type.Optional(Type.String({ description: "Working directory (created if missing); default ~/work" })),
+					dir: Type.Optional(Type.String({ description: "Working directory (created if missing); default: the computer's home" })),
 					session: Type.Optional(Type.String({ description: "A session id from an earlier run, to continue it" })),
 				}),
 				execute: async (args, _api, context) => {
-					const workbench = host.workbench;
+					const workbench = host.workbench();
 					if (workbench === undefined) return text("No computer is configured, so there's nowhere to run it.");
 					const { model, timeoutMinutes } = host.settings.options(engine.name, DEFAULTS);
 					const env: Record<string, string> = {};
@@ -108,8 +109,8 @@ export function codingAgentExtension(engine: Engine, host: Pick<Host, "workbench
 						const value = host.secrets.get(`${engine.name}.${secret.key}`, secret.env);
 						if (value !== undefined) env[secret.env] = value;
 					}
-					const dir = args.dir ?? "work";
-					const command = `export PATH="$HOME/.local/bin:$PATH"; ${engine.install}; mkdir -p ${q(dir)} && cd ${q(dir)} && ${engine.command(args.task, String(model), args.session)}`;
+					const into = args.dir === undefined ? "" : `mkdir -p ${q(args.dir)} && cd ${q(args.dir)} && `;
+					const command = `${engine.install}; ${into}${engine.command(args.task, String(model), args.session)}`;
 					let output = "";
 					const { exitCode, timedOut } = await workbench.exec(command, {
 						env,

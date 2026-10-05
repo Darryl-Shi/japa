@@ -15,14 +15,14 @@ const context = BACKGROUND_CONTEXT;
 const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
 
 test("answers survive a restart and are delivered once", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
 	faux.setResponses([fauxAssistantMessage("Paris.")]);
 
 	let thread = await MainThread.open({ dataDir, models, settings }, context);
-	const target = { chatId: 1, messageId: 10 };
+	const target = { channel: "test", chatId: "1", messageId: "10" };
 	assert.deepEqual(await thread.ask("tg:1:10", "Capital of France?", target, context), { text: "Paris." });
 	assert.deepEqual(await thread.pending(context), [{ requestId: "tg:1:10", content: "Capital of France?", ...target }]);
 	await thread.close(context);
@@ -38,7 +38,7 @@ test("answers survive a restart and are delivered once", async () => {
 });
 
 test("the main model follows the settings", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -50,7 +50,7 @@ test("the main model follows the settings", async () => {
 });
 
 async function sliceHarness(context_: { idleMinutes: number; sliceTokens: number }, replies: string[]) {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -77,7 +77,7 @@ async function sliceHarness(context_: { idleMinutes: number; sliceTokens: number
 	return { thread, live, sent, slices, summaries, state, done };
 }
 
-const target = { chatId: 1, messageId: 1 };
+const target = { channel: "test", chatId: "1", messageId: "1" };
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("after an idle gap the next message starts a small slice from state, never waiting for a summary", async () => {
@@ -107,9 +107,9 @@ test("a reply to an earlier slice anchors a new one; /new starts fresh; replies 
 	const optionsAt = Date.now() - 1000;
 	await wait(5);
 	await h.thread.ask("b", "something else", target, context, { newTopic: true });
-	await h.thread.ask("c", "the second one", target, context, { replyTo: { messageId: 2, text: "Two options: A or B.", at: optionsAt } });
+	await h.thread.ask("c", "the second one", target, context, { replyTo: { messageId: "2", text: "Two options: A or B.", at: optionsAt } });
 	assert.ok((await h.sent()).includes("replies to this earlier message: «Two options: A or B.»"));
-	await h.thread.ask("d", "do it", target, context, { replyTo: { messageId: 4, text: "Going with B.", at: Date.now() } });
+	await h.thread.ask("d", "do it", target, context, { replyTo: { messageId: "4", text: "Going with B.", at: Date.now() } });
 	assert.deepEqual(h.slices(), ["continued", "new-topic", "reply-to-earlier", "continued"]);
 	await h.done();
 });

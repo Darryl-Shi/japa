@@ -4,7 +4,8 @@
 // a message nor the agent itself can widen it. Channels are extensions, and the Host gives them an Inbox, never the
 // main thread.
 import type { Context } from "@earendil-works/chord";
-import type { Answer, Arrival, MainThread, ReplyTarget } from "../pi/harness.ts";
+import type { CardRef } from "../core/ui.ts";
+import type { Answer, Arrival, MainThread } from "../pi/harness.ts";
 import type { SettingsFile } from "../settings.ts";
 
 export class NotAllowed extends Error {}
@@ -49,15 +50,15 @@ export class Inbox {
 	}
 
 	/** A message from someone on the list; checked again here, so a channel can't skip the gate. */
-	async ask(from: string | number, requestId: string, content: string, reply: ReplyTarget, context: Context, arrival?: Arrival): Promise<Answer> {
+	async ask(from: string | number, requestId: string, content: string, reply: CardRef, context: Context, arrival?: Arrival): Promise<Answer> {
 		if (!this.allowed().includes(String(from))) throw new NotAllowed(`${this.platform} user ${from} is not on the allowlist`);
 		await this.prepare(context);
 		return this.thread().ask(requestId, content, reply, context, arrival);
 	}
 
-	/** Messages admitted before a restart whose answers were never delivered. */
-	pending(context: Context): ReturnType<MainThread["pending"]> {
-		return this.thread().pending(context);
+	/** Messages admitted before a restart whose answers were never delivered: this channel's, and any with no channel. */
+	async pending(context: Context): ReturnType<MainThread["pending"]> {
+		return (await this.thread().pending(context)).filter((pending) => (pending.channel || this.platform) === this.platform);
 	}
 
 	/** The answer to an admitted message (after a restart: no new admission, so no gate). */

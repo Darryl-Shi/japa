@@ -1,7 +1,6 @@
 // Pi's ExecutionEnv on top of any Backend. Pi's built-in tools (bash, read, write, edit) touch files and processes
 // only through this, so the agent works on the backend as if it were its own machine — no sandbox tool in between.
-// Every file operation is built on exec (POSIX shell + GNU coreutils), so a provider only has to run commands;
-// its optional fast file paths are used when present.
+// Every file operation is built on exec (POSIX shell + GNU coreutils), so a provider only has to run commands.
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import {
@@ -75,13 +74,6 @@ export class BackendExecutionEnv implements ExecutionEnv {
 
 	async readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
 		const absolute = this.resolve(path);
-		if (this.backend.readFile !== undefined) {
-			try {
-				return ok(await this.backend.readFile(absolute, context.abortSignal));
-			} catch {
-				// Fall through to exec: the fast path may not reach every path.
-			}
-		}
 		const result = await this.fileOp(`test -d ${q(absolute)} && { echo "Is a directory" >&2; exit 1; }; base64 -w0 -- ${q(absolute)}`, absolute, context);
 		return result.ok ? ok(new Uint8Array(Buffer.from(result.value.trim(), "base64"))) : result;
 	}
@@ -118,15 +110,6 @@ export class BackendExecutionEnv implements ExecutionEnv {
 
 	private async put(path: string, data: Uint8Array, append: boolean, context: Context): Promise<Result<void, FileError>> {
 		const absolute = this.resolve(path);
-		if (!append && this.backend.writeFile !== undefined) {
-			// The fast path is expected to create parent directories too.
-			try {
-				await this.backend.writeFile(absolute, data, context.abortSignal);
-				return ok(undefined);
-			} catch {
-				// Fall through to exec.
-			}
-		}
 		for (let start = 0; start < data.length || start === 0; start += CHUNK_BYTES) {
 			const chunk = Buffer.from(data.subarray(start, start + CHUNK_BYTES)).toString("base64");
 			const redirect = append || start > 0 ? ">>" : ">";

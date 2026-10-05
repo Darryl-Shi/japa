@@ -5,16 +5,19 @@
 #
 # It clones (or updates) the repo, brings its own Node 24 if the machine has none, asks for the keys on first install,
 # and runs the agent as a systemd service that restarts on failure and on boot. Run it again to update: it pulls the
-# latest code, reinstalls dependencies, keeps your settings, keys and data, and restarts the service.
+# latest code, reinstalls dependencies, keeps your settings, keys and data (moving any from older layouts), and
+# restarts the service.
 #
-# Every question can be answered ahead of time through the environment, for an unattended install:
+# This sets up the defaults: Telegram as the channel, one pi-ai model provider, optionally boat.dev for the agent's
+# own computer and Parallel for web search. Everything else (other providers through /login, other channels and
+# machines as extensions) is done from chat. Every question can be answered ahead of time through the environment:
 #   TELEGRAM_BOT_TOKEN, JAPA_TELEGRAM_ID   the bot, and your own Telegram user id (the allowlist)
 #   JAPA_PROVIDER, JAPA_MODEL_KEY          a pi-ai provider and its API key
 #   JAPA_MODEL, JAPA_FAST_MODEL            the main model and the fast one (reviews, summaries)
 #   JAPA_NAME, JAPA_TIMEZONE               who the agent works for, and their zone
 #   BOAT_API_KEY, PARALLEL_API_KEY         the agent's own computer (boat.dev) and web search (optional)
-# and where it goes: JAPA_DIR (default ~/japa), JAPA_REPO, JAPA_BRANCH, JAPA_SERVICE (auto | system | user | none),
-# JAPA_CONFIGURE=1 to ask everything again on an existing install.
+# and where it goes: JAPA_DIR (the code, default ~/japa), JAPA_DATA (everything it keeps, default $JAPA_DIR/data),
+# JAPA_REPO, JAPA_BRANCH, JAPA_SERVICE (auto | system | user | none), JAPA_CONFIGURE=1 to ask everything again.
 set -euo pipefail
 
 REPO="${JAPA_REPO:-https://github.com/Darryl-Shi/japa.git}"
@@ -120,38 +123,51 @@ note "node $("$NODE" --version)"
 say "Installing dependencies"
 npm ci --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error
 
-# --- First install: keys and settings, all in data/ (gitignored, readable only by you) --------------------------------
+# --- Everything it keeps is in one directory (readable only by you) ---------------------------------------------------
 
-mkdir -p data && chmod 700 data
-if [ ! -f data/settings.json ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
-	[ -n "$TTY" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || die "no terminal to ask on: set TELEGRAM_BOT_TOKEN and the other answers in the environment"
+DATA="${JAPA_DATA:-$DIR/data}"
+DATA="$(mkdir -p "$DATA" && cd "$DATA" && pwd)"
+chmod 700 "$DATA"
+export JAPA_DATA="$DATA"
 
-	say "Telegram"
-	note "Create a bot with @BotFather and paste its token."
+# Older layouts: memory in ~/jarvis-home (JARVIS_HOME), the log as jarvis.log.
+OLD_MEMORY="${JARVIS_HOME:-$HOME/jarvis-home}"
+if [ -d "$OLD_MEMORY" ] && [ ! -e "$DATA/memory" ]; then
+	note "Moving memory from $OLD_MEMORY to $DATA/memory"
+	mv "$OLD_MEMORY" "$DATA/memory"
+fi
+if [ -f "$DATA/jarvis.log" ] && [ ! -e "$DATA/japa.log" ]; then mv "$DATA/jarvis.log" "$DATA/japa.log"; fi
+
+# --- First install: keys and settings ----------------------------------------------------------------------------------
+
+if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
+	[ -n "$TTY" ] || [ -n "${JAPA_PROVIDER:-}" ] || die "no terminal to ask on: set the answers in the environment"
+
+	say "Telegram (the default channel)"
+	note "Create a bot with @BotFather and paste its token. Empty: no Telegram (bring another channel as an extension)."
 	ask TELEGRAM_BOT_TOKEN "Bot token" "" secret
-	[ -n "$TELEGRAM_BOT_TOKEN" ] || die "a bot token is needed"
-	note "Only Telegram users on the allowlist get through. Leave this empty to find your id with /whoami after it starts."
-	ask JAPA_TELEGRAM_ID "Your Telegram user id"
+	if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+		note "Only Telegram users on the allowlist get through. Leave this empty to find your id with /whoami after it starts."
+		ask JAPA_TELEGRAM_ID "Your Telegram user id"
+	fi
 
 	say "Model"
-	note "Any pi-ai provider, e.g. anthropic, openai, google, openrouter, zai, deepseek, xai."
-	ask JAPA_PROVIDER "Provider" "anthropic"
+	providers="$("$NODE" --input-type=module -e '
+		import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
+		console.log(getBuiltinProviders().join(" "));
+	')"
+	note "Any pi-ai provider: $providers"
+	note "(More, and other logins, later with /login.)"
+	ask JAPA_PROVIDER "Provider"
 	models="$("$NODE" --input-type=module -e '
 		import { getBuiltinProviders, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 		const provider = process.argv[1];
 		if (!getBuiltinProviders().includes(provider)) process.exit(1);
 		console.log(getBuiltinModels(provider).map((model) => model.id).join(" "));
 	' "$JAPA_PROVIDER")" || die "unknown provider: $JAPA_PROVIDER"
-	case "$JAPA_PROVIDER" in
-		anthropic) main_default=claude-sonnet-5-5 fast_default=claude-haiku-4-5 ;;
-		zai) main_default=glm-5.3 fast_default=glm-5.3-flash ;;
-		*)
-			main_default='' fast_default=''
-			note "Its models: $models"
-			;;
-	esac
-	ask JAPA_MODEL "Main model (the chief of staff)" "$main_default"
-	ask JAPA_FAST_MODEL "Fast model (approvals, summaries)" "${fast_default:-$JAPA_MODEL}"
+	note "Its models: $models"
+	ask JAPA_MODEL "Main model (the chief of staff)"
+	ask JAPA_FAST_MODEL "Fast model (approvals, summaries)" "$JAPA_MODEL"
 	for model in "$JAPA_MODEL" "$JAPA_FAST_MODEL"; do
 		[[ " $models " == *" $model "* ]] || die "$JAPA_PROVIDER has no model $model"
 	done
@@ -159,14 +175,15 @@ if [ ! -f data/settings.json ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 	if [ -n "$JAPA_MODEL_KEY" ]; then
 		JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL_KEY="$JAPA_MODEL_KEY" "$NODE" -e '
 			const { existsSync, readFileSync, writeFileSync } = require("node:fs");
-			const all = existsSync("data/auth.json") ? JSON.parse(readFileSync("data/auth.json", "utf8")) : {};
+			const file = `${process.env.JAPA_DATA}/auth.json`;
+			const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
 			all[process.env.JAPA_PROVIDER] = { type: "api_key", key: process.env.JAPA_MODEL_KEY };
-			writeFileSync("data/auth.json", JSON.stringify(all, null, "\t") + "\n", { mode: 0o600 });
+			writeFileSync(file, JSON.stringify(all, null, "\t") + "\n", { mode: 0o600 });
 		'
 	else
 		[ -n "$TTY" ] || die "set JAPA_MODEL_KEY for an unattended install"
-		(cd data && "$DIR/node_modules/.bin/pi-ai" login "$JAPA_PROVIDER" <"$TTY")
-		[ -f data/auth.json ] || die "no login saved"
+		(cd "$DATA" && "$DIR/node_modules/.bin/pi-ai" login "$JAPA_PROVIDER" <"$TTY")
+		[ -f "$DATA/auth.json" ] || die "no login saved"
 	fi
 
 	say "You"
@@ -182,19 +199,20 @@ if [ ! -f data/settings.json ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 
 	umask 077
 	{
-		echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
+		if [ -n "$TELEGRAM_BOT_TOKEN" ]; then echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"; fi
 		if [ -n "$BOAT_API_KEY" ]; then echo "BOAT_API_KEY=$BOAT_API_KEY"; fi
 		if [ -n "$PARALLEL_API_KEY" ]; then echo "PARALLEL_API_KEY=$PARALLEL_API_KEY"; fi
-	} >data/.env
+	} >"$DATA/.env"
 	umask 022
-	chmod 600 data/.env
+	chmod 600 "$DATA/.env"
 
 	JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL="$JAPA_MODEL" JAPA_FAST_MODEL="$JAPA_FAST_MODEL" JAPA_NAME="$JAPA_NAME" \
 		JAPA_TIMEZONE="$JAPA_TIMEZONE" JAPA_TELEGRAM_ID="$JAPA_TELEGRAM_ID" BOAT="${BOAT_API_KEY:+1}" "$NODE" --input-type=module -e '
 		import { existsSync, readFileSync, writeFileSync } from "node:fs";
 		import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 		const env = process.env;
-		const settings = existsSync("data/settings.json") ? JSON.parse(readFileSync("data/settings.json", "utf8")) : {};
+		const file = `${env.JAPA_DATA}/settings.json`;
+		const settings = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
 		const choice = (modelId) => ({ provider: env.JAPA_PROVIDER, modelId });
 		const sees = (modelId) => getBuiltinModel(env.JAPA_PROVIDER, modelId)?.input?.includes("image");
 		settings.model = choice(env.JAPA_MODEL);
@@ -206,20 +224,18 @@ if [ ! -f data/settings.json ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 		if (env.JAPA_TIMEZONE) settings.timezone = env.JAPA_TIMEZONE;
 		settings.allowlist ??= {};
 		if (/^\d+$/.test(env.JAPA_TELEGRAM_ID ?? "")) settings.allowlist.telegram = [Number(env.JAPA_TELEGRAM_ID)];
-		settings.allowlist.telegram ??= [];
 		settings.machines ??= {};
 		if (env.BOAT) settings.machines.workbench ??= { provider: "boat", type: "small", screen: true, idleSeconds: 7200 };
-		writeFileSync("data/settings.json", JSON.stringify(settings, null, "\t") + "\n");
+		writeFileSync(file, JSON.stringify(settings, null, "\t") + "\n");
 	'
 fi
 
 # Memory: a git repo of its own, so every change the agent makes to it is a commit you can read and undo.
-HOME_REPO="${JARVIS_HOME:-$HOME/jarvis-home}"
-if [ ! -d "$HOME_REPO/.git" ]; then
-	mkdir -p "$HOME_REPO"
-	git -C "$HOME_REPO" init --quiet
-	git -C "$HOME_REPO" config user.name "$NAME"
-	git -C "$HOME_REPO" config user.email "$NAME@localhost"
+if [ ! -d "$DATA/memory/.git" ]; then
+	mkdir -p "$DATA/memory"
+	git -C "$DATA/memory" init --quiet
+	git -C "$DATA/memory" config user.name "$NAME"
+	git -C "$DATA/memory" config user.email "$NAME@localhost"
 fi
 
 # --- The service -----------------------------------------------------------------------------------------------------
@@ -241,20 +257,22 @@ unit() {
 		[Service]
 		$1
 		WorkingDirectory=$DIR
-		EnvironmentFile=$DIR/data/.env
+		EnvironmentFile=-$DATA/.env
 		Environment=PATH=$(dirname "$NODE"):/usr/local/bin:/usr/bin:/bin
+		Environment=JAPA_DATA=$DATA
 		ExecStart=$NODE $DIR/src/main.ts
 		Restart=always
 		RestartSec=5
-		StandardOutput=append:$DIR/data/jarvis.log
-		StandardError=append:$DIR/data/jarvis.log
+		StandardOutput=append:$DATA/japa.log
+		StandardError=append:$DATA/japa.log
 
 		[Install]
 		WantedBy=$2
 	EOF
 }
 
-log_from=$(stat -c %s data/jarvis.log 2>/dev/null || echo 0)
+LOG="$DATA/japa.log"
+log_from=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
 case "$SERVICE" in
 	system)
 		say "Starting the $NAME service"
@@ -278,7 +296,7 @@ case "$SERVICE" in
 		;;
 	none)
 		say "Installed. No systemd here, so start it yourself:"
-		note "cd $DIR && set -a && . data/.env && set +a && $NODE src/main.ts"
+		note "cd $DIR && set -a && . $DATA/.env && set +a && JAPA_DATA=$DATA $NODE src/main.ts"
 		exit 0
 		;;
 	*) die "JAPA_SERVICE must be auto, system, user or none" ;;
@@ -286,21 +304,26 @@ esac
 
 # --- Is it up? ---------------------------------------------------------------------------------------------------------
 
-new_log() { tail -c +"$((log_from + 1))" data/jarvis.log 2>/dev/null || true; }
+new_log() { tail -c +"$((log_from + 1))" "$LOG" 2>/dev/null || true; }
 for _ in $(seq 60); do
+	if new_log | grep -q "japa: ready"; then break; fi
+	sleep 1
+done
+if ! new_log | grep -q "japa: ready"; then
+	note "It hasn't started yet. The log so far:"
+	new_log | tail -20 >&2
+	die "see $LOG"
+fi
+say "Running"
+
+# The default channel: once the bot is connected, put its owner on the allowlist if no one is yet.
+for _ in $(seq 15); do
 	if new_log | grep -q "telegram: polling as @"; then break; fi
 	sleep 1
 done
 bot="$(new_log | grep -o "polling as @[A-Za-z0-9_]*" | tail -1 | cut -d@ -f2)"
-if [ -z "$bot" ]; then
-	note "It hasn't connected to Telegram yet. The log so far:"
-	new_log | tail -20 >&2
-	die "see $DIR/data/jarvis.log"
-fi
-say "Running as @$bot"
-
-allowed="$("$NODE" -p 'String(JSON.parse(require("fs").readFileSync("data/settings.json", "utf8")).allowlist?.telegram?.length ?? 0)')"
-if [ "$allowed" = 0 ] && [ -n "$TTY" ]; then
+allowed="$("$NODE" -p 'String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).allowlist?.telegram?.length ?? 0)' "$DATA/settings.json")"
+if [ -n "$bot" ] && [ "$allowed" = 0 ] && [ -n "$TTY" ]; then
 	say "Send /whoami to @$bot in Telegram (waiting up to 5 minutes)"
 	for _ in $(seq 300); do
 		id="$(new_log | grep -o "telegram: refused user [0-9]*" | tail -1 | awk '{ print $4 }')"
@@ -312,19 +335,21 @@ if [ "$allowed" = 0 ] && [ -n "$TTY" ]; then
 		if [ "$CONFIRM" = y ]; then
 			ID="$id" "$NODE" -e '
 				const fs = require("node:fs");
-				const settings = JSON.parse(fs.readFileSync("data/settings.json", "utf8"));
+				const file = process.argv[1];
+				const settings = JSON.parse(fs.readFileSync(file, "utf8"));
 				settings.allowlist = { ...settings.allowlist, telegram: [Number(process.env.ID)] };
-				fs.writeFileSync("data/settings.json", JSON.stringify(settings, null, "\t") + "\n");
-			'
+				fs.writeFileSync(file, JSON.stringify(settings, null, "\t") + "\n");
+			' "$DATA/settings.json"
 			note "Done: say hello to @$bot."
 		fi
 	else
-		note "Nothing yet. Later, put your id in \"allowlist\": { \"telegram\": [...] } in $DIR/data/settings.json."
+		note "Nothing yet. Later, put your id in \"allowlist\": { \"telegram\": [...] } in $DATA/settings.json."
 	fi
 fi
 
 say "Installed in $DIR"
-note "Settings: /settings in Telegram, or $DIR/data/settings.json (live, no restart)"
-note "Log: $DIR/data/jarvis.log"
+note "Settings: /settings in chat, or $DATA/settings.json (live, no restart)"
+note "Model logins: /login in chat"
+note "Log: $LOG"
 note "Service: $manage"
 note "Update: run the same install command again"

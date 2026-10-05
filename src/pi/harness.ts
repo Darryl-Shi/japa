@@ -21,14 +21,17 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
-import { Outbox, type Origin, type OutboxMessage, REPORT_PREFIX } from "./delegation.ts";
+import type { CardRef } from "../core/ui.ts";
+import { Outbox, type OutboxMessage, REPORT_PREFIX } from "./delegation.ts";
 import type { SliceEnd } from "./extension.ts";
 import { summarizeSlice, transcriptText } from "./state.ts";
 import { TRIGGER_PREFIX } from "./triggers.ts";
 
-/** Where an answer goes once it exists. Written before submitting, so a restart can still deliver it. */
-export type ReplyTarget = { chatId: number; messageId: number; channel?: string };
-type PendingReply = ReplyTarget & { content: string };
+/**
+ * A message admitted and where its answer goes (none: the channel's default chat). Written before submitting, so a
+ * restart can still deliver it.
+ */
+type PendingReply = Partial<CardRef> & { content: string };
 
 const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
 	kind: "jarvis.pending-replies",
@@ -67,7 +70,7 @@ export type Answer = { text: string } | { error: string };
 /** What the channel knows about an incoming message that bears on where it belongs. */
 export type Arrival = {
 	/** The message it replies to, if any. */
-	replyTo?: { messageId: number; text: string; at: number };
+	replyTo?: { messageId: string; text: string; at: number };
 	/** The user asked for a fresh start (/new). */
 	newTopic?: boolean;
 };
@@ -137,7 +140,7 @@ export class MainThread {
 			/** The ones the chief of staff has right now; re-read with the settings, so a toggle applies on the next message. */
 			selected?: () => readonly Extension[];
 			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
-			env?: () => ExecutionEnv;
+			env?: () => ExecutionEnv | undefined;
 			/** Open items and working set a new slice starts from. */
 			state?: SliceState;
 			/** Extensions' work when a slice ends (e.g. memory reflection), in the background. */
@@ -165,7 +168,8 @@ export class MainThread {
 			},
 			context,
 		);
-		const root = await harness.root(context, { agent: { model: options.settings().model } });
+		const model = options.settings().model;
+		const root = await harness.root(context, { agent: model === undefined ? {} : { model } });
 		const selected = options.selected ?? (() => options.installed ?? []);
 		const thread = new MainThread({
 			harness,
@@ -187,7 +191,7 @@ export class MainThread {
 	async applySettings(settings: Settings, context: Context): Promise<void> {
 		const agent = await this.root.agent(context);
 		const current = agent.model;
-		if (current?.provider !== settings.model.provider || current?.modelId !== settings.model.modelId) {
+		if (settings.model !== undefined && (current?.provider !== settings.model.provider || current?.modelId !== settings.model.modelId)) {
 			await this.root.configure({ model: settings.model }, context);
 		}
 		const wanted = this.selected();
@@ -196,7 +200,7 @@ export class MainThread {
 	}
 
 	/** Submit a message from a channel and resolve with its answer. Idempotent per requestId. */
-	async ask(requestId: string, content: string, reply: ReplyTarget, context: Context, arrival: Arrival = {}): Promise<Answer> {
+	async ask(requestId: string, content: string, reply: CardRef | undefined, context: Context, arrival: Arrival = {}): Promise<Answer> {
 		await this.root.commit(async (tx) => {
 			(await tx.doc(PendingReplies)).byRequest[requestId] = { ...reply, content };
 		}, context);
@@ -210,6 +214,7 @@ export class MainThread {
 	}
 
 	async answer(requestId: string, content: string, context: Context, arrival: Arrival = {}): Promise<Answer> {
+		if (this.settings().model === undefined) return { error: "no model chosen yet: log in to a provider with /login, then pick a model in /settings" };
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
 		const boundary = existing === undefined ? await this.boundary(content, arrival, context) : undefined;
 		if (boundary !== undefined) await this.startSlice(arrival, context);
@@ -292,6 +297,8 @@ export class MainThread {
 				const message = entry.model?.[0];
 				if (message === undefined) continue;
 				const said = textOf(message);
+				// A turn that only called tools says nothing worth recalling.
+				if (said.trim() === "") continue;
 				const who = message.role === "assistant" ? "You" : said.startsWith(REPORT_PREFIX) ? "Team" : said.startsWith(TRIGGER_PREFIX) ? "Trigger" : "User";
 				const line = `${who}: ${said.slice(0, MESSAGE_CHARS)}`;
 				if (recent.length >= RECENT_MESSAGES || used + line.length > RECENT_CHARS) break scan;
@@ -331,20 +338,22 @@ export class MainThread {
 	}
 
 	/** The chat message the main thread is answering right now (the placed input). */
-	async origin(context: Context): Promise<Origin | undefined> {
+	async origin(context: Context): Promise<CardRef | undefined> {
 		const placed = (await this.harness.inspect(context)).submissions.findLast(
 			(submission) => submission.conversationId === this.root.id && submission.type === "input" && submission.status === "placed",
 		);
 		if (placed?.requestId === undefined) return undefined;
 		const target = (await this.harness.snapshot(PendingReplies, context))?.byRequest[placed.requestId];
-		return target === undefined ? undefined : { chatId: target.chatId, messageId: target.messageId, ...(target.channel === undefined ? {} : { channel: target.channel }) };
+		if (target?.chatId === undefined || target.messageId === undefined) return undefined;
+		// String() and "": answers admitted before ids were strings and channels were recorded.
+		return { channel: target.channel ?? "", chatId: String(target.chatId), messageId: String(target.messageId) };
 	}
 
 	/**
 	 * Deliver the outbox (messages the chief of staff sends on its own: results, questions, news) through a channel, now
 	 * and whenever something is added. The open item learns the sent message's id, so a reply to it finds the job.
 	 */
-	async deliverOutbox(send: (message: OutboxMessage) => Promise<number | undefined>, context: Context): Promise<void> {
+	async deliverOutbox(send: (message: OutboxMessage) => Promise<string | undefined>, context: Context): Promise<void> {
 		await this.root.commit(async (tx) => void (await tx.doc(Outbox)), context);
 		let draining = Promise.resolve();
 		const drain = () => {

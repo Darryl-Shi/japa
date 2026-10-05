@@ -1,10 +1,11 @@
 // The local backend: commands run on this machine under `home`. For development and tests, and the smallest
-// example of a provider — implementing `exec` is all it takes to attach a computer.
+// example of a machine provider: implementing `exec` is all it takes to attach a computer.
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import type { Backend, BackendProvider, ExecOptions, ExecResult } from "../core/backend.ts";
+import type { Backend, ExecOptions, ExecResult } from "../core/backend.ts";
+import type { Host, JapaExtension } from "../pi/extension.ts";
 
 export class LocalBackend implements Backend {
 	readonly id: string;
@@ -44,9 +45,17 @@ export class LocalBackend implements Backend {
 	}
 }
 
-export const localProvider: BackendProvider = {
-	name: "local",
-	async open(role, config) {
-		return new LocalBackend(typeof config.home === "string" ? config.home : join("data", "machines", role));
-	},
-};
+/** The machine for a role: `home` from the config, else a directory for the role under the data directory. */
+export function localBackend(dataDir: string, role: string, config: Readonly<Record<string, unknown>>): Backend {
+	return new LocalBackend(typeof config.home === "string" ? config.home : join(dataDir, "machines", role));
+}
+
+/** "local" in machines.workbench: commands run where the agent itself runs, beside its secrets, so for development. */
+export function localExtension(host: Pick<Host, "dataDir">): JapaExtension {
+	return {
+		name: "local-machine",
+		title: "Local machine",
+		about: 'The machine japa runs on as a workbench ("local"): for development only, since it holds japa\'s own secrets.',
+		backends: { local: (role, config) => localBackend(host.dataDir, role, config) },
+	};
+}

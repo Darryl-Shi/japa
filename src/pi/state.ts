@@ -74,10 +74,10 @@ export function transcriptText(messages: readonly Message[]): string {
 /** One cheap call over the departing slice only (never the whole history): the new working set. */
 export async function summarizeSlice(
 	models: Models,
-	choice: ModelChoice,
+	choice: ModelChoice | undefined,
 	input: { workingSet: string | undefined; openItems: string | undefined; conversation: string; today: string },
 ): Promise<string | undefined> {
-	const model = models.getModel(choice.provider, choice.modelId);
+	const model = choice === undefined ? undefined : models.getModel(choice.provider, choice.modelId);
 	if (model === undefined) return undefined;
 	const content = [
 		`<today>${input.today}</today>`,

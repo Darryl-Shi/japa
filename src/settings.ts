@@ -8,18 +8,20 @@ export type ModelChoice = { provider: string; modelId: string };
 export type MachineConfig = { provider: string; screen?: boolean; [option: string]: unknown };
 
 export type Settings = {
-	/** The chief of staff: judgment and synthesis, kept fast by small contexts rather than a small model. */
-	model: ModelChoice;
-	/** A job's model when the chief of staff doesn't pick one. */
-	delegateModel: ModelChoice;
+	/**
+	 * The chief of staff: judgment and synthesis, kept fast by small contexts rather than a small model. No default:
+	 * it's one of the models the user has logged in to (/login), chosen in /settings.
+	 */
+	model?: ModelChoice;
+	/** A job's model when the chief of staff doesn't pick one; default: the chief of staff's. */
+	delegateModel?: ModelChoice;
 	/** Named models the chief of staff can assign to a job (bound to that job and its subagents). */
 	jobModels: Record<string, ModelChoice>;
 	/**
-	 * The computers the agent works on, by role, each backed by a provider (built in: "boat", "local"; extensions can
-	 * add more). workbench: its own machine for shell, files, scripts and coding agents — no secrets. desk (later):
-	 * a machine with a screen and the user's logged-in browser. A role with no entry is not available.
+	 * The workbench: the agent's own machine for shell, files and coding agents, with no secrets. `provider` names a
+	 * machine provider an extension declares (built in: "boat", "local"). None: no computer.
 	 */
-	machines: { workbench?: MachineConfig; desk?: MachineConfig };
+	machines: { workbench?: MachineConfig };
 	/** Who the agent works for. Optional; the agent also learns about them in memory. */
 	user?: { name?: string };
 	/**
@@ -44,12 +46,7 @@ export type Settings = {
 export type ExtensionOptions = { enabled?: boolean; [option: string]: unknown };
 
 export const DEFAULTS: Settings = {
-	model: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
-	delegateModel: { provider: "anthropic", modelId: "claude-sonnet-5-5" },
-	jobModels: {
-		fast: { provider: "anthropic", modelId: "claude-haiku-4-5" },
-		strong: { provider: "anthropic", modelId: "claude-opus-5-5" },
-	},
+	jobModels: {},
 	machines: {},
 	allowlist: {},
 	context: { idleMinutes: 10, sliceTokens: 8000 },

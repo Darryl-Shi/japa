@@ -6,8 +6,8 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { boatProvider } from "../src/backends/boat.ts";
-import { LocalBackend } from "../src/backends/local.ts";
+import { boatBackend } from "../src/backends/boat.ts";
+import { LocalBackend, localExtension } from "../src/backends/local.ts";
 import { BackendExecutionEnv } from "../src/pi/backend-env.ts";
 import { MainThread } from "../src/pi/harness.ts";
 import { shellExtension } from "../src/pi/shell.ts";
@@ -16,7 +16,7 @@ import { DEFAULTS } from "../src/settings.ts";
 const context = BACKGROUND_CONTEXT;
 
 test("the agent's own bash/write/read act directly on the workbench backend", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const machine = new LocalBackend(join(dataDir, "machine"));
 	const faux = fauxProvider();
 	const models = createModels();
@@ -29,7 +29,7 @@ test("the agent's own bash/write/read act directly on the workbench backend", as
 	]);
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
 	const thread = await MainThread.open({ dataDir, models, settings, installed: [shellExtension()], env: () => new BackendExecutionEnv(machine) }, context);
-	assert.deepEqual(await thread.ask("1", "plan it", { chatId: 1, messageId: 1 }, context), { text: "Two steps written." });
+	assert.deepEqual(await thread.ask("1", "plan it", { channel: "test", chatId: "1", messageId: "1" }, context), { text: "Two steps written." });
 	assert.equal(await readFile(join(machine.home, "notes/plan.md"), "utf8"), "step one\nstep two\n");
 	const sent = JSON.stringify((await thread.root.context(context)).messages);
 	assert.match(sent, /"text":"2\\n"/, "bash output came back as the tool result");
@@ -93,11 +93,11 @@ function fakeBoat(machine: LocalBackend) {
 }
 
 test("boat provider: creates a no-env machine once, streams commands, resumes a stopped machine, runs long commands detached", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const machine = new LocalBackend(join(dataDir, "machine"));
 	const boat = fakeBoat(machine);
-	const provider = boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl });
-	const backend = await provider.open("workbench", { provider: "boat" });
+	const options = { apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl };
+	const backend = boatBackend(options, "workbench", { home: machine.home });
 	assert.equal(backend.id, "boat:workbench");
 	assert.equal(boat.calls.length, 0, "opening starts nothing");
 
@@ -109,8 +109,8 @@ test("boat provider: creates a no-env machine once, streams commands, resumes a 
 	assert.equal(output, "hello\n");
 	assert.deepEqual(JSON.parse(await readFile(join(dataDir, "boat.json"), "utf8")), { workbench: "bx_aaaaaaaa" });
 
-	// Stopped between uses: the next command resumes it and runs, invisibly to the agent.
-	await backend.suspend?.();
+	// Stopped between uses (boat put it to sleep): the next command resumes it and runs, invisibly to the agent.
+	boat.setState("archived");
 	assert.ok((await env.writeFile("kept.txt", "still here", context)).ok);
 	assert.deepEqual(await env.readTextFile("kept.txt", context), { ok: true, value: "still here" });
 	assert.ok(boat.calls.includes("POST /sandboxes/bx_aaaaaaaa/resume"));
@@ -122,16 +122,16 @@ test("boat provider: creates a no-env machine once, streams commands, resumes a 
 	assert.equal(long, "long-running\n");
 
 	// Opening the same role again reuses the machine instead of creating another.
-	await (await provider.open("workbench", { provider: "boat" })).exec("true");
+	await boatBackend(options, "workbench", {}).exec("true");
 	assert.equal(boat.calls.filter((call) => call === "POST /sandboxes").length, 1);
 	assert.equal(await backend.viewUrl?.(), "https://desktop.example/vnc.html?_token=x");
 	await rm(dataDir, { recursive: true, force: true });
 });
 
 test("boat provider: with idleSeconds the machine sleeps only after that long unused (each use pushes the deadline back)", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const boat = fakeBoat(new LocalBackend(join(dataDir, "machine")));
-	const backend = await boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl, touchEveryMs: 300 }).open("workbench", { provider: "boat", idleSeconds: 7200 });
+	const backend = boatBackend({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl, touchEveryMs: 300 }, "workbench", { idleSeconds: 7200 });
 	const touches = () => boat.bodies.filter((request) => request.call === "PATCH /sandboxes/bx_aaaaaaaa").map((request) => request.body);
 	await backend.exec("true");
 	assert.deepEqual(boat.bodies.find((request) => request.call === "POST /sandboxes")?.body, { type: "small", ttlSeconds: 7200, noEnv: true });
@@ -142,21 +142,53 @@ test("boat provider: with idleSeconds the machine sleeps only after that long un
 	assert.deepEqual(touches(), [{ ttlSeconds: 7200 }], "pushed back on use, at most once per interval");
 	await backend.exec("sleep 1.5", { cwd: "/tmp" });
 	assert.ok(touches().length >= 3, `and while a long command runs (${touches().length})`);
-	await backend.suspend?.();
+	boat.setState("archived");
 	await backend.exec("true");
 	assert.deepEqual(boat.bodies.find((request) => request.call.endsWith("/resume"))?.body, { ttlSeconds: 7200 }, "a resumed machine keeps sleeping when idle");
 	await rm(dataDir, { recursive: true, force: true });
 });
 
 test("boat provider: a remembered machine that's gone is replaced on the next command", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const boat = fakeBoat(new LocalBackend(join(dataDir, "machine")));
 	await writeFile(join(dataDir, "boat.json"), JSON.stringify({ workbench: "bx_gone" }));
-	const backend = await boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl }).open("workbench", { provider: "boat" });
+	const backend = boatBackend({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl }, "workbench", {});
 	let output = "";
 	const result = await backend.exec("echo hi", { cwd: "/tmp", onOutput: (text) => (output += text) });
 	assert.equal(result.exitCode, 0);
 	assert.equal(output, "hi\n");
 	assert.deepEqual(JSON.parse(await readFile(join(dataDir, "boat.json"), "utf8")), { workbench: "bx_aaaaaaaa" });
 	await rm(dataDir, { recursive: true, force: true });
+});
+
+test("the workbench is opened through the machine provider settings name, from an extension that's on, and follows settings", async () => {
+	const { agent, say } = await import("./helpers.ts");
+	const opened: string[] = [];
+	const h = await agent({
+		extensions: (host) => [
+			localExtension(host),
+			{
+				name: "elsewhere",
+				title: "Elsewhere",
+				about: "",
+				backends: { elsewhere: (role, config) => (opened.push(`${role}:${String(config.size)}`), new LocalBackend(join(host.dataDir, "elsewhere"))) },
+			},
+		],
+		script: () => say("ok"),
+	});
+	assert.equal(h.host.workbench(), undefined, "none configured: no computer");
+	h.settings.update({ machines: { workbench: { provider: "nowhere" } } });
+	assert.equal(h.host.workbench(), undefined, "a provider no extension declares: none");
+	h.settings.update({ machines: { workbench: { provider: "elsewhere", size: 2 } } });
+	const first = h.host.workbench();
+	assert.equal(first?.home, join(h.dataDir, "elsewhere"));
+	assert.equal(h.host.workbench(), first, "opened once");
+	h.settings.update({ machines: { workbench: { provider: "local" } } });
+	assert.equal(h.host.workbench()?.home, join(h.dataDir, "machines", "workbench"), "local: a directory under the data dir by default");
+	h.settings.update({ extensions: { "local-machine": { enabled: false } } });
+	await h.japa.apply(BACKGROUND_CONTEXT);
+	h.settings.update({ machines: { workbench: { provider: "local", home: join(h.dataDir, "x") } } });
+	assert.equal(h.host.workbench(), undefined, "its extension off: none");
+	assert.deepEqual(opened, ["workbench:2"]);
+	await h.done();
 });

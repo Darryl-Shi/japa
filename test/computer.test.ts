@@ -39,7 +39,7 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		t.skip("Xvfb not available");
 		return;
 	}
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const local = new LocalBackend(join(dataDir, "machine"));
 	const commands: string[] = [];
 	const backend = { id: local.id, home: local.home, exec: (command: string, options?: Parameters<LocalBackend["exec"]>[1]) => (commands.push(command), local.exec(command, options)) };
@@ -52,9 +52,9 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		fauxAssistantMessage("Looked."),
 	]);
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
-	const thread = await MainThread.open({ dataDir, models, settings, installed: [computerExtension({ backend, display: ":97" })] }, context);
+	const thread = await MainThread.open({ dataDir, models, settings, installed: [computerExtension({ backend: () => backend, display: ":97" })] }, context);
 	try {
-		await thread.ask("1", "look at the screen", { chatId: 1, messageId: 1 }, context);
+		await thread.ask("1", "look at the screen", { channel: "test", chatId: "1", messageId: "1" }, context);
 		const results = (await thread.root.context(context)).messages.filter((message): message is ToolResultMessage => message.role === "toolResult");
 		const image = results[0]?.content.find((part) => part.type === "image");
 		assert.ok(image !== undefined && image.type === "image", "the screenshot came back as an image");

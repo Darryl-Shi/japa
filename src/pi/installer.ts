@@ -1,5 +1,5 @@
 // Extensions installed from chat, hot-loaded. A job writes one on the workbench: a TypeScript module whose default
-// export makes a JarvisExtension from the Host, the same shape as the built-in ones. install_extension shows the user
+// export makes a JapaExtension from the Host, the same shape as the built-in ones. install_extension shows the user
 // what it is and asks with buttons, every time, whatever the approvals mode: the code runs inside this process with
 // the Host, keys included, so only the user's tap installs it. On Install it is loaded, copied into
 // data/extensions, and on from the next message, with no restart; the chief of staff hears how it went. At start,
@@ -13,7 +13,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
 import type { Card } from "../core/ui.ts";
 import { BackendExecutionEnv } from "./backend-env.ts";
-import type { ExtensionSet, Host, JarvisExtension } from "./extension.ts";
+import type { ExtensionSet, Host, JapaExtension } from "./extension.ts";
 
 export const EXTENSION_PREFIX = "[Extension ";
 const NAME = /^[a-z][a-z0-9-]{0,39}$/;
@@ -32,12 +32,12 @@ const guide = (repo: string) =>
 	[
 		"A job writes it; its brief must say: clone",
 		`${repo} on the workbench and npm ci; the contract is src/pi/extension.ts, src/pi/web.ts is an example; write one`,
-		"file anywhere npm run check covers, whose default export is (host: Host) => JarvisExtension; import values only from packages",
+		"file anywhere npm run check covers, whose default export is (host: Host) => JapaExtension; import values only from packages",
 		"(@earendil-works/pi-ai, @earendil-works/pi-durable, node:*), types only with `import type`; a key goes in a secret",
-		'settings field the user sets in /settings, read with host.secrets.get("<name>.<key>"), never in the code; a model',
-		"provider is an extension whose start() calls host.models.setProvider (and host.models.refresh for it, if it fetches its",
-		"model list), with its key from /login; npm run check passes. Not a Pi coding-agent",
-		"extension. The file is checked before the user is asked.",
+		'settings field the user sets in /settings, read with host.secrets.get("<name>.<key>"), never in the code; what japa is',
+		"built from goes through its typed field: a model provider in `providers` (a pi-ai createProvider; its key comes from",
+		"/login), a machine in `backends`, a channel as `channel` with host.ui.attach and host.inbox; npm run check passes.",
+		"Not a Pi coding-agent extension. The file is checked before the user is asked.",
 	].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
@@ -45,10 +45,10 @@ const text = (value: string) => ({ content: [{ type: "text" as const, text: valu
 type Pending = { id: string; name: string; summary: string; from: string };
 
 /** Import a module (fresh, never from the import cache) and make its extension. */
-export async function loadExtension(path: string, host: Host): Promise<JarvisExtension> {
+export async function loadExtension(path: string, host: Host): Promise<JapaExtension> {
 	const module = (await import(`${pathToFileURL(path).href}?v=${Date.now()}`)) as { default?: unknown };
 	if (typeof module.default !== "function") throw new Error("its default export must be a function: (host) => extension");
-	const entry = (await module.default(host)) as JarvisExtension;
+	const entry = (await module.default(host)) as JapaExtension;
 	if (typeof entry !== "object" || entry === null || typeof entry.name !== "string" || typeof entry.title !== "string" || typeof entry.about !== "string") {
 		throw new Error("the extension needs a name, title and about");
 	}
@@ -90,13 +90,13 @@ export function problems(source: string): string[] {
 	return found;
 }
 
-const piExtensions = (entry: JarvisExtension | undefined) => [...new Set([...(entry?.chief ?? []), ...(entry?.jobs ?? [])])];
+const piExtensions = (entry: JapaExtension | undefined) => [...new Set([...(entry?.chief ?? []), ...(entry?.jobs ?? [])])];
 
 export type Installer = {
 	/** install_extension and remove_extension, for the chief of staff. */
 	extension: Extension;
 	/** The ones installed before, loaded again at start; a broken one is logged and skipped. */
-	loadInstalled(): Promise<JarvisExtension[]>;
+	loadInstalled(): Promise<JapaExtension[]>;
 };
 
 export function installer(options: {
@@ -123,7 +123,7 @@ export function installer(options: {
 	};
 
 	/** Put it in the registry and the set, replacing an older version; refuses names taken by anything else. */
-	const activate = async (entry: JarvisExtension) => {
+	const activate = async (entry: JapaExtension) => {
 		const set = options.extensions();
 		const old = set.get(entry.name);
 		const own = new Set(piExtensions(old).map((extension) => extension.name));
@@ -215,8 +215,9 @@ export function installer(options: {
 				execute: async (args, _api, context) => {
 					if (!NAME.test(args.name)) return text(`"${args.name}" isn't a valid name: lowercase letters, digits and dashes.`);
 					if (options.extensions().get(args.name) !== undefined && !installed.has(args.name)) return text(`"${args.name}" is built in; pick another name.`);
-					if (host.workbench === undefined) return text("There's no workbench to read it from.");
-					const read = await new BackendExecutionEnv(host.workbench).readTextFile(args.path, context);
+					const workbench = host.workbench();
+					if (workbench === undefined) return text("There's no workbench to read it from.");
+					const read = await new BackendExecutionEnv(workbench).readTextFile(args.path, context);
 					if (!read.ok) return text(`Couldn't read ${args.path}: ${String(read.error)}`);
 					const found = problems(read.value);
 					if (found.length > 0) return text(`Not asking the user: it wouldn't load.\n- ${found.join("\n- ")}\nFix it (in a job, against a clone of the repo, until npm run check passes), then install again.`);
@@ -253,7 +254,7 @@ export function installer(options: {
 		loadInstalled: async () => {
 			if (!existsSync(dir)) return [];
 			prepare();
-			const entries: JarvisExtension[] = [];
+			const entries: JapaExtension[] = [];
 			for (const file of readdirSync(dir).filter((name) => name.endsWith(".ts")).sort()) {
 				try {
 					const entry = await loadExtension(join(dir, file), host);

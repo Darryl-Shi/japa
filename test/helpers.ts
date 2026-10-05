@@ -11,15 +11,15 @@ import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolC
 import type { Backend } from "../src/core/backend.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
 import { SecretsFile } from "../src/credentials.ts";
-import { type Jarvis, startJarvis } from "../src/jarvis.ts";
-import type { Host, JarvisExtension } from "../src/pi/extension.ts";
+import { type Japa, startJapa } from "../src/japa.ts";
+import type { Host, JapaExtension } from "../src/pi/extension.ts";
 import { SettingsFile } from "../src/settings.ts";
 
 export const context = BACKGROUND_CONTEXT;
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const call = (name: string, args: JsonObject) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 export const say = (text: string) => fauxAssistantMessage(text);
-export const target = (messageId: number) => ({ chatId: 1, messageId, channel: "test" });
+export const target = (messageId: number) => ({ channel: "test", chatId: "1", messageId: String(messageId) });
 
 /** One model request: who it's from (the chief of staff, a job, or a background call) and the newest message it answers. */
 export type Turn = { text: string; job?: string; request: string };
@@ -31,14 +31,15 @@ function lastText(request: PiContext): string {
 }
 
 export async function agent(options: {
-	extensions: (host: Host) => JarvisExtension[];
+	extensions: (host: Host) => JapaExtension[];
 	script: (turn: Turn) => AssistantMessage | Promise<AssistantMessage>;
+	/** A machine, provided the way any is: an extension declaring a backend, named in machines.workbench. */
 	workbench?: Backend;
 	settings?: Parameters<SettingsFile["update"]>[0];
 	/** Reuse one (a restart); default: a new one. */
 	dataDir?: string;
 }) {
-	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "jarvis-")));
+	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "japa-")));
 	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-fast" }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -58,18 +59,18 @@ export async function agent(options: {
 		jobModels: { fast: { provider: "faux", modelId: "faux-fast" } },
 		context: { idleMinutes: 60, sliceTokens: 1_000_000 },
 		allowlist: { test: [7] },
+		...(options.workbench === undefined ? {} : { machines: { workbench: { provider: "test-machine" } } }),
 		...options.settings,
 	});
 	const secrets = new SecretsFile(join(dataDir, "secrets.json"));
 	const cards: Array<{ card: Card; replaced?: CardRef; ref: CardRef }> = [];
 	let shown = 5000;
-	const jarvis: Jarvis = await startJarvis(
+	const japa: Japa = await startJapa(
 		{
 			dataDir,
 			settings,
 			secrets,
 			models,
-			...(options.workbench === undefined ? {} : { workbench: options.workbench }),
 			extensions: (host) => [
 				// A stand-in channel: shows cards by recording them.
 				{
@@ -81,12 +82,13 @@ export async function agent(options: {
 						host.ui.attach({
 							channel: "test",
 							show: async (card, replace) => {
-								const ref = replace ?? { channel: "test", chatId: 7, messageId: shown++ };
+								const ref = replace ?? { channel: "test", chatId: "7", messageId: String(shown++) };
 								cards.push({ card, ref, ...(replace === undefined ? {} : { replaced: replace }) });
 								return ref;
 							},
 						}),
 				},
+				...(options.workbench === undefined ? [] : [{ name: "test-machine", title: "Test machine", about: "", backends: { "test-machine": () => options.workbench! } }]),
 				...options.extensions(host),
 			],
 		},
@@ -96,11 +98,11 @@ export async function agent(options: {
 		for (let i = 0; i < 500 && !check(); i++) await sleep(10);
 		assert.ok(check(), `timed out waiting for ${what}`);
 	};
-	const inbox = jarvis.host.inbox("test");
+	const inbox = japa.host.inbox("test");
 	return {
-		jarvis,
-		thread: jarvis.thread,
-		host: jarvis.host,
+		japa,
+		thread: japa.thread,
+		host: japa.host,
 		settings,
 		secrets,
 		turns,
@@ -110,7 +112,7 @@ export async function agent(options: {
 		/** A message from the user on the test channel. */
 		ask: (id: string, text: string, messageId = 1, arrival?: Parameters<typeof inbox.ask>[5]) => inbox.ask(7, id, text, target(messageId), context, arrival),
 		done: async () => {
-			await jarvis.close(context);
+			await japa.close(context);
 			await rm(dataDir, { recursive: true, force: true });
 		},
 	};

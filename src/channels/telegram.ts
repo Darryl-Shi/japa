@@ -6,8 +6,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
 import { stamp } from "../core/schedule.ts";
 import type { Button, Card, CardRef, Command } from "../core/ui.ts";
-import type { Host, JarvisExtension } from "../pi/extension.ts";
-import type { Arrival, ReplyTarget } from "../pi/harness.ts";
+import type { Host, JapaExtension } from "../pi/extension.ts";
+import type { Arrival } from "../pi/harness.ts";
 
 const context = BACKGROUND_CONTEXT;
 const LIMIT = 4096;
@@ -21,7 +21,7 @@ const OWN: Command[] = [
 
 const keyboard = (buttons: Button[][]) => ({ inline_keyboard: buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) });
 
-export function telegramExtension(host: Host): JarvisExtension {
+export function telegramExtension(host: Host): JapaExtension {
 	let bot: Bot | undefined;
 	let stopAdvertising: (() => void) | undefined;
 
@@ -31,7 +31,8 @@ export function telegramExtension(host: Host): JarvisExtension {
 		const inbox = host.inbox(PLATFORM);
 		const live = new Bot(token);
 		bot = live;
-		const ref = (chatId: number, messageId: number): CardRef => ({ channel: PLATFORM, chatId, messageId });
+		// The UI's ids are strings; Telegram's are numbers, converted here at its edge.
+		const ref = (chatId: number, messageId: number): CardRef => ({ channel: PLATFORM, chatId: String(chatId), messageId: String(messageId) });
 		/** Messages that asked for a reply: the reply goes to the card's owner, not the agent. */
 		const asks = new Map<number, NonNullable<Card["ask"]>>();
 
@@ -48,13 +49,15 @@ export function telegramExtension(host: Host): JarvisExtension {
 			return last;
 		};
 
-		const deliver = async (requestId: string, content: string, target: ReplyTarget, from: number | undefined, arrival: Arrival = {}) => {
+		/** Answer a message (`from`: newly admitted; none: admitted before a restart), as a reply to it when there is one. */
+		const deliver = async (requestId: string, content: string, chatId: number, messageId: number | undefined, from: number | undefined, arrival: Arrival = {}) => {
 			const started = Date.now();
-			const typing = setInterval(() => void live.api.sendChatAction(target.chatId, "typing").catch(() => {}), 4000);
-			void live.api.sendChatAction(target.chatId, "typing").catch(() => {});
+			const typing = setInterval(() => void live.api.sendChatAction(chatId, "typing").catch(() => {}), 4000);
+			void live.api.sendChatAction(chatId, "typing").catch(() => {});
 			try {
-				const answer = from !== undefined ? await inbox.ask(from, requestId, content, target, context, arrival) : await inbox.answer(requestId, content, context);
-				await send(target.chatId, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, target.messageId);
+				const answer =
+					from !== undefined ? await inbox.ask(from, requestId, content, ref(chatId, messageId ?? 0), context, arrival) : await inbox.answer(requestId, content, context);
+				await send(chatId, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, messageId);
 				await inbox.delivered(requestId, context);
 				host.log(`${requestId} answered in ${Date.now() - started}ms`);
 			} finally {
@@ -104,12 +107,11 @@ export function telegramExtension(host: Host): JarvisExtension {
 				}
 			}
 			if (replied !== undefined && (replied.text ?? replied.caption) !== undefined) {
-				arrival.replyTo = { messageId: replied.message_id, text: replied.text ?? replied.caption ?? "", at: replied.date * 1000 };
+				arrival.replyTo = { messageId: String(replied.message_id), text: replied.text ?? replied.caption ?? "", at: replied.date * 1000 };
 			}
-			const target = { chatId: ctx.chat.id, messageId: ctx.message.message_id, channel: PLATFORM };
-			const requestId = `tg:${target.chatId}:${target.messageId}`;
+			const requestId = `tg:${ctx.chat.id}:${ctx.message.message_id}`;
 			const content = `[${stamp(ctx.message.date * 1000, host.settings.get().timezone)}] ${text}`;
-			void deliver(requestId, content, target, ctx.from.id, arrival).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
+			void deliver(requestId, content, ctx.chat.id, ctx.message.message_id, ctx.from.id, arrival).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
 		});
 
 		// Cards from any extension (and the agent's own messages): to the user's private chat, whose id is their user id.
@@ -118,13 +120,13 @@ export function telegramExtension(host: Host): JarvisExtension {
 			show: async (card, replace) => {
 				const markup = card.buttons === undefined ? {} : { reply_markup: keyboard(card.buttons) };
 				if (replace !== undefined) {
-					await live.api.editMessageText(replace.chatId, replace.messageId, card.text, markup).catch(() => {});
+					await live.api.editMessageText(Number(replace.chatId), Number(replace.messageId), card.text, markup).catch(() => {});
 					return replace;
 				}
 				const owner = inbox.owner();
-				const chatId = card.replyTo?.channel === PLATFORM ? card.replyTo.chatId : owner === undefined ? undefined : Number(owner);
+				const chatId = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.chatId) : owner === undefined ? undefined : Number(owner);
 				if (chatId === undefined) throw new Error("telegram: no one on the allowlist to show it to");
-				const replyTo = card.replyTo?.channel === PLATFORM ? card.replyTo.messageId : undefined;
+				const replyTo = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.messageId) : undefined;
 				if (card.buttons === undefined && card.ask === undefined) return ref(chatId, await send(chatId, card.text, replyTo, card.buzz ?? true));
 				const sent = await live.api.sendMessage(chatId, card.text, {
 					...(replyTo === undefined ? {} : { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }),
@@ -153,7 +155,9 @@ export function telegramExtension(host: Host): JarvisExtension {
 
 		// Answers admitted before the last restart and never delivered.
 		for (const { requestId, content, chatId, messageId } of await inbox.pending(context)) {
-			void deliver(requestId, content, { chatId, messageId, channel: PLATFORM }, undefined).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
+			const to = chatId ?? inbox.owner();
+			if (to === undefined) continue;
+			void deliver(requestId, content, Number(to), messageId === undefined ? undefined : Number(messageId), undefined).catch((error: unknown) => host.log(`${requestId} failed: ${String(error)}`));
 		}
 
 		live.catch((error) => host.log(`telegram: ${String(error.error)}`));

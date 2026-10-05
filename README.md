@@ -1,6 +1,6 @@
 # japa
 
-A personal chief of staff you text on Telegram. It answers quickly, remembers you, and hands longer work to a team of job agents that run on their own computer. Their results come back as a reply to the message that asked for them. It's built on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable), so everything it's in the middle of survives a restart.
+A personal chief of staff you message (on Telegram, by default). It answers quickly, remembers you, and hands longer work to a team of job agents that run on their own computer. Their results come back as a reply to the message that asked for them. It's built on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable), so everything it's in the middle of survives a restart.
 
 It should feel like texting one competent person. The chat never blocks, small questions stay small, and it asks before anything that sends, spends, deletes or deploys.
 
@@ -12,35 +12,37 @@ On any Linux machine that stays on (a small VM is plenty):
 curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | bash
 ```
 
-The script asks for:
-- a Telegram bot token (from [@BotFather](https://t.me/BotFather));
-- a model provider and its API key, or a subscription login. Any [pi-ai](https://github.com/earendil-works/pi) provider works: Anthropic, OpenAI, Google, OpenRouter, Z.ai and others;
+The script sets up the defaults. It asks for:
+- a Telegram bot token (from [@BotFather](https://t.me/BotFather)), for the default channel;
+- a model provider and its API key, or a subscription login. Any [pi-ai](https://github.com/earendil-works/pi) provider works: Anthropic, OpenAI, Google, OpenRouter, Z.ai and others. More can be added later from chat with `/login`;
 - your name and time zone;
 - optionally a [boat.dev](https://boat.dev) key, for the agent's own computer;
 - optionally a [Parallel](https://parallel.ai) key, for web search.
 
 It brings its own Node 24 if the machine has none and runs the agent as a systemd service. At the end it asks you to send `/whoami` to your bot, and puts you on the allowlist.
 
-Run the same command again to update. For an unattended install, every answer can come from the environment instead (see the top of `install.sh`).
+Run the same command again to update; it also moves data from older layouts. For an unattended install, every answer can come from the environment instead (see the top of `install.sh`).
 
 ## How it works
 
 ```
                     ┌──────────────────────────── core (always on) ─────────────────────────────┐
- Telegram ─► Inbox ─┤  Main thread ──── the chief of staff: one conversation, worked in slices   │
+ Channel ─► Inbox ──┤  Main thread ──── the chief of staff: one conversation, worked in slices   │
  (allowlist)        │       │  delegate / check_job / conclude_job          message_user ─► UI ─┼─► cards back
-                    │       ▼                                                                    │   to Telegram
+                    │       ▼                                                                    │   on the channel
                     │  Team: one job agent per job ──── report ──► back to the chief of staff    │
-                    │  Open items · Triggers (schedules, events) · UI cards · /settings          │
+                    │  Open items · Triggers · UI cards · /settings · /login                     │
+                    │  Adapters: channels (Surface, Inbox) · model providers · machines          │
                     └───────────────▲─────────────────────────────────────────────▲──────────────┘
                                     │ the Host: settings, secrets, models, workbench,│
                                     │ cards, wake, holds, emit, history, inbox       │
                     ┌───────────────┴───────────── extensions ───────────────────────┴───────────┐
-                    │ Telegram · Memory · Approvals · Web · Computer · Screen · Claude Code · Codex│
+                    │ Telegram · Memory · Approvals · Web · Computer · Screen · Claude Code ·     │
+                    │ Codex · boat.dev · Local machine · whatever you install from chat          │
                     └────────────────────────────────────────────────────────────────────────────┘
                                               │ bash, files, screen, coding agents
                                               ▼
-                                  Workbench: its own machine (boat.dev), holding none of your secrets
+                       Workbench: its own machine (boat.dev, by default), holding none of your secrets
 ```
 
 **The core** can't be turned off. It's made of:
@@ -50,11 +52,18 @@ Run the same command again to update. For an unattended install, every answer ca
 - **triggers;**
 - **the UI** and `/settings`.
 
-**Everything else is an extension.** Each extension is built from one shape, `JarvisExtension` in `src/pi/extension.ts`, and is hooked in only through the **Host**. It never touches the main thread directly.
+**Everything else is an extension.** Each extension is built from one shape, `JapaExtension` in `src/pi/extension.ts`, and is hooked in only through the **Host**. It never touches the main thread directly.
+
+**What japa is built from has one typed adapter in the core,** and every implementation goes through it, built-in or not:
+- **a channel** is a `Surface` attached to the UI (it renders cards) plus an `Inbox` (the allowlist gate);
+- **a model provider** is a pi-ai `Provider`, declared in an extension's `providers`. Its key comes from `/login`;
+- **a machine** is an `OpenBackend`, declared in an extension's `backends` and picked by name in `machines.workbench`.
+
+The core registers them while their extension is on and drops them when it's off. Telegram, boat.dev and the local machine are ordinary extensions on these adapters.
 
 ### One message, end to end
 
-1. **In.** Telegram passes your message to its Inbox, which refuses anyone not on the allowlist. The message is saved before anything runs, so if the process dies, the answer still goes out after the restart.
+1. **In.** The channel (Telegram, by default) passes your message to its Inbox, which refuses anyone not on the allowlist. The message is saved before anything runs, so if the process dies, the answer still goes out after the restart.
 2. **A slice.** The chief of staff doesn't carry the whole history. A new slice starts from **state** rather than from history: open items, a short working set, and the last few messages. A new slice begins when any of these happens:
    - you've been quiet for a while;
    - the context would grow too large;
@@ -82,7 +91,7 @@ Run the same command again to update. For an unattended install, every answer ca
 
 ### Memory
 
-Memory is one free-form document, `~/jarvis-home/memory.md`, holding what the agent knows about you and your world. It changes only through small edits, never wholesale rewrites:
+Memory is one free-form document, `data/memory/memory.md`, holding what the agent knows about you and your world. It changes only through small edits, never wholesale rewrites:
 - `remember` during a conversation;
 - a reflection at the end of each slice, which also marks things that stopped being true.
 
@@ -98,13 +107,15 @@ Each one can be switched off in `/settings`:
 | Memory | `remember`, `search_history`, memory in the prompt | the chief of staff; `onSliceEnd` (reflection) |
 | Approvals | review before every tool call, the buttons, the audit log | every agent (`beforeTool`); UI cards; `wake`; holds |
 | Web | `web_search`, `web_fetch` (Parallel, fast mode) | every agent; a key in `/settings` |
-| Computer, Screen | bash and files; the `computer` tool on the workbench's desktop | every agent |
+| Computer, Screen | bash and files; the `computer` tool on the workbench's desktop | every agent; quiet while there's no workbench |
 | Claude Code, Codex | `claude_code`, `codex` | job agents only; a key is passed to one command, never stored on the workbench |
+| boat.dev | the `boat` machine provider | `backends`; its key in `/settings` |
+| Local machine | the `local` machine provider, for development | `backends` |
 
 ### Writing an extension
 
 ```ts
-export function weatherExtension(host: Host): JarvisExtension {
+export function weatherExtension(host: Host): JapaExtension {
   return {
     name: "weather",
     title: "Weather",
@@ -124,23 +135,25 @@ An extension can also:
 - start and stop as it's switched (`start`/`stop`);
 - show cards and handle their buttons (`host.ui`);
 - wake an agent (`host.wake`) or raise an event that fires triggers (`host.emit`);
-- be a messaging channel (`channel`). A channel reaches the agent only through `host.inbox(platform)`, so it gets the allowlist for free;
-- add a model provider (`host.models.setProvider` in `start`).
+- be a messaging channel (`channel`): it attaches a surface with `host.ui.attach`, and reaches the agent only through `host.inbox(platform)`, so it gets the allowlist for free;
+- add model providers (`providers`) or machine providers (`backends`).
 
 ### Extensions from chat
 
-The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file whose default export is `(host: Host) => JarvisExtension`, importing values only from packages. Then the chief of staff calls `install_extension`, and you get a card with Install and Don't install buttons, every time, whatever the approvals mode, because the code runs inside the agent with its keys. When you tap Install it's loaded, saved to `data/extensions/`, and on from your next message, with no restart. Installing a new version replaces the old one in place, and installed extensions load again at start. `remove_extension` takes one out.
+The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file whose default export is `(host: Host) => JapaExtension`, importing values only from packages. Then the chief of staff calls `install_extension`, and you get a card with Install and Don't install buttons, every time, whatever the approvals mode, because the code runs inside the agent with its keys. When you tap Install it's loaded, saved to `data/extensions/`, and on from your next message, with no restart. Installing a new version replaces the old one in place, and installed extensions load again at start. `remove_extension` takes one out.
 
-The only other configurable abstraction is the **backend**, meaning which machine is the workbench. It's infrastructure, not a capability, so it's set in `machines.workbench` in `data/settings.json`:
-- `boat`: built in;
-- `local`: for development;
-- any provider an extension registers.
+Which machine is the workbench is set in `machines.workbench` in `data/settings.json`, by the name of a machine provider:
+- `boat`: boat.dev;
+- `local`: this machine, for development;
+- any provider an installed extension declares.
+
+It's opened when first needed and again when that setting changes.
 
 ## Configuration
 
-Send `/settings` to the bot. It's a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to the bot's question, and that message is then deleted. Changes apply immediately.
+Send `/settings` in chat. It's a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to the bot's question, and that message is then deleted. Changes apply immediately. `/login` logs in to a model provider, with an API key or the provider's own account login, and offers its models in `/settings`.
 
-Files in `data/` (gitignored, readable only by you):
+Everything it keeps is in one directory, `JAPA_DATA` (default `data/` in the checkout; gitignored, readable only by you):
 
 | File | Holds |
 |---|---|
@@ -148,7 +161,9 @@ Files in `data/` (gitignored, readable only by you):
 | `auth.json` | model credentials (API keys or subscription logins) |
 | `secrets.json`, `.env` | extension keys and the bot token. Environment variables also work: `TELEGRAM_BOT_TOKEN`, `BOAT_API_KEY`, `PARALLEL_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `CODEX_API_KEY` |
 | `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
-| `audit.jsonl`, `jarvis.log` | every reviewed action; the log |
+| `memory/` | its memory of you, a git repo |
+| `extensions/` | extensions installed from chat |
+| `audit.jsonl`, `japa.log` | every reviewed action; the log |
 
 **The workbench** on boat.dev is set with `{ "provider": "boat", "type": "small", "screen": true, "idleSeconds": 7200 }`. It sleeps after `idleSeconds` unused, and each command pushes that deadline back. The next command wakes it with the same disk.
 
@@ -170,14 +185,14 @@ npm run check     # type-check
 ```
 src/
   main.ts          the default extensions, and start
-  jarvis.ts        the core, assembled; builds the Host
+  japa.ts          the core, assembled; builds the Host and opens the workbench through its provider
   core/            our formats and services: UI cards, schedules, approvals, memory, state (no Pi imports)
   pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host; installer.ts: extensions from chat)
-  channels/        the Inbox (allowlist gate), /settings, Telegram
-  backends/        workbench providers: boat, local
+  channels/        the Inbox (allowlist gate), /settings, /login, Telegram
+  backends/        machine providers, as extensions: boat, local
 ```
 
-Pi is pinned at 1.0.2 (`pi-durable`, `pi-ai`, `chord`). Pi is experimental, so our data formats live in `src/core`, and only `src/pi` imports Pi.
+Pi is pinned at 1.0.2 (`pi-durable`, `pi-ai`, `chord`). Pi is experimental, so our data formats live in `src/core`, and only `src/pi` imports Pi. How to work on it, and why it's shaped this way: [AGENTS.md](AGENTS.md).
 
 ## Next
 

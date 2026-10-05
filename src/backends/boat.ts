@@ -1,11 +1,13 @@
-// boat.dev as a backend provider: a persistent Linux VM per role. The agent never sees any of this — to it, the
+// boat.dev as a machine provider ("boat" in machines.workbench): a persistent Linux VM per role. The agent never sees any of this — to it, the
 // machine is just its computer. The API key stays in the harness; the machine is created no-env so none of the
 // account's secrets reach it. Files and installed packages persist across stop/resume.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { posix } from "node:path";
-import { type Backend, type BackendProvider, type ExecOptions, type ExecResult, shellQuote as q } from "../core/backend.ts";
+import { join, posix } from "node:path";
+import { type Backend, type ExecOptions, type ExecResult, shellQuote as q } from "../core/backend.ts";
+import type { Host, JapaExtension } from "../pi/extension.ts";
 
 const API = "https://boat.dev/api/v1";
+/** The home directory of boat's machine image, unless the config says otherwise. */
 const HOME = "/home/user";
 /** boat's synchronous command limit. */
 const SYNC_LIMIT_S = 600;
@@ -56,7 +58,7 @@ export class BoatApi {
  */
 export class BoatBackend implements Backend {
 	readonly id: string;
-	readonly home = HOME;
+	readonly home: string;
 	private readonly api: BoatApi;
 	/** The machine's id: the remembered one, or a new machine (`fresh`: the remembered one is gone). */
 	private readonly find: (fresh: boolean) => Promise<string>;
@@ -66,12 +68,13 @@ export class BoatBackend implements Backend {
 	private readonly touchEveryMs: number;
 	private touchedAt = 0;
 
-	constructor(api: BoatApi, role: string, find: (fresh: boolean) => Promise<string>, idleSeconds?: number, touchEveryMs = TOUCH_EVERY_MS) {
+	constructor(api: BoatApi, role: string, find: (fresh: boolean) => Promise<string>, options: { home?: string; idleSeconds?: number; touchEveryMs?: number } = {}) {
 		this.api = api;
 		this.id = `boat:${role}`;
+		this.home = options.home ?? HOME;
 		this.find = find;
-		this.idleSeconds = idleSeconds;
-		this.touchEveryMs = touchEveryMs;
+		this.idleSeconds = options.idleSeconds;
+		this.touchEveryMs = options.touchEveryMs ?? TOUCH_EVERY_MS;
 	}
 
 	/** The machine's id, creating the machine on first use. */
@@ -124,7 +127,7 @@ export class BoatBackend implements Backend {
 	}
 
 	async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
-		const cwd = options.cwd === undefined ? HOME : posix.isAbsolute(options.cwd) ? options.cwd : posix.join(HOME, options.cwd);
+		const cwd = options.cwd === undefined ? this.home : posix.isAbsolute(options.cwd) ? options.cwd : posix.join(this.home, options.cwd);
 		const exports = Object.entries(options.env ?? {})
 			.map(([key, value]) => `export ${key}=${q(value)}; `)
 			.join("");
@@ -203,39 +206,50 @@ export class BoatBackend implements Backend {
 		}
 		throw new Error("the screen link isn't available");
 	}
-
-	async suspend(): Promise<void> {
-		if (this.machine === undefined) return;
-		await this.api.json("POST", `/sandboxes/${await this.sandboxId()}/stop`, {});
-	}
 }
 
 /**
- * Config per role: `sandboxId` to use an existing machine, else one is created on first use (`type`, default "small")
- * and its id remembered in `stateFile`, so the same machine — and everything on it — comes back next time; if it's
- * gone, the next command gets a new one. `idleSeconds`: sleep after that long unused (free trials require ≤ 7200); it
- * wakes, same disk, on the next command. Opening costs nothing: no machine starts until something runs on it.
+ * The machine for a role. Config: `sandboxId` to use an existing machine, else one is created on first use (`type`,
+ * default "small") and its id remembered in `stateFile`, so the same machine — and everything on it — comes back next
+ * time; if it's gone, the next command gets a new one. `idleSeconds`: sleep after that long unused (free trials require
+ * ≤ 7200); it wakes, same disk, on the next command. `home`: the machine's home directory. Opening costs nothing: no
+ * machine starts until something runs on it.
  */
-export function boatProvider(options: { apiKey: string; stateFile: string; fetch?: typeof fetch; touchEveryMs?: number }): BackendProvider {
+export function boatBackend(options: { apiKey: string; stateFile: string; fetch?: typeof fetch; touchEveryMs?: number }, role: string, config: Readonly<Record<string, unknown>>): Backend {
 	const api = new BoatApi(options.apiKey, options.fetch);
 	const remembered = (): Record<string, string> => (existsSync(options.stateFile) ? (JSON.parse(readFileSync(options.stateFile, "utf8")) as Record<string, string>) : {});
+	const idleSeconds = typeof config.idleSeconds === "number" ? config.idleSeconds : undefined;
+	const configured = typeof config.sandboxId === "string" ? config.sandboxId : undefined;
+	const find = async (fresh: boolean) => {
+		const known = fresh ? undefined : (configured ?? remembered()[role]);
+		if (known !== undefined) return known;
+		const created = await api.json<{ sandbox: { id: string } }>("POST", "/sandboxes", {
+			type: typeof config.type === "string" ? config.type : "small",
+			ttlSeconds: idleSeconds ?? null,
+			noEnv: true,
+		});
+		writeFileSync(options.stateFile, `${JSON.stringify({ ...remembered(), [role]: created.sandbox.id }, null, "\t")}\n`);
+		return created.sandbox.id;
+	};
+	return new BoatBackend(api, role, find, {
+		...(typeof config.home === "string" ? { home: config.home } : {}),
+		...(idleSeconds === undefined ? {} : { idleSeconds }),
+		...(options.touchEveryMs === undefined ? {} : { touchEveryMs: options.touchEveryMs }),
+	});
+}
+
+export function boatExtension(host: Pick<Host, "dataDir" | "secrets">): JapaExtension {
 	return {
 		name: "boat",
-		async open(role, config) {
-			const idleSeconds = typeof config.idleSeconds === "number" ? config.idleSeconds : undefined;
-			const configured = typeof config.sandboxId === "string" ? config.sandboxId : undefined;
-			const find = async (fresh: boolean) => {
-				const known = fresh ? undefined : (configured ?? remembered()[role]);
-				if (known !== undefined) return known;
-				const created = await api.json<{ sandbox: { id: string } }>("POST", "/sandboxes", {
-					type: typeof config.type === "string" ? config.type : "small",
-					ttlSeconds: idleSeconds ?? null,
-					noEnv: true,
-				});
-				writeFileSync(options.stateFile, `${JSON.stringify({ ...remembered(), [role]: created.sandbox.id }, null, "\t")}\n`);
-				return created.sandbox.id;
-			};
-			return new BoatBackend(api, role, find, idleSeconds, options.touchEveryMs);
+		title: "boat.dev",
+		about: 'boat.dev machines as the workbench ("boat"). Its key stays here; the machine is created without the account\'s secrets.',
+		settings: [{ key: "apiKey", label: "boat.dev API key", kind: "secret", env: "BOAT_API_KEY" }],
+		backends: {
+			boat: (role, config) => {
+				const apiKey = host.secrets.get("boat.apiKey", "BOAT_API_KEY");
+				if (apiKey === undefined) throw new Error("boat.dev needs its API key (set in /settings)");
+				return boatBackend({ apiKey, stateFile: join(host.dataDir, "boat-machines.json") }, role, config);
+			},
 		},
 	};
 }

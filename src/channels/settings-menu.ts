@@ -16,7 +16,7 @@ export type Prompt = { page: string; field: number; label: string; secret: boole
 
 const GENERAL: readonly Field[] = [
 	{ key: "model", label: "Chief of staff model", kind: "model" },
-	{ key: "delegateModel", label: "Default job model", kind: "model" },
+	{ key: "delegateModel", label: "Default job model (blank: the same)", kind: "model" },
 	{ key: "jobModels.fast", label: "Fast model (approvals, summaries)", kind: "model" },
 	{ key: "user.name", label: "Your name", kind: "text" },
 	{ key: "timezone", label: "Time zone", kind: "text" },

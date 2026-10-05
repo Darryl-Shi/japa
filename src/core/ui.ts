@@ -3,8 +3,8 @@
 // channel (a Surface) only renders cards and passes presses, replies and commands back here. Button data is
 // "<owner>:<payload>", so each press or reply goes to the extension that made the card.
 
-/** Where a card or message is in a channel. */
-export type CardRef = { channel: string; chatId: number; messageId: number };
+/** Where a card or message is in a channel: the channel's own ids, as strings (each channel has its own format). */
+export type CardRef = { channel: string; chatId: string; messageId: string };
 export type Button = { text: string; data: string };
 
 export type Card = {

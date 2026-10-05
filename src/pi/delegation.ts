@@ -7,13 +7,11 @@ import type { Context } from "@earendil-works/chord";
 import { type AssistantMessage, Type } from "@earendil-works/pi-ai";
 import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
+import type { CardRef } from "../core/ui.ts";
 import type { ModelChoice } from "../settings.ts";
 
-/** Where a reply goes. */
-export type Origin = { chatId: number; messageId: number; channel?: string };
-
 /** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose one. */
-export type OutboxMessage = { text: string; replyTo?: Origin; buzz: boolean; itemId?: string };
+export type OutboxMessage = { text: string; replyTo?: CardRef; buzz: boolean; itemId?: string };
 export const Outbox = defineDoc<{ messages: Record<string, OutboxMessage> }>({
 	kind: "jarvis.outbox",
 	version: 1,
@@ -30,7 +28,7 @@ type Job = {
 	/** 1: a job; 2: a job's subagent (no subagents of its own). */
 	depth: 1 | 2;
 	model: ModelChoice;
-	origin?: Origin;
+	origin?: CardRef;
 	status: "working" | "reported" | "concluded" | "cancelled";
 	lastReportAt?: number;
 };
@@ -126,9 +124,9 @@ export type Delegation = {
 
 export function delegationExtensions(options: {
 	openItems: OpenItems;
-	settings: () => { delegateModel: ModelChoice; jobModels: Record<string, ModelChoice> };
+	settings: () => { model?: ModelChoice; delegateModel?: ModelChoice; jobModels: Record<string, ModelChoice> };
 	/** The chat message the chief of staff is answering right now. */
-	origin: (context: Context) => Promise<Origin | undefined>;
+	origin: (context: Context) => Promise<CardRef | undefined>;
 	/** What a new job agent must not have (the chief of staff's own extensions, anything turned off). */
 	withhold: () => readonly Extension[];
 	/** A job paused on something only the user can give (an approval) isn't reported as gone quiet. */
@@ -209,8 +207,10 @@ export function delegationExtensions(options: {
 				replay: "unsafe",
 				execute: async (args, api, context) => {
 					const settings = options.settings();
-					const model = args.model === undefined ? settings.delegateModel : settings.jobModels[args.model];
-					if (model === undefined) return reply(`No model named ${args.model}; choose from: ${Object.keys(settings.jobModels).join(", ")}.`);
+					const model = args.model === undefined ? (settings.delegateModel ?? settings.model) : settings.jobModels[args.model];
+					if (model === undefined) {
+						return reply(args.model === undefined ? "No model is chosen for jobs yet: the user picks one in /settings." : `No model named ${args.model}; choose from: ${Object.keys(settings.jobModels).join(", ") || "(none set)"}.`);
+					}
 					const origin = await options.origin(context);
 					const item = openItems.add("task", args.title, origin?.messageId);
 					const job1 = { id: item.id, title: args.title, parentConversationId: api.conversationId, depth: 1 as const, model, ...(origin === undefined ? {} : { origin }) };

@@ -17,7 +17,7 @@ const context = BACKGROUND_CONTEXT;
 const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
 
 test("the portrait records, corrects and forgets", async () => {
-	const home = await mkdtemp(join(tmpdir(), "jarvis-home-"));
+	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
 	const portrait = new Portrait(home);
 	portrait.remember("Sister: Mia");
 	portrait.remember("Terse when things are fine");
@@ -30,8 +30,8 @@ test("the portrait records, corrects and forgets", async () => {
 });
 
 test("the agent remembers into its prompt and finds earlier slices in history, with dates", async () => {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
-	const home = await mkdtemp(join(tmpdir(), "jarvis-home-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
+	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
 	const history = new History(join(dataDir, "history.sqlite"));
 	const portrait = new Portrait(home);
 	let thread: MainThread | undefined;
@@ -59,7 +59,7 @@ test("the agent remembers into its prompt and finds earlier slices in history, w
 	faux.setResponses(Array.from({ length: 12 }, () => respond));
 
 	thread = await MainThread.open({ dataDir, models, settings, installed: [memory] }, context);
-	const target = { chatId: 1, messageId: 1 };
+	const target = { channel: "test", chatId: "1", messageId: "1" };
 	await thread.ask("1", "My sister is Mia.", target, context);
 	assert.equal(portrait.read(), "- Sister: Mia");
 
@@ -81,7 +81,7 @@ test("the agent remembers into its prompt and finds earlier slices in history, w
 });
 
 test("reflection (the memory extension's slice-end hook) keeps memory current, and marks what stopped being true; turned off, it edits nothing", async () => {
-	const home = await mkdtemp(join(tmpdir(), "jarvis-home-"));
+	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
 	const portrait = new Portrait(home);
 	portrait.remember("Runs two LLM research labs.");
 	const reflections = [

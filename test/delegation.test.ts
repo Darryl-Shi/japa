@@ -32,7 +32,7 @@ const call = (name: string, args: JsonObject) => fauxAssistantMessage(fauxToolCa
 const say = (text: string) => fauxAssistantMessage(text);
 
 async function setup(script: (turn: Turn) => AssistantMessage | Promise<AssistantMessage>) {
-	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-fast" }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -56,7 +56,7 @@ async function setup(script: (turn: Turn) => AssistantMessage | Promise<Assistan
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" }, context: { idleMinutes: 60, sliceTokens: 1_000_000 } });
 	thread = await MainThread.open({ dataDir, models, settings, installed: [stateTools, team.chief, team.job, team.helper], selected: () => [stateTools, team.chief], state }, context);
 	const sent: OutboxMessage[] = [];
-	await thread.deliverOutbox(async (message) => (sent.push(message), 1000 + sent.length - 1), context);
+	await thread.deliverOutbox(async (message) => (sent.push(message), String(1000 + sent.length - 1)), context);
 	const until = async (check: () => boolean, what: string) => {
 		for (let i = 0; i < 500 && !check(); i++) await sleep(10);
 		assert.ok(check(), `timed out waiting for ${what}`);
@@ -74,7 +74,7 @@ async function setup(script: (turn: Turn) => AssistantMessage | Promise<Assistan
 	};
 }
 
-const target = (messageId: number) => ({ chatId: 1, messageId });
+const target = (messageId: number) => ({ channel: "test", chatId: "1", messageId: String(messageId) });
 
 test("a job reports to the chief of staff, who decides what the user hears; the job stays open until concluded", async () => {
 	const h = await setup((turn) => {
@@ -88,13 +88,13 @@ test("a job reports to the chief of staff, who decides what the user hears; the 
 	});
 	assert.deepEqual(await h.thread.ask("tg:1:7", "[Mon 10:00] research the venue", target(7), context), { text: "On it." });
 	await h.until(() => h.sent.length === 1, "the chief of staff's message");
-	assert.deepEqual(h.sent[0], { text: "Venues: A, B, C. I'd pick B, it's closest.", buzz: false, replyTo: { chatId: 1, messageId: 7 }, itemId: "t1" });
+	assert.deepEqual(h.sent[0], { text: "Venues: A, B, C. I'd pick B, it's closest.", buzz: false, replyTo: { channel: "test", chatId: "1", messageId: "7" }, itemId: "t1" });
 	assert.ok(h.turns.some((turn) => turn.role === "chief" && turn.text.startsWith('[Report from job t1 "Venue research" — done] Three venues')), "the report went to the chief of staff");
 	assert.equal(h.state.openItems.open().length, 1, "the job stays open until the user accepts it");
 
 	await h.thread.ask("tg:1:9", "[Mon 10:05] great, go with B", target(9), context);
 	assert.equal(h.state.openItems.open().length, 0);
-	assert.equal(h.state.openItems.forMessage(1000)?.outcome, "B chosen", "a reply to the result finds its job");
+	assert.equal(h.state.openItems.forMessage("1000")?.outcome, "B chosen", "a reply to the result finds its job");
 	await h.done();
 });
 

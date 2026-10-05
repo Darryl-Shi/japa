@@ -1,6 +1,6 @@
 // The agent's screen: one `computer` tool that sees and drives a backend's desktop like a person would. Generic —
-// it uses the backend's native screen API when there is one, otherwise the X display over exec (xdotool, plus
-// ImageMagick or ffmpeg for screenshots), so any Linux machine with a display works.
+// the X display over exec (xdotool, plus ImageMagick or ffmpeg for screenshots), so any Linux machine with a display
+// works.
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
 import { type Backend, type ScreenAction, shellQuote as q } from "../core/backend.ts";
@@ -76,19 +76,23 @@ class DisplayOverExec {
 
 const actions = ["screenshot", "click", "double_click", "right_click", "move", "drag", "type", "key", "scroll", "share_screen"] as const;
 
-export function computerExtension(options: { backend: Backend; display?: string }): Extension {
-	const { backend } = options;
-	const display = new DisplayOverExec(backend, options.display ?? ":0");
+/** `backend` is asked on each use: the machine can change (or go) with settings. */
+export function computerExtension(options: { backend: () => Backend | undefined; display?: string }): Extension {
+	let current: { backend: Backend; display: DisplayOverExec } | undefined;
 	/** Screen px per screenshot px, known once a screenshot has been taken. */
 	let scale: number | undefined;
+	const machine = () => {
+		const backend = options.backend();
+		if (backend === undefined) throw new Error("No computer is configured.");
+		if (current?.backend !== backend) {
+			current = { backend, display: new DisplayOverExec(backend, options.display ?? ":0") };
+			scale = undefined;
+		}
+		return current;
+	};
 
 	const shoot = async (signal?: AbortSignal) => {
-		if (backend.screen !== undefined) {
-			const shot = await backend.screen.screenshot(signal);
-			scale = 1;
-			return { png: Buffer.from(shot.png).toString("base64"), width: shot.width, height: shot.height };
-		}
-		const shot = await display.screenshot(signal);
+		const shot = await machine().display.screenshot(signal);
 		scale = shot.scale;
 		return shot;
 	};
@@ -100,7 +104,9 @@ export function computerExtension(options: { backend: Backend; display?: string 
 			section(
 				"screen",
 				() =>
-					"Your computer also has a screen. The computer tool shows it (screenshot) and drives it like a person: click, type, key, scroll, drag. Coordinates are pixels in the latest screenshot. Prefer bash for anything scriptable; use the screen for GUIs and websites. share_screen gives a link the user can open to watch or take over, e.g. when a login or 2FA needs them.",
+					options.backend() === undefined
+						? undefined
+						: "Your computer also has a screen. The computer tool shows it (screenshot) and drives it like a person: click, type, key, scroll, drag. Coordinates are pixels in the latest screenshot. Prefer bash for anything scriptable; use the screen for GUIs and websites. share_screen gives a link the user can open to watch or take over, e.g. when a login or 2FA needs them.",
 			),
 		],
 		tools: [
@@ -121,6 +127,7 @@ export function computerExtension(options: { backend: Backend; display?: string 
 				execute: async (args, _api, context) => {
 					const signal = context.abortSignal;
 					if (args.action === "share_screen") {
+						const { backend } = machine();
 						if (backend.viewUrl === undefined) throw new Error("This computer has no viewable screen link.");
 						return { content: [{ type: "text", text: await backend.viewUrl() }] };
 					}
@@ -139,8 +146,7 @@ export function computerExtension(options: { backend: Backend; display?: string 
 											: args.action === "key"
 												? { type: "key", keys: args.keys ?? "" }
 												: { type: "scroll", ...at, direction: args.direction ?? "down", ...(args.amount === undefined ? {} : { amount: args.amount }) };
-						if (backend.screen !== undefined) await backend.screen.act(action, signal);
-						else await display.act(action, signal);
+						await machine().display.act(action, signal);
 						await new Promise((resolve) => setTimeout(resolve, 400)); // let the screen settle
 					}
 					const shot = await shoot(signal);

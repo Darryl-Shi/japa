@@ -20,7 +20,7 @@ export type OpenItem = {
 	text: string;
 	openedAt: number;
 	/** The chat messages it belongs to (the request, the report), so a reply to any of them finds it. */
-	messageIds?: number[];
+	messageIds?: string[];
 	closedAt?: number;
 	outcome?: string;
 };
@@ -43,7 +43,7 @@ export class OpenItems {
 		return this.all().filter((item) => item.closedAt === undefined);
 	}
 
-	add(kind: OpenItemKind, text: string, messageId?: number, now = Date.now()): OpenItem {
+	add(kind: OpenItemKind, text: string, messageId?: string, now = Date.now()): OpenItem {
 		const items = this.all();
 		const id = `${kind[0]}${(items.reduce((max, item) => Math.max(max, Number(item.id.slice(1)) || 0), 0) + 1).toString()}`;
 		const item: OpenItem = { id, kind, text, openedAt: now, ...(messageId === undefined ? {} : { messageIds: [messageId] }) };
@@ -72,23 +72,16 @@ export class OpenItems {
 		return item;
 	}
 
-	/** A task that now needs the user: it becomes a question waiting on them. */
-	needsUser(id: string, question: string): OpenItem | undefined {
-		return this.change(id, (item) => {
-			item.kind = "waiting";
-			item.text = question;
-		});
-	}
-
 	/** Remember another chat message that belongs to this item. */
-	link(id: string, messageId: number): void {
+	link(id: string, messageId: string): void {
 		this.change(id, (item) => {
-			item.messageIds = [...new Set([...(item.messageIds ?? []), messageId])];
+			item.messageIds = [...new Set([...(item.messageIds ?? []).map(String), messageId])];
 		});
 	}
 
-	forMessage(messageId: number): OpenItem | undefined {
-		return this.all().findLast((item) => item.messageIds?.includes(messageId) === true);
+	forMessage(messageId: string): OpenItem | undefined {
+		// String(): items saved before ids were strings hold numbers.
+		return this.all().findLast((item) => item.messageIds?.map(String).includes(messageId) === true);
 	}
 
 	/** What goes in the prompt. Promises and questions waiting on the user are never dropped; tasks are, oldest first. */

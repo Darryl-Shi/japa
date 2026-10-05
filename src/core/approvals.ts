@@ -59,10 +59,6 @@ export class Approvals {
 		return Object.values(this.load());
 	}
 
-	get(id: string): ApprovalRequest | undefined {
-		return this.load()[id];
-	}
-
 	/** Ask, once per tool task. */
 	request(fields: Omit<ApprovalRequest, "id" | "at" | "status">): ApprovalRequest {
 		const all = this.load();
