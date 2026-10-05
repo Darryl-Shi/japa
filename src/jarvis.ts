@@ -144,7 +144,15 @@ export async function startJarvis(
 		},
 	};
 
-	new SettingsMenu({ settings, secrets, extensions: set, modelExists: (choice) => models.getModel(choice.provider, choice.modelId) !== undefined, changed: () => jarvis.apply(context) }).attach(ui);
+	new SettingsMenu({
+		settings,
+		secrets,
+		extensions: set,
+		modelExists: (choice) => models.getModel(choice.provider, choice.modelId) !== undefined,
+		available: async () =>
+			(await models.getAvailable()).map((model) => ({ provider: model.provider, id: model.id, name: model.name, vision: model.input.includes("image") })),
+		changed: () => jarvis.apply(context),
+	}).attach(ui);
 	// What the chief of staff sends on its own (results, questions, news) goes out as cards on whichever channel is on.
 	await thread.deliverOutbox(async (message) => {
 		const replyTo = message.replyTo === undefined ? undefined : { channel: message.replyTo.channel ?? "telegram", chatId: message.replyTo.chatId, messageId: message.replyTo.messageId };

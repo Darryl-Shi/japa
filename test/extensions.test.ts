@@ -207,6 +207,16 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	assert.equal(h.secrets.get("web.apiKey"), "pk-live");
 	assert.ok(!JSON.stringify(h.settings.get()).includes("pk-live"), "secrets never land in settings.json");
 	assert.ok(!JSON.stringify(h.cards.map((shown) => shown.card)).includes("allowlist"), "the allowlist isn't in the menu");
+
+	// A model is picked from the models pi can use, not typed.
+	await ui.run("settings", { channel: "test", chatId: 7, messageId: 1 });
+	await press("General");
+	await press("Chief of staff model: faux/faux-1");
+	assert.deepEqual(labels(), ["✅ faux-1 👁", "faux-fast 👁", "⌨ Type an id", "« Back"], "one provider: straight to its models, the current one ticked");
+	await press("faux-fast 👁");
+	assert.deepEqual(h.settings.get().model, { provider: "faux", modelId: "faux-fast" });
+	assert.ok(labels().includes("Chief of staff model: faux/faux-fast"), "back on the page, showing the choice");
+	assert.equal((await h.thread.root.agent(context)).model?.modelId, "faux-fast", "and the chief of staff switched to it");
 	await h.done();
 });
 
