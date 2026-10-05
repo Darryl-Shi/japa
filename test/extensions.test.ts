@@ -10,6 +10,7 @@ import { Approvals } from "../src/core/approvals.ts";
 import { approvalsExtension } from "../src/pi/approvals.ts";
 import { CLAUDE_CODE, CODEX, codingAgentExtension } from "../src/pi/coding-agents.ts";
 import type { JarvisExtension } from "../src/pi/extension.ts";
+import { problems } from "../src/pi/installer.ts";
 import { webExtension } from "../src/pi/web.ts";
 import { agent, call, context, say, sleep } from "./helpers.ts";
 
@@ -337,5 +338,38 @@ test("installer: the user saying no installs nothing, and a built-in can't be re
 	await h.until(() => h.cards.some((shown) => shown.card.text === "Okay, not installed."), "the chief of staff hearing no");
 	assert.equal(h.jarvis.extensions.get("greet"), undefined);
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] replace web"), { text: '"web" is built in; pick another name.' });
+	await h.done();
+});
+
+test("installer: a file that wouldn't load is sent back to the agent with why, before the user is asked", async () => {
+	assert.deepEqual(problems(greetSource("v1")), [], "a good one passes (type imports from anywhere are fine)");
+	const piStyle = `import {
+	createProvider,
+	type Model,
+} from "@earendil-works/pi-ai";
+import { envApiKeyAuth } from "@earendil-works/pi-ai/auth/helpers";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.nope";
+import { helper } from "./helper.ts";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+export default function (pi: ExtensionAPI) {}
+`;
+	const found = problems(piStyle);
+	assert.equal(found.length, 3, found.join("\n"));
+	assert.match(found[0]!, /"@earendil-works\/pi-ai\/auth\/helpers" isn't available \(@earendil-works\/pi-ai exports \., \.\/models/);
+	assert.match(found[1]!, /openai-completions\.nope/, "a wildcard export pointing at no file");
+	assert.match(found[2]!, /"\.\/helper\.ts": it must be one file/);
+	assert.deepEqual(problems("export const x = 1;"), ["it has no default export"]);
+
+	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const workbench = new LocalBackend(join(dataDir, "machine"));
+	await writeFile(join(workbench.home, "bad.ts"), piStyle);
+	const h = await agent({
+		workbench,
+		dataDir,
+		extensions: () => [],
+		script: (turn) => (turn.text.includes("install it") ? call("install_extension", { path: join(workbench.home, "bad.ts"), name: "bad", summary: "Bad." }) : say(turn.text.split("\n")[0]!)),
+	});
+	assert.deepEqual(await h.ask("1", "[Mon 10:00] install it"), { text: "Not asking the user: it wouldn't load." });
+	assert.ok(!h.cards.some((shown) => shown.card.buttons !== undefined), "no card");
 	await h.done();
 });

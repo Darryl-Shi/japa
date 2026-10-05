@@ -6,7 +6,7 @@
 // what was installed before loads again. A new version replaces the old one in place.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, type Registry } from "@earendil-works/pi-durable";
@@ -31,6 +31,41 @@ export async function loadExtension(path: string, host: Host): Promise<JarvisExt
 		throw new Error("the extension needs a name, title and about");
 	}
 	return entry;
+}
+
+/** Its exports, to say what's there when an import isn't. */
+function exportsOf(specifier: string): string {
+	const parts = specifier.split("/");
+	const name = parts.slice(0, specifier.startsWith("@") ? 2 : 1).join("/");
+	try {
+		const manifest = JSON.parse(readFileSync(join(CODE_DIR, "node_modules", name, "package.json"), "utf8")) as { exports?: Record<string, unknown> };
+		return manifest.exports === undefined ? "" : ` (${name} exports ${Object.keys(manifest.exports).join(", ")})`;
+	} catch {
+		return ` (${name} isn't installed)`;
+	}
+}
+
+/**
+ * What would stop it loading, found without running it: no default export, or a value import that doesn't resolve.
+ * Installed extensions import from japa's own node_modules, so resolving from here is resolving from there.
+ */
+export function problems(source: string): string[] {
+	const found: string[] = [];
+	if (!/\bexport\s+default\b/.test(source)) found.push("it has no default export");
+	const specifiers = [...source.matchAll(/^\s*(?:import|export)\s+(?!type\s)(?:[^'"]*?\sfrom\s+)?["']([^"']+)["']/gm)].map((match) => match[1]!);
+	for (const specifier of new Set(specifiers)) {
+		if (specifier.startsWith(".") || specifier.startsWith("/")) {
+			found.push(`"${specifier}": it must be one file, importing values only from packages (types with import type)`);
+			continue;
+		}
+		try {
+			const url = import.meta.resolve(specifier);
+			if (url.startsWith("file:") && !existsSync(fileURLToPath(url))) throw new Error("missing");
+		} catch {
+			found.push(`"${specifier}" isn't available${exportsOf(specifier)}`);
+		}
+	}
+	return found;
 }
 
 const piExtensions = (entry: JarvisExtension | undefined) => [...new Set([...(entry?.chief ?? []), ...(entry?.jobs ?? [])])];
@@ -142,7 +177,7 @@ export function installer(options: {
 			defineTool({
 				name: "install_extension",
 				description:
-					"Install an extension written on your computer (the workbench) into yourself, hot: the user is asked with buttons, and on Install it's on from the next message. A new version of an installed one replaces it.",
+					"Install an extension written on your computer (the workbench) into yourself, hot: the user is asked with buttons, and on Install it's on from the next message. A new version of an installed one replaces it. The file must be a japa extension, not a Pi coding-agent one: default export (host: Host) => JarvisExtension (src/pi/extension.ts in the repo), values imported only from packages japa has. It's checked before the user is asked.",
 				parameters: Type.Object({
 					path: Type.String({ description: "The .ts file on the workbench" }),
 					name: Type.String({ description: "The extension's name (lowercase-with-dashes), as in the file" }),
@@ -154,6 +189,8 @@ export function installer(options: {
 					if (host.workbench === undefined) return text("There's no workbench to read it from.");
 					const read = await new BackendExecutionEnv(host.workbench).readTextFile(args.path, context);
 					if (!read.ok) return text(`Couldn't read ${args.path}: ${String(read.error)}`);
+					const found = problems(read.value);
+					if (found.length > 0) return text(`Not asking the user: it wouldn't load.\n- ${found.join("\n- ")}\nFix it (in a job, against a clone of the repo, until npm run check passes), then install again.`);
 					prepare();
 					const pending: Pending = { id: Date.now().toString(36), name: args.name, summary: args.summary, from: args.path };
 					writeFileSync(join(pendingDir, `${pending.id}.ts`), read.value);
