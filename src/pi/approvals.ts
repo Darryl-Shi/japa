@@ -31,7 +31,8 @@ const REVIEW_PROMPT = [
 
 type Verdict = { ask: boolean; summary: string; rule: string };
 
-async function review(models: Models, model: { provider: string; modelId: string } | undefined, call: ToolCall, permissions: readonly string[]): Promise<Verdict> {
+/** Exported for checking the prompt against real models. */
+export async function review(models: Models, model: { provider: string; modelId: string } | undefined, call: ToolCall, permissions: readonly string[]): Promise<Verdict> {
 	const fallback = { ask: true, summary: `${call.name}`, rule: `Use ${call.name}` };
 	const resolved = model === undefined ? undefined : models.getModel(model.provider, model.modelId);
 	if (resolved === undefined) return fallback;
