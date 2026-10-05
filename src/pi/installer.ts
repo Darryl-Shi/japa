@@ -36,7 +36,7 @@ const guide = (repo: string) =>
 		"(@earendil-works/pi-ai, @earendil-works/pi-durable, node:*), types only with `import type`; a key goes in a secret",
 		'settings field the user sets in /settings, read with host.secrets.get("<name>.<key>"), never in the code; what japa is',
 		"built from goes through its typed field: a model provider in `providers` (a pi-ai createProvider; its key comes from",
-		"/login), a machine in `backends`, a channel as `channel` with host.ui.attach and host.inbox; npm run check passes.",
+		"/login), a machine in `backends`, a channel in `channel` (opened with its inbox, shows cards); npm run check passes.",
 		"Not a Pi coding-agent extension. The file is checked before the user is asked.",
 	].join(" ");
 

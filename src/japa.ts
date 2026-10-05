@@ -85,6 +85,15 @@ export async function startJapa(
 	};
 
 	const inboxes = new Map<string, Inbox>();
+	/** The gate a channel's messages come in through: one per platform, refusing anyone not on its allowlist. */
+	const inbox = (platform: string): Inbox => {
+		let found = inboxes.get(platform);
+		if (found === undefined) {
+			found = new Inbox({ platform, thread: main, settings, log, prepare: (callContext) => japa.apply(callContext) });
+			inboxes.set(platform, found);
+		}
+		return found;
+	};
 	const host: Host = {
 		settings,
 		secrets,
@@ -94,14 +103,6 @@ export async function startJapa(
 		ui,
 		holds,
 		log,
-		inbox: (platform) => {
-			let inbox = inboxes.get(platform);
-			if (inbox === undefined) {
-				inbox = new Inbox({ platform, thread: main, settings, log, prepare: (callContext) => japa.apply(callContext) });
-				inboxes.set(platform, inbox);
-			}
-			return inbox;
-		},
 		searchHistory: async (query, callContext) => {
 			await indexHistory(main().root, history, callContext);
 			return history.search(query);
@@ -133,7 +134,7 @@ export async function startJapa(
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
 	const registry = createRegistry();
 	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => japa.apply(callContext), context });
-	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, models, log);
+	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, { models, ui, inbox }, log);
 	extensions = set;
 	const core = [stateTools, team.chief, schedule.extension, installs.extension];
 	const coreTools = [...core, team.job, team.helper].flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));

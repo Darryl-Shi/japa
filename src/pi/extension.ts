@@ -6,8 +6,8 @@
 // be turned off.
 //
 // What japa is built from has one typed adapter each, and every implementation goes through it, built-in or not: a
-// channel is a Surface on the UI plus an Inbox, a model provider is a pi-ai Provider in `providers`, a machine is an
-// OpenBackend in `backends`. The core registers them while the extension is on and unregisters them when it's off.
+// channel is a Channel in `channel`, a model provider is a pi-ai Provider in `providers`, a machine is an OpenBackend
+// in `backends`. The core registers them while the extension is on and unregisters them when it's off.
 import type { Context } from "@earendil-works/chord";
 import type { Models, MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Extension } from "@earendil-works/pi-durable";
@@ -15,7 +15,7 @@ import type { Inbox } from "../channels/inbox.ts";
 import type { Backend, OpenBackend } from "../core/backend.ts";
 import type { HistoryHit } from "../core/history.ts";
 import type { When } from "../core/schedule.ts";
-import type { CardRef, Holds, UI } from "../core/ui.ts";
+import type { Card, CardRef, Holds, UI } from "../core/ui.ts";
 import type { SecretsFile } from "../credentials.ts";
 import type { SettingsFile } from "../settings.ts";
 
@@ -41,7 +41,24 @@ export type SliceEnd = { conversation: string; openItems: string | undefined; to
  */
 export type Trigger = { name: string; when: When; prompt: string };
 
-/** Everything an extension may use. It never gets the main thread itself: messages come in only through an Inbox. */
+/**
+ * A messaging channel: the core's adapter for one. While its extension is on, the core opens it with the Inbox for
+ * its platform and shows cards through it; when it's turned off, the core stops showing cards there and closes it.
+ */
+export interface Channel {
+	/** Its allowlist is settings.allowlist[platform], and the CardRefs it makes carry it as their channel. */
+	readonly platform: string;
+	/**
+	 * Start receiving. Each message goes to the inbox (which refuses anyone not on the allowlist); card presses, replies
+	 * to a card's question, and slash commands go to the UI (press, reply, run), whose commands it may advertise.
+	 */
+	open(to: { inbox: Inbox; ui: UI }): void | Promise<void>;
+	/** Render a card, or replace one already shown; only while open. */
+	show(card: Card, replace?: CardRef): Promise<CardRef>;
+	close(): void | Promise<void>;
+}
+
+/** Everything an extension may use. It never gets the main thread itself: messages come in only through a Channel. */
 export type Host = {
 	settings: SettingsFile;
 	secrets: SecretsFile;
@@ -52,8 +69,6 @@ export type Host = {
 	/** The agent's computer: machines.workbench opened through its provider's backend. None when unset or unavailable. */
 	workbench(): Backend | undefined;
 	ui: UI;
-	/** The only way a channel reaches the agent; refuses anyone not on that platform's allowlist. */
-	inbox(platform: string): Inbox;
 	/**
 	 * A new turn in a conversation: the chief of staff (as if from the user; its answer is shown threaded under
 	 * `replyTo`) or a job agent (a new run of its job, seen through as usual). `id` makes it happen once.
@@ -95,8 +110,8 @@ export type JapaExtension = {
 	providers?: readonly Provider[];
 	/** Machine providers it adds, by the name settings use (machines.workbench.provider). */
 	backends?: Readonly<Record<string, OpenBackend>>;
-	/** A messaging channel for this platform (its allowlist is settings.allowlist[platform]). The last one can't be turned off. */
-	channel?: string;
+	/** A messaging channel. The last one on can't be turned off. */
+	channel?: Channel;
 	/** While it's on: started when turned on (or at startup), stopped when turned off. */
 	start?: () => void | Promise<void>;
 	stop?: () => void | Promise<void>;
@@ -106,14 +121,16 @@ export type JapaExtension = {
 export class ExtensionSet {
 	private list: JapaExtension[];
 	private readonly settings: SettingsFile;
-	private readonly models: MutableModels;
+	private readonly adapters: Adapters;
 	private readonly running = new Set<string>();
+	/** Channels that opened, so only those are shown on and closed. */
+	private readonly open = new Set<Channel>();
 	private readonly log: (line: string) => void;
 
-	constructor(entries: readonly JapaExtension[], settings: SettingsFile, models: MutableModels, log: (line: string) => void = (line) => console.log(line)) {
+	constructor(entries: readonly JapaExtension[], settings: SettingsFile, adapters: Adapters, log: (line: string) => void = (line) => console.log(line)) {
 		this.list = [...entries];
 		this.settings = settings;
-		this.models = models;
+		this.adapters = adapters;
 		this.log = log;
 	}
 
@@ -207,13 +224,24 @@ export class ExtensionSet {
 	}
 
 	private async start(entry: JapaExtension): Promise<void> {
+		const { models, ui, inbox } = this.adapters;
 		for (const provider of entry.providers ?? []) {
-			this.models.setProvider(provider);
+			models.setProvider(provider);
 			// A provider that fetches its model list gets it now (with the credential from /login), not on first use.
-			void this.models.refresh({ providers: [provider.id] }).then(
+			void models.refresh({ providers: [provider.id] }).then(
 				(result) => result.errors.forEach((error, id) => this.log(`${entry.name}: models of ${id}: ${error.message}`)),
 				(error: unknown) => this.log(`${entry.name}: models: ${String(error)}`),
 			);
+		}
+		const channel = entry.channel;
+		if (channel !== undefined) {
+			try {
+				await channel.open({ inbox: inbox(channel.platform), ui });
+				this.open.add(channel);
+				ui.attach({ channel: channel.platform, show: (card, replace) => channel.show(card, replace) });
+			} catch (error) {
+				this.log(`${entry.name}: open: ${error instanceof Error ? error.message : String(error)}`);
+			}
 		}
 		await Promise.resolve()
 			.then(() => entry.start?.())
@@ -224,8 +252,18 @@ export class ExtensionSet {
 		await Promise.resolve()
 			.then(() => entry.stop?.())
 			.catch((error: unknown) => this.log(`${entry.name}: stop: ${String(error)}`));
-		for (const provider of entry.providers ?? []) this.models.deleteProvider(provider.id);
+		const channel = entry.channel;
+		if (channel !== undefined && this.open.delete(channel)) {
+			this.adapters.ui.detach(channel.platform);
+			await Promise.resolve()
+				.then(() => channel.close())
+				.catch((error: unknown) => this.log(`${entry.name}: close: ${String(error)}`));
+		}
+		for (const provider of entry.providers ?? []) this.adapters.models.deleteProvider(provider.id);
 	}
 }
+
+/** The core's side of the adapters: where providers are registered, channels shown, and messages let in. */
+export type Adapters = { models: MutableModels; ui: UI; inbox(platform: string): Inbox };
 
 const unique = (extensions: readonly Extension[]) => [...new Set(extensions)];

@@ -1,12 +1,13 @@
-// Telegram as a channel extension: one private chat with the user, long polling (no public endpoint). It reaches the
-// agent only through its Inbox (anyone not on allowlist.telegram is refused by the first middleware, and again at the
-// Inbox), answers each message as a reply to it, and renders the UI's cards: buttons, questions answered by reply,
-// and slash commands such as /settings. It knows nothing about which extension a card belongs to.
+// Telegram as a channel, on the core's Channel adapter: one private chat with the user, long polling (no public
+// endpoint). It reaches the agent only through the Inbox the core opens it with (anyone not on allowlist.telegram is
+// refused by the first middleware, and again at the Inbox), answers each message as a reply to it, and renders the
+// UI's cards: buttons, questions answered by reply, and slash commands such as /settings. It knows nothing about which
+// extension a card belongs to.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
 import { stamp } from "../core/schedule.ts";
 import type { Button, Card, CardRef, Command } from "../core/ui.ts";
-import type { Host, JapaExtension } from "../pi/extension.ts";
+import type { Channel, Host, JapaExtension } from "../pi/extension.ts";
 import type { Arrival } from "../pi/harness.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -24,11 +25,12 @@ const keyboard = (buttons: Button[][]) => ({ inline_keyboard: buttons.map((row) 
 export function telegramExtension(host: Host): JapaExtension {
 	let bot: Bot | undefined;
 	let stopAdvertising: (() => void) | undefined;
+	/** How cards are rendered, once open. */
+	let render: Channel["show"] | undefined;
 
-	const start = async () => {
+	const open: Channel["open"] = async ({ inbox, ui }) => {
 		const token = host.secrets.get("telegram.token", "TELEGRAM_BOT_TOKEN");
-		if (token === undefined) return host.log("telegram: no bot token (TELEGRAM_BOT_TOKEN, or /settings → Telegram)");
-		const inbox = host.inbox(PLATFORM);
+		if (token === undefined) throw new Error("no bot token (TELEGRAM_BOT_TOKEN, or /settings → Telegram)");
 		const live = new Bot(token);
 		bot = live;
 		// The UI's ids are strings; Telegram's are numbers, converted here at its edge.
@@ -70,7 +72,7 @@ export function telegramExtension(host: Host): JapaExtension {
 		live.use(async (ctx, next) => {
 			if (ctx.chat?.type === "private" && inbox.admits(ctx.from?.id)) return next();
 			if (inbox.allowed().length === 0 && ctx.chat?.type === "private" && ctx.message?.text?.startsWith("/whoami") === true) {
-				await ctx.reply(`Your Telegram user id is ${ctx.from?.id}. Put it in "allowlist": { "telegram": [...] } in data/settings.json.`);
+				await ctx.reply(`Your Telegram user id is ${ctx.from?.id}. Put it in "allowlist": { "telegram": [...] } in ${host.settings.path}.`);
 			}
 		});
 
@@ -79,7 +81,7 @@ export function telegramExtension(host: Host): JapaExtension {
 		live.on("callback_query:data", async (ctx) => {
 			await ctx.answerCallbackQuery();
 			const message = ctx.callbackQuery.message;
-			if (message !== undefined) await host.ui.press(ctx.callbackQuery.data, ref(message.chat.id, message.message_id));
+			if (message !== undefined) await ui.press(ctx.callbackQuery.data, ref(message.chat.id, message.message_id));
 		});
 
 		live.on("message:text", async (ctx) => {
@@ -89,10 +91,10 @@ export function telegramExtension(host: Host): JapaExtension {
 			if (ask !== undefined) {
 				if (ask.secret === true) await ctx.deleteMessage().catch(() => {});
 				asks.delete(replied!.message_id);
-				return void (await host.ui.reply(ask.data, ctx.message.text, here));
+				return void (await ui.reply(ask.data, ctx.message.text, here));
 			}
 			const command = /^\/(\w+)(?:@\w+)?\s*$/.exec(ctx.message.text)?.[1];
-			if (command !== undefined && command !== "new" && (await host.ui.run(command, here))) return;
+			if (command !== undefined && command !== "new" && (await ui.run(command, here))) return;
 
 			let text = ctx.message.text;
 			const arrival: Arrival = {};
@@ -115,34 +117,31 @@ export function telegramExtension(host: Host): JapaExtension {
 		});
 
 		// Cards from any extension (and the agent's own messages): to the user's private chat, whose id is their user id.
-		host.ui.attach({
-			channel: PLATFORM,
-			show: async (card, replace) => {
-				const markup = card.buttons === undefined ? {} : { reply_markup: keyboard(card.buttons) };
-				if (replace !== undefined) {
-					await live.api.editMessageText(Number(replace.chatId), Number(replace.messageId), card.text, markup).catch(() => {});
-					return replace;
-				}
-				const owner = inbox.owner();
-				const chatId = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.chatId) : owner === undefined ? undefined : Number(owner);
-				if (chatId === undefined) throw new Error("telegram: no one on the allowlist to show it to");
-				const replyTo = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.messageId) : undefined;
-				if (card.buttons === undefined && card.ask === undefined) return ref(chatId, await send(chatId, card.text, replyTo, card.buzz ?? true));
-				const sent = await live.api.sendMessage(chatId, card.text, {
-					...(replyTo === undefined ? {} : { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }),
-					disable_notification: card.buzz === false,
-					...(card.ask === undefined ? markup : { reply_markup: { force_reply: true, input_field_placeholder: card.ask.placeholder ?? "" } }),
-				});
-				if (card.ask !== undefined) asks.set(sent.message_id, card.ask);
-				return ref(chatId, sent.message_id);
-			},
-		});
+		render = async (card, replace) => {
+			const markup = card.buttons === undefined ? {} : { reply_markup: keyboard(card.buttons) };
+			if (replace !== undefined) {
+				await live.api.editMessageText(Number(replace.chatId), Number(replace.messageId), card.text, markup).catch(() => {});
+				return replace;
+			}
+			const owner = inbox.owner();
+			const chatId = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.chatId) : owner === undefined ? undefined : Number(owner);
+			if (chatId === undefined) throw new Error("telegram: no one on the allowlist to show it to");
+			const replyTo = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.messageId) : undefined;
+			if (card.buttons === undefined && card.ask === undefined) return ref(chatId, await send(chatId, card.text, replyTo, card.buzz ?? true));
+			const sent = await live.api.sendMessage(chatId, card.text, {
+				...(replyTo === undefined ? {} : { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }),
+				disable_notification: card.buzz === false,
+				...(card.ask === undefined ? markup : { reply_markup: { force_reply: true, input_field_placeholder: card.ask.placeholder ?? "" } }),
+			});
+			if (card.ask !== undefined) asks.set(sent.message_id, card.ask);
+			return ref(chatId, sent.message_id);
+		};
 
 		// The command menu: every command registered with the UI (by any extension) plus Telegram's own, kept current as
 		// extensions add theirs. Telegram allows lowercase names of up to 32 characters.
 		let advertising = Promise.resolve();
 		const advertise = () => {
-			const commands = [...host.ui.commands(), ...OWN]
+			const commands = [...ui.commands(), ...OWN]
 				.filter((command) => /^[a-z0-9_]{1,32}$/.test(command.name))
 				.map((command) => ({ command: command.name, description: command.description.slice(0, 256) || command.name }));
 			advertising = advertising
@@ -150,7 +149,7 @@ export function telegramExtension(host: Host): JapaExtension {
 				.then(() => void 0)
 				.catch((error: unknown) => host.log(`telegram: couldn't set the command menu: ${String(error)}`));
 		};
-		stopAdvertising = host.ui.onCommands(advertise);
+		stopAdvertising = ui.onCommands(advertise);
 		advertise();
 
 		// Answers admitted before the last restart and never delivered.
@@ -167,15 +166,21 @@ export function telegramExtension(host: Host): JapaExtension {
 	return {
 		name: "telegram",
 		title: "Telegram",
-		about: "Talk to it in a private chat. Only people on allowlist.telegram in data/settings.json get through.",
-		channel: PLATFORM,
+		about: "Talk to it in a private chat. Only people on allowlist.telegram in settings.json get through.",
 		settings: [{ key: "token", label: "Bot token (from @BotFather)", kind: "secret", env: "TELEGRAM_BOT_TOKEN" }],
-		start,
-		stop: async () => {
-			stopAdvertising?.();
-			host.ui.detach(PLATFORM);
-			await bot?.stop();
-			bot = undefined;
+		channel: {
+			platform: PLATFORM,
+			open,
+			show: (card, replace) => {
+				if (render === undefined) throw new Error("telegram isn't open");
+				return render(card, replace);
+			},
+			close: async () => {
+				stopAdvertising?.();
+				render = undefined;
+				await bot?.stop();
+				bot = undefined;
+			},
 		},
 	};
 }

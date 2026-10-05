@@ -8,11 +8,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, JsonObject, Context as PiContext } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import type { Inbox } from "../src/channels/inbox.ts";
 import type { Backend } from "../src/core/backend.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
 import { SecretsFile } from "../src/credentials.ts";
 import { type Japa, startJapa } from "../src/japa.ts";
 import type { Host, JapaExtension } from "../src/pi/extension.ts";
+import type { Arrival } from "../src/pi/harness.ts";
 import { SettingsFile } from "../src/settings.ts";
 
 export const context = BACKGROUND_CONTEXT;
@@ -65,6 +67,7 @@ export async function agent(options: {
 	const secrets = new SecretsFile(join(dataDir, "secrets.json"));
 	const cards: Array<{ card: Card; replaced?: CardRef; ref: CardRef }> = [];
 	let shown = 5000;
+	let gate: Inbox | undefined;
 	const japa: Japa = await startJapa(
 		{
 			dataDir,
@@ -72,21 +75,22 @@ export async function agent(options: {
 			secrets,
 			models,
 			extensions: (host) => [
-				// A stand-in channel: shows cards by recording them.
+				// A stand-in channel, on the same adapter as any: messages go in through the inbox it's opened with, and cards
+				// are shown by recording them.
 				{
 					name: "test-channel",
 					title: "Test channel",
 					about: "",
-					channel: "test",
-					start: () =>
-						host.ui.attach({
-							channel: "test",
-							show: async (card, replace) => {
-								const ref = replace ?? { channel: "test", chatId: "7", messageId: String(shown++) };
-								cards.push({ card, ref, ...(replace === undefined ? {} : { replaced: replace }) });
-								return ref;
-							},
-						}),
+					channel: {
+						platform: "test",
+						open: ({ inbox }) => void (gate = inbox),
+						show: async (card, replace) => {
+							const ref = replace ?? { channel: "test", chatId: "7", messageId: String(shown++) };
+							cards.push({ card, ref, ...(replace === undefined ? {} : { replaced: replace }) });
+							return ref;
+						},
+						close: () => void (gate = undefined),
+					},
 				},
 				...(options.workbench === undefined ? [] : [{ name: "test-machine", title: "Test machine", about: "", backends: { "test-machine": () => options.workbench! } }]),
 				...options.extensions(host),
@@ -98,7 +102,6 @@ export async function agent(options: {
 		for (let i = 0; i < 500 && !check(); i++) await sleep(10);
 		assert.ok(check(), `timed out waiting for ${what}`);
 	};
-	const inbox = japa.host.inbox("test");
 	return {
 		japa,
 		thread: japa.thread,
@@ -110,7 +113,10 @@ export async function agent(options: {
 		dataDir,
 		until,
 		/** A message from the user on the test channel. */
-		ask: (id: string, text: string, messageId = 1, arrival?: Parameters<typeof inbox.ask>[5]) => inbox.ask(7, id, text, target(messageId), context, arrival),
+		ask: (id: string, text: string, messageId = 1, arrival?: Arrival) => {
+			assert.ok(gate !== undefined, "the test channel isn't open");
+			return gate.ask(7, id, text, target(messageId), context, arrival);
+		},
 		done: async () => {
 			await japa.close(context);
 			await rm(dataDir, { recursive: true, force: true });

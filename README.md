@@ -32,10 +32,10 @@ Run the same command again to update; it also moves data from older layouts. For
                     │       ▼                                                                    │   on the channel
                     │  Team: one job agent per job ──── report ──► back to the chief of staff    │
                     │  Open items · Triggers · UI cards · /settings · /login                     │
-                    │  Adapters: channels (Surface, Inbox) · model providers · machines          │
+                    │  Adapters: channels · model providers · machines                           │
                     └───────────────▲─────────────────────────────────────────────▲──────────────┘
                                     │ the Host: settings, secrets, models, workbench,│
-                                    │ cards, wake, holds, emit, history, inbox       │
+                                    │ cards, wake, holds, emit, history              │
                     ┌───────────────┴───────────── extensions ───────────────────────┴───────────┐
                     │ Telegram · Memory · Approvals · Web · Computer · Screen · Claude Code ·     │
                     │ Codex · boat.dev · Local machine · whatever you install from chat          │
@@ -53,7 +53,7 @@ Run the same command again to update; it also moves data from older layouts. For
 - **the UI**, with `/settings` and `/login`;
 - **the installer,** which adds extensions from chat.
 
-**Everything else is an extension.** There is one kind, `JapaExtension` in `src/pi/extension.ts`. It's made from the **Host**, which is everything an extension may use: settings, secrets, the data directory, models, the workbench, UI cards, `wake`, holds, `emit`, history search and inboxes. It never touches the main thread directly.
+**Everything else is an extension.** There is one kind, `JapaExtension` in `src/pi/extension.ts`. It's made from the **Host**, which is everything an extension may use: settings, secrets, the data directory, models, the workbench, UI cards, `wake`, holds, `emit` and history search. It never touches the main thread directly; even a channel's messages come in through an adapter.
 
 ### Core abstractions and their adapters
 
@@ -62,11 +62,11 @@ Each thing japa is built from has one typed adapter in the core, and every imple
 | Abstraction | Adapter in the core | An extension provides one with | Built in |
 |---|---|---|---|
 | **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: `chief`, `jobs`, `settings`, `safeTools`, `onSliceEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen, Claude Code, Codex |
-| **Channel** | a `Surface` on the `UI` (`src/core/ui.ts`) plus an `Inbox` (`src/channels/inbox.ts`) | `channel: "<platform>"`; `host.ui.attach(surface)` in `start`; each message to `host.inbox(platform).ask(...)`; presses, replies and commands to `host.ui.press`, `reply` and `run` | Telegram |
+| **Channel** | `Channel` (`src/pi/extension.ts`): `platform`, `open({ inbox, ui })`, `show(card)`, `close()`. Messages go in through the `Inbox`, the allowlist gate (`src/channels/inbox.ts`); presses, replies and commands go to the `UI` (`src/core/ui.ts`) | `channel: { platform, open, show, close }` | Telegram |
 | **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in `auth.json` through `/login` | `providers: [createProvider(...)]` | pi-ai's providers |
 | **Machine** | `Backend` (`exec`, optionally `viewUrl`), opened by an `OpenBackend` (`src/core/backend.ts`) | `backends: { "<name>": (role, config) => backend }`, picked by name in `machines.workbench` | boat.dev, Local machine |
 
-The core registers providers and machines while their extension is on and drops them when it's off. A channel attaches its own surface in `start` and detaches it in `stop`.
+While an extension is on, the core registers its providers and machines, and opens its channel and shows cards on it. When the extension is turned off, the core drops them and closes the channel.
 
 What's built on each adapter is generic and never names an implementation:
 - **on `Backend`:** shell, files, the screen and the coding agents. They only run commands;
@@ -147,8 +147,7 @@ An extension can also:
 - start and stop as it's switched (`start`/`stop`);
 - show cards and handle their buttons (`host.ui`);
 - wake an agent (`host.wake`) or raise an event that fires triggers (`host.emit`);
-- be a messaging channel (`channel`): it attaches a surface with `host.ui.attach`, and reaches the agent only through `host.inbox(platform)`, so it gets the allowlist for free;
-- add model providers (`providers`) or machine providers (`backends`).
+- be a messaging channel (`channel`), add model providers (`providers`), or add machine providers (`backends`), through the adapters above. A channel is opened with its platform's inbox, so it gets the allowlist for free.
 
 ### Extensions from chat
 

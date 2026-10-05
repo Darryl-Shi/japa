@@ -18,19 +18,24 @@ The things japa is built from each have one generic, typed adapter in the core, 
 it, the built-in ones included:
 
 - a **capability** is a `JapaExtension` made from the `Host` (`src/pi/extension.ts`);
-- a **channel** is a `Surface` attached to the UI plus an `Inbox` (`src/core/ui.ts`, `src/channels/inbox.ts`);
+- a **channel** is a `Channel` in an extension's `channel` (`src/pi/extension.ts`), opened with its platform's `Inbox`
+  (the allowlist gate) and the `UI`;
 - a **model provider** is a pi-ai `Provider` in an extension's `providers`, its credential from `/login`;
 - a **machine** is a `Backend`, opened by an `OpenBackend` in an extension's `backends` (`src/core/backend.ts`), picked
   by name in `machines.workbench`.
 
-The core registers providers and machines while their extension is on and drops them when it's off; a channel attaches
-its surface in `start` and detaches it in `stop`. The README has the full table.
+The core registers them while their extension is on (a channel is opened, and cards shown on it) and drops them when
+it's off (the channel is closed). The README has the full table.
 
-The adapter is where the type is enforced, so a provider can't half-implement the contract. What's built on an adapter
-stays generic: shell, files, screen and coding agents only run commands on a `Backend`; `/login` and the model picker
-only use `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation. And because built-ins use the same path, a default has no
-privilege an installed extension lacks: the user can replace any of them. For example, boat.dev used to be a branch in
-`main.ts`'s switch; now it's an extension declaring `backends.boat`, exactly as a user's own machine provider would.
+The adapter is where the type is enforced, so a provider can't half-implement the contract, and nothing reaches around
+it: the Host has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
+adapter stays generic: shell, files, screen and coding agents only run commands on a `Backend`; `/login` and the model
+picker only use `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
+
+Because built-ins use the same path, a default has no privilege an installed extension lacks: the user can replace any
+of them. For example, boat.dev used to be a branch in `main.ts`'s switch; now it's an extension declaring
+`backends.boat`, exactly as a user's own machine provider would. Telegram used to attach itself to the UI and fetch its
+own inbox; now it declares a `Channel` and the core opens it.
 
 When something new comes up, ask which it is. Something japa is built from gets an adapter in the core. A capability
 (email, calendar, a skill) is an extension. Neither needs a second unit kind, a registry beside the adapter, or an

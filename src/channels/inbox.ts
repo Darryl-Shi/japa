@@ -1,7 +1,7 @@
 // The hard user whitelist. Every messaging channel, whichever extension provides it, reaches the agent
 // only through an Inbox, and an Inbox refuses anyone not on the platform's list in settings.allowlist. An empty list
 // lets no one in. The list lives only in data/settings.json: not in /settings, and no tool can change it, so neither
-// a message nor the agent itself can widen it. Channels are extensions, and the Host gives them an Inbox, never the
+// a message nor the agent itself can widen it. A channel is opened with its platform's Inbox by the core (the Channel adapter), never the
 // main thread.
 import type { Context } from "@earendil-works/chord";
 import type { CardRef } from "../core/ui.ts";

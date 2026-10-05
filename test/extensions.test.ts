@@ -9,7 +9,7 @@ import { LocalBackend } from "../src/backends/local.ts";
 import { Approvals } from "../src/core/approvals.ts";
 import { approvalsExtension } from "../src/pi/approvals.ts";
 import { CLAUDE_CODE, CODEX, codingAgentExtension } from "../src/pi/coding-agents.ts";
-import type { JapaExtension } from "../src/pi/extension.ts";
+import type { Channel, JapaExtension } from "../src/pi/extension.ts";
 import { problems } from "../src/pi/installer.ts";
 import { webExtension } from "../src/pi/web.ts";
 import { agent, call, context, say, sleep } from "./helpers.ts";
@@ -229,6 +229,37 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	assert.deepEqual(h.settings.get().model, { provider: "faux", modelId: "faux-fast" });
 	assert.ok(labels().includes("Chief of staff model: faux/faux-fast"), "back on the page, showing the choice");
 	assert.equal((await h.thread.root.agent(context)).model?.modelId, "faux-fast", "and the chief of staff switched to it");
+	await h.done();
+});
+
+test("channels: the core opens each with its inbox and shows cards on it while it's on; off, it's detached and closed; one that fails to open isn't shown on", async () => {
+	const events: string[] = [];
+	const other = (platform: string, fails = false): Channel => ({
+		platform,
+		open: ({ inbox }) => {
+			if (fails) throw new Error("no token");
+			events.push(`${platform} open, gate for ${inbox.platform}`);
+		},
+		show: async (card) => (events.push(`${platform} shows ${card.text}`), { channel: platform, chatId: "1", messageId: "1" }),
+		close: () => void events.push(`${platform} closed`),
+	});
+	const h = await agent({
+		extensions: () => [
+			{ name: "other", title: "Other", about: "", channel: other("other") },
+			{ name: "broken", title: "Broken", about: "", channel: other("broken", true) },
+		],
+		script: () => say("ok"),
+	});
+	assert.deepEqual(events, ["other open, gate for other"]);
+	await h.host.ui.show({ text: "hello", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
+	await h.host.ui.show({ text: "lost", replyTo: { channel: "broken", chatId: "1", messageId: "9" } });
+	assert.deepEqual(events.slice(1), ["other shows hello"], "threaded on its own channel; the broken one gets nothing");
+
+	h.settings.update({ extensions: { other: { enabled: false } } });
+	await h.japa.apply(context);
+	await h.host.ui.show({ text: "again", replyTo: { channel: "other", chatId: "1", messageId: "9" } });
+	assert.deepEqual(events.slice(2), ["other closed"], "off: closed, and its cards go to a channel that's on");
+	assert.equal(h.cards.at(-1)!.card.text, "again");
 	await h.done();
 });
 

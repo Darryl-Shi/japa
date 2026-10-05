@@ -1,6 +1,7 @@
 // What the agent shows the user outside the conversation itself: cards with buttons, questions answered by reply,
 // and slash commands. Channel-neutral: an extension shows a card and handles its button presses and replies; a
-// channel (a Surface) only renders cards and passes presses, replies and commands back here. Button data is
+// channel only renders cards (the core attaches it here as a Surface while it's on) and passes presses, replies and
+// commands back here. Button data is
 // "<owner>:<payload>", so each press or reply goes to the extension that made the card.
 
 /** Where a card or message is in a channel: the channel's own ids, as strings (each channel has its own format). */
