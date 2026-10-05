@@ -8,7 +8,7 @@ A personal chief of staff on Pi Durable, reached over Telegram. See [PLAN.md](PL
 npm install
 mkdir -p data
 npx @earendil-works/pi-ai login anthropic && mv auth.json data/   # or any provider pi-ai supports
-export TELEGRAM_BOT_TOKEN=...                                       # from @BotFather
+export TELEGRAM_BOT_TOKEN=...                                       # from @BotFather; later changeable in /settings → Telegram
 npm start
 ```
 
