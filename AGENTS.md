@@ -25,7 +25,7 @@ it, the built-in ones included:
   by name in `machines.workbench`.
 
 The core registers them while their extension is on (a channel is opened, and cards shown on it) and drops them when
-it's off (the channel is closed). The README has the full table.
+it's off (the channel is closed). docs/architecture.md has the full table.
 
 The adapter is where the type is enforced, so a provider can't half-implement the contract, and nothing reaches around
 it: the Host has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
