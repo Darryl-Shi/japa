@@ -12,7 +12,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { LocalBackend } from "../src/backends/local.ts";
 import type { JapaExtension } from "../src/pi/extension.ts";
-import { agent, call, eventually, machineWithPackages, say, type Turn } from "./helpers.ts";
+import { agent, call, context, eventually, machineWithPackages, say, type Turn } from "./helpers.ts";
 
 /** An in-process tool that says what it was called with. */
 function notesExtension(): JapaExtension {
@@ -132,7 +132,11 @@ export default function (host) {
 		{ text: "Sunny (you sent Bearer japa-secret:weather.key) (my key: japa-secret:weather.key)" },
 		"the code only ever sees a placeholder, even when the answer echoes the key",
 	);
-	assert.deepEqual(seen, ["/forecast Bearer real-key"], "the request went out with the real key");
+	assert.deepEqual(
+		seen.filter((each) => each.startsWith("/forecast")),
+		["/forecast Bearer real-key"],
+		"the request went out with the real key",
+	);
 
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] note it"), { text: "Noted: milk" }, "it can't rewrite another extension's call or result");
 	assert.ok(h.host.safeTools().has("forecast"));
@@ -142,9 +146,11 @@ export default function (host) {
 	// Its key from /login: its model list is fetched there with the key filled in here, and a request to one of its
 	// models runs here, on pi-ai's built-in API.
 	await h.host.models.login("acme", "api_key", { prompt: async () => "acme-key", notify: () => {} });
-	const refreshed = await h.host.models.refresh({ providers: ["acme"] });
-	assert.equal(refreshed.errors.size, 0, [...refreshed.errors.values()].map(String).join());
-	assert.ok(h.host.models.getModel("acme", "acme-2"), "its fetched models are here");
+	h.settings.setOption("weather", "enabled", false);
+	await h.japa.apply(context);
+	h.settings.setOption("weather", "enabled", true);
+	await h.japa.apply(context);
+	await eventually(() => h.host.models.getModel("acme", "acme-2") !== undefined, "its fetched models, when it's turned on");
 	assert.ok(seen.includes("/models Bearer acme-key"));
 	const reply = await h.host.models.completeSimple(h.host.models.getModel("acme", "acme-1")!, { messages: [{ role: "user", content: "hi", timestamp: 0 }] });
 	assert.deepEqual(reply.content, [{ type: "text", text: "Hello from Acme" }], reply.errorMessage ?? "");
