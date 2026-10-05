@@ -126,7 +126,7 @@ test("web: one search sends the objective and all queries in fast mode, and rend
 	assert.deepEqual(await h.ask("1", "[Mon 10:00] look it up"), { text: "No key." });
 	h.secrets.set("web.apiKey", "pk-test");
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] look it up again"), { text: "Found it." });
-	assert.deepEqual(requests[0], { url: "https://api.parallel.ai/v1/search", body: { objective: "Find alpha", search_queries: ["alpha", "alpha fact"], mode: "fast", max_results: 8 }, key: "pk-test" });
+	assert.deepEqual(requests[0], { url: "https://api.parallel.ai/v1/search", body: { objective: "Find alpha", search_queries: ["alpha", "alpha fact"], mode: "fast", advanced_settings: { max_results: 8 } }, key: "pk-test" });
 	assert.deepEqual(requests[1]?.body, { urls: ["https://b.example"], advanced_settings: { full_content: true } });
 	await h.done();
 });
@@ -308,6 +308,33 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 	await press("« Jobs");
 	assert.equal(h.cards.at(-1)!.card.text, "No jobs running.");
 	assert.ok(labels().includes("Finished (1)"));
+	await h.done();
+});
+
+test("messages: message_user while replying to the user is refused (no double message); message_job reaches the job, never the user", async () => {
+	let job = "";
+	const h = await agent({
+		extensions: () => [],
+		script: (turn) => {
+			if (turn.job !== undefined) {
+				if (turn.text.includes("From the chief of staff: Check May 3 too.")) return call("report", { kind: "done", text: "May 3 is cheaper." });
+				return say("Working on it.");
+			}
+			if (turn.text.includes("look into flights")) return call("delegate", { title: "Flights", brief: "Compare fares for May." });
+			if (turn.text.startsWith("Started job")) {
+				job = /Started job (\w+)/.exec(turn.text)![1]!;
+				return call("message_user", { text: "Use the QR login instead.", urgency: "now", job });
+			}
+			if (turn.text.startsWith("Not sent")) return say("On it.");
+			if (turn.text.includes("automatic]")) return call("message_job", { id: job, text: "Check May 3 too." });
+			return say("Noted.");
+		},
+	});
+	assert.deepEqual(await h.ask("1", "[Mon 10:00] look into flights"), { text: "On it." });
+	await h.until(() => h.turns.some((turn) => turn.text.includes("May 3 is cheaper.")), "the job's answer to the chief of staff's message");
+	const shown = h.cards.map((card) => card.card.text).join("\n");
+	assert.doesNotMatch(shown, /QR login/, "the duplicate never reached the user");
+	assert.doesNotMatch(shown, /Check May 3/, "nor did the message to the job");
 	await h.done();
 });
 

@@ -28,7 +28,7 @@ Run the same command again to update; it also moves data from older layouts. For
 ```
                     ┌──────────────────────────── core (always on) ─────────────────────────────┐
  Channel ─► Inbox ──┤  Main thread ──── the chief of staff: one conversation, worked in slices   │
- (allowlist)        │       │  delegate / check_job / conclude_job          message_user ─► UI ─┼─► cards back
+ (allowlist)        │       │  delegate / message_job / conclude_job        message_user ─► UI ─┼─► cards back
                     │       ▼                                                                    │   on the channel
                     │  Team: one job agent per job ──── report ──► back to the chief of staff    │
                     │  Open items · Triggers · UI cards · /settings · /login · /jobs             │

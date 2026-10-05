@@ -53,7 +53,7 @@ export function webExtension(host: Pick<Host, "settings" | "secrets">, options: 
 				replay: "safe",
 				execute: async (args, _api, context) => {
 					const { mode, maxResults } = host.settings.options("web", DEFAULTS);
-					const result = await request("/search", { objective: args.objective, search_queries: args.queries, mode, max_results: Number(maxResults) }, context.abortSignal);
+					const result = await request("/search", { objective: args.objective, search_queries: args.queries, mode, advanced_settings: { max_results: Number(maxResults) } }, context.abortSignal);
 					const pages = (result.results ?? []) as Page[];
 					return text(pages.length === 0 ? "No results." : render(pages));
 				},

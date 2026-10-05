@@ -138,8 +138,9 @@ const CHIEF_GUIDE = [
 	"name only when the job needs it). Job agents can have tools you don't, such as coding agents: hand them coding work.",
 	"Job agents report back to you as messages starting with \"[Report from job\" —",
 	"those are your team, not the user, and your reply to them goes nowhere. On a report: check it, ask the job agent",
-	"more (check_job with a question) or redirect it if it's thin or wrong, and connect it with other jobs and what",
-	"you know of the user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet.",
+	"more or redirect it (message_job) if it's thin or wrong, and connect it with other jobs and what you know of the",
+	"user. Then decide what they hear: message_user (now, or silent when it can wait), or nothing yet. message_user",
+	"always goes to the user, never to a job; when you're replying to the user, just reply.",
 	"Don't break into an unrelated conversation with non-urgent news; mention it at a natural opening. A job stays",
 	"open until the user has accepted the result or dropped it; only then conclude_job. Messages starting \"[Trigger\" are",
 	"your own schedule or an event, not the user: do what they ask and, as with reports, decide what the user hears.",
@@ -153,7 +154,7 @@ const JOB_GUIDE = [
 ].join(" ");
 
 export type Delegation = {
-	/** The chief of staff's tools: delegate, check_job, cancel_job, conclude_job, message_user (and the tasks). */
+	/** The chief of staff's tools: delegate, message_job, check_job, cancel_job, conclude_job, message_user (and the tasks). */
 	chief: Extension;
 	/** A job agent's tools: report, subagent. */
 	job: Extension;
@@ -266,17 +267,25 @@ export function delegationExtensions(options: {
 				},
 			}),
 			defineTool({
+				name: "message_job",
+				description: "Tell a job's agent something: a question, a correction, new direction or information from the user. It answers with a report. Never seen by the user.",
+				parameters: Type.Object({ id: Type.String(), text: Type.String() }),
+				execute: async (args, api, context) => {
+					const found = (await api.snapshot(Jobs, context))?.jobs[args.id];
+					if (found === undefined) return reply(`No job ${args.id}.`);
+					if (found.status === "cancelled" || found.status === "concluded") return reply(`${found.id} is ${found.status}; start a new job instead.`);
+					await api.commit((tx) => tx.createTask(Run, { jobId: found.id, message: `From the chief of staff: ${args.text}`, startedAt: Date.now() }, background), context);
+					return reply(`Sent to ${found.id}; its answer will come as a report.`);
+				},
+			}),
+			defineTool({
 				name: "check_job",
-				description: "A job's status. With a question, the job agent is asked and answers with a report.",
-				parameters: Type.Object({ id: Type.String(), question: Type.Optional(Type.String()) }),
+				description: "A job's status and its subagents'.",
+				parameters: Type.Object({ id: Type.String() }),
 				execute: async (args, api, context) => {
 					const jobs = (await api.snapshot(Jobs, context))?.jobs ?? {};
 					const found = jobs[args.id];
 					if (found === undefined) return reply(`No job ${args.id}.`);
-					if (args.question !== undefined) {
-						await api.commit((tx) => tx.createTask(Run, { jobId: found.id, message: `From the chief of staff: ${args.question}`, startedAt: Date.now() }, background), context);
-						return reply(`Asked ${found.id}; the answer will come as a report.`);
-					}
 					const lines = [`${found.id} "${found.title}": ${found.status}${found.lastReportAt === undefined ? "" : `, last report ${new Date(found.lastReportAt).toISOString().slice(0, 16)}`}, model ${found.model.modelId}`];
 					for (const sub of Object.values(jobs).filter((candidate) => candidate.parentConversationId === found.conversationId)) lines.push(`  ${sub.id} "${sub.title}": ${sub.status}`);
 					return reply(lines.join("\n"));
@@ -310,9 +319,15 @@ export function delegationExtensions(options: {
 			}),
 			defineTool({
 				name: "message_user",
-				description: "Send the user a message when you're not replying to them: a result, a question, news. urgency now buzzes; silent arrives without a notification. With a job id it threads under their original request.",
-				parameters: Type.Object({ text: Type.String(), urgency: Type.Union([Type.Literal("now"), Type.Literal("silent")]), job: Type.Optional(Type.String()) }),
+				description: "Send the user a message when you're not replying to them (after a report or a trigger): a result, a question, news. It goes to the user, never to a job (that's message_job). urgency now buzzes; silent arrives without a notification.",
+				parameters: Type.Object({
+					text: Type.String(),
+					urgency: Type.Union([Type.Literal("now"), Type.Literal("silent")]),
+					job: Type.Optional(Type.String({ description: "The job it's about: it threads under the user's original request" })),
+				}),
 				execute: async (args, api, context) => {
+					// Replying to the user already reaches them; a message on top would say it twice.
+					if ((await options.origin(context)) !== undefined) return reply("Not sent: you're replying to the user right now, so say it in your reply. message_user is for when you aren't.");
 					const found = args.job === undefined ? undefined : (await api.snapshot(Jobs, context))?.jobs[args.job];
 					await api.commit(async (tx) => {
 						(await tx.doc(Outbox)).messages[`message:${api.taskId}`] = {
