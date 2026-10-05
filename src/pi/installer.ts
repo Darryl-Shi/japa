@@ -35,7 +35,8 @@ const guide = (repo: string) =>
 		"file anywhere npm run check covers, whose default export is (host: Host) => JarvisExtension; import values only from packages",
 		"(@earendil-works/pi-ai, @earendil-works/pi-durable, node:*), types only with `import type`; a key goes in a secret",
 		'settings field the user sets in /settings, read with host.secrets.get("<name>.<key>"), never in the code; a model',
-		"provider is an extension whose start() calls host.models.setProvider; npm run check passes. Not a Pi coding-agent",
+		"provider is an extension whose start() calls host.models.setProvider (and host.models.refresh for it, if it fetches its",
+		"model list), with its key from /login; npm run check passes. Not a Pi coding-agent",
 		"extension. The file is checked before the user is asked.",
 	].join(" ");
 

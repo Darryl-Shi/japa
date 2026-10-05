@@ -12,5 +12,6 @@ keeps it that way.
   (the code's own directory, the configured data dir, the workbench's home), never a fixed directory like
   `~/.pi/agent/extensions` or `/tmp/japa`.
 
-For example: a model provider added by an extension takes its key from `/settings` → Model keys (stored where pi keeps
-credentials), not from a constant in the extension or an env var on one server.
+For example: a model provider added by an extension gets its key through `/login` (pi's own login, stored where pi
+keeps credentials), not from a constant in the extension or an env var on one server; and loading its model list is the
+extension's job, not a special case in the core.

@@ -184,18 +184,25 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	};
 
 	assert.deepEqual(lifecycle, ["web on"], "started at startup");
-	assert.deepEqual(ui.commands(), [{ name: "settings", description: "Models, extensions and their options" }], "advertised, with what it does");
+	assert.deepEqual(
+		ui.commands(),
+		[
+			{ name: "settings", description: "Models, extensions and their options" },
+			{ name: "login", description: "Log in to a model provider" },
+		],
+		"advertised, with what they do",
+	);
 	assert.equal(await ui.run("settings", { channel: "test", chatId: 7, messageId: 1 }), true);
-	assert.deepEqual(labels(), ["General", "🔑 Model keys", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
+	assert.deepEqual(labels(), ["General", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
 	assert.ok((await tools()).includes("web_search"));
 
 	await press("✅ Web (Parallel)");
-	assert.deepEqual(labels().slice(3, 4), ["⬜ Web (Parallel)"]);
+	assert.deepEqual(labels().slice(2, 3), ["⬜ Web (Parallel)"]);
 	assert.ok(!(await tools()).includes("web_search"), "turned off: gone from the chief of staff's tools");
 	assert.deepEqual(lifecycle, ["web on", "web off"], "and stopped");
 	await press("✅ Test channel");
 	assert.match(h.cards.at(-1)!.card.text, /only channel/);
-	assert.deepEqual(labels().slice(2, 3), ["✅ Test channel"], "the last channel can't be turned off");
+	assert.deepEqual(labels().slice(1, 2), ["✅ Test channel"], "the last channel can't be turned off");
 
 	await press("⚙");
 	assert.deepEqual(labels(), ["Search mode: fast ▸", "Results per search: 8", "Parallel API key: not set", "« Back"]);
@@ -221,7 +228,7 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	await h.done();
 });
 
-test("settings: a provider an extension adds gets its key in Model keys, and then its models are in the picker", async () => {
+test("login: /login runs a provider's own login from chat, here one an extension adds; then its models are offered", async () => {
 	const big = { id: "dyn-big", name: "Dyn Big", api: "openai-completions" as const, provider: "dyn", baseUrl: "http://dyn.invalid", input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 };
 	const unused = () => {
 		throw new Error("not in this test");
@@ -239,7 +246,6 @@ test("settings: a provider an extension adds gets its key in Model keys, and the
 							name: "Dyn",
 							auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
 							models: [],
-							// Dynamic: its models come from the service, with the key from wherever pi keeps it.
 							fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
 							api: { stream: unused, streamSimple: unused },
 						}),
@@ -258,19 +264,14 @@ test("settings: a provider an extension adds gets its key in Model keys, and the
 	};
 	const at = { channel: "test", chatId: 7, messageId: 1 };
 
-	await ui.run("settings", at);
-	await press("General");
-	await press("Chief of staff model: faux/faux-1");
-	assert.ok(!labels().some((label) => label.startsWith("dyn")), "no key yet: not offered");
-
-	await ui.run("settings", at);
-	await press("🔑 Model keys");
-	await press("⬜ Dyn");
-	const prompt = h.cards.at(-1)!.card;
-	assert.ok(prompt.ask?.secret === true, "asked for as a secret");
-	await ui.reply(prompt.ask!.data, "dk-1", { channel: "test", chatId: 7, messageId: 99 });
-	assert.ok(labels().includes("✅ Dyn"), "shown as set");
-	assert.match(await readFile(join(h.dataDir, "auth.json"), "utf8"), /"dk-1"/, "kept where pi keeps credentials");
+	await ui.run("login", at);
+	assert.ok(labels().includes("Dyn"), "offered, without a tick");
+	const pressed = press("Dyn");
+	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the provider's own prompt for its key");
+	assert.equal(h.cards.at(-1)!.card.ask!.secret, true, "asked for as a secret");
+	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: 7, messageId: 99 });
+	await pressed;
+	assert.equal(h.cards.at(-1)!.card.text, "Logged in to Dyn.");
 
 	await ui.run("settings", at);
 	await press("General");

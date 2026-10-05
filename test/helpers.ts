@@ -10,7 +10,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Backend } from "../src/core/backend.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
-import { FileCredentialStore, SecretsFile } from "../src/credentials.ts";
+import { SecretsFile } from "../src/credentials.ts";
 import { type Jarvis, startJarvis } from "../src/jarvis.ts";
 import type { Host, JarvisExtension } from "../src/pi/extension.ts";
 import { SettingsFile } from "../src/settings.ts";
@@ -40,8 +40,7 @@ export async function agent(options: {
 }) {
 	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "jarvis-")));
 	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-fast" }] });
-	const credentials = new FileCredentialStore(join(dataDir, "auth.json"));
-	const models = createModels({ credentials });
+	const models = createModels();
 	models.setProvider(faux.provider);
 	const turns: Turn[] = [];
 	const respond: FauxResponseFactory = async (request) => {
@@ -70,7 +69,6 @@ export async function agent(options: {
 			settings,
 			secrets,
 			models,
-			credentials,
 			...(options.workbench === undefined ? {} : { workbench: options.workbench }),
 			extensions: (host) => [
 				// A stand-in channel: shows cards by recording them.

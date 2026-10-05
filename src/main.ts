@@ -36,14 +36,12 @@ const workbenchConfig = settings.get().machines.workbench;
 const workbench = workbenchConfig === undefined ? undefined : await providers.open("workbench", workbenchConfig);
 if (workbench !== undefined) console.log(`workbench: ${workbench.id} (starts on first use)`);
 
-const credentials = new FileCredentialStore(join(dataDir, "auth.json"));
 const jarvis = await startJarvis(
 	{
 		dataDir,
 		settings,
 		secrets: new SecretsFile(join(dataDir, "secrets.json")),
-		models: builtinModels({ credentials }),
-		credentials,
+		models: builtinModels({ credentials: new FileCredentialStore(join(dataDir, "auth.json")) }),
 		...(workbench === undefined ? {} : { workbench }),
 		// The default extensions, each of which can be turned off in /settings.
 		extensions: (host) => [
