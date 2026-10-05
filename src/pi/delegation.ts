@@ -147,8 +147,8 @@ const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean, fin
 });
 
 const CHIEF_GUIDE = [
-	"You run a team. delegate hands a self-contained job to a job agent (its own computer and model; pick a model",
-	"name only when the job needs it). Job agents can have tools you don't, such as coding agents: hand them coding work.",
+	"You run a team. delegate hands a self-contained job to a job agent (its own conversation and model; pick a model",
+	"name only when the job needs it). Job agents can have tools you don't: hand them the work that needs those.",
 	"Job agents report back to you as messages starting with \"[Report from job\": your team, not the user. On a",
 	"report: check it, ask the job agent more or redirect it (message_job) if it's thin or wrong, and connect it with",
 	"other jobs and what you know of the user. Then reply with what the user should hear. Whatever you're answering (the",

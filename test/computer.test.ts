@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { LocalBackend } from "../src/backends/local.ts";
+import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { computerExtension, xdotoolCommand } from "../src/pi/computer.ts";
 import { MainThread } from "../src/pi/harness.ts";
 import { DEFAULTS } from "../src/settings.ts";
@@ -40,9 +42,15 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		return;
 	}
 	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
-	const local = new LocalBackend(join(dataDir, "machine"));
+	await mkdir(join(dataDir, "machine"));
 	const commands: string[] = [];
-	const backend = { id: local.id, home: local.home, exec: (command: string, options?: Parameters<LocalBackend["exec"]>[1]) => (commands.push(command), local.exec(command, options)) };
+	// Its computer, with every command it runs recorded.
+	const computer = new (class extends NodeExecutionEnv {
+		override exec(command: string, options: ShellExecOptions | undefined, callContext: Context) {
+			commands.push(command);
+			return super.exec(command, options, callContext);
+		}
+	})({ cwd: join(dataDir, "machine") });
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -52,7 +60,7 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		fauxAssistantMessage("Looked."),
 	]);
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
-	const thread = await MainThread.open({ dataDir, models, settings, installed: [computerExtension({ backend: () => backend, display: ":97" })] }, context);
+	const thread = await MainThread.open({ dataDir, models, settings, installed: [computerExtension({ display: ":97" })], env: () => computer }, context);
 	try {
 		await thread.ask("1", "look at the screen", { channel: "test", chatId: "1", messageId: "1" }, context);
 		const results = (await thread.root.context(context)).messages.filter((message): message is ToolResultMessage => message.role === "toolResult");

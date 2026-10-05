@@ -1,18 +1,16 @@
-// The one unit. Everything beyond the core loop is an extension: memory, the computer and screen, the web, coding
-// agents, approvals, messaging channels, model providers, machine providers, and whatever the user adds. An extension
-// is made from the Host (everything it may use) and says what it gives the chief of staff and job agents, what it adds
-// to /settings, which of its tools are safe, what it does when a slice ends, when it wakes the chief of staff by
-// itself, and what runs while it's on. The core (the main thread, open items, the team) is not an extension and can't
-// be turned off.
+// The one unit. Everything beyond the core loop is an extension: memory, the computer and screen, the web, approvals,
+// messaging channels, model providers, and whatever the user adds. An extension is made from the Host (everything it
+// may use) and says what it gives the chief of staff and job agents, what it adds to /settings, which of its tools are
+// safe, what it does when a slice ends, when it wakes the chief of staff by itself, and what runs while it's on. The
+// core (the main thread, open items, the team) is not an extension and can't be turned off.
 //
 // What japa is built from has one typed adapter each, and every implementation goes through it, built-in or not: a
-// channel is a Channel in `channel`, a model provider is a pi-ai Provider in `providers`, a machine is an OpenBackend
-// in `backends`. The core registers them while the extension is on and unregisters them when it's off.
+// channel is a Channel in `channel`, a model provider is a pi-ai Provider in `providers`. The core registers them
+// while the extension is on and unregisters them when it's off.
 import type { Context } from "@earendil-works/chord";
 import type { Models, MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { Inbox } from "../channels/inbox.ts";
-import type { Backend, OpenBackend } from "../core/backend.ts";
 import type { HistoryHit } from "../core/history.ts";
 import type { When } from "../core/schedule.ts";
 import type { Card, CardRef, Holds, UI } from "../core/ui.ts";
@@ -66,8 +64,6 @@ export type Host = {
 	dataDir: string;
 	/** The models pi can use. To add a provider, declare it in `providers`. */
 	models: Models;
-	/** The agent's computer: machines.workbench opened through its provider's backend. None when unset or unavailable. */
-	workbench(): Backend | undefined;
 	ui: UI;
 	/**
 	 * A new turn in a conversation: the chief of staff (addressed from `from`, e.g. the extension's name; its answer goes
@@ -109,8 +105,6 @@ export type JapaExtension = {
 	triggers?: readonly Trigger[];
 	/** Model providers it adds: registered while it's on, their models loaded with the credential from /login. */
 	providers?: readonly Provider[];
-	/** Machine providers it adds, by the name settings use (machines.workbench.provider). */
-	backends?: Readonly<Record<string, OpenBackend>>;
 	/** A messaging channel. The last one on can't be turned off. */
 	channel?: Channel;
 	/** While it's on: started when turned on (or at startup), stopped when turned off. */
@@ -207,11 +201,6 @@ export class ExtensionSet {
 
 	async sliceEnded(slice: SliceEnd): Promise<void> {
 		await Promise.all(this.on().map((entry) => entry.onSliceEnd?.(slice).catch((error: unknown) => this.log(`${entry.name}: slice end: ${String(error)}`))));
-	}
-
-	/** The machine provider of that name, from the extensions that are on. */
-	backend(name: string): OpenBackend | undefined {
-		return this.on().find((entry) => entry.backends?.[name] !== undefined)?.backends?.[name];
 	}
 
 	/** Start what was turned on and stop what was turned off. */

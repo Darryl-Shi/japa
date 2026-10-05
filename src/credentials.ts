@@ -1,5 +1,5 @@
 // Model credentials (API keys, Claude/ChatGPT subscription OAuth) in data/auth.json, the same shape pi uses.
-// Only the harness reads this file; the workbench never sees it.
+// Only japa reads this file; the agent's commands never get it in their environment.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
@@ -56,8 +56,8 @@ export class FileCredentialStore implements CredentialStore {
 }
 
 /**
- * Extension secrets (API keys, tokens) in data/secrets.json, set from /settings or the environment. They stay in the
- * harness: an extension that needs one on the workbench passes it to a single command, never writes it there.
+ * Extension secrets (API keys, tokens) in data/secrets.json, set from /settings or the environment. An extension
+ * whose command needs one passes it to that one command, never into every command's environment.
  */
 export class SecretsFile {
 	private readonly path: string;

@@ -1,7 +1,7 @@
 # Working on japa
 
-japa is a chief of staff that each user makes their own: their channel, their models, their machines, and extensions
-they add from chat. Most decisions below follow from that. The default setup (Telegram, boat.dev, one pi-ai provider)
+japa is a chief of staff that each user makes their own: their channel, their models, the machine it runs on, and
+extensions they add from chat. Most decisions below follow from that. The default setup (Telegram, one pi-ai provider)
 is one configuration of japa, never something the code may assume.
 
 pls dont hardcode anything, introduce unecessary abstraction or give up on flexibility and assume a specific working
@@ -20,22 +20,24 @@ it, the built-in ones included:
 - a **capability** is a `JapaExtension` made from the `Host` (`src/pi/extension.ts`);
 - a **channel** is a `Channel` in an extension's `channel` (`src/pi/extension.ts`), opened with its platform's `Inbox`
   (the allowlist gate) and the `UI`;
-- a **model provider** is a pi-ai `Provider` in an extension's `providers`, its credential from `/login`;
-- a **machine** is a `Backend`, opened by an `OpenBackend` in an extension's `backends` (`src/core/backend.ts`), picked
-  by name in `machines.workbench`.
+- a **model provider** is a pi-ai `Provider` in an extension's `providers`, its credential from `/login`.
 
 The core registers them while their extension is on (a channel is opened, and cards shown on it) and drops them when
 it's off (the channel is closed). docs/architecture.md has the full table.
 
+There is no machine adapter, because there is no other machine: japa runs on one, and that machine is the agent's
+computer. Its tools run there through Pi's own local environment, in the agent's home. Where that machine is (a
+laptop, a server, a VM) is the installer's business, not the code's.
+
 The adapter is where the type is enforced, so a provider can't half-implement the contract, and nothing reaches around
 it: the Host has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
-adapter stays generic: shell, files, screen and coding agents only run commands on a `Backend`; `/login` and the model
+adapter stays generic: shell, files and the screen only use the call's environment (`api.env`); `/login` and the model
 picker only use `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
 
 Because built-ins use the same path, a default has no privilege an installed extension lacks: the user can replace any
-of them. For example, boat.dev used to be a branch in `main.ts`'s switch; now it's an extension declaring
-`backends.boat`, exactly as a user's own machine provider would. Telegram used to attach itself to the UI and fetch its
-own inbox; now it declares a `Channel` and the core opens it.
+of them. For example, Telegram used to attach itself to the UI and fetch its own inbox; now it declares a `Channel` and
+the core opens it. And what only some users want isn't built in: Claude Code and Codex used to be, and now a coding
+agent is an extension a user adds from chat if they want one.
 
 When something new comes up, ask which it is. Something japa is built from gets an adapter in the core. A capability
 (email, calendar, a skill) is an extension. Neither needs a second unit kind, a registry beside the adapter, or an
@@ -43,7 +45,7 @@ option nobody asked for. A deleted speculative feature costs nothing; a kept one
 
 ## The specific lives in its extension
 
-Behaviour that belongs to one provider, channel or machine stays in that extension. The core changes only for a
+Behaviour that belongs to one provider or channel stays in that extension. The core changes only for a
 mechanism every implementation shares. When the Sudocode provider's models didn't show in `/settings`, the wrong fix
 was a core page and refresh calls for that case. The right fix was `/login` (any provider's own login, kept where pi
 keeps credentials) and the provider adapter loading a provider's model list when it's registered. If a fix names one
@@ -54,8 +56,8 @@ provider, it belongs in that provider's extension.
 - **Values** come from settings, secrets, pi's credential store, or live state. That means no keys, models, hosts or
   names in code or prompts. No default models: the user picks from what they've logged in to.
 - **Locations** come from where things actually are: `JAPA_DATA` (`host.dataDir` for an extension's own files), the
-  code's own directory (`import.meta.dirname`), the workbench's `home`. Never a fixed directory like `~/jarvis-home`
-  or `/tmp/japa`.
+  code's own directory (`import.meta.dirname`), the agent's `home` (the home directory of the user japa runs as).
+  Never a fixed directory like `~/jarvis-home` or `/tmp/japa`.
 - **Formats** don't bake in one implementation. A `CardRef` carries the channel's own ids as strings, because every
   channel has its own id format; Telegram converts at its edge.
 
@@ -74,13 +76,15 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
 
 - Secrets never go in code or `settings.json`. Model credentials live in `auth.json`, through `/login`. Extension keys
   live in `secrets.json`, through a secret settings field.
-- Secrets never go on the workbench. A key a command needs is passed to that one command.
-- Agent-written code runs on a machine, not in the harness: shell and coding agents on the workbench, extensions
-  installed from chat on the extensions machine (`src/pi/sandbox.ts`), where keys are placeholders that japa fills in
-  on a request to the web. The harness keeps what an extension extends (the loop, state, keys, consent) and holds the
-  lines there: a sandboxed hook rewrites only its own tools' calls, safeTools vouch only for its own tools. The user
-  still approves every install with a card, after it has loaded in its sandbox, whatever the approvals mode.
-- The allowlist is edited only in `settings.json`; no tool can change it.
+- Secrets never go in a command's environment. japa's own keys are taken out of the environment its commands run in;
+  a key a command needs is passed to that one command.
+- There is one machine. The agent's shell, files and screen are the machine japa runs on, as the user japa runs as, so
+  nothing but review stands between them and japa's own files: every action is reviewed, and only effects beyond the
+  machine wait for the user.
+- Every extension runs inside japa with the Host, keys included, built-in or installed from chat, with no
+  restrictions a built-in doesn't have. So the user approves every install with a card, whatever the approvals mode,
+  and the code is checked before they're asked.
+- The allowlist is edited only in `settings.json`; no tool of japa's changes it.
 
 ## Continuity
 
@@ -94,4 +98,5 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
 ## Checking your work
 
 `npm run check` type-checks; `npm test` runs the whole agent on pi-ai's faux provider, with no key needed. A test
-reaches japa the way a user's code would: a machine for a test is an extension declaring a backend, not a back door.
+reaches japa the way a user's code would: its agent gets a home of its own on this machine, and anything else it needs
+is an extension, not a back door.

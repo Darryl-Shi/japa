@@ -4,8 +4,6 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export type ModelChoice = { provider: string; modelId: string };
-/** `screen: true` gives the agent the computer tool on that machine's display. Other options go to the provider. */
-export type MachineConfig = { provider: string; screen?: boolean; [option: string]: unknown };
 
 export type Settings = {
 	/**
@@ -17,13 +15,6 @@ export type Settings = {
 	delegateModel?: ModelChoice;
 	/** Named models the chief of staff can assign to a job (bound to that job and its subagents). */
 	jobModels: Record<string, ModelChoice>;
-	/**
-	 * The workbench: the agent's own machine for shell, files and coding agents, with no secrets. `provider` names a
-	 * machine provider an extension declares (built in: "boat", "local"). None: no computer. `extensions`: where
-	 * extensions installed from chat run, each in its own process; default: the workbench's provider, as a machine of
-	 * its own (its own VM, or its own directory).
-	 */
-	machines: { workbench?: MachineConfig; extensions?: MachineConfig };
 	/** Who the agent works for. Optional; the agent also learns about them in memory. */
 	user?: { name?: string };
 	/**
@@ -49,7 +40,6 @@ export type ExtensionOptions = { enabled?: boolean; [option: string]: unknown };
 
 export const DEFAULTS: Settings = {
 	jobModels: {},
-	machines: {},
 	allowlist: {},
 	context: { idleMinutes: 10, sliceTokens: 8000 },
 	extensions: {},

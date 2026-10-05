@@ -22,10 +22,9 @@ const REVIEW_PROMPT = [
 	"change accounts, permissions or security settings. Everything else goes ahead without asking. That includes reading,",
 	"searching, browsing, fetching and drafting, and anything on the assistant's own computer, where its commands and",
 	"files run: creating, overwriting or deleting files at any path there (~, /home/..., /tmp, relative paths), cloning,",
-	"installing, building, running tests, scripts and coding agents. That computer is its sandbox and holds none of the",
-	"user's accounts, so nothing there needs asking. If it's unclear whether something is the user's or the assistant's,",
-	"it's the assistant's, unless the action names one of the user's accounts or services. Allow whatever a standing",
-	"permission below covers. Return JSON only:",
+	"installing, building, running tests and scripts. That computer is its own, so nothing there needs asking. If it's",
+	"unclear whether something is the user's or the assistant's, it's the assistant's, unless the action names one of the",
+	"user's accounts or services. Allow whatever a standing permission below covers. Return JSON only:",
 	'{"ask": boolean, "summary": "what it would do, in a few plain words for the user", "rule": "the general kind of action, as a standing permission would name it"}',
 ].join(" ");
 

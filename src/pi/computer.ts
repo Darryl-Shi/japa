@@ -1,9 +1,19 @@
-// The agent's screen: one `computer` tool that sees and drives a backend's desktop like a person would. Generic —
-// the X display over exec (xdotool, plus ImageMagick or ffmpeg for screenshots), so any Linux machine with a display
-// works.
+// The agent's screen: one `computer` tool that sees and drives its computer's desktop like a person would. The X
+// display through the call's shell (xdotool, plus ImageMagick or ffmpeg for screenshots), so any Linux machine with a
+// display works.
+import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
-import { type Backend, type ScreenAction, shellQuote as q } from "../core/backend.ts";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { shellQuote as q } from "../core/shell.ts";
+
+export type ScreenAction =
+	| { type: "click"; x: number; y: number; button?: "left" | "right" | "middle"; double?: boolean }
+	| { type: "move"; x: number; y: number }
+	| { type: "drag"; fromX: number; fromY: number; toX: number; toY: number }
+	| { type: "type"; text: string }
+	| { type: "key"; keys: string }
+	| { type: "scroll"; x: number; y: number; direction: "up" | "down" | "left" | "right"; amount?: number };
 
 /** Screenshots are downscaled to this width to save image tokens; coordinates are scaled back. */
 const SHOT_WIDTH = 1280;
@@ -29,27 +39,26 @@ export function xdotoolCommand(action: ScreenAction): string {
 	}
 }
 
-/** The screen as seen over exec. */
-class DisplayOverExec {
-	private readonly backend: Backend;
+/** The screen, through a shell on the machine it's on. */
+class Display {
 	private readonly display: string;
 	private geometry: { width: number; height: number } | undefined;
 
-	constructor(backend: Backend, display: string) {
-		this.backend = backend;
+	constructor(display: string) {
 		this.display = display;
 	}
 
-	private async run(command: string, signal?: AbortSignal): Promise<string> {
+	private async run(env: ExecutionEnv, command: string, context: Context): Promise<string> {
 		let output = "";
-		const { exitCode } = await this.backend.exec(command, { env: { DISPLAY: this.display }, onOutput: (chunk) => (output += chunk), ...(signal === undefined ? {} : { signal }) });
-		if (exitCode !== 0) throw new Error(output.trim() || `exit ${exitCode}`);
+		const result = await env.exec(command, { env: { DISPLAY: this.display }, onOutput: (chunk) => void (output += chunk) }, context);
+		if (!result.ok) throw result.error;
+		if (result.value.exitCode !== 0) throw new Error(output.trim() || `exit ${result.value.exitCode}`);
 		return output;
 	}
 
-	async size(signal?: AbortSignal): Promise<{ width: number; height: number }> {
+	async size(env: ExecutionEnv, context: Context): Promise<{ width: number; height: number }> {
 		if (this.geometry === undefined) {
-			const out = await this.run(`xdotool getdisplaygeometry 2>/dev/null || xdpyinfo 2>/dev/null | awk '/dimensions:/{sub("x"," ",$2); print $2}'`, signal);
+			const out = await this.run(env, `xdotool getdisplaygeometry 2>/dev/null || xdpyinfo 2>/dev/null | awk '/dimensions:/{sub("x"," ",$2); print $2}'`, context);
 			const [width, height] = out.trim().split(/\s+/).map(Number);
 			if (!width || !height) throw new Error(`No display at ${this.display}`);
 			this.geometry = { width, height };
@@ -57,8 +66,8 @@ class DisplayOverExec {
 		return this.geometry;
 	}
 
-	async screenshot(signal?: AbortSignal): Promise<{ png: string; width: number; height: number; scale: number }> {
-		const screen = await this.size(signal);
+	async screenshot(env: ExecutionEnv, context: Context): Promise<{ png: string; width: number; height: number; scale: number }> {
+		const screen = await this.size(env, context);
 		const width = Math.min(SHOT_WIDTH, screen.width);
 		const height = Math.round((screen.height * width) / screen.width);
 		const grab = [
@@ -66,33 +75,30 @@ class DisplayOverExec {
 			`elif command -v ffmpeg >/dev/null; then ffmpeg -loglevel error -f x11grab -video_size ${screen.width}x${screen.height} -i "$DISPLAY" -frames:v 1 -vf scale=${width}:${height} -f image2pipe -vcodec png -;`,
 			`else echo "no screenshot tool: install imagemagick or ffmpeg" >&2; exit 127; fi | base64 -w0`,
 		].join(" ");
-		return { png: (await this.run(grab, signal)).trim(), width, height, scale: screen.width / width };
+		return { png: (await this.run(env, grab, context)).trim(), width, height, scale: screen.width / width };
 	}
 
-	async act(action: ScreenAction, signal?: AbortSignal): Promise<void> {
-		await this.run(`command -v xdotool >/dev/null || { echo "xdotool is not installed: install it (e.g. sudo apt-get install -y xdotool)" >&2; exit 127; }; ${xdotoolCommand(action)}`, signal);
+	async act(env: ExecutionEnv, action: ScreenAction, context: Context): Promise<void> {
+		await this.run(env, `command -v xdotool >/dev/null || { echo "xdotool is not installed: install it (e.g. sudo apt-get install -y xdotool)" >&2; exit 127; }; ${xdotoolCommand(action)}`, context);
 	}
 }
 
-const actions = ["screenshot", "click", "double_click", "right_click", "move", "drag", "type", "key", "scroll", "share_screen"] as const;
+/** The computer a tool call runs on. */
+export function computerOf(api: { env: ExecutionEnv | undefined }): ExecutionEnv {
+	if (api.env === undefined) throw new Error("There's no computer to run on.");
+	return api.env;
+}
 
-/** `backend` is asked on each use: the machine can change (or go) with settings. */
-export function computerExtension(options: { backend: () => Backend | undefined; display?: string }): Extension {
-	let current: { backend: Backend; display: DisplayOverExec } | undefined;
+const actions = ["screenshot", "click", "double_click", "right_click", "move", "drag", "type", "key", "scroll"] as const;
+
+/** `display`: the X display to use. */
+export function computerExtension(options: { display: string }): Extension {
+	const screen = new Display(options.display);
 	/** Screen px per screenshot px, known once a screenshot has been taken. */
 	let scale: number | undefined;
-	const machine = () => {
-		const backend = options.backend();
-		if (backend === undefined) throw new Error("No computer is configured.");
-		if (current?.backend !== backend) {
-			current = { backend, display: new DisplayOverExec(backend, options.display ?? ":0") };
-			scale = undefined;
-		}
-		return current;
-	};
 
-	const shoot = async (signal?: AbortSignal) => {
-		const shot = await machine().display.screenshot(signal);
+	const shoot = async (env: ExecutionEnv, context: Context) => {
+		const shot = await screen.screenshot(env, context);
 		scale = shot.scale;
 		return shot;
 	};
@@ -104,15 +110,13 @@ export function computerExtension(options: { backend: () => Backend | undefined;
 			section(
 				"screen",
 				() =>
-					options.backend() === undefined
-						? undefined
-						: "Your computer also has a screen. The computer tool shows it (screenshot) and drives it like a person: click, type, key, scroll, drag. Coordinates are pixels in the latest screenshot. Prefer bash for anything scriptable; use the screen for GUIs and websites. share_screen gives a link the user can open to watch or take over, e.g. when a login or 2FA needs them.",
+					"Your computer also has a screen. The computer tool shows it (screenshot) and drives it like a person: click, type, key, scroll, drag. Coordinates are pixels in the latest screenshot. Prefer bash for anything scriptable; use the screen for GUIs and websites.",
 			),
 		],
 		tools: [
 			defineTool({
 				name: "computer",
-				description: "See and use your computer's screen. Every action except share_screen returns a fresh screenshot.",
+				description: "See and use your computer's screen. Every action returns a fresh screenshot.",
 				parameters: Type.Object({
 					action: Type.Union(actions.map((action) => Type.Literal(action))),
 					x: Type.Optional(Type.Number()),
@@ -124,15 +128,10 @@ export function computerExtension(options: { backend: () => Backend | undefined;
 					direction: Type.Optional(Type.Union([Type.Literal("up"), Type.Literal("down"), Type.Literal("left"), Type.Literal("right")])),
 					amount: Type.Optional(Type.Number({ description: "scroll steps (default 3)" })),
 				}),
-				execute: async (args, _api, context) => {
-					const signal = context.abortSignal;
-					if (args.action === "share_screen") {
-						const { backend } = machine();
-						if (backend.viewUrl === undefined) throw new Error("This computer has no viewable screen link.");
-						return { content: [{ type: "text", text: await backend.viewUrl() }] };
-					}
+				execute: async (args, api, context) => {
+					const env = computerOf(api);
 					if (args.action !== "screenshot") {
-						if (scale === undefined) await shoot(signal); // establish the coordinate scale
+						if (scale === undefined) await shoot(env, context); // establish the coordinate scale
 						const at = { x: toScreen(args.x), y: toScreen(args.y) };
 						const action: ScreenAction =
 							args.action === "click" || args.action === "double_click" || args.action === "right_click"
@@ -146,10 +145,10 @@ export function computerExtension(options: { backend: () => Backend | undefined;
 											: args.action === "key"
 												? { type: "key", keys: args.keys ?? "" }
 												: { type: "scroll", ...at, direction: args.direction ?? "down", ...(args.amount === undefined ? {} : { amount: args.amount }) };
-						await machine().display.act(action, signal);
+						await screen.act(env, action, context);
 						await new Promise((resolve) => setTimeout(resolve, 400)); // let the screen settle
 					}
-					const shot = await shoot(signal);
+					const shot = await shoot(env, context);
 					return {
 						content: [
 							{ type: "text", text: `Screen (${shot.width}x${shot.height}).` },

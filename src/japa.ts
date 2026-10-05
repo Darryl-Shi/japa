@@ -1,23 +1,23 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
 // conversation, the UI with /settings, /login and /jobs, and the installer. None of these can be turned off. Everything else is an extension, made from the
 // Host this builds, and hooked in only through it: what it gives each agent, its settings, its safe tools, its slice
-// end, its triggers, its lifecycle, and the channels, model providers and machines it adds through the core's adapters.
+// end, its triggers, its lifecycle, and the channels and model providers it adds through the core's adapters. The
+// agent's computer is the machine this runs on: its tools run here, in `home`.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { createRegistry, type Storage } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Inbox } from "./channels/inbox.ts";
 import { attachJobs } from "./channels/jobs.ts";
 import { attachLogin } from "./channels/login.ts";
 import { SettingsMenu } from "./channels/settings-menu.ts";
-import type { Backend } from "./core/backend.ts";
 import { History } from "./core/history.ts";
 import { stamp } from "./core/schedule.ts";
 import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { Holds, UI } from "./core/ui.ts";
 import type { SecretsFile } from "./credentials.ts";
 import { toInput } from "./pi/attachments.ts";
-import { BackendExecutionEnv } from "./pi/backend-env.ts";
 import { delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JapaExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
@@ -40,6 +40,8 @@ export type Japa = {
 export async function startJapa(
 	options: {
 		dataDir: string;
+		/** The agent's home on this machine: where its tools start and its files go. */
+		home: string;
 		settings: SettingsFile;
 		secrets: SecretsFile;
 		models: MutableModels;
@@ -50,7 +52,7 @@ export async function startJapa(
 	},
 	context: Context,
 ): Promise<Japa> {
-	const { dataDir, settings, secrets, models } = options;
+	const { dataDir, home, settings, secrets, models } = options;
 	const log = options.log ?? ((line: string) => console.log(line));
 	const ui = new UI(log);
 	const holds = new Holds();
@@ -60,39 +62,6 @@ export async function startJapa(
 	let thread: MainThread | undefined;
 	let extensions: ExtensionSet | undefined;
 	const main = () => thread!;
-
-	// A machine for a role, opened through the backend its settings name, from the extensions that are on; opened
-	// again when its settings change. Opening starts nothing remote. The workbench is the agent's own computer; the
-	// extensions machine is where extensions installed from chat run, the workbench's provider (as a machine of its
-	// own) unless settings name one.
-	const opened = new Map<string, { key: string; backend: Backend }>();
-	const failed = new Map<string, string>();
-	const machine = (role: "workbench" | "extensions"): Backend | undefined => {
-		const machines = settings.get().machines;
-		const config = machines[role] ?? (role === "workbench" ? undefined : machines.workbench);
-		if (config === undefined) return undefined;
-		const key = JSON.stringify(config);
-		const known = opened.get(role);
-		if (known?.key === key) return known.backend;
-		const problem = (why: string) => {
-			if (failed.get(role) !== why) log(`${role}: ${why}`);
-			failed.set(role, why);
-			return undefined;
-		};
-		const open = extensions?.backend(config.provider);
-		if (open === undefined) return problem(`no machine provider "${config.provider}" is on`);
-		let backend: Backend;
-		try {
-			backend = open(role, config);
-		} catch (error) {
-			return problem(error instanceof Error ? error.message : String(error));
-		}
-		opened.set(role, { key, backend });
-		failed.delete(role);
-		log(`${role}: ${backend.id} (starts on first use)`);
-		return backend;
-	};
-	const workbench = () => machine("workbench");
 
 	const inboxes = new Map<string, Inbox>();
 	/** The gate a channel's messages come in through: one per platform, refusing anyone not on its allowlist. */
@@ -105,11 +74,11 @@ export async function startJapa(
 				settings,
 				log,
 				prepare: (callContext) => japa.apply(callContext),
-				// Files go on the workbench; images are shown to the chief of staff too when its model takes them.
+				// Files go on its computer; images are shown to the chief of staff too when its model takes them.
 				receive: (message) => {
 					const choice = settings.get().model;
 					const model = choice === undefined ? undefined : models.getModel(choice.provider, choice.modelId);
-					return toInput(message, { workbench: workbench(), seesImages: model?.input.includes("image") === true });
+					return toInput(message, { home, seesImages: model?.input.includes("image") === true });
 				},
 			});
 			inboxes.set(platform, found);
@@ -121,7 +90,6 @@ export async function startJapa(
 		secrets,
 		dataDir,
 		models,
-		workbench,
 		ui,
 		holds,
 		log,
@@ -155,18 +123,7 @@ export async function startJapa(
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
 	const registry = createRegistry();
-	const installs = installer({
-		host,
-		dataDir,
-		extensions: () => extensions!,
-		registry,
-		machine: () => machine("extensions"),
-		models,
-		inbox,
-		apply: (callContext) => japa.apply(callContext),
-		problem: (about, text) => report(about, text),
-		context,
-	});
+	const installs = installer({ host, dataDir, home, extensions: () => extensions!, registry, apply: (callContext) => japa.apply(callContext), problem: (about, text) => report(about, text), context });
 	/** A problem with something japa runs: the chief of staff hears it once, and can have it fixed. Kept until it's open. */
 	const early: Array<[string, string | undefined]> = [];
 	const report = (about: string, text: string | undefined) => {
@@ -181,6 +138,10 @@ export async function startJapa(
 		log,
 	);
 	extensions = set;
+	// Its commands run here, in its home, without japa's own keys in their environment: a key a command needs is passed
+	// to that command.
+	const keys = set.entries.flatMap((entry) => (entry.settings ?? []).flatMap((field) => (field.kind === "secret" && field.env !== undefined ? [field.env] : [])));
+	const computer = new NodeExecutionEnv({ cwd: home, shellEnv: { ...Object.fromEntries(keys.map((key) => [key, undefined])), HOME: home } });
 	const core = [stateTools, team.chief, schedule.extension, installs.extension];
 	const coreTools = [...core, team.job, team.helper].flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
 
@@ -193,10 +154,7 @@ export async function startJapa(
 			settings: () => settings.get(),
 			installed: [...core, team.job, team.helper, ...set.installed()],
 			selected: () => [...core, ...set.forChief()],
-			env: () => {
-				const backend = workbench();
-				return backend === undefined ? undefined : new BackendExecutionEnv(backend);
-			},
+			env: () => computer,
 			state,
 			onSliceEnd: (slice) => set.sliceEnded(slice),
 			log,
@@ -243,7 +201,6 @@ export async function startJapa(
 		return (await ui.show({ text: message.text, buzz: message.buzz, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) }))?.messageId;
 	}, context);
 	await japa.apply(context);
-	installs.resume();
 	log("japa: ready");
 	return japa;
 }

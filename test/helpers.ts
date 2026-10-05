@@ -1,7 +1,7 @@
 // A whole agent (core plus the given extensions) on pi-ai's faux provider, with a fake channel surface that records
 // every card it's asked to show.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -9,8 +9,6 @@ import type { AssistantMessage, JsonObject, Context as PiContext } from "@earend
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Inbox } from "../src/channels/inbox.ts";
-import { LocalBackend } from "../src/backends/local.ts";
-import type { Backend } from "../src/core/backend.ts";
 import type { Incoming } from "../src/core/message.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
 import { SecretsFile } from "../src/credentials.ts";
@@ -37,8 +35,8 @@ function lastText(request: PiContext): string {
 export async function agent(options: {
 	extensions: (host: Host) => JapaExtension[];
 	script: (turn: Turn) => AssistantMessage | Promise<AssistantMessage>;
-	/** A machine, provided the way any is: an extension declaring a backend, named in machines.workbench. */
-	workbench?: Backend;
+	/** The agent's home on this machine; default: a new directory. */
+	home?: string;
 	settings?: Parameters<SettingsFile["update"]>[0];
 	/** Reuse one (a restart); default: a new one. */
 	dataDir?: string;
@@ -63,16 +61,18 @@ export async function agent(options: {
 		jobModels: { fast: { provider: "faux", modelId: "faux-fast" } },
 		context: { idleMinutes: 60, sliceTokens: 1_000_000 },
 		allowlist: { test: [7] },
-		...(options.workbench === undefined ? {} : { machines: { workbench: { provider: "test-machine" } } }),
 		...options.settings,
 	});
 	const secrets = new SecretsFile(join(dataDir, "secrets.json"));
+	const home = options.home ?? join(dataDir, "home");
+	await mkdir(home, { recursive: true });
 	const cards: Array<{ card: Card; replaced?: CardRef; ref: CardRef }> = [];
 	let shown = 5000;
 	let gate: Inbox | undefined;
 	const japa: Japa = await startJapa(
 		{
 			dataDir,
+			home,
 			settings,
 			secrets,
 			models,
@@ -94,7 +94,6 @@ export async function agent(options: {
 						close: () => void (gate = undefined),
 					},
 				},
-				...(options.workbench === undefined ? [] : [{ name: "test-machine", title: "Test machine", about: "", backends: { "test-machine": () => options.workbench! } }]),
 				...options.extensions(host),
 			],
 		},
@@ -124,20 +123,4 @@ export async function agent(options: {
 			await rm(dataDir, { recursive: true, force: true });
 		},
 	};
-}
-
-/**
- * A machine as a test's extensions run on: the workbench (extensions installed from chat run on its provider unless
- * settings say otherwise), with the packages japa's own extensions use already there, as a machine may come with them.
- */
-export async function machineWithPackages(dataDir: string): Promise<LocalBackend> {
-	const machine = new LocalBackend(join(dataDir, "machine"));
-	await symlink(join(import.meta.dirname, "..", "node_modules"), join(machine.home, "node_modules"), "dir");
-	return machine;
-}
-
-/** Wait longer than `until` does: a sandbox starts a process on its machine. */
-export async function eventually(check: () => boolean, what: string, seconds = 60): Promise<void> {
-	for (let i = 0; i < seconds * 20 && !check(); i++) await sleep(50);
-	assert.ok(check(), `timed out waiting for ${what}`);
 }

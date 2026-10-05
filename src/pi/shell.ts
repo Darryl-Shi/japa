@@ -1,11 +1,11 @@
-// The agent's own computer: Pi's bash/read/write/edit, acting on whichever backend is the workbench. Generic — it
-// knows nothing about the provider behind it.
+// The agent's computer, which is the machine it runs on: Pi's bash/read/write/edit, and its screen.
 import { defineExtension, type Extension, section } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { computerExtension } from "./computer.ts";
-import type { Host, JapaExtension } from "./extension.ts";
+import type { JapaExtension } from "./extension.ts";
 
-export function shellExtension(): Extension {
+/** `own`: where its own code and data are on this machine, which it changes only through install_extension. */
+export function shellExtension(own: readonly string[]): Extension {
 	return defineExtension({
 		name: "jarvis.shell",
 		sections: [
@@ -14,27 +14,27 @@ export function shellExtension(): Extension {
 				(input) =>
 					input.env === undefined
 						? undefined
-						: `You have your own Linux computer (no access to the user's accounts or secrets), separate from where you run: nothing you write there changes you. bash, read, write and edit act on it directly. Working directory: ${input.env?.cwd ?? "~"}. Use it yourself only for a quick command or two; real work on it is a job.`,
+						: `You have your own Linux computer: the one you run on. bash, read, write and edit act on it directly. Working directory: ${input.env.cwd}. Your own code and data are on it too (${own.join(", ")}): leave them alone; you change yourself only with install_extension. Use it yourself only for a quick command or two; real work on it is a job.`,
 			),
 		],
 		tools: [createBashTool(), createReadTool(), createWriteTool(), createEditTool()],
 	});
 }
 
-/** The workbench as two extensions: its shell and files, and its screen. Both say nothing while there's no workbench. */
-export function workbenchExtensions(host: Pick<Host, "workbench">, options: { screen: boolean }): JapaExtension[] {
-	const shell = shellExtension();
-	const screen = computerExtension({ backend: () => host.workbench() });
+/** The computer as two extensions: its shell and files, and its screen (on by default when it has a display). */
+export function computerExtensions(options: { own: readonly string[]; display: string; hasDisplay: boolean }): JapaExtension[] {
+	const shell = shellExtension(options.own);
+	const screen = computerExtension({ display: options.display });
 	return [
 		{
 			name: "computer",
 			title: "Computer",
-			about: "Shell and files on its own machine, which holds none of your secrets. It starts when needed and sleeps when idle.",
-			// They only ever touch the workbench's own files: its sandbox, nothing of the user's.
+			about: "Shell and files on the machine it runs on.",
+			// They only touch files on its own computer.
 			safeTools: ["read", "write", "edit"],
 			chief: [shell],
 			jobs: [shell],
 		},
-		{ name: "screen", title: "Screen", about: "Seeing and using the machine's desktop.", enabledByDefault: options.screen, chief: [screen], jobs: [screen] },
+		{ name: "screen", title: "Screen", about: "Seeing and using the machine's desktop.", enabledByDefault: options.hasDisplay, chief: [screen], jobs: [screen] },
 	];
 }

@@ -4,18 +4,19 @@
 #   curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | bash
 #
 # It clones (or updates) the repo, brings its own Node 24 if the machine has none, asks for the keys on first install,
-# and runs the agent as a systemd service that restarts on failure and on boot. Run it again to update: it pulls the
-# latest code, reinstalls dependencies, keeps your settings, keys and data (moving any from older layouts), and
-# restarts the service.
+# and runs the agent as a systemd service that restarts on failure and on boot. The machine it's installed on is the
+# agent's computer: its shell, files and screen are this machine's, as the user it's installed as. Run it again to
+# update: it pulls the latest code, reinstalls dependencies, keeps your settings, keys and data (moving any from older
+# layouts), and restarts the service.
 #
-# This sets up the defaults: Telegram as the channel, one pi-ai model provider, optionally boat.dev for the agent's
-# own computer and Parallel for web search. Everything else (other providers through /login, other channels and
-# machines as extensions) is done from chat. Every question can be answered ahead of time through the environment:
+# This sets up the defaults: Telegram as the channel, one pi-ai model provider, and optionally Parallel for web search.
+# Everything else (other providers through /login, other channels as extensions) is done from chat. Every question can
+# be answered ahead of time through the environment:
 #   TELEGRAM_BOT_TOKEN, JAPA_TELEGRAM_ID   the bot, and your own Telegram user id (the allowlist)
 #   JAPA_PROVIDER, JAPA_MODEL_KEY          a pi-ai provider and its API key
 #   JAPA_MODEL, JAPA_FAST_MODEL            the main model and the fast one (reviews, summaries)
 #   JAPA_NAME, JAPA_TIMEZONE               who the agent works for, and their zone
-#   BOAT_API_KEY, PARALLEL_API_KEY         the agent's own computer (boat.dev) and web search (optional)
+#   PARALLEL_API_KEY                       web search (optional)
 # and where it goes: JAPA_DIR (the code, default ~/japa), JAPA_DATA (everything it keeps, default $JAPA_DIR/data),
 # JAPA_REPO, JAPA_BRANCH, JAPA_SERVICE (auto | system | user | none), JAPA_CONFIGURE=1 to ask everything again.
 set -euo pipefail
@@ -191,23 +192,19 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 	ask JAPA_TIMEZONE "Your time zone" "$("$NODE" -p 'Intl.DateTimeFormat().resolvedOptions().timeZone')"
 
 	say "Optional extras (Enter to skip; all of them can be set later)"
-	note "boat.dev gives the agent its own computer for shell, files and coding agents. Without it, it has none:"
-	note "agent code never runs on this machine."
-	ask BOAT_API_KEY "boat.dev API key" "" secret
 	note "Parallel powers web search (also settable later in /settings → Web)."
 	ask PARALLEL_API_KEY "Parallel API key" "" secret
 
 	umask 077
 	{
 		if [ -n "$TELEGRAM_BOT_TOKEN" ]; then echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"; fi
-		if [ -n "$BOAT_API_KEY" ]; then echo "BOAT_API_KEY=$BOAT_API_KEY"; fi
 		if [ -n "$PARALLEL_API_KEY" ]; then echo "PARALLEL_API_KEY=$PARALLEL_API_KEY"; fi
 	} >"$DATA/.env"
 	umask 022
 	chmod 600 "$DATA/.env"
 
 	JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL="$JAPA_MODEL" JAPA_FAST_MODEL="$JAPA_FAST_MODEL" JAPA_NAME="$JAPA_NAME" \
-		JAPA_TIMEZONE="$JAPA_TIMEZONE" JAPA_TELEGRAM_ID="$JAPA_TELEGRAM_ID" BOAT="${BOAT_API_KEY:+1}" "$NODE" --input-type=module -e '
+		JAPA_TIMEZONE="$JAPA_TIMEZONE" JAPA_TELEGRAM_ID="$JAPA_TELEGRAM_ID" "$NODE" --input-type=module -e '
 		import { existsSync, readFileSync, writeFileSync } from "node:fs";
 		import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 		const env = process.env;
@@ -224,8 +221,6 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 		if (env.JAPA_TIMEZONE) settings.timezone = env.JAPA_TIMEZONE;
 		settings.allowlist ??= {};
 		if (/^\d+$/.test(env.JAPA_TELEGRAM_ID ?? "")) settings.allowlist.telegram = [Number(env.JAPA_TELEGRAM_ID)];
-		settings.machines ??= {};
-		if (env.BOAT) settings.machines.workbench ??= { provider: "boat", type: "small", screen: true, idleSeconds: 7200 };
 		writeFileSync(file, JSON.stringify(settings, null, "\t") + "\n");
 	'
 fi

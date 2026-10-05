@@ -5,20 +5,18 @@ japa's runtime keeps three things nobody else holds: the state of every conversa
 ## Who gets in
 
 - Every channel's messages go through the same gate, its platform's Inbox, which refuses anyone not on the allowlist.
-- The allowlist is edited only in `settings.json`. No tool can change it, so neither a message nor the agent itself can widen it.
+- The allowlist is edited only in `settings.json`. No tool of japa's changes it, so a message can't widen it. The agent's shell is on the same machine, so against the agent itself this holds through the review of its actions, not the machine.
 
 ## Keys
 
 - Model credentials live in `auth.json`, set with `/login`. Extension keys live in `secrets.json`, set with a secret field in `/settings`. Neither is in code or `settings.json`.
-- The workbench never holds a key. A key a coding agent needs is passed to that one command's environment.
-- An extension installed from chat never sees a key. It gets a placeholder, and japa fills in the real value when a request to the web carries one: only the extension's own keys, masked again in the answer.
+- The agent's commands don't get japa's keys in their environment. A key a command needs is passed to that one command.
 
 ## Code japa didn't ship
 
-- Shell, files and coding agents run on the workbench. Without a workbench, the agent has no shell at all.
-- Extensions installed from chat run on the extensions machine, each in its own process. Before you're asked, the code is loaded there to see what it declares. The install card says what it would get, and only your tap installs it, whatever the approvals mode.
-- Once installed, an extension can rewrite only its own tools' calls; for any other tool it can only block. It vouches only for its own tools as safe, and its cards' buttons are its own.
-- Built-in extensions run inside japa. They ship with japa and change only through its code.
+- Shell, files and the screen are the machine japa runs on, in the agent's home, as the user japa runs as. So install japa where you're happy for the agent to have a shell: a machine of its own, not one you use for anything else.
+- Extensions run inside japa, the built-in ones and those installed from chat alike, with the Host and its keys. An installed one has nothing a built-in lacks, and nothing taken away.
+- So your tap is the line. Before you're asked, the code is checked without running it: where it starts, that its imports resolve, and its own npm packages installed without running their scripts. The install card says where it came from, its size, the web addresses in it and its packages, and only your tap installs it, whatever the approvals mode.
 
 ## Actions
 
