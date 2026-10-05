@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Type } from "@earendil-works/pi-ai";
+import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Approvals } from "../src/core/approvals.ts";
@@ -177,6 +177,10 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 		ui.commands(),
 		[
 			{ name: "settings", description: "Models, extensions and their options" },
+			{ name: "model", description: "The models it and its jobs use" },
+			{ name: "thinking", description: "How hard each model thinks" },
+			{ name: "login", description: "Log in to a model provider" },
+			{ name: "logout", description: "Log out of a model provider" },
 			{ name: "jobs", description: "What the team is working on" },
 		],
 		"advertised, with what they do",
@@ -208,11 +212,12 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	// A model is picked from the models pi can use, not typed.
 	await ui.run("settings", { channel: "test", chatId: "7", messageId: "1" });
 	await press("General");
-	await press("Chief of staff model: faux/faux-1");
+	await press("Models ▸");
+	await press("Chief of staff: faux/faux-1");
 	assert.deepEqual(labels(), ["✅ faux-1 👁", "faux-fast 👁", "⌨ Type an id", "« Back"], "one provider: straight to its models, the current one ticked");
 	await press("faux-fast 👁");
 	assert.deepEqual(h.settings.get().model, { provider: "faux", modelId: "faux-fast" });
-	assert.ok(labels().includes("Chief of staff model: faux/faux-fast"), "back on the page, showing the choice");
+	assert.ok(labels().includes("Chief of staff: faux/faux-fast"), "back on the page, showing the choice");
 	assert.equal((await h.thread.root.agent(context)).model?.modelId, "faux-fast", "and the chief of staff switched to it");
 	await h.done();
 });
@@ -385,6 +390,96 @@ test("modalities: a photo is shown to a model that takes images and kept on its 
 	await h.done();
 });
 
+test("login: /login runs a provider's own login from chat; then its models are offered; /logout removes the credential", async () => {
+	const big = { id: "dyn-big", name: "Dyn Big", api: "openai-completions" as const, provider: "dyn", baseUrl: "http://dyn.invalid", input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 };
+	const unused = () => {
+		throw new Error("not in this test");
+	};
+	const h = await agent({
+		extensions: () => [],
+		providers: [
+			createProvider({
+				id: "dyn",
+				name: "Dyn",
+				auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
+				models: [],
+				fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
+				api: { stream: unused, streamSimple: unused },
+			}),
+		],
+		script: () => say("ok"),
+	});
+	const ui = h.host.ui;
+	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
+	const press = (label: string) => {
+		const last = h.cards.at(-1)!;
+		const button = last.card.buttons!.flat().find((candidate) => candidate.text === label);
+		assert.ok(button !== undefined, `no button "${label}" in ${labels().join(" | ")}`);
+		return ui.press(button.data, last.ref);
+	};
+	const at = { channel: "test", chatId: "7", messageId: "1" };
+
+	await ui.run("login", at);
+	assert.ok(labels().includes("Dyn"), "offered, without a tick");
+	const pressed = press("Dyn");
+	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the provider's own prompt for its key");
+	assert.equal(h.cards.at(-1)!.card.ask!.secret, true, "asked for as a secret");
+	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: "7", messageId: "99" });
+	await pressed;
+	assert.equal(h.cards.at(-1)!.card.text, "Logged in to Dyn.");
+
+	await ui.run("settings", at);
+	await ui.run("model", at);
+	await press("Chief of staff: faux/faux-1");
+	await press("dyn (1)");
+	assert.ok(labels().includes("Dyn Big"), "its models are in the picker");
+
+	await ui.run("logout", at);
+	assert.deepEqual(labels(), ["✕ Dyn"], "only the providers with a credential");
+	await press("✕ Dyn");
+	await press("Yes, log out");
+	assert.equal(h.cards.at(-1)!.card.text, "Logged out of Dyn.");
+	assert.equal(await h.host.models.checkAuth("dyn"), undefined, "its credential is gone");
+	await h.done();
+});
+
+test("thinking: each model slot has its own level, from the ones its model supports; the chief of staff and its jobs think at theirs", async () => {
+	const h = await agent({
+		extensions: () => [],
+		script: (turn) => {
+			if (turn.job === undefined && turn.text.includes("start it")) return call("delegate", { title: "Dig", brief: "Dig in." });
+			if (turn.job !== undefined && turn.text.includes("Dig in")) return call("report", { kind: "done", text: "Dug." });
+			return say("ok");
+		},
+	});
+	const ui = h.host.ui;
+	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
+	const press = (label: string) => {
+		const last = h.cards.at(-1)!;
+		const button = last.card.buttons!.flat().find((candidate) => candidate.text === label);
+		assert.ok(button !== undefined, `no button "${label}" in ${labels().join(" | ")}`);
+		return ui.press(button.data, last.ref);
+	};
+	await ui.run("thinking", { channel: "test", chatId: "7", messageId: "1" });
+	assert.deepEqual(labels(), ["Chief of staff: off", "Jobs (blank: the chief of staff's): off", "Fast (approvals, summaries): off", "« Back"]);
+	await press("Chief of staff: off");
+	assert.deepEqual(labels(), ["✅ off", "minimal", "low", "medium", "high", "« Back"], "the levels its model supports");
+	await press("high");
+	await press("Jobs (blank: the chief of staff's): off");
+	await press("low");
+	await press("Fast (approvals, summaries): off");
+	assert.deepEqual(labels(), ["✅ off", "« Back"], "a model that doesn't reason has only off");
+	assert.deepEqual(h.settings.get().model, { provider: "faux", modelId: "faux-1", thinking: "high" });
+	assert.equal((await h.thread.root.agent(context)).thinkingLevel, "high");
+
+	await h.ask("1", "[Mon 10:00] start it");
+	await h.until(() => h.turns.some((turn) => turn.job !== undefined), "the job's turn");
+	await h.thread.settled();
+	assert.ok(h.turns.filter((turn) => turn.job === undefined && turn.text.includes("start it")).every((turn) => turn.reasoning === "high"), "the chief of staff thinks at its level");
+	assert.ok(h.turns.filter((turn) => turn.job !== undefined).every((turn) => turn.reasoning === "low"), "its job at the jobs' level");
+	await h.done();
+});
+
 test("triggers: a time trigger wakes the chief of staff on schedule (durably), an event trigger when emitted; off means no more", async () => {
 	const h = await agent({
 		extensions: () => [
@@ -428,7 +523,7 @@ test("prompt: the chief of staff gets its role and how it extends itself, naming
 });
 
 /** An extension as a job would write it on its computer: one file, values imported only from packages. */
-const greetSource = (version: string) => `import { Type } from "@earendil-works/pi-ai";
+const greetSource = (version: string) => `import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Host, JapaExtension } from "../src/pi/extension.ts";
 
@@ -496,7 +591,7 @@ test("installer: a directory with its own npm package and files of its own insta
 	await writeFile(join(code, "words.ts"), 'export const word = "hello";\n');
 	await writeFile(
 		join(code, "index.ts"),
-		`import { Type } from "@earendil-works/pi-ai";
+		`import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { shout } from "shout";
 import { word } from "./words.ts";

@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | b
 
 It asks for:
 - a Telegram bot token, from [@BotFather](https://t.me/BotFather);
-- optionally an AI model provider (Anthropic, OpenAI, Google, OpenRouter, Z.ai and others), with an API key or a subscription login;
+- optionally an AI model provider (Anthropic, OpenAI, Google, OpenRouter, Z.ai and others), with an API key or a subscription login; or later, with `/login`;
 - your name and time zone;
 - optionally a [Parallel](https://parallel.ai) key, for web search.
 
@@ -36,6 +36,8 @@ Just message it. A few commands help:
 | Command | What it does |
 |---|---|
 | `/settings` | Choose models, set your name and time zone, and switch abilities on or off, all with buttons |
+| `/model`, `/thinking` | Which model the chief of staff and its jobs use, and how hard each one thinks |
+| `/login`, `/logout` | Connect an AI model provider, or disconnect one |
 | `/jobs` | See what the team is working on, and close or cancel a job |
 | `/new` | Start a fresh topic |
 

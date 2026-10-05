@@ -9,6 +9,8 @@ import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
 import { type ApprovalRequest, type Approvals, canonical, type Decision } from "../core/approvals.ts";
 import type { Card } from "../core/ui.ts";
 import type { Host, JapaExtension } from "./extension.ts";
+import type { ModelChoice } from "../settings.ts";
+import { reasoningOf } from "./models.ts";
 import { parseJson } from "./state.ts";
 
 const DEFAULTS = { mode: "smart", permissions: [] as string[] };
@@ -32,7 +34,6 @@ const REVIEW_PROMPT = [
 
 type Verdict = { ask: boolean; summary: string; rule: string };
 
-type ModelChoice = { provider: string; modelId: string };
 
 /**
  * Ask the reviewing models in turn (each up to twice, since a provider can fail now and then) until one gives a
@@ -63,7 +64,7 @@ export async function review(
 		}
 		for (let attempt = 1; attempt <= 2; attempt++) {
 			try {
-				const answer = await models.completeSimple(model, { systemPrompt: REVIEW_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
+				const answer = await models.completeSimple(model, { systemPrompt: REVIEW_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] }, reasoningOf(models, choice));
 				const text = answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 				const parsed = parseJson(text);
 				if (parsed !== undefined && typeof parsed.ask === "boolean") {

@@ -7,12 +7,13 @@
 // itself when the job reports done, or by the chief of staff or the user; more for a finished job (message_job) opens
 // it again. A job agent that ends its run without reporting has its last words reported as done for it.
 import type { Context } from "@earendil-works/chord";
-import { type AssistantMessage, type Message, Type } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Message, type ModelThinkingLevel, Type } from "@earendil-works/pi-ai";
 import { type Conversation, type ConversationId, configure, defineDoc, defineExtension, defineTask, defineTool, type Extension, section, type Tx } from "@earendil-works/pi-durable";
 import type { OpenItems } from "../core/state.ts";
 import type { CardRef } from "../core/ui.ts";
 import type { ModelChoice } from "../settings.ts";
 import { address } from "./inputs.ts";
+import { modelRef } from "./models.ts";
 
 type Job = {
 	id: string;
@@ -194,6 +195,8 @@ export function delegationExtensions(options: {
 	withhold: () => readonly Extension[];
 	/** A job paused on something only the user can give (an approval) isn't reported for. */
 	waitingOnUser?: (conversationId: ConversationId) => boolean;
+	/** The thinking level a job's model slot runs at (default: off). */
+	thinking?: (choice: ModelChoice) => ModelThinkingLevel;
 }): Delegation {
 	const { openItems } = options;
 	/** Finished: cancelled, or its open item (a subagent's: its job's) closed, which is the one record of that. */
@@ -227,7 +230,7 @@ export function delegationExtensions(options: {
 	const startJob = async (tx: Tx, job: Omit<Job, "conversationId" | "status">, brief: string, withhold: readonly Extension[]) => {
 		const anchor = await tx.createTask(Anchor, null, background);
 		const conversation = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-		await configure(tx, conversation.id, { model: job.model, extensions: { remove: [...withhold] }, instructions: `Your job (${job.id}): "${job.title}".` });
+		await configure(tx, conversation.id, { model: modelRef(job.model), thinkingLevel: options.thinking?.(job.model) ?? "off", extensions: { remove: [...withhold] }, instructions: `Your job (${job.id}): "${job.title}".` });
 		(await tx.doc(Jobs)).jobs[job.id] = { ...job, conversationId: conversation.id, status: "working", startedAt: Date.now() };
 		await tx.createTask(Run, { jobId: job.id, message: brief, startedAt: Date.now() }, background);
 	};

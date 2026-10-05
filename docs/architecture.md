@@ -11,8 +11,8 @@ japa has a **core**, which is what japa is and can't be turned off. Everything e
                   │                         ▼                      │                         │
                   │                      Team: one job agent per job (+ subagents)           │
                   │                                                                          │
-                  │ Open items · Working set · Triggers · Installer · Models (auth.json)     │
- you ◄─ Channel ◄─│ UI cards ◄─ /settings · /jobs · approvals · install cards                │
+                  │ Open items · Working set · Triggers · Installer · Models (/login)        │
+ you ◄─ Channel ◄─│ UI cards ◄─ /settings · /jobs · pi's /login /model … · approvals         │
                   └───────────────────▲─────────────────────────────────────▲────────────────┘
                                       │ Host: settings · secrets · models   │
                                       │ ui · wake · holds · emit · history  │
@@ -33,7 +33,7 @@ japa has a **core**, which is what japa is and can't be turned off. Everything e
 - **Open items** are the record of what's been promised, asked or is in progress. With a short working set, they are what each slice starts from.
 - **The team** (`src/pi/delegation.ts`) is one job agent per job, with subagents if a job needs them.
 - **Triggers** wake the chief on a schedule or on an event.
-- **The UI** (`src/core/ui.ts`) shows channel-neutral cards with buttons, and runs `/settings` and `/jobs`.
+- **The UI** (`src/core/ui.ts`) shows channel-neutral cards with buttons, and runs japa's commands (`/settings`, `/jobs`) and pi's (`/login`, `/logout`, `/model`, `/thinking`).
 - **The installer** (`src/pi/installer.ts`) adds extensions from chat.
 
 ## Adapters
@@ -44,12 +44,12 @@ Each thing japa is built from has one typed adapter in the core, and every imple
 |---|---|---|---|
 | **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: a Pi extension (`tools`, `sections`, `hooks`, `wraps`, `tasks`), plus `for`, `settings`, `safeTools`, `onExchangeEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen |
 | **Channel** | `Channel` (`src/pi/extension.ts`): `platform`, `open({ inbox, ui })`, `show(card)`, `close()`. Messages go in through the `Inbox`, the allowlist gate (`src/channels/inbox.ts`); presses, replies and commands go to the `UI` | `channel: { platform, open, show, close }` | Telegram |
-| **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in pi's `auth.json` | (none: pi-ai's own) | pi-ai's providers |
+| **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in pi's `auth.json`, through `/login` | (none: pi-ai's own) | pi-ai's providers |
 
 While an extension is on, the core opens its channel and shows cards on it. When the extension is turned off, the core closes the channel.
 
 What's built on each adapter is generic and never names an implementation:
-- **on `Models`:** the model picker in `/settings`, and every agent's model;
+- **on `Models`:** `/login` and `/logout`, the model picker (`/model`), thinking levels (`/thinking`), and every agent's model;
 - **on the `UI`:** `/settings`, approval and install cards, and the commands a channel advertises.
 
 ## One message, end to end

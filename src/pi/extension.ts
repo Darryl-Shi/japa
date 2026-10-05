@@ -65,7 +65,7 @@ export type Host = {
 	secrets: SecretsFile;
 	/** Where an extension keeps its own files (the data directory; name them after the extension). */
 	dataDir: string;
-	/** The models pi can use (the providers with a credential in auth.json). */
+	/** The models pi can use (the providers logged in to with /login). */
 	models: Models;
 	ui: UI;
 	/**

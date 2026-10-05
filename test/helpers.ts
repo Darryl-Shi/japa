@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, JsonObject, Context as PiContext } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, Context as PiContext, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Inbox } from "../src/channels/inbox.ts";
@@ -23,8 +23,11 @@ export const call = (name: string, args: JsonObject) => fauxAssistantMessage(fau
 export const say = (text: string) => fauxAssistantMessage(text);
 export const target = (messageId: number) => ({ channel: "test", chatId: "1", messageId: String(messageId) });
 
-/** One model request: who it's from (the chief of staff, a job, or a background call) and the newest message it answers. */
-export type Turn = { text: string; job?: string; request: string; signal?: AbortSignal };
+/**
+ * One model request: who it's from (the chief of staff, a job, or a background call), the newest message it answers,
+ * and how hard it was asked to think.
+ */
+export type Turn = { text: string; job?: string; request: string; signal?: AbortSignal; reasoning?: string };
 
 function lastText(request: PiContext): string {
 	const last = [...request.messages].reverse().find((message) => message.role === "user" || message.role === "toolResult");
@@ -40,16 +43,19 @@ export async function agent(options: {
 	settings?: Parameters<SettingsFile["update"]>[0];
 	/** Reuse one (a restart); default: a new one. */
 	dataDir?: string;
+	/** Model providers pi has besides the faux one, as pi-ai's own are in a real install. */
+	providers?: readonly Provider[];
 }) {
 	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "japa-")));
-	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-fast" }] });
+	const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }, { id: "faux-fast" }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
+	for (const provider of options.providers ?? []) models.setProvider(provider);
 	const turns: Turn[] = [];
 	const respond: FauxResponseFactory = async (request, requestOptions) => {
 		const sent = JSON.stringify(request);
 		if (sent.includes("You keep the working set")) return say(JSON.stringify({ working_set: "" }));
-		const turn: Turn = { text: lastText(request), request: sent, ...(requestOptions?.signal === undefined ? {} : { signal: requestOptions.signal }), ...(/Your job \(([\w.]+)\)/.exec(sent) === null ? {} : { job: /Your job \(([\w.]+)\)/.exec(sent)![1]! }) };
+		const turn: Turn = { text: lastText(request), request: sent, ...(requestOptions?.signal === undefined ? {} : { signal: requestOptions.signal }), ...(requestOptions?.reasoning === undefined ? {} : { reasoning: requestOptions.reasoning }), ...(/Your job \(([\w.]+)\)/.exec(sent) === null ? {} : { job: /Your job \(([\w.]+)\)/.exec(sent)![1]! }) };
 		turns.push(turn);
 		return options.script(turn);
 	};

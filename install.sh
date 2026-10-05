@@ -9,9 +9,9 @@
 # update: it pulls the latest code, reinstalls dependencies, keeps your settings, keys and data (moving any from older
 # layouts), and restarts the service.
 #
-# This sets up the defaults: Telegram as the channel, optionally one pi-ai model provider (or later, with pi's own login),
+# This sets up the defaults: Telegram as the channel, optionally one pi-ai model provider (or later, with /login),
 # and optionally Parallel for web search.
-# Everything else (other channels and abilities as extensions) is done from chat; other model providers are pi's own login. Every question can
+# Everything else (other providers through /login, other channels as extensions) is done from chat. Every question can
 # be answered ahead of time through the environment:
 #   TELEGRAM_BOT_TOKEN, JAPA_TELEGRAM_ID   the bot, and your own Telegram user id (the allowlist)
 #   JAPA_PROVIDER, JAPA_MODEL_KEY          a pi-ai provider and its API key
@@ -159,7 +159,7 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 		console.log(getBuiltinProviders().join(" "));
 	')"
 	note "Any pi-ai provider: $providers"
-	note "Empty: none yet. Later: cd $DATA && $DIR/node_modules/.bin/pi-ai login <provider>, then pick models in /settings."
+	note "Empty: none yet; log in with /login in chat and pick models with /model. (More, and other logins, there too.)"
 	ask JAPA_PROVIDER "Provider"
 	if [ -n "$JAPA_PROVIDER" ]; then
 		models="$("$NODE" --input-type=module -e '
@@ -349,7 +349,7 @@ fi
 
 say "Installed in $DIR"
 note "Settings: /settings in chat, or $DATA/settings.json (live, no restart)"
-note "Model logins: cd $DATA && $DIR/node_modules/.bin/pi-ai login <provider>"
+note "Model logins: /login in chat; models and thinking: /model, /thinking"
 note "Log: $LOG"
 note "Service: $manage"
 note "Update: run the same install command again"

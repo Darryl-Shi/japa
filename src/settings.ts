@@ -3,12 +3,13 @@
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type ModelChoice = { provider: string; modelId: string };
+/** A model slot: the model, and how hard it thinks (one of pi's thinking levels, as the model supports; default off). */
+export type ModelChoice = { provider: string; modelId: string; thinking?: string };
 
 export type Settings = {
 	/**
 	 * The chief of staff: judgment and synthesis, kept fast by small contexts rather than a small model. No default:
-	 * it's one of the models of a provider with a key in auth.json, chosen in /settings.
+	 * it's one of the models the user has logged in to (/login), chosen with /model.
 	 */
 	model?: ModelChoice;
 	/** A job's model when the chief of staff doesn't pick one; default: the chief of staff's. */

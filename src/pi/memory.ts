@@ -8,6 +8,7 @@ import type { History, HistoryLine, HistoryHit } from "../core/history.ts";
 import { type MemoryEdit, type MemoryFile, wordCount } from "../core/memory.ts";
 import type { ModelChoice } from "../settings.ts";
 import type { ExchangeEnd, Host, JapaExtension } from "./extension.ts";
+import { reasoningOf } from "./models.ts";
 import { parseJson } from "./state.ts";
 
 const GUIDE = [
@@ -83,7 +84,7 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice | unde
 		`<open_items>\n${input.openItems ?? "(none)"}\n</open_items>`,
 		`<conversation>\n${input.conversation}\n</conversation>`,
 	].join("\n");
-	const answer = await models.completeSimple(model, { systemPrompt: reflectPrompt(wordCount(input.memory), input.words), messages: [{ role: "user", content, timestamp: Date.now() }] });
+	const answer = await models.completeSimple(model, { systemPrompt: reflectPrompt(wordCount(input.memory), input.words), messages: [{ role: "user", content, timestamp: Date.now() }] }, reasoningOf(models, choice));
 	if (answer.stopReason === "error") return [];
 	const edits = parseJson(answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""))?.memory_edits;
 	if (!Array.isArray(edits)) return [];

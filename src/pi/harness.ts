@@ -26,6 +26,7 @@ import type { CardRef } from "../core/ui.ts";
 import { REPORT_PREFIX } from "./delegation.ts";
 import { Address, claim, Outbox, type OutboxMessage } from "./inputs.ts";
 import type { ExchangeEnd } from "./extension.ts";
+import { modelRef, thinkingOf } from "./models.ts";
 import { summarizeSlice, transcriptText } from "./state.ts";
 import { TRIGGER_PREFIX } from "./triggers.ts";
 
@@ -180,7 +181,7 @@ export class MainThread {
 			context,
 		);
 		const model = options.settings().model;
-		const root = await harness.root(context, { agent: model === undefined ? {} : { model } });
+		const root = await harness.root(context, { agent: model === undefined ? {} : { model: modelRef(model), thinkingLevel: thinkingOf(options.models, model) } });
 		const selected = options.selected ?? (() => options.installed ?? []);
 		const thread = new MainThread({
 			harness,
@@ -202,8 +203,11 @@ export class MainThread {
 	async applySettings(settings: Settings, context: Context): Promise<void> {
 		const agent = await this.root.agent(context);
 		const current = agent.model;
-		if (settings.model !== undefined && (current?.provider !== settings.model.provider || current?.modelId !== settings.model.modelId)) {
-			await this.root.configure({ model: settings.model }, context);
+		if (settings.model !== undefined) {
+			const thinkingLevel = thinkingOf(this.models, settings.model);
+			if (current?.provider !== settings.model.provider || current?.modelId !== settings.model.modelId || agent.thinkingLevel !== thinkingLevel) {
+				await this.root.configure({ model: modelRef(settings.model), thinkingLevel }, context);
+			}
 		}
 		const wanted = this.selected();
 		const names = (list: readonly Extension[]) => list.map((extension) => extension.name).join(",");
@@ -225,7 +229,7 @@ export class MainThread {
 	}
 
 	async answer(requestId: string, content: Content, context: Context, arrival: Arrival = {}): Promise<Answer> {
-		if (this.settings().model === undefined) return { error: "no model chosen yet: pick one in /settings (from the providers with a key in auth.json)" };
+		if (this.settings().model === undefined) return { error: "no model chosen yet: log in to a provider with /login, then pick a model with /model" };
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
 		const boundary = existing === undefined ? await this.boundary(typeof content === "string" ? content : textOf({ role: "user", content, timestamp: 0 }), arrival, context) : undefined;
 		if (boundary !== undefined) await this.startSlice(boundary, arrival, context);

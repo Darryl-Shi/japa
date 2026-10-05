@@ -2,6 +2,8 @@
 
 ## From chat
 
+- `/login` logs in to a model provider (an API key, or the provider's own account login), and `/logout` removes a credential. Both are pi's own commands.
+- `/model` picks the model for each slot: the chief of staff, jobs, and each named job model; `/thinking` sets how hard each one thinks, from the levels its model supports.
 - `/settings` is a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to its question, and that message is then deleted. Changes apply immediately.
 
 ## Where data lives
@@ -11,7 +13,7 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 | File | Holds |
 |---|---|
 | `settings.json` | settings, re-read when the file changes. The **allowlist** is edited only here: per platform, the user ids that may talk to the agent. An empty list lets no one in. |
-| `auth.json` | model credentials (API keys or subscription logins), pi's own format: written by the installer, or by pi's login (`node_modules/.bin/pi-ai login <provider>`, run in this directory) |
+| `auth.json` | model credentials (API keys or subscription logins), pi's own format: set with `/login`, or by the installer |
 | `secrets.json`, `.env` | extension keys, as `<extension>.<key>` (Telegram's bot token is one). An extension's secret field can name an environment variable to fall back on; the defaults use `TELEGRAM_BOT_TOKEN` and `PARALLEL_API_KEY`. Variables named this way are taken out of the environment the agent's commands run in |
 | `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
 | `memory/` | its memory of you, a git repo |
@@ -24,7 +26,7 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 
 | Setting | What it is |
 |---|---|
-| `model` | the chief of staff's model, as `{ provider, modelId }`. There's no default: you pick from the providers you've logged in to. |
+| `model` | the chief of staff's model, as `{ provider, modelId, thinking? }`. There's no default: you pick from the providers you've logged in to. `thinking` is one of pi's levels (`off`, `minimal`, `low`, `medium`, `high`, …, as the model supports); every model slot has one. |
 | `delegateModel` | a job's model when the chief doesn't pick one. The default is the chief's model. |
 | `jobModels` | named models the chief can assign to a job, such as `fast` or `strong` |
 | `user`, `timezone` | your name, and the time zone stamped on messages |

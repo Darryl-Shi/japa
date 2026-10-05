@@ -6,6 +6,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
 import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { ModelChoice } from "../settings.ts";
+import { reasoningOf } from "./models.ts";
 
 const GUIDE = [
 	"<open_items> lists what is still open: tasks in flight, things waiting on the user, promises you made. When you",
@@ -85,7 +86,7 @@ export async function summarizeSlice(
 		`<previous_working_set>\n${input.workingSet ?? "(none)"}\n</previous_working_set>`,
 		`<conversation>\n${input.conversation}\n</conversation>`,
 	].join("\n");
-	const answer = await models.completeSimple(model, { systemPrompt: SUMMARY_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
+	const answer = await models.completeSimple(model, { systemPrompt: SUMMARY_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] }, reasoningOf(models, choice));
 	if (answer.stopReason === "error") return undefined;
 	const parsed = parseJson(answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""));
 	const text = parsed?.working_set;

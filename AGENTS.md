@@ -10,9 +10,8 @@ path. (The user's words; what follows is what they mean here.)
 ## One core, one unit, one adapter per thing japa is built from
 
 The core is what japa *is*, and can't be turned off: the main thread (the chief of staff), open items, the team of job
-agents, triggers, the UI and its commands (`/settings`, `/jobs`), and the installer. Everything else is an
-extension, and there is exactly one kind: `JapaExtension` (`src/pi/extension.ts`), made from the `Host` and hooked in
-only through it.
+agents, triggers, the UI and its commands, and the installer. Everything else is an extension, and there is exactly
+one kind: `JapaExtension` (`src/pi/extension.ts`), made from the `Host` and hooked in only through it.
 
 The things japa is built from each have one generic, typed adapter in the core, and every implementation goes through
 it, the built-in ones included:
@@ -21,7 +20,7 @@ it, the built-in ones included:
   japa's own flow needs (who gets it, its settings, its safe tools, its exchange end, its triggers, its lifecycle);
 - a **channel** is a `Channel` in an extension's `channel` (`src/pi/extension.ts`), opened with its platform's `Inbox`
   (the allowlist gate) and the `UI`;
-- a **model provider** is a pi-ai `Provider` on the core's `Models`, its credential in pi's `auth.json`.
+- a **model provider** is a pi-ai `Provider` on the core's `Models`, its credential in pi's `auth.json` (`/login`).
 
 The core opens a channel while its extension is on, and shows cards on it, and closes it when it's off.
 docs/architecture.md has the full table.
@@ -32,8 +31,8 @@ laptop, a server, a VM) is the installer's business, not the code's.
 
 The adapter is where the type is enforced, so a provider can't half-implement the contract, and nothing reaches around
 it: the Host has no inbox, so a channel's messages come in only through the one it was opened with. What's built on an
-adapter stays generic: shell, files and the screen only use the call's environment (`api.env`); the model picker only
-uses `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
+adapter stays generic: shell, files and the screen only use the call's environment (`api.env`); `/login` and the model
+picker only use `Models`; `/settings` and approvals only show cards on the `UI`. None of them names an implementation.
 
 Because built-ins use the same path, a default has no privilege an installed extension lacks: the user can replace any
 of them. For example, Telegram used to attach itself to the UI and fetch its own inbox; now it declares a `Channel` and
@@ -50,8 +49,14 @@ Behaviour that belongs to one provider or channel stays in that extension. The c
 mechanism every implementation shares. When the Sudocode provider's models didn't show in `/settings`, the wrong fix
 was a core page and refresh calls for that case. If a fix names one provider or channel, it doesn't belong in the core.
 
-Nor does japa wrap what pi already does. Model credentials are pi's: its `auth.json`, written by the installer or by
-pi's own login. A `/login` command was one such wrapper, a level of abstraction nothing else in japa has, so it's gone.
+## Commands: japa's own, and pi's
+
+The UI's commands are of two kinds, and nothing in between. japa's own are for its own flow: `/settings`, `/jobs`,
+`/new`. pi's are pi's commands, offered in chat when the user needs one and has no other way to reach it there (no
+terminal): `/login`, `/logout`, `/model`, `/thinking`. They keep pi's names and meaning, and are thin over pi's own API
+(`Models`, a conversation's model and thinking level). A pi command that only makes sense in a terminal (`/hotkeys`,
+`/quit`) or against japa's design (`/tree`, `/fork`, `/compact`: japa is one conversation, worked in slices) isn't
+offered. A new command is one or the other; a japa invention that wraps pi is neither.
 
 ## Nothing hardcoded, nothing assumed
 
@@ -76,7 +81,7 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
 
 ## Trust lines
 
-- Secrets never go in code or `settings.json`. Model credentials live in pi's `auth.json`. Extension keys
+- Secrets never go in code or `settings.json`. Model credentials live in pi's `auth.json`, through `/login`. Extension keys
   live in `secrets.json`, through a secret settings field.
 - Secrets never go in a command's environment. japa's own keys are taken out of the environment its commands run in;
   a key a command needs is passed to that one command.

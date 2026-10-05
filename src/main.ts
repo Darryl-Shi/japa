@@ -1,7 +1,7 @@
 // Start the agent: the core (src/japa.ts) plus the default extensions, on this machine, which is its computer: its
 // tools run here, from the home directory of the user it runs as. Everything it keeps is in one data directory
 // (JAPA_DATA, default ./data): settings.json (live, also edited through /settings; the allowlist only here), auth.json
-// (model credentials, written by the installer or pi-ai's own login), secrets.json (extension keys, set from /settings or the environment), and
+// (model credentials, set with /login), secrets.json (extension keys, set from /settings or the environment), and
 // memory/ (its memory of the user: yours to read and edit, a git repo when it is one).
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";

@@ -1,8 +1,10 @@
 // /settings as a menu of cards, independent of the channel that shows it. The first page has the general settings
 // and every extension with its switch; each extension's page is built from the fields it declares, so an extension
 // adds its own settings just by listing them. Values go to settings.json, secrets to data/secrets.json. The allowlist
-// is deliberately not here. Model fields pick from the models pi can actually use (providers with credentials), a
-// page at a time, rather than asking for an id.
+// is deliberately not here. The model slots (the chief of staff's, the jobs') have a page of their own, also opened by
+// pi's /model, and their thinking levels another, opened by pi's /thinking. Models are picked from the ones pi can
+// actually use (providers with credentials), a page at a time, rather than by typing an id; thinking levels from the
+// ones the model supports.
 import type { Button, CardRef, UI } from "../core/ui.ts";
 import type { SecretsFile } from "../credentials.ts";
 import type { ExtensionSet, Field } from "../pi/extension.ts";
@@ -15,9 +17,6 @@ export type AvailableModel = { provider: string; id: string; name?: string; visi
 export type Prompt = { page: string; field: number; label: string; secret: boolean };
 
 const GENERAL: readonly Field[] = [
-	{ key: "model", label: "Chief of staff model", kind: "model" },
-	{ key: "delegateModel", label: "Default job model (blank: the same)", kind: "model" },
-	{ key: "jobModels.fast", label: "Fast model (approvals, summaries)", kind: "model" },
 	{ key: "user.name", label: "Your name", kind: "text" },
 	{ key: "timezone", label: "Time zone", kind: "text" },
 	{ key: "context.idleMinutes", label: "New slice after idle (minutes)", kind: "number" },
@@ -39,6 +38,7 @@ export class SettingsMenu {
 	private readonly modelExists: (choice: ModelChoice) => boolean;
 	private readonly available: () => Promise<readonly AvailableModel[]>;
 	private readonly changed: () => Promise<void>;
+	private readonly thinkingLevels: (choice: ModelChoice) => readonly string[];
 
 	constructor(options: {
 		settings: SettingsFile;
@@ -49,7 +49,10 @@ export class SettingsMenu {
 		available?: () => Promise<readonly AvailableModel[]>;
 		/** After any change: apply it (extensions started or stopped, the model switched). */
 		changed?: () => Promise<void>;
+		/** The thinking levels a model supports. */
+		thinkingLevels?: (choice: ModelChoice) => readonly string[];
 	}) {
+		this.thinkingLevels = options.thinkingLevels ?? (() => ["off"]);
 		this.settings = options.settings;
 		this.secrets = options.secrets;
 		this.extensions = options.extensions;
@@ -61,6 +64,8 @@ export class SettingsMenu {
 	/** Show it through the UI: /settings opens it, its buttons and replies come back here. */
 	attach(ui: UI): void {
 		ui.command("settings", "Models, extensions and their options", async (at) => void (await ui.show({ ...this.main(), replyTo: at })));
+		ui.command("model", "The models it and its jobs use", async (at) => void (await ui.show({ ...this.page("models"), replyTo: at })));
+		ui.command("thinking", "How hard each model thinks", async (at) => void (await ui.show({ ...this.page("thinking"), replyTo: at })));
 		ui.handle("settings", {
 			press: async (payload, ref) => {
 				const next = await this.press(payload);
@@ -81,19 +86,39 @@ export class SettingsMenu {
 		});
 	}
 
+	/**
+	 * The model slots: the chief of staff's, the jobs' default, and each named job model (`fast` always, since reviews
+	 * and summaries use it).
+	 */
+	private slots(): Field[] {
+		const named = [...new Set(["fast", ...Object.keys(this.settings.get().jobModels)])];
+		return [
+			{ key: "model", label: "Chief of staff", kind: "model" },
+			{ key: "delegateModel", label: "Jobs (blank: the chief of staff's)", kind: "model" },
+			...named.map((name): Field => ({ key: `jobModels.${name}`, label: name === "fast" ? "Fast (approvals, summaries)" : `Jobs asking for "${name}"`, kind: "model" })),
+		];
+	}
+
+	/** Pages of the core's own settings (the rest are extensions'). */
+	private core(page: string): boolean {
+		return page === "general" || page === "models" || page === "thinking";
+	}
+
 	private fields(page: string): readonly Field[] {
-		return page === "general" ? GENERAL : (this.extensions.get(page)?.settings ?? []);
+		if (page === "general") return GENERAL;
+		if (page === "models" || page === "thinking") return this.slots();
+		return this.extensions.get(page)?.settings ?? [];
 	}
 
 	private get(page: string, field: Field): unknown {
 		if (field.kind === "secret") return this.secrets.get(`${page}.${field.key}`, field.env) === undefined ? "not set" : "set";
-		if (page === "general") return field.key.split(".").reduce<unknown>((value, key) => (value as Record<string, unknown> | undefined)?.[key], this.settings.get());
+		if (this.core(page)) return field.key.split(".").reduce<unknown>((value, key) => (value as Record<string, unknown> | undefined)?.[key], this.settings.get());
 		return this.settings.options(page, this.extensions.get(page)?.defaults ?? {})[field.key];
 	}
 
 	private set(page: string, field: Field, value: unknown): void {
 		if (field.kind === "secret") return this.secrets.set(`${page}.${field.key}`, value === undefined ? undefined : String(value));
-		if (page !== "general") return this.settings.setOption(page, field.key, value);
+		if (!this.core(page)) return this.settings.setOption(page, field.key, value);
 		const [head, tail] = field.key.split(".") as [string, string | undefined];
 		const current = this.settings.get() as unknown as Record<string, unknown>;
 		const next = tail === undefined ? value : { ...(current[head] as Record<string, unknown> | undefined), [tail]: value };
@@ -110,10 +135,35 @@ export class SettingsMenu {
 		return { text: "Settings. Tap an extension to turn it on or off, ⚙ for its options.", buttons: rows };
 	}
 
+	/** Each model slot and its thinking level; a slot opens the levels its model supports. */
+	private thinking(): View {
+		const rows: Button[][] = this.slots().flatMap((field, index) => {
+			const choice = this.get("thinking", field) as ModelChoice | undefined;
+			return choice === undefined ? [] : [[{ text: `${field.label}: ${choice.thinking ?? "off"}`, data: `settings:th:thinking:${index}` }]];
+		});
+		rows.push([{ text: "« Back", data: "settings:p:general" }]);
+		return { text: "Thinking: how hard each model thinks before it answers. More is slower and costs more.", buttons: rows };
+	}
+
+	private levels(at: number): View {
+		const field = this.slots()[at];
+		const choice = field === undefined ? undefined : (this.get("thinking", field) as ModelChoice | undefined);
+		if (field === undefined || choice === undefined) return this.thinking();
+		const current = choice.thinking ?? "off";
+		return {
+			text: `${field.label} (${show(choice)}): how hard it thinks.`,
+			buttons: [
+				...this.thinkingLevels(choice).map((level) => [{ text: `${level === current ? "✅ " : ""}${level}`, data: `settings:tl:thinking:${at}:${level}` }]),
+				[{ text: "« Back", data: "settings:p:thinking" }],
+			],
+		};
+	}
+
 	page(name: string): View {
+		if (name === "thinking") return this.thinking();
 		const entry = this.extensions.get(name);
-		const title = name === "general" ? "General" : (entry?.title ?? name);
-		const rows: Button[][] = [];
+		const title = name === "general" ? "General" : name === "models" ? "Models" : (entry?.title ?? name);
+		const rows: Button[][] = name === "general" ? [[{ text: "Models ▸", data: "settings:p:models" }], [{ text: "Thinking ▸", data: "settings:p:thinking" }]] : [];
 		this.fields(name).forEach((field, index) => {
 			const value = this.get(name, field);
 			if (field.kind === "toggle") rows.push([{ text: `${value === true ? "✅" : "⬜"} ${field.label}`, data: `settings:f:${name}:${index}` }]);
@@ -123,7 +173,7 @@ export class SettingsMenu {
 				items.forEach((item, at) => rows.push([{ text: `✕ ${String(item).slice(0, 50)}`, data: `settings:x:${name}:${index}:${at}` }]));
 			} else rows.push([{ text: `${field.label}: ${show(value)}${field.kind === "choice" ? " ▸" : ""}`, data: `settings:f:${name}:${index}` }]);
 		});
-		rows.push([{ text: "« Back", data: "settings:m" }]);
+		rows.push([{ text: "« Back", data: name === "models" ? "settings:p:general" : "settings:m" }]);
 		return { text: [title, entry?.about].filter(Boolean).join("\n\n"), buttons: rows };
 	}
 
@@ -185,14 +235,22 @@ export class SettingsMenu {
 			this.settings.setOption(name, "enabled", !this.extensions.enabled(entry));
 			return this.main();
 		}
+		if (action === "th") return this.levels(Number(a));
 		const field = this.fields(name)[Number(a)];
 		if (field === undefined) return this.page(name);
+		if (action === "tl") {
+			const choice = this.get(name, field) as ModelChoice | undefined;
+			if (choice !== undefined && b !== undefined) this.set(name, field, b === "off" ? { provider: choice.provider, modelId: choice.modelId } : { ...choice, thinking: b });
+			return this.thinking();
+		}
 		if (action === "mp") return this.picker(name, Number(a), b === undefined ? undefined : Number(b), Number(c ?? 0));
 		if (action === "ms") {
 			const group = (await this.providers())[Number(b)];
 			const model = group?.models[Number(c)];
 			if (model === undefined) return this.picker(name, Number(a));
-			this.set(name, field, { provider: model.provider, modelId: model.id });
+			// A new model keeps the slot's thinking level (pi clamps it to what the model supports).
+			const thinking = (this.get(name, field) as ModelChoice | undefined)?.thinking;
+			this.set(name, field, { provider: model.provider, modelId: model.id, ...(thinking === undefined ? {} : { thinking }) });
 			return this.page(name);
 		}
 		if (action === "k") return { page: name, field: Number(a), label: field.label, secret: false };
@@ -232,7 +290,8 @@ export class SettingsMenu {
 			const slash = text.indexOf("/");
 			const choice = { provider: text.slice(0, slash), modelId: text.slice(slash + 1) };
 			if (slash <= 0 || !this.modelExists(choice)) return { error: `Unknown model "${text}". Write it as provider/modelId, e.g. anthropic/claude-sonnet-5-5.` };
-			this.set(prompt.page, field, choice);
+			const thinking = (this.get(prompt.page, field) as ModelChoice | undefined)?.thinking;
+			this.set(prompt.page, field, { ...choice, ...(thinking === undefined ? {} : { thinking }) });
 		} else this.set(prompt.page, field, text);
 		return this.page(prompt.page);
 	}
