@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | bash
 #
 # It clones (or updates) the repo, brings its own Node 24 if the machine has none, asks for the keys on first install,
-# and runs the agent as a systemd service that restarts on failure and on boot. Run it again to update.
+# and runs the agent as a systemd service that restarts on failure and on boot. Run it again to update: it pulls the
+# latest code, reinstalls dependencies, keeps your settings, keys and data, and restarts the service.
 #
 # Every question can be answered ahead of time through the environment, for an unattended install:
 #   TELEGRAM_BOT_TOKEN, JAPA_TELEGRAM_ID   the bot, and your own Telegram user id (the allowlist)
@@ -256,6 +257,8 @@ case "$SERVICE" in
 		;;
 	user)
 		say "Starting the $NAME service (as your user)"
+		# Run through sudo -u or su, there's no login session to say where the user's service manager is.
+		export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 		mkdir -p "$HOME/.config/systemd/user"
 		unit "" default.target >"$HOME/.config/systemd/user/$NAME.service"
 		loginctl enable-linger "$(id -un)" 2>/dev/null || note "Couldn't enable lingering: it will stop when you log out."
