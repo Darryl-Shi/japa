@@ -105,7 +105,7 @@ export function computerExtension(options: { display: string }): Extension {
 	const toScreen = (value: number | undefined) => Math.round((value ?? 0) * (scale ?? 1));
 
 	return defineExtension({
-		name: "jarvis.computer",
+		name: "screen",
 		sections: [
 			section(
 				"screen",

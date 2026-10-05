@@ -29,6 +29,18 @@ test("the portrait records, corrects and forgets", async () => {
 	await rm(home, { recursive: true, force: true });
 });
 
+test("memory stays within its size: past the limit, only what makes room gets in", async () => {
+	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
+	const portrait = new Portrait(home);
+	assert.equal(portrait.apply([{ add: "one two three" }], "test", { words: 5 }).length, 1);
+	assert.equal(portrait.apply([{ add: "four five six" }], "test", { words: 5 }).length, 0, "an addition past the limit is refused");
+	assert.equal(portrait.apply([{ replace: "one two three", with: "one two three four five six" }], "test", { words: 5 }).length, 0, "so is a correction that grows past it");
+	// Corrections go first, so one that makes room lets an addition in.
+	assert.equal(portrait.apply([{ add: "four five" }, { replace: "one two three", with: "one" }], "test", { words: 5 }).length, 2);
+	assert.equal(portrait.read(), "- one\n- four five");
+	await rm(home, { recursive: true, force: true });
+});
+
 test("the agent remembers into its prompt and finds earlier slices in history, with dates", async () => {
 	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
 	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
@@ -60,7 +72,7 @@ test("the agent remembers into its prompt and finds earlier slices in history, w
 
 	thread = await MainThread.open({ dataDir, models, settings, installed: [memory] }, context);
 	const target = { channel: "test", chatId: "1", messageId: "1" };
-	await thread.ask("1", "My sister is Mia.", target, context);
+	await thread.ask("1", "Remember that my sister is Mia.", target, context);
 	assert.equal(portrait.read(), "- Sister: Mia");
 
 	await thread.ask("2", "What did we decide on pricing?", target, context);
@@ -80,7 +92,7 @@ test("the agent remembers into its prompt and finds earlier slices in history, w
 	await rm(home, { recursive: true, force: true });
 });
 
-test("reflection (the memory extension's slice-end hook) keeps memory current, and marks what stopped being true; turned off, it edits nothing", async () => {
+test("reflection (the memory extension's exchange-end hook) keeps memory current, and marks what stopped being true; turned off, it edits nothing", async () => {
 	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
 	const portrait = new Portrait(home);
 	portrait.remember("Runs two LLM research labs.");
@@ -114,6 +126,35 @@ test("reflection (the memory extension's slice-end hook) keeps memory current, a
 	assert.ok(!portrait.read().includes("Should never"), "memory untouched while off");
 	assert.equal(reflections.length, 1, "the reflection wasn't even asked");
 	assert.ok(!(await h.thread.root.agent(context)).tools.some((tool) => tool.name === "remember"));
+	await h.done();
+	await rm(home, { recursive: true, force: true });
+});
+
+test("reflection waits for the exchange to end: a slice cut for size isn't one, and the reflection sees all of it", async () => {
+	const home = await mkdtemp(join(tmpdir(), "japa-home-"));
+	const portrait = new Portrait(home);
+	const asked: string[] = [];
+	const h = await agent({
+		settings: { context: { idleMinutes: 60, sliceTokens: 200 } },
+		extensions: (host) => [memoryExtension(host, portrait)],
+		script: (turn) => {
+			if (!turn.request.includes("reflective side")) return fauxAssistantMessage("ok");
+			asked.push(turn.request);
+			return fauxAssistantMessage(JSON.stringify({ memory_edits: [] }));
+		},
+	});
+	const long = "plans ".repeat(300).trim();
+	await h.ask("1", `[Mon 6 Oct 09:00] I'm in Tokyo till the 14th. ${long}`);
+	await h.ask("2", "[Mon 6 Oct 09:05] and the launch is on the 10th", 2);
+	await h.thread.settled();
+	assert.ok(!JSON.stringify((await h.thread.root.context(context)).messages).includes(long), "the first slice was cut for size");
+	assert.equal(asked.length, 0, "cut for size mid-exchange: no reflection yet");
+
+	await h.ask("3", "[Mon 6 Oct 11:00] something else", 3, { newTopic: true });
+	await h.thread.settled();
+	assert.equal(asked.length, 1);
+	// The first slice in full (a new slice's handoff only quotes the start of a long message), and the second.
+	assert.ok(asked[0]!.includes(long) && asked[0]!.includes("the launch is on the 10th"));
 	await h.done();
 	await rm(home, { recursive: true, force: true });
 });

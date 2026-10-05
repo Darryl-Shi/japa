@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, JsonObject, Context as PiContext } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonObject, Context as PiContext, Provider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Inbox } from "../src/channels/inbox.ts";
@@ -40,11 +40,14 @@ export async function agent(options: {
 	settings?: Parameters<SettingsFile["update"]>[0];
 	/** Reuse one (a restart); default: a new one. */
 	dataDir?: string;
+	/** Model providers pi has besides the faux one, as pi-ai's own are in a real install. */
+	providers?: readonly Provider[];
 }) {
 	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "japa-")));
 	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-fast" }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
+	for (const provider of options.providers ?? []) models.setProvider(provider);
 	const turns: Turn[] = [];
 	const respond: FauxResponseFactory = async (request, requestOptions) => {
 		const sent = JSON.stringify(request);

@@ -1,51 +1,61 @@
-// Memory as an extension: the agent's memory of the user in the system prompt, `remember` to record into it, cited
-// search over everything said before, and, when a slice ends, a reflection that keeps memory current from what was
-// said in passing. Turned off, all of it stops: no section, no tools, no edits. The formats live in src/core.
+// Memory as an extension: the agent's memory of the user in the system prompt, cited search over everything said
+// before, and, when an exchange with the user ends, a reflection that keeps memory current and short. `remember` is for
+// when the user asks. Turned off, all of it stops: no section, no tools, no edits. The formats live in src/core.
 import type { Context } from "@earendil-works/chord";
 import { type Models, Type } from "@earendil-works/pi-ai";
 import { type Conversation, defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
 import type { History, HistoryLine, HistoryHit } from "../core/history.ts";
-import type { MemoryEdit, Portrait } from "../core/portrait.ts";
+import { type MemoryEdit, type Portrait, wordCount } from "../core/portrait.ts";
 import type { ModelChoice } from "../settings.ts";
-import type { Host, JapaExtension, SliceEnd } from "./extension.ts";
+import type { ExchangeEnd, Host, JapaExtension } from "./extension.ts";
 import { parseJson } from "./state.ts";
 
 const GUIDE = [
-	"<memory> is your own memory of the user and their world, organized however serves you: who they are and how they work,",
-	"what they're in the middle of, people, plans, this week or this season — whatever you'd want to know weeks from now.",
-	"When they tell you something worth keeping, call remember and end your reply with one line: \"Noted: …\". Write dates",
-	"into the text (\"until Oct 14\", \"since early Sept\"), and when something stops being true, correct it rather than",
-	"adding a contradiction. Memory is also kept up in the background after each stretch of conversation. For anything",
-	"said before, call search_history and cite the date, e.g. \"(from our Sep 12 chat)\".",
+	"<memory> is your own memory of the user and their world. It's kept up in the background after each exchange, so",
+	"don't record things as you go: call remember only when the user asks you to remember, correct or forget something.",
+	"For anything said before, call search_history and cite the date, e.g. \"(from our Sep 12 chat)\".",
 ].join(" ");
 
-const REFLECT_PROMPT = [
-	"You are the reflective side of the user's chief of staff. A stretch of conversation just ended. Return JSON only:",
-	'{"memory_edits": [{"add": string} | {"replace": string, "with": string}]}: small changes to your memory of the user',
-	"and their world, organized however serves you — anything you'd want to know in days, weeks or months: who they are,",
-	"how they work, what they're in the middle of, people, plans, seasons. Write dates into the text. When something in",
-	"memory is no longer true, replace it (e.g. past tense with when it ended) or remove it (replace with \"\"); `replace`",
-	"must quote memory exactly. Only what the conversation supports; no how-to steps or rules, nothing only relevant",
-	"today, nothing already there. Keep memory under about 600 words: merge and compress when it grows. Most stretches",
-	"need no edits: return [].",
-].join(" ");
+const reflectPrompt = (words: number, limit: number) =>
+	[
+		"You are the reflective side of the user's chief of staff. An exchange with the user just ended. Return JSON only:",
+		'{"memory_edits": [{"add": string} | {"replace": string, "with": string}]}: changes to your memory of the user and',
+		"their world. Memory holds only what would change how you help them weeks from now: who they are, how they work,",
+		"the people in their life, their commitments and plans. Not what matters only today, what open items already",
+		"track, how-to steps or rules, or anything already there. Write dates into the text. When something in memory",
+		'stopped being true, replace it (past tense, with when it ended) or remove it (replace with ""); `replace` must',
+		"quote memory exactly. Sharpen or merge an existing line rather than add one. Memory is",
+		`${words} of at most ${limit} words; an addition past that is refused unless your replacements make room.`,
+		"Most exchanges need no edits: return []. Never more than a few.",
+	].join(" ");
+
+/** Its settings when settings.json says nothing. */
+export const DEFAULTS = { words: 300 };
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
 
-/** The tools and sections: `search` finds earlier lines of the main conversation (the core keeps that record). */
-export function memoryTools(options: { portrait: Portrait; search: (query: string, context: Context) => Promise<HistoryHit[]> }): Extension {
+/**
+ * The tools and sections: `search` finds earlier lines of the main conversation (the core keeps that record); `words`
+ * is how long memory may get.
+ */
+export function memoryTools(options: { portrait: Portrait; search: (query: string, context: Context) => Promise<HistoryHit[]>; words?: () => number }): Extension {
 	const { portrait } = options;
 	return defineExtension({
-		name: "jarvis.memory",
+		name: "memory",
 		sections: [section("memory_guide", () => GUIDE, { tag: false }), section("memory", () => portrait.read() || undefined)],
 		tools: [
 			defineTool({
 				name: "remember",
-				description: "Add something to your memory, or correct it. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
+				description: "When the user asks: add something to your memory, or correct it. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
 				parameters: Type.Object({ note: Type.String(), replaces: Type.Optional(Type.String()) }),
 				execute: async (args) => {
+					const current = portrait.read();
+					if (args.replaces === undefined && current.includes(args.note.trim())) return text("Already in memory.");
+					if (args.replaces !== undefined && !current.includes(args.replaces)) return text("That text isn't in memory; read <memory> and quote it exactly.");
 					const edit = args.replaces === undefined ? { add: args.note } : { replace: args.replaces, with: args.note };
-					return text(portrait.apply([edit], "conversation").length > 0 ? "Saved." : args.replaces === undefined ? "Already in memory." : "That text isn't in memory; read <memory> and quote it exactly.");
+					const words = options.words?.();
+					if (portrait.apply([edit], "conversation", words === undefined ? {} : { words }).length > 0) return text("Saved.");
+					return text(`Memory is full (${wordCount(current)} of ${words} words): make room first by merging or removing something (remember with \`replaces\`).`);
 				},
 			}),
 			defineTool({
@@ -63,8 +73,8 @@ export function memoryTools(options: { portrait: Portrait; search: (query: strin
 	});
 }
 
-/** One cheap call over the departing slice: small edits to memory. */
-export async function reflectOnMemory(models: Models, choice: ModelChoice | undefined, input: { memory: string } & SliceEnd): Promise<MemoryEdit[]> {
+/** One cheap call over the exchange that ended: small edits to memory, if any. */
+export async function reflectOnMemory(models: Models, choice: ModelChoice | undefined, input: { memory: string; words: number } & ExchangeEnd): Promise<MemoryEdit[]> {
 	const model = choice === undefined ? undefined : models.getModel(choice.provider, choice.modelId);
 	if (model === undefined) return [];
 	const content = [
@@ -73,7 +83,7 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice | unde
 		`<open_items>\n${input.openItems ?? "(none)"}\n</open_items>`,
 		`<conversation>\n${input.conversation}\n</conversation>`,
 	].join("\n");
-	const answer = await models.completeSimple(model, { systemPrompt: REFLECT_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] });
+	const answer = await models.completeSimple(model, { systemPrompt: reflectPrompt(wordCount(input.memory), input.words), messages: [{ role: "user", content, timestamp: Date.now() }] });
 	if (answer.stopReason === "error") return [];
 	const edits = parseJson(answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""))?.memory_edits;
 	if (!Array.isArray(edits)) return [];
@@ -87,15 +97,18 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice | unde
 }
 
 export function memoryExtension(host: Host, portrait: Portrait): JapaExtension {
+	const words = () => Number(host.settings.options("memory", DEFAULTS).words) || DEFAULTS.words;
 	return {
-		name: "memory",
+		...memoryTools({ portrait, search: (query, context) => host.searchHistory(query, context), words }),
 		title: "Memory",
-		about: `Its memory of you (${portrait.path}, yours to edit), search over everything said before, and reflection after each conversation.`,
+		about: `Its memory of you (${portrait.path}, yours to edit), kept short and current after each exchange, and search over everything said before.`,
+		for: "chief",
+		settings: [{ key: "words", label: "Memory size (words)", kind: "number" }],
+		defaults: DEFAULTS,
 		safeTools: ["remember", "search_history"],
-		chief: [memoryTools({ portrait, search: (query, context) => host.searchHistory(query, context) })],
-		onSliceEnd: async (slice) => {
-			const edits = await reflectOnMemory(host.models, host.settings.get().model, { memory: portrait.read(), ...slice });
-			const applied = portrait.apply(edits, "reflection");
+		onExchangeEnd: async (exchange) => {
+			const edits = await reflectOnMemory(host.models, host.settings.get().model, { memory: portrait.read(), words: words(), ...exchange });
+			const applied = portrait.apply(edits, "reflection", { words: words() });
 			if (applied.length > 0) host.log(`memory: ${applied.length} edit(s) from reflection`);
 		},
 	};

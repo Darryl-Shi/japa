@@ -9,7 +9,7 @@ japa has a **core**, which is what japa is and can't be turned off. Everything e
                     │       ▼  delegate / message_job / cancel_job                               │   on the channel
                     │  Team: one job agent per job ── report ──► back to the chief of staff      │
                     │  Open items · Triggers · UI cards · /settings · /login · /jobs · Installer │
-                    │  Adapters: channels · model providers                                      │
+                    │  Adapters: channels · models                                               │
                     └───────────────▲─────────────────────────────────────────────▲──────────────┘
                                     │ the Host: settings, secrets, models, cards,    │
                                     │ wake, holds, emit, history                     │
@@ -36,11 +36,11 @@ Each thing japa is built from has one typed adapter in the core, and every imple
 
 | Abstraction | Adapter in the core | An extension provides one with | Built in |
 |---|---|---|---|
-| **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: `chief`, `jobs`, `settings`, `safeTools`, `onSliceEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen |
+| **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: a Pi extension (`tools`, `sections`, `hooks`, `wraps`, `tasks`), plus `for`, `settings`, `safeTools`, `onExchangeEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen |
 | **Channel** | `Channel` (`src/pi/extension.ts`): `platform`, `open({ inbox, ui })`, `show(card)`, `close()`. Messages go in through the `Inbox`, the allowlist gate (`src/channels/inbox.ts`); presses, replies and commands go to the `UI` | `channel: { platform, open, show, close }` | Telegram |
-| **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in `auth.json` through `/login` | `providers: [createProvider(...)]` | pi-ai's providers |
+| **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in `auth.json` through `/login` | (none: pi-ai's own) | pi-ai's providers |
 
-While an extension is on, the core registers its providers, and opens its channel and shows cards on it. When the extension is turned off, the core drops them and closes the channel.
+While an extension is on, the core opens its channel and shows cards on it. When the extension is turned off, the core closes the channel.
 
 What's built on each adapter is generic and never names an implementation:
 - **on `Models`:** `/login`, the model picker in `/settings`, and every agent's model;
@@ -55,7 +55,7 @@ What's built on each adapter is generic and never names an implementation:
    - you send `/new`;
    - you reply to something from an earlier slice.
 
-   The departing slice is reflected on in the background, so your message never waits. History search brings back anything older.
+   The departing slice updates the working set in the background, so your message never waits. Every boundary but the size one also ends an **exchange**: extensions hear about it then (memory reflects on it), over all the slices it took. History search brings back anything older.
 3. **Answer, or delegate.** By itself the chief does only the very simple: an answer it knows, or a quick tool call or two. Everything else goes to `delegate`, which starts a job agent in its own conversation, with its own model. The chief replies at once, and the chat is free again.
 4. **Work.** A job agent has web search and fetch, bash and files, the screen, and whatever extensions give job agents. It can split work across subagents, and decides when to `report`. If it ends its run without a report, its last words count as its report.
 5. **Approval.** Every tool call passes the Approvals hook first, where a fast model reviews it. Anything that sends as you, spends, deletes your things, deploys or changes accounts is **blocked, not held**:
@@ -70,7 +70,7 @@ What's built on each adapter is generic and never names an implementation:
 
 ## Memory
 
-Memory is one free-form document, `memory/memory.md` in the data directory. It changes only through small edits: `remember` during a conversation, and a reflection at the end of each slice, which also marks things that stopped being true. The directory is a git repo, so every change is a commit you can read and undo. Everything said before is searchable (`history.sqlite`, rebuilt from the transcript if lost).
+Memory is one short free-form document, `memory/memory.md` in the data directory, kept to what would change how the agent helps you weeks from now. It changes only through small edits. A reflection at the end of each exchange does most of them: it sharpens or merges lines rather than adding, and marks things that stopped being true. `remember` is for when you ask it to remember, correct or forget something. Memory has a size in words (Memory in `/settings`): past it, an addition gets in only if a correction makes room. The directory is a git repo, so every change is a commit you can read and undo. Everything said before is searchable (`history.sqlite`, rebuilt from the transcript if lost).
 
 ## Extensions installed from chat
 

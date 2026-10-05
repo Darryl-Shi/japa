@@ -16,7 +16,7 @@ import { agent, call, context, say, sleep } from "./helpers.ts";
 /** A tool that acts on the world, counting its runs. */
 function emailExtension(sent: string[]): JapaExtension {
 	const extension = defineExtension({
-		name: "test.email",
+		name: "email",
 		tools: [
 			defineTool({
 				name: "send_email",
@@ -30,7 +30,7 @@ function emailExtension(sent: string[]): JapaExtension {
 			defineTool({ name: "list_inbox", description: "List the inbox.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "3 unread." }] }) }),
 		],
 	});
-	return { name: "email", title: "Email", about: "", safeTools: ["list_inbox"], chief: [extension], jobs: [extension] };
+	return { ...extension, title: "Email", about: "", safeTools: ["list_inbox"] };
 }
 
 const isReview = (request: string) => request.includes("You review one action");
@@ -386,28 +386,22 @@ test("modalities: a photo is shown to a model that takes images and kept on its 
 	await h.done();
 });
 
-test("login: /login runs a provider's own login from chat, here one an extension adds; then its models are offered", async () => {
+test("login: /login runs a provider's own login from chat; then its models are offered", async () => {
 	const big = { id: "dyn-big", name: "Dyn Big", api: "openai-completions" as const, provider: "dyn", baseUrl: "http://dyn.invalid", input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 };
 	const unused = () => {
 		throw new Error("not in this test");
 	};
 	const h = await agent({
-		extensions: () => [
-			{
-				name: "dyn",
-				title: "Dyn",
-				about: "",
-				providers: [
-					createProvider({
-						id: "dyn",
-						name: "Dyn",
-						auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
-						models: [],
-						fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
-						api: { stream: unused, streamSimple: unused },
-					}),
-				],
-			},
+		extensions: () => [],
+		providers: [
+			createProvider({
+				id: "dyn",
+				name: "Dyn",
+				auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
+				models: [],
+				fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
+				api: { stream: unused, streamSimple: unused },
+			}),
 		],
 		script: () => say("ok"),
 	});
@@ -435,10 +429,6 @@ test("login: /login runs a provider's own login from chat, here one an extension
 	await press("Chief of staff model: faux/faux-1");
 	await press("dyn (1)");
 	assert.ok(labels().includes("Dyn Big"), "its models are in the picker");
-
-	h.settings.update({ extensions: { dyn: { enabled: false } } });
-	await h.japa.apply(context);
-	assert.equal(h.host.models.getProvider("dyn"), undefined, "off: its provider is gone");
 	await h.done();
 });
 
@@ -491,10 +481,10 @@ import type { Host, JapaExtension } from "../src/pi/extension.ts";
 
 export default function (host: Host): JapaExtension {
 	const extension = defineExtension({
-		name: "ext.greet",
+		name: "greet",
 		tools: [defineTool({ name: "greet", description: "Say hi.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "Hi from greet ${version}" }] }) })],
 	});
-	return { name: "greet", title: "Greet", about: "Says hi.", chief: [extension] };
+	return { ...extension, title: "Greet", about: "Says hi.", for: "chief" };
 }
 `;
 
@@ -560,17 +550,20 @@ import { word } from "./words.ts";
 
 export default function () {
 	const extension = defineExtension({
-		name: "ext.shouter",
+		name: "shouter",
 		tools: [defineTool({ name: "shout", description: "Shout.", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: shout(word) }] }) })],
 	});
-	return { name: "shouter", title: "Shouter", about: "Shouts.", chief: [extension] };
+	return { ...extension, title: "Shouter", about: "Shouts." };
 }
 `,
 	);
-	// Installed before, in the layouts of earlier versions: one file, and code/ beside what a sandbox kept.
+	// Installed before, in the layouts of earlier versions: one file, and code/ beside what a sandbox kept, in the shape
+	// from before an extension was a Pi extension itself (the Pi extensions each agent gets).
 	await mkdir(join(dataDir, "extensions", "old", "code"), { recursive: true });
 	await writeFile(join(dataDir, "extensions", "greet.ts"), greetSource("old"));
-	await writeFile(join(dataDir, "extensions", "old", "code", "old.ts"), greetSource("sandboxed").replaceAll("greet", "old"));
+	const oldShape = greetSource("sandboxed").replaceAll("greet", "old").replace("return { ...extension,", 'return { name: "old", chief: [extension],');
+	assert.ok(oldShape.includes("chief: [extension]"));
+	await writeFile(join(dataDir, "extensions", "old", "code", "old.ts"), oldShape);
 	await writeFile(join(dataDir, "extensions", "old", "manifest.json"), "{}");
 	const h = await agent({
 		home,

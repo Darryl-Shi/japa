@@ -41,7 +41,7 @@ export function webExtension(host: Pick<Host, "settings" | "secrets">, options: 
 	};
 
 	const extension = defineExtension({
-		name: "jarvis.web",
+		name: "web",
 		tools: [
 			defineTool({
 				name: "web_search",
@@ -82,7 +82,7 @@ export function webExtension(host: Pick<Host, "settings" | "secrets">, options: 
 	});
 
 	return {
-		name: "web",
+		...extension,
 		title: "Web (Parallel)",
 		about: "Web search and page reading through Parallel. Fast mode costs about $1 per 1000 searches.",
 		settings: [
@@ -92,7 +92,5 @@ export function webExtension(host: Pick<Host, "settings" | "secrets">, options: 
 		],
 		defaults: DEFAULTS,
 		safeTools: ["web_search", "web_fetch"],
-		chief: [extension],
-		jobs: [extension],
 	};
 }

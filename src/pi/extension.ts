@@ -1,14 +1,14 @@
 // The one unit. Everything beyond the core loop is an extension: memory, the computer and screen, the web, approvals,
-// messaging channels, model providers, and whatever the user adds. An extension is made from the Host (everything it
-// may use) and says what it gives the chief of staff and job agents, what it adds to /settings, which of its tools are
-// safe, what it does when a slice ends, when it wakes the chief of staff by itself, and what runs while it's on. The
-// core (the main thread, open items, the team) is not an extension and can't be turned off.
+// messaging channels, and whatever the user adds. An extension is a Pi extension (its tools, sections, hooks, wraps and
+// tasks), made from the Host (everything it may use), and says what japa's flow needs besides: who gets it (the chief
+// of staff, job agents, or both), what it adds to /settings, which of its tools are safe, what it does when an
+// exchange with the user ends, when it wakes the chief of staff by itself, and what runs while it's on. The core (the
+// main thread, open items, the team) is not an extension and can't be turned off.
 //
-// What japa is built from has one typed adapter each, and every implementation goes through it, built-in or not: a
-// channel is a Channel in `channel`, a model provider is a pi-ai Provider in `providers`. The core registers them
-// while the extension is on and unregisters them when it's off.
+// A channel is the one thing japa is built from that an extension adds through a typed adapter: a Channel in
+// `channel`, opened by the core while the extension is on and closed when it's off.
 import type { Context } from "@earendil-works/chord";
-import type { Models, MutableModels, Provider } from "@earendil-works/pi-ai";
+import type { Models } from "@earendil-works/pi-ai";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { Inbox } from "../channels/inbox.ts";
 import type { HistoryHit } from "../core/history.ts";
@@ -29,8 +29,11 @@ export type Field =
 	/** Stored in data/secrets.json as "<extension>.<key>"; `env` is the fallback. */
 	| { key: string; label: string; kind: "secret"; env?: string };
 
-/** What a slice of the main conversation was, handed to extensions when it ends. */
-export type SliceEnd = { conversation: string; openItems: string | undefined; today: string };
+/**
+ * An exchange with the user that just ended (they went quiet, started a new topic, or went back to an earlier one),
+ * handed to extensions: what was said, across however many slices it took.
+ */
+export type ExchangeEnd = { conversation: string; openItems: string | undefined; today: string };
 
 /**
  * A reason to wake the chief of staff by itself: on a schedule (`every`, or `at` a local time) or on an event another
@@ -62,7 +65,7 @@ export type Host = {
 	secrets: SecretsFile;
 	/** Where an extension keeps its own files (the data directory; name them after the extension). */
 	dataDir: string;
-	/** The models pi can use. To add a provider, declare it in `providers`. */
+	/** The models pi can use (the providers logged in to with /login). */
 	models: Models;
 	ui: UI;
 	/**
@@ -84,9 +87,8 @@ export type Host = {
 	log(line: string): void;
 };
 
-export type JapaExtension = {
-	/** Its key in settings.extensions. */
-	name: string;
+/** A Pi extension, named by its key in settings.extensions, with what japa's flow needs besides. */
+export type JapaExtension = Extension & {
 	title: string;
 	about: string;
 	/** On unless settings say otherwise (default true). */
@@ -96,15 +98,11 @@ export type JapaExtension = {
 	defaults?: Readonly<Record<string, unknown>>;
 	/** Tools that only read or only touch the agent's own state; approvals never stop them. */
 	safeTools?: readonly string[];
-	/** What the chief of staff gets. */
-	chief?: readonly Extension[];
-	/** What a job agent (and its subagents) gets. */
-	jobs?: readonly Extension[];
-	/** When a slice of the main conversation ends (in the background; the user never waits for it). */
-	onSliceEnd?: (slice: SliceEnd) => Promise<void>;
+	/** Only the chief of staff, or only job agents (and their subagents); both unless it says. */
+	for?: "chief" | "jobs";
+	/** When an exchange with the user ends (in the background; the user never waits for it). */
+	onExchangeEnd?: (exchange: ExchangeEnd) => Promise<void>;
 	triggers?: readonly Trigger[];
-	/** Model providers it adds: registered while it's on, their models loaded with the credential from /login. */
-	providers?: readonly Provider[];
 	/** A messaging channel. The last one on can't be turned off. */
 	channel?: Channel;
 	/** While it's on: started when turned on (or at startup), stopped when turned off. */
@@ -174,19 +172,13 @@ export class ExtensionSet {
 		return [...this.open].some((channel) => channel !== entry.channel) ? undefined : "It's the only channel you can reach me on.";
 	}
 
-	/** Every Pi extension, once each, for the registry. */
-	installed(): Extension[] {
-		return unique(this.entries.flatMap((entry) => [...(entry.chief ?? []), ...(entry.jobs ?? [])]));
-	}
-
-	forChief(): Extension[] {
-		return unique(this.on().flatMap((entry) => entry.chief ?? []));
+	forChief(): JapaExtension[] {
+		return this.on().filter((entry) => entry.for !== "jobs");
 	}
 
 	/** What a new job agent must not have: whatever isn't on for jobs right now. */
-	withheldFromJobs(): Extension[] {
-		const jobs = new Set(this.on().flatMap((entry) => entry.jobs ?? []));
-		return this.installed().filter((extension) => !jobs.has(extension));
+	withheldFromJobs(): JapaExtension[] {
+		return this.entries.filter((entry) => !this.enabled(entry) || entry.for === "chief");
 	}
 
 	/** Only from the extensions that are on: one turned off vouches for nothing. */
@@ -199,8 +191,8 @@ export class ExtensionSet {
 		return new Map(this.on().flatMap((entry) => (entry.triggers ?? []).map((trigger) => [`${entry.name}/${trigger.name}`, trigger] as const)));
 	}
 
-	async sliceEnded(slice: SliceEnd): Promise<void> {
-		await Promise.all(this.on().map((entry) => entry.onSliceEnd?.(slice).catch((error: unknown) => this.log(`${entry.name}: slice end: ${String(error)}`))));
+	async exchangeEnded(exchange: ExchangeEnd): Promise<void> {
+		await Promise.all(this.on().map((entry) => entry.onExchangeEnd?.(exchange).catch((error: unknown) => this.log(`${entry.name}: exchange end: ${String(error)}`))));
 	}
 
 	/** Start what was turned on and stop what was turned off. */
@@ -226,16 +218,8 @@ export class ExtensionSet {
 	 * not just a line in the log.
 	 */
 	private async start(entry: JapaExtension): Promise<void> {
-		const { models, ui, inbox } = this.adapters;
+		const { ui, inbox } = this.adapters;
 		const problems: string[] = [];
-		for (const provider of entry.providers ?? []) {
-			models.setProvider(provider);
-			// A provider that fetches its model list gets it now (with the credential from /login), not on first use.
-			void models.refresh({ providers: [provider.id] }).then(
-				(result) => result.errors.forEach((error, id) => this.log(`${entry.name}: models of ${id}: ${error.message}`)),
-				(error: unknown) => this.log(`${entry.name}: models: ${String(error)}`),
-			);
-		}
 		const channel = entry.channel;
 		if (channel !== undefined) {
 			try {
@@ -271,17 +255,11 @@ export class ExtensionSet {
 				.then(() => channel.close())
 				.catch((error: unknown) => this.log(`${entry.name}: close: ${String(error)}`));
 		}
-		for (const provider of entry.providers ?? []) this.adapters.models.deleteProvider(provider.id);
 		this.failures.delete(entry.name);
 	}
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-/**
- * The core's side of the adapters: where providers are registered, channels shown, messages let in, and problems
- * reported (undefined: it works now).
- */
-export type Adapters = { models: MutableModels; ui: UI; inbox(platform: string): Inbox; problem(entry: JapaExtension, text: string | undefined): void };
-
-const unique = (extensions: readonly Extension[]) => [...new Set(extensions)];
+/** The core's side of the adapters: where channels are shown, messages let in, and problems reported (undefined: it works now). */
+export type Adapters = { ui: UI; inbox(platform: string): Inbox; problem(entry: JapaExtension, text: string | undefined): void };

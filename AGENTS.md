@@ -17,13 +17,14 @@ only through it.
 The things japa is built from each have one generic, typed adapter in the core, and every implementation goes through
 it, the built-in ones included:
 
-- a **capability** is a `JapaExtension` made from the `Host` (`src/pi/extension.ts`);
+- a **capability** is a `JapaExtension` made from the `Host` (`src/pi/extension.ts`): a Pi extension, plus the fields
+  japa's own flow needs (who gets it, its settings, its safe tools, its exchange end, its triggers, its lifecycle);
 - a **channel** is a `Channel` in an extension's `channel` (`src/pi/extension.ts`), opened with its platform's `Inbox`
   (the allowlist gate) and the `UI`;
-- a **model provider** is a pi-ai `Provider` in an extension's `providers`, its credential from `/login`.
+- a **model provider** is a pi-ai `Provider` on the core's `Models`, its credential from `/login`.
 
-The core registers them while their extension is on (a channel is opened, and cards shown on it) and drops them when
-it's off (the channel is closed). docs/architecture.md has the full table.
+The core opens a channel while its extension is on, and shows cards on it, and closes it when it's off.
+docs/architecture.md has the full table.
 
 There is no machine adapter, because there is no other machine: japa runs on one, and that machine is the agent's
 computer. Its tools run there through Pi's own local environment, in the agent's home. Where that machine is (a
@@ -48,8 +49,8 @@ option nobody asked for. A deleted speculative feature costs nothing; a kept one
 Behaviour that belongs to one provider or channel stays in that extension. The core changes only for a
 mechanism every implementation shares. When the Sudocode provider's models didn't show in `/settings`, the wrong fix
 was a core page and refresh calls for that case. The right fix was `/login` (any provider's own login, kept where pi
-keeps credentials) and the provider adapter loading a provider's model list when it's registered. If a fix names one
-provider, it belongs in that provider's extension.
+keeps credentials) loading a provider's model list once it's logged in to. If a fix names one provider, it doesn't
+belong in the core.
 
 ## Nothing hardcoded, nothing assumed
 

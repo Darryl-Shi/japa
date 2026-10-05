@@ -1,6 +1,6 @@
 // Extensions installed from chat, hot. A job writes one on the agent's computer: a TypeScript module (one file, or a
-// directory with a package.json for its own npm packages) whose default export makes a JapaExtension from the Host,
-// the same shape as the built-in ones, and it runs the same way: inside this process, with the Host, keys included.
+// directory with a package.json for its own npm packages) whose default export makes a JapaExtension (a Pi extension
+// with japa's fields) from the Host, the same shape as the built-in ones, and it runs the same way: inside this process, with the Host, keys included.
 // So only the user's tap installs it, every time, whatever the approvals mode. install_extension copies it here and
 // checks it without running it (where it starts, its imports, its own packages installed without their scripts);
 // one that wouldn't load goes back to the agent with why, and the user isn't asked. On Install it's loaded and on
@@ -37,11 +37,11 @@ const guide = (repo: string) =>
 		"A job writes it; its brief must say: clone",
 		`${repo} into a directory of its own on your computer and npm ci; the contract is src/pi/extension.ts, src/pi/web.ts is an example; write one`,
 		"file (or a directory with a package.json for its own npm packages) whose default export is (host: Host) => JapaExtension;",
-		"types only with `import type`; a key goes in a secret settings field the user sets in /settings, read with",
-		'host.secrets.get("<name>.<key>"), never in the code; what japa is built from goes through its typed field: a model',
-		"provider in `providers` (a pi-ai createProvider; its key comes from /login), a channel in",
-		"`channel` (opened with its inbox, shows cards); npm run check passes. It runs inside the agent, like the built-in",
-		"ones. Not a Pi coding-agent extension. It's checked before the user is asked, and a problem comes back to you.",
+		"types only with `import type`; it's a Pi extension (tools, sections, hooks) named as installed, for you and job",
+		'agents unless `for` says one; a key goes in a secret settings field the user sets in /settings, read with',
+		'host.secrets.get("<name>.<key>"), never in the code; a messaging channel goes in `channel` (opened with its inbox,',
+		"shows cards); npm run check passes. It runs inside the agent, like the built-in ones. Not a Pi coding-agent",
+		"extension. It's checked before the user is asked, and a problem comes back to you.",
 	].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
@@ -148,11 +148,23 @@ export function problems(code: string, entry: string): string[] {
 export async function loadExtension(path: string, host: Host): Promise<JapaExtension> {
 	const module = (await import(pathToFileURL(path).href)) as { default?: unknown };
 	if (typeof module.default !== "function") throw new Error("its default export must be a function: (host) => extension");
-	const entry = (await module.default(host)) as JapaExtension;
+	const entry = (await module.default(host)) as JapaExtension & { chief?: readonly Extension[]; jobs?: readonly Extension[] };
 	if (typeof entry !== "object" || entry === null || typeof entry.name !== "string" || typeof entry.title !== "string" || typeof entry.about !== "string") {
 		throw new Error("the extension needs a name, title and about");
 	}
-	return entry;
+	if (entry.chief === undefined && entry.jobs === undefined) return entry;
+	// Written before an extension was a Pi extension itself, with the Pi extensions each agent got: read as one.
+	const { chief = [], jobs = [], ...rest } = entry;
+	const parts = [...new Set([...chief, ...jobs])];
+	return {
+		...rest,
+		tools: parts.flatMap((part) => part.tools ?? []),
+		sections: parts.flatMap((part) => part.sections ?? []),
+		hooks: parts.flatMap((part) => part.hooks ?? []),
+		wraps: parts.flatMap((part) => part.wraps ?? []),
+		tasks: parts.flatMap((part) => part.tasks ?? []),
+		...(jobs.length === 0 ? { for: "chief" as const } : chief.length === 0 ? { for: "jobs" as const } : {}),
+	};
 }
 
 /** Web addresses in its code, for the card. */
@@ -161,8 +173,6 @@ function hostsIn(code: string): string[] {
 	for (const file of files(code)) for (const match of readFileSync(join(code, file), "utf8").matchAll(/https?:\/\/([a-z0-9.-]+)/gi)) found.add(match[1]!.toLowerCase());
 	return [...found].sort();
 }
-
-const piExtensions = (entry: JapaExtension | undefined) => [...new Set([...(entry?.chief ?? []), ...(entry?.jobs ?? [])])];
 
 export type Installer = {
 	/** install_extension and remove_extension, for the chief of staff. */
@@ -199,22 +209,10 @@ export function installer(options: {
 		if (!existsSync(modules)) symlinkSync(join(CODE_DIR, "node_modules"), modules, "dir");
 	};
 
-	/** Put it in the registry and the set, replacing an older version; refuses names taken by anything else. */
+	/** Put it in the registry and the set, replacing an older version in place. */
 	const activate = async (entry: JapaExtension) => {
-		const set = options.extensions();
-		const old = set.get(entry.name);
-		const own = new Set(piExtensions(old).map((extension) => extension.name));
-		const taken = registry
-			.snapshot()
-			.installed()
-			.filter((extension) => !own.has(extension.name))
-			.map((extension) => extension.name);
-		const clash = piExtensions(entry).find((extension) => taken.includes(extension.name));
-		if (clash !== undefined) throw new Error(`its Pi extension name "${clash.name}" is already taken; pick another`);
-		for (const extension of piExtensions(entry)) registry.install(extension);
-		const kept = new Set(piExtensions(entry).map((extension) => extension.name));
-		for (const extension of piExtensions(old)) if (!kept.has(extension.name)) registry.uninstall(extension);
-		await set.put(entry);
+		registry.install(entry);
+		await options.extensions().put(entry);
 		installed.add(entry.name);
 		await options.apply(options.context);
 	};
@@ -281,9 +279,9 @@ export function installer(options: {
 				await host.ui.show(card(pending, "Installed:"), ref);
 				// One that failed to start is reported as a problem, with why; that's the chief of staff's news.
 				if (options.extensions().failure(entry.name) !== undefined) return;
-				const tools = piExtensions(entry).flatMap((extension) => (extension.tools ?? []).map((tool) => tool.name));
-				const where = [entry.chief?.length ? "you" : "", entry.jobs?.length ? "job agents" : ""].filter(Boolean).join(" and ");
-				await tell(pending, `Installed and on from now${where === "" ? "" : ` for ${where}`}.${tools.length === 0 ? "" : ` Tools: ${[...new Set(tools)].join(", ")}.`}${entry.settings?.length ? " Its settings are in /settings." : ""}`, ref);
+				const tools = (entry.tools ?? []).map((tool) => tool.name);
+				const where = entry.for === "chief" ? "you" : entry.for === "jobs" ? "job agents" : "you and job agents";
+				await tell(pending, `Installed and on from now for ${where}.${tools.length === 0 ? "" : ` Tools: ${tools.join(", ")}.`}${entry.settings?.length ? " Its settings are in /settings." : ""}`, ref);
 			} catch (error) {
 				rmSync(target, { recursive: true, force: true });
 				await host.ui.show(card(pending, "Failed to install:"), ref);
@@ -334,7 +332,8 @@ export function installer(options: {
 				execute: async (args) => {
 					if (!installed.has(args.name)) return text(`"${args.name}" wasn't installed from chat.`);
 					const set = options.extensions();
-					for (const extension of piExtensions(set.get(args.name))) registry.uninstall(extension);
+					const entry = set.get(args.name);
+					if (entry !== undefined) registry.uninstall(entry);
 					await set.remove(args.name);
 					installed.delete(args.name);
 					rmSync(join(dir, args.name), { recursive: true, force: true });

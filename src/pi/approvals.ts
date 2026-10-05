@@ -113,7 +113,7 @@ export function approvalsExtension(host: Host, approvals: Approvals): JapaExtens
 	});
 
 	const extension = defineExtension({
-		name: "jarvis.approvals",
+		name: "approvals",
 		hooks: [
 			hook(ToolTask, {
 				beforeTool: async (call, api) => {
@@ -143,7 +143,7 @@ export function approvalsExtension(host: Host, approvals: Approvals): JapaExtens
 	});
 
 	return {
-		name: "approvals",
+		...extension,
 		title: "Approvals",
 		about: "Before anything that sends, spends, deletes, deploys or changes accounts, you're asked with buttons. Smart: a fast model decides what needs asking. Always: every action outside the safe ones.",
 		settings: [
@@ -151,8 +151,6 @@ export function approvalsExtension(host: Host, approvals: Approvals): JapaExtens
 			{ key: "permissions", label: "Standing permissions", kind: "list" },
 		],
 		defaults: DEFAULTS,
-		chief: [extension],
-		jobs: [extension],
 		// After a restart: still waiting on the user (hold the job; show the card if it never went out), or decided but
 		// never told.
 		start: async () => {

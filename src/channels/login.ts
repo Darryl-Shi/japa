@@ -1,5 +1,5 @@
 // /login: log in to a model provider from chat, through that provider's own login in pi (an API key, or OAuth with a
-// link and a pasted code). The same for built-in providers and ones an extension adds; pi keeps the credential.
+// link and a pasted code). The same for every provider pi has; pi keeps the credential.
 import type { AuthEvent, AuthType, Models, Provider } from "@earendil-works/pi-ai";
 import type { Button, Card, CardRef, UI } from "../core/ui.ts";
 

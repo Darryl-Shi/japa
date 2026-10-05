@@ -7,7 +7,7 @@ import type { JapaExtension } from "./extension.ts";
 /** `own`: where its own code and data are on this machine, which it changes only through install_extension. */
 export function shellExtension(own: readonly string[]): Extension {
 	return defineExtension({
-		name: "jarvis.shell",
+		name: "computer",
 		sections: [
 			section(
 				"computer",
@@ -23,18 +23,14 @@ export function shellExtension(own: readonly string[]): Extension {
 
 /** The computer as two extensions: its shell and files, and its screen (on by default when it has a display). */
 export function computerExtensions(options: { own: readonly string[]; display: string; hasDisplay: boolean }): JapaExtension[] {
-	const shell = shellExtension(options.own);
-	const screen = computerExtension({ display: options.display });
 	return [
 		{
-			name: "computer",
+			...shellExtension(options.own),
 			title: "Computer",
 			about: "Shell and files on the machine it runs on.",
 			// They only touch files on its own computer.
 			safeTools: ["read", "write", "edit"],
-			chief: [shell],
-			jobs: [shell],
 		},
-		{ name: "screen", title: "Screen", about: "Seeing and using the machine's desktop.", enabledByDefault: options.hasDisplay, chief: [screen], jobs: [screen] },
+		{ ...computerExtension({ display: options.display }), title: "Screen", about: "Seeing and using the machine's desktop.", enabledByDefault: options.hasDisplay },
 	];
 }

@@ -25,7 +25,7 @@ import type { Content } from "../core/message.ts";
 import type { CardRef } from "../core/ui.ts";
 import { REPORT_PREFIX } from "./delegation.ts";
 import { Address, claim, Outbox, type OutboxMessage } from "./inputs.ts";
-import type { SliceEnd } from "./extension.ts";
+import type { ExchangeEnd } from "./extension.ts";
 import { summarizeSlice, transcriptText } from "./state.ts";
 import { TRIGGER_PREFIX } from "./triggers.ts";
 
@@ -86,8 +86,11 @@ export type Arrival = {
 /** What a slice starts from, and the working set the end of a slice keeps current. */
 export type SliceState = { openItems: OpenItems; workingSet: WorkingSetFile };
 
-/** When the current slice started; a reply to anything older anchors a new one. */
-const Slice = defineDoc<{ startedAt: number }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
+/**
+ * When the current slice started (a reply to anything older anchors a new one), and what was said in the slices of
+ * this exchange that were cut for size: the exchange isn't over, so it waits for the end.
+ */
+const Slice = defineDoc<{ startedAt: number; carried?: string }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
 
 /** When the user last wrote. Reports from the team are inputs too, so the idle clock can't be read off the transcript. */
 const Heard = defineDoc<{ at: number }>({ kind: "jarvis.heard", version: 1, scope: "session", initial: () => ({ at: 0 }) });
@@ -108,7 +111,7 @@ export class MainThread {
 	private readonly settings: () => Settings;
 	private readonly selected: () => readonly Extension[];
 	private readonly state: SliceState | undefined;
-	private readonly onSliceEnd: (slice: SliceEnd) => Promise<void>;
+	private readonly onExchangeEnd: (exchange: ExchangeEnd) => Promise<void>;
 	private readonly log: (line: string) => void;
 	private readonly background = new Set<Promise<void>>();
 	private inFlight = 0;
@@ -121,7 +124,7 @@ export class MainThread {
 		settings: () => Settings;
 		selected: () => readonly Extension[];
 		state: SliceState | undefined;
-		onSliceEnd: (slice: SliceEnd) => Promise<void>;
+		onExchangeEnd: (exchange: ExchangeEnd) => Promise<void>;
 		log: (line: string) => void;
 	}) {
 		this.harness = options.harness;
@@ -131,7 +134,7 @@ export class MainThread {
 		this.settings = options.settings;
 		this.selected = options.selected;
 		this.state = options.state;
-		this.onSliceEnd = options.onSliceEnd;
+		this.onExchangeEnd = options.onExchangeEnd;
 		this.log = options.log;
 	}
 
@@ -151,8 +154,8 @@ export class MainThread {
 			env?: () => ExecutionEnv | undefined;
 			/** Open items and working set a new slice starts from. */
 			state?: SliceState;
-			/** Extensions' work when a slice ends (e.g. memory reflection), in the background. */
-			onSliceEnd?: (slice: SliceEnd) => Promise<void>;
+			/** Extensions' work when an exchange with the user ends (e.g. memory reflection), in the background. */
+			onExchangeEnd?: (exchange: ExchangeEnd) => Promise<void>;
 			/** Per-answer slice, cost and cache numbers, for tuning the boundaries from real use. */
 			log?: (line: string) => void;
 		},
@@ -187,7 +190,7 @@ export class MainThread {
 			settings: options.settings,
 			selected: () => [core, ...selected()],
 			state: options.state,
-			onSliceEnd: options.onSliceEnd ?? (async () => {}),
+			onExchangeEnd: options.onExchangeEnd ?? (async () => {}),
 			log: options.log ?? (() => {}),
 		});
 		await thread.applySettings(options.settings(), context);
@@ -225,7 +228,7 @@ export class MainThread {
 		if (this.settings().model === undefined) return { error: "no model chosen yet: log in to a provider with /login, then pick a model in /settings" };
 		const existing = await this.root.commit((tx) => tx.submissionByRequest(this.root.id, requestId), context);
 		const boundary = existing === undefined ? await this.boundary(typeof content === "string" ? content : textOf({ role: "user", content, timestamp: 0 }), arrival, context) : undefined;
-		if (boundary !== undefined) await this.startSlice(arrival, context);
+		if (boundary !== undefined) await this.startSlice(boundary, arrival, context);
 		// Recorded after the boundary decision, which measures the gap since the previous message.
 		if (existing === undefined) {
 			await this.root.commit(async (tx) => {
@@ -285,16 +288,22 @@ export class MainThread {
 	 * messages and, for a reply, the message replied to. The departing slice's working set is written in the
 	 * background, so the user's message never waits for a summary.
 	 */
-	private async startSlice(arrival: Arrival, context: Context): Promise<void> {
+	private async startSlice(reason: string, arrival: Arrival, context: Context): Promise<void> {
 		const { messages } = await this.root.context(context);
 		const departing = transcriptText(messages);
-		const version = (await this.harness.snapshot(Slice, context))?.startedAt ?? 0;
+		const slice = await this.harness.snapshot(Slice, context);
+		const version = slice?.startedAt ?? 0;
+		const said = [slice?.carried, departing].filter((text) => text !== undefined && text !== "").join("\n\n");
+		// Cut for size, the exchange goes on: what it said waits for the exchange to end.
+		const ended = reason !== "size";
 		await this.root.reset(await this.handoff(arrival, context), context);
 		await this.root.commit(async (tx) => {
-			(await tx.doc(Slice)).startedAt = Date.now();
+			const doc = await tx.doc(Slice);
+			doc.startedAt = Date.now();
+			if (ended) delete doc.carried;
+			else doc.carried = said;
 		}, context);
-		// Reflect on any slice where the user said something: even one line ("in Tokyo till the 14th") can matter.
-		if (messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing));
+		if (messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing, ended ? said : undefined));
 	}
 
 	private async handoff(arrival: Arrival, context: Context): Promise<string> {
@@ -327,15 +336,19 @@ export class MainThread {
 		return parts.join("\n");
 	}
 
-	/** The end of a slice: a new working set (versioned), then the extensions' own work (e.g. memory reflection). */
-	private async reflect(version: number, departing: string): Promise<void> {
+	/**
+	 * The end of a slice: a new working set (versioned), then, if the exchange ended with it, the extensions' own work
+	 * (e.g. memory reflection) over everything the exchange said.
+	 */
+	private async reflect(version: number, departing: string, exchange: string | undefined): Promise<void> {
 		const state = this.state;
-		const slice = { conversation: departing, openItems: state?.openItems.projection(), today: new Date().toISOString().slice(0, 10) };
+		const openItems = state?.openItems.projection();
+		const today = new Date().toISOString().slice(0, 10);
 		if (state !== undefined) {
-			const workingSet = await summarizeSlice(this.models, this.settings().model, { workingSet: state.workingSet.read()?.text, ...slice });
+			const workingSet = await summarizeSlice(this.models, this.settings().model, { workingSet: state.workingSet.read()?.text, conversation: departing, openItems, today });
 			if (workingSet !== undefined && state.workingSet.write({ version, text: workingSet })) this.log(`working set updated from slice ${version}`);
 		}
-		await this.onSliceEnd(slice);
+		if (exchange !== undefined) await this.onExchangeEnd({ conversation: exchange, openItems, today });
 	}
 
 	private inBackground(work: Promise<void>): void {

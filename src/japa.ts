@@ -1,8 +1,8 @@
 // The core, assembled: the main thread (the chief of staff), open items, the team, triggers, the record of the
-// conversation, the UI with /settings, /login and /jobs, and the installer. None of these can be turned off. Everything else is an extension, made from the
-// Host this builds, and hooked in only through it: what it gives each agent, its settings, its safe tools, its slice
-// end, its triggers, its lifecycle, and the channels and model providers it adds through the core's adapters. The
-// agent's computer is the machine this runs on: its tools run here, in `home`.
+// conversation, the UI with /settings, /login and /jobs, and the installer. None of these can be turned off. Everything
+// else is an extension, made from the Host this builds, and hooked in only through it: which agents get it, its
+// settings, its safe tools, its exchange end, its triggers, its lifecycle, and the channel it adds through the core's
+// adapter. The agent's computer is the machine this runs on: its tools run here, in `home`.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -134,7 +134,7 @@ export async function startJapa(
 	const set = new ExtensionSet(
 		[...options.extensions(host), ...(await installs.loadInstalled())],
 		settings,
-		{ models, ui, inbox, problem: (entry, text) => report(`extension ${entry.name}`, text) },
+		{ ui, inbox, problem: (entry, text) => report(`extension ${entry.name}`, text) },
 		log,
 	);
 	extensions = set;
@@ -152,11 +152,11 @@ export async function startJapa(
 			models,
 			registry,
 			settings: () => settings.get(),
-			installed: [...core, team.job, team.helper, ...set.installed()],
+			installed: [...core, team.job, team.helper, ...set.entries],
 			selected: () => [...core, ...set.forChief()],
 			env: () => computer,
 			state,
-			onSliceEnd: (slice) => set.sliceEnded(slice),
+			onExchangeEnd: (exchange) => set.exchangeEnded(exchange),
 			log,
 		},
 		context,
