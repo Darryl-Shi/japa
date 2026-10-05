@@ -240,3 +240,23 @@ test("triggers: a time trigger wakes the chief of staff on schedule (durably), a
 	assert.equal(h.turns.filter((turn) => turn.text.startsWith("[Trigger pinger/tick")).length, ticks, "turned off: no more ticks");
 	await h.done();
 });
+
+test("setup: the chief of staff is told how it's set up from live state; job agents aren't", async () => {
+	const h = await agent({
+		extensions: () => [emailExtension([]), { name: "calendar", title: "Calendar", about: "Your calendar.", enabledByDefault: false }],
+		script: (turn) => {
+			if (turn.job !== undefined) return call("report", { summary: "Done." });
+			if (turn.text.includes("hand it off")) return call("delegate", { title: "Errand", brief: "Do the errand." });
+			return say("ok");
+		},
+	});
+	await h.ask("1", "[Mon 10:00] hand it off");
+	await h.until(() => h.turns.some((turn) => turn.job !== undefined), "the job agent's turn");
+	const chief = h.turns.find((turn) => turn.job === undefined)!.request;
+	assert.match(chief, /You are japa/);
+	assert.match(chief, /you run on faux\/faux-1/);
+	assert.match(chief, /Calendar \(off\): Your calendar\./);
+	assert.match(chief, /Email \(on\)/);
+	assert.ok(!h.turns.find((turn) => turn.job !== undefined)!.request.includes("You are japa"), "job agents aren't told");
+	await h.done();
+});

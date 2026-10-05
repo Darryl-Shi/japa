@@ -19,6 +19,7 @@ import { type Delegation, delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JarvisExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
 import { indexHistory } from "./pi/memory.ts";
+import { setupExtension } from "./pi/setup.ts";
 import { stateExtension } from "./pi/state.ts";
 import { triggers } from "./pi/triggers.ts";
 import type { SettingsFile } from "./settings.ts";
@@ -99,17 +100,18 @@ export async function startJarvis(
 	};
 
 	const stateTools = stateExtension(state);
+	const setup = setupExtension({ settings: () => settings.get(), extensions: () => extensions!, workbench, dataDir });
 	const team = delegationExtensions({
 		openItems: state.openItems,
 		settings: () => settings.get(),
 		origin: (callContext) => main().origin(callContext),
-		withhold: () => [main().core, stateTools, team.chief, schedule.extension, ...extensions!.withheldFromJobs()],
+		withhold: () => [main().core, setup, stateTools, team.chief, schedule.extension, ...extensions!.withheldFromJobs()],
 		waitingOnUser: (conversationId) => holds.has(String(conversationId)),
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
 	const set = new ExtensionSet(options.extensions(host), settings, log);
 	extensions = set;
-	const core = [stateTools, team.chief, schedule.extension];
+	const core = [setup, stateTools, team.chief, schedule.extension];
 
 	thread = await MainThread.open(
 		{
