@@ -19,9 +19,11 @@ export type Settings = {
 	jobModels: Record<string, ModelChoice>;
 	/**
 	 * The workbench: the agent's own machine for shell, files and coding agents, with no secrets. `provider` names a
-	 * machine provider an extension declares (built in: "boat", "local"). None: no computer.
+	 * machine provider an extension declares (built in: "boat", "local"). None: no computer. `extensions`: where
+	 * extensions installed from chat run, each in its own process; default: the workbench's provider, as a machine of
+	 * its own (its own VM, or its own directory).
 	 */
-	machines: { workbench?: MachineConfig };
+	machines: { workbench?: MachineConfig; extensions?: MachineConfig };
 	/** Who the agent works for. Optional; the agent also learns about them in memory. */
 	user?: { name?: string };
 	/**

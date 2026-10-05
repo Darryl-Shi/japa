@@ -11,12 +11,14 @@ japa's runtime keeps three things nobody else holds: the state of every conversa
 
 - Model credentials live in `auth.json`, set with `/login`. Extension keys live in `secrets.json`, set with a secret field in `/settings`. Neither is in code or `settings.json`.
 - The workbench never holds a key. A key a coding agent needs is passed to that one command's environment.
+- An extension installed from chat never sees a key. It gets a placeholder, and japa fills in the real value when a request to the web carries one: only the extension's own keys, masked again in the answer.
 
 ## Code japa didn't ship
 
 - Shell, files and coding agents run on the workbench. Without a workbench, the agent has no shell at all.
-- Extensions run inside japa, the built-in ones and those installed from chat alike, with the Host and its keys. An installed one has nothing a built-in lacks, and nothing taken away.
-- So your tap is the line. Before you're asked, the code is checked without running it: where it starts, that its imports resolve, and its own npm packages installed without running their scripts. The install card says where it came from, its size, the web addresses in it and its packages, and only your tap installs it, whatever the approvals mode.
+- Extensions installed from chat run on the extensions machine, each in its own process. Before you're asked, the code is loaded there to see what it declares. The install card says what it would get, and only your tap installs it, whatever the approvals mode.
+- Once installed, an extension can rewrite only its own tools' calls; for any other tool it can only block. It vouches only for its own tools as safe, and its cards' buttons are its own.
+- Built-in extensions run inside japa. They ship with japa and change only through its code.
 
 ## Actions
 

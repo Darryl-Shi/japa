@@ -61,31 +61,38 @@ export async function startJapa(
 	let extensions: ExtensionSet | undefined;
 	const main = () => thread!;
 
-	// The workbench, opened through the backend its settings name, from the extensions that are on; opened again when
-	// its settings change. Opening starts nothing remote.
-	let opened: { key: string; backend: Backend } | undefined;
-	let failed: string | undefined;
-	const workbench = (): Backend | undefined => {
-		const config = settings.get().machines.workbench;
+	// A machine for a role, opened through the backend its settings name, from the extensions that are on; opened
+	// again when its settings change. Opening starts nothing remote. The workbench is the agent's own computer; the
+	// extensions machine is where extensions installed from chat run, the workbench's provider (as a machine of its
+	// own) unless settings name one.
+	const opened = new Map<string, { key: string; backend: Backend }>();
+	const failed = new Map<string, string>();
+	const machine = (role: "workbench" | "extensions"): Backend | undefined => {
+		const machines = settings.get().machines;
+		const config = machines[role] ?? (role === "workbench" ? undefined : machines.workbench);
 		if (config === undefined) return undefined;
 		const key = JSON.stringify(config);
-		if (opened?.key === key) return opened.backend;
+		const known = opened.get(role);
+		if (known?.key === key) return known.backend;
 		const problem = (why: string) => {
-			if (failed !== why) log(`workbench: ${why}`);
-			failed = why;
+			if (failed.get(role) !== why) log(`${role}: ${why}`);
+			failed.set(role, why);
 			return undefined;
 		};
 		const open = extensions?.backend(config.provider);
 		if (open === undefined) return problem(`no machine provider "${config.provider}" is on`);
+		let backend: Backend;
 		try {
-			opened = { key, backend: open("workbench", config) };
+			backend = open(role, config);
 		} catch (error) {
 			return problem(error instanceof Error ? error.message : String(error));
 		}
-		failed = undefined;
-		log(`workbench: ${opened.backend.id} (starts on first use)`);
-		return opened.backend;
+		opened.set(role, { key, backend });
+		failed.delete(role);
+		log(`${role}: ${backend.id} (starts on first use)`);
+		return backend;
 	};
+	const workbench = () => machine("workbench");
 
 	const inboxes = new Map<string, Inbox>();
 	/** The gate a channel's messages come in through: one per platform, refusing anyone not on its allowlist. */
@@ -148,7 +155,18 @@ export async function startJapa(
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
 	const registry = createRegistry();
-	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => japa.apply(callContext), problem: (about, text) => report(about, text), context });
+	const installs = installer({
+		host,
+		dataDir,
+		extensions: () => extensions!,
+		registry,
+		machine: () => machine("extensions"),
+		models,
+		inbox,
+		apply: (callContext) => japa.apply(callContext),
+		problem: (about, text) => report(about, text),
+		context,
+	});
 	/** A problem with something japa runs: the chief of staff hears it once, and can have it fixed. Kept until it's open. */
 	const early: Array<[string, string | undefined]> = [];
 	const report = (about: string, text: string | undefined) => {
@@ -225,6 +243,7 @@ export async function startJapa(
 		return (await ui.show({ text: message.text, buzz: message.buzz, ...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }) }))?.messageId;
 	}, context);
 	await japa.apply(context);
+	installs.resume();
 	log("japa: ready");
 	return japa;
 }

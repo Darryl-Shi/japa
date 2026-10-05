@@ -1,6 +1,6 @@
 # How it works
 
-japa has a **core**, which is what japa is and can't be turned off. Everything else is an **extension** of one kind, plugged in through one typed adapter per thing japa is built from. Agent-written code runs on the workbench; the one exception is an extension, which runs inside japa like the built-in ones, once you've tapped Install.
+japa has a **core**, which is what japa is and can't be turned off. Everything else is an **extension** of one kind, plugged in through one typed adapter per thing japa is built from. Code japa didn't ship runs on a machine, never inside the runtime that holds the keys.
 
 ```
                     ┌──────────────────────────── core (always on) ─────────────────────────────┐
@@ -14,12 +14,14 @@ japa has a **core**, which is what japa is and can't be turned off. Everything e
                                     │ the Host: settings, secrets, models, workbench,│
                                     │ cards, wake, holds, emit, history              │
                     ┌───────────────┴───────────── extensions ───────────────────────┴───────────┐
-                    │ in-process, all alike: Telegram · Memory · Approvals · Web · Computer ·     │
-                    │ Screen · Claude Code · Codex · boat.dev · Local machine · installed ones   │
-                    └─────────────────────────────────────────────────────────────────────────────┘
-                             │ bash, files, screen, coding agents
-                             ▼
-       Workbench: the agent's own machine (boat.dev, by default), holding none of your secrets
+                    │ built in, in-process: Telegram · Memory · Approvals · Web · Computer ·      │
+                    │ Screen · Claude Code · Codex · boat.dev · Local machine                    │
+                    │ installed from chat: a stand-in here, forwarding to its code ─────────┐    │
+                    └───────────────────────────────────────────────────────────────────────┼────┘
+                             │ bash, files, screen, coding agents                exec only  │
+                             ▼                                                              ▼
+       Workbench: the agent's own machine (boat.dev,       Extensions machine: each installed extension's
+       by default), holding none of your secrets           code in its own process, keys as placeholders
 ```
 
 ## The core
@@ -41,7 +43,7 @@ Each thing japa is built from has one typed adapter in the core, and every imple
 | **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: `chief`, `jobs`, `settings`, `safeTools`, `onSliceEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen, Claude Code, Codex |
 | **Channel** | `Channel` (`src/pi/extension.ts`): `platform`, `open({ inbox, ui })`, `show(card)`, `close()`. Messages go in through the `Inbox`, the allowlist gate (`src/channels/inbox.ts`); presses, replies and commands go to the `UI` | `channel: { platform, open, show, close }` | Telegram |
 | **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in `auth.json` through `/login` | `providers: [createProvider(...)]` | pi-ai's providers |
-| **Machine** | `Backend` (`exec`, optionally `viewUrl`), opened by an `OpenBackend` (`src/core/backend.ts`) for a role | `backends: { "<name>": (role, config) => backend }`, picked by name in `machines.workbench` | boat.dev, Local machine |
+| **Machine** | `Backend` (`exec`, optionally `viewUrl`), opened by an `OpenBackend` (`src/core/backend.ts`) for a role | `backends: { "<name>": (role, config) => backend }`, picked by name in `machines.workbench` and `machines.extensions` | boat.dev, Local machine |
 
 While an extension is on, the core registers its providers and machines, and opens its channel and shows cards on it. When the extension is turned off, the core drops them and closes the channel.
 
@@ -78,4 +80,4 @@ Memory is one free-form document, `memory/memory.md` in the data directory. It c
 
 ## Extensions installed from chat
 
-They run inside japa exactly like the built-in ones: same Host, same adapters, no restrictions. The line is your Install tap. The details are in [Extensions](extensions.md#from-chat).
+They run sandboxed, on a machine of their own. Each one is split into its code, which runs there, and a stand-in that japa registers. The details are in [Extensions](extensions.md#how-installed-extensions-run).
