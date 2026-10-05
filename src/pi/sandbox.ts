@@ -34,6 +34,8 @@ const ROOT = ".japa";
 /** Base64 per command, to keep each command a modest size. */
 const CHUNK = 512 * 1024;
 const POLL_S = 25;
+/** Tries for one that won't start, before waiting for a change. */
+const RETRIES = 3;
 
 export type ToolSpec = { name: string; description: string; parameters: unknown; replay?: "safe" | "unsafe"; executionMode?: "parallel" | "sequential" };
 export type PiSpec = { name: string; tools: ToolSpec[]; sections: Array<{ key: string; tag?: boolean }>; hooks: Array<{ task: string; names: string[] }> };
@@ -349,7 +351,13 @@ process.exit(wanted.every(found) ? 0 : 1);`;
 				this.failures = 0;
 				this.options.problem(undefined);
 			})();
-			this.starting.catch(() => (this.starting = undefined));
+			// A start that failed half way leaves nothing behind: no poll, no process.
+			this.starting.catch(() => {
+				this.starting = undefined;
+				const where = this.where;
+				this.where = undefined;
+				if (where !== undefined) void this.send("shutdown", {}, where).catch(() => {});
+			});
 		}
 		return this.starting;
 	}
@@ -374,7 +382,7 @@ process.exit(wanted.every(found) ? 0 : 1);`;
 	 */
 	start(): void {
 		this.wanted = true;
-		if (this.live()) void this.up().catch((error: unknown) => this.failed(`it didn't start: ${message(error)}`));
+		if (this.live()) void this.up().catch((error: unknown) => this.failed(`it didn't start: ${message(error)}`, true));
 	}
 
 	/** Turned off: its channel closed, its own stop run, its process ended. */
@@ -390,11 +398,15 @@ process.exit(wanted.every(found) ? 0 : 1);`;
 		this.where = undefined;
 	}
 
-	/** Report it, and while it's wanted, try again later (sooner at first). */
-	private failed(text: string): void {
+	/**
+	 * Report it, and while it's wanted, try again later (sooner at first). One that won't start is tried a few times,
+	 * then left until it's turned off and on, reinstalled, or japa restarts: its code won't change by itself.
+	 */
+	private failed(text: string, starting = false): void {
 		this.log(text);
 		this.options.problem(text);
 		if (!this.wanted) return;
+		if (starting && this.failures >= RETRIES) return this.log(`not trying again (${RETRIES} tries) until it's turned off and on, or reinstalled`);
 		const generation = this.generation;
 		const delay = Math.min(10 * 60_000, 15_000 * 2 ** this.failures++);
 		setTimeout(() => {

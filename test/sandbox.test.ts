@@ -46,7 +46,14 @@ async function install(h: Awaited<ReturnType<typeof agent>>, machine: LocalBacke
 test("sandbox: a key goes into a request only on japa's side, a hook only blocks others' tools, and it vouches only for its own", async () => {
 	const seen: string[] = [];
 	const server = createServer((request, response) => {
-		seen.push(request.headers.authorization ?? "");
+		seen.push(`${request.url} ${request.headers.authorization ?? ""}`);
+		if (request.url === "/models") return void response.end(JSON.stringify({ data: [{ id: "acme-2" }] }));
+		if (request.url === "/chat/completions") {
+			// An OpenAI-compatible stream, as the provider's models are served.
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			const chunk = (delta: object, finish: string | null) => `data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "acme-1", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+			return void response.end(`${chunk({ role: "assistant", content: "Hello from Acme" }, null)}${chunk({}, "stop")}data: [DONE]\n\n`);
+		}
 		response.end(request.headers.authorization === "Bearer real-key" ? `Sunny (you sent ${request.headers.authorization})` : "bad key");
 	});
 	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
@@ -84,6 +91,10 @@ export default function (host) {
 		auth: { apiKey: envApiKeyAuth("Acme", []) },
 		models: [{ id: "acme-1", name: "Acme 1", api: "openai-completions", provider: "acme", baseUrl: "${url}", input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 }],
 		api: openAICompletionsApi(),
+		fetchModels: async (context) => {
+			const response = await fetch("${url}/models", { headers: { authorization: "Bearer " + context.credential.key } });
+			return (await response.json()).data.map((model) => ({ id: model.id, name: model.id, api: "openai-completions", provider: "acme", baseUrl: "${url}", input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 }));
+		},
 	});
 	return {
 		name: "weather",
@@ -121,12 +132,23 @@ export default function (host) {
 		{ text: "Sunny (you sent Bearer japa-secret:weather.key) (my key: japa-secret:weather.key)" },
 		"the code only ever sees a placeholder, even when the answer echoes the key",
 	);
-	assert.deepEqual(seen, ["Bearer real-key"], "the request went out with the real key");
+	assert.deepEqual(seen, ["/forecast Bearer real-key"], "the request went out with the real key");
 
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] note it"), { text: "Noted: milk" }, "it can't rewrite another extension's call or result");
 	assert.ok(h.host.safeTools().has("forecast"));
 	assert.ok(!h.host.safeTools().has("note"), "it vouches only for its own tools");
 	assert.equal(h.host.models.getModel("acme", "acme-1")?.name, "Acme 1", "its provider is registered here");
+
+	// Its key from /login: its model list is fetched there with the key filled in here, and a request to one of its
+	// models runs here, on pi-ai's built-in API.
+	await h.host.models.login("acme", "api_key", { prompt: async () => "acme-key", notify: () => {} });
+	const refreshed = await h.host.models.refresh({ providers: ["acme"] });
+	assert.equal(refreshed.errors.size, 0, [...refreshed.errors.values()].map(String).join());
+	assert.ok(h.host.models.getModel("acme", "acme-2"), "its fetched models are here");
+	assert.ok(seen.includes("/models Bearer acme-key"));
+	const reply = await h.host.models.completeSimple(h.host.models.getModel("acme", "acme-1")!, { messages: [{ role: "user", content: "hi", timestamp: 0 }] });
+	assert.deepEqual(reply.content, [{ type: "text", text: "Hello from Acme" }], reply.errorMessage ?? "");
+	assert.ok(seen.includes("/chat/completions Bearer acme-key"), "the model request carried its /login key");
 
 	// One that only answers calls: when its process is gone (its machine slept), the next call just starts it again.
 	await machine.exec("kill $(cat .japa/extensions/weather/*/pid)");
