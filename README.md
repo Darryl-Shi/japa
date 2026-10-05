@@ -1,39 +1,188 @@
-# pi-jarvis
+# japa
 
-A personal chief of staff on Pi Durable, reached over Telegram. See [PLAN.md](PLAN.md).
+A personal chief of staff you text on Telegram. It answers quickly, remembers you, and hands longer work to a team of job agents that run on their own computer. Their results come back as a reply to the message that asked for them. It's built on [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable), so everything it's in the middle of survives a restart.
 
-## Run
+It should feel like texting one competent person. The chat never blocks, small questions stay small, and it asks before anything that sends, spends, deletes or deploys.
+
+## Install
+
+On any Linux machine that stays on (a small VM is plenty):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | bash
+```
+
+The script asks for:
+- a Telegram bot token (from [@BotFather](https://t.me/BotFather));
+- a model provider and its API key, or a subscription login. Any [pi-ai](https://github.com/earendil-works/pi) provider works: Anthropic, OpenAI, Google, OpenRouter, Z.ai and others;
+- your name and time zone;
+- optionally a [boat.dev](https://boat.dev) key, for the agent's own computer;
+- optionally a [Parallel](https://parallel.ai) key, for web search.
+
+It brings its own Node 24 if the machine has none and runs the agent as a systemd service. At the end it asks you to send `/whoami` to your bot, and puts you on the allowlist.
+
+Run the same command again to update. For an unattended install, every answer can come from the environment instead (see the top of `install.sh`).
+
+## How it works
+
+```
+                    ┌──────────────────────────── core (always on) ─────────────────────────────┐
+ Telegram ─► Inbox ─┤  Main thread ──── the chief of staff: one conversation, worked in slices   │
+ (allowlist)        │       │  delegate / check_job / conclude_job          message_user ─► UI ─┼─► cards back
+                    │       ▼                                                                    │   to Telegram
+                    │  Team: one job agent per job ──── report ──► back to the chief of staff    │
+                    │  Open items · Triggers (schedules, events) · UI cards · /settings          │
+                    └───────────────▲─────────────────────────────────────────────▲──────────────┘
+                                    │ the Host: settings, secrets, models, workbench,│
+                                    │ cards, wake, holds, emit, history, inbox       │
+                    ┌───────────────┴───────────── extensions ───────────────────────┴───────────┐
+                    │ Telegram · Memory · Approvals · Web · Computer · Screen · Claude Code · Codex│
+                    └────────────────────────────────────────────────────────────────────────────┘
+                                              │ bash, files, screen, coding agents
+                                              ▼
+                                  Workbench: its own machine (boat.dev), holding none of your secrets
+```
+
+**The core** can't be turned off. It's made of:
+- **the main thread,** which is the chief of staff;
+- **open items,** the record of what's been promised, asked or is in progress;
+- **the team** of job agents;
+- **triggers;**
+- **the UI** and `/settings`.
+
+**Everything else is an extension.** Each extension is built from one shape, `JarvisExtension` in `src/pi/extension.ts`, and is hooked in only through the **Host**. It never touches the main thread directly.
+
+### One message, end to end
+
+1. **In.** Telegram passes your message to its Inbox, which refuses anyone not on the allowlist. The message is saved before anything runs, so if the process dies, the answer still goes out after the restart.
+2. **A slice.** The chief of staff doesn't carry the whole history. A new slice starts from **state** rather than from history: open items, a short working set, and the last few messages. A new slice begins when any of these happens:
+   - you've been quiet for a while;
+   - the context would grow too large;
+   - you send `/new`;
+   - you reply to something from an earlier slice.
+
+   The departing slice is summarised and reflected on in the background, so your message never waits. History search brings back anything older.
+3. **Answer, or delegate.** Quick things it answers directly. Longer work goes to `delegate`, which starts a job agent in its own conversation, with its own model, on the workbench. The chief of staff replies at once ("on it"), and the chat is free again.
+4. **Work.** The job agent has these tools:
+   - web search and fetch;
+   - bash and files;
+   - the screen;
+   - Claude Code or Codex for coding.
+
+   It can split work across subagents, and decides when to `report`.
+5. **Approval.** Every tool call passes the Approvals hook first. A fast model reviews it. Anything that sends as you, spends, deletes your things, deploys or changes accounts is **blocked, not held**:
+   - you get **Approve / Deny / Always** buttons;
+   - the agent ends its turn;
+   - your decision comes back to it as a message;
+   - an approved call then goes through exactly once.
+
+   Every reviewed call is written to `data/audit.jsonl`.
+6. **Back to you.** A report wakes the chief of staff, not you. It checks the report, can question or redirect the job, connects it with what it knows, and decides what you hear: now, silently, or not yet. Results arrive threaded under your original message. A job stays open until you accept or drop it.
+7. **On its own.** Triggers wake the chief of staff without you, on a schedule ("08:00 on weekdays", "every 15m") or on an event. They're durable, so a sleeping schedule survives restarts.
+
+### Memory
+
+Memory is one free-form document, `~/jarvis-home/memory.md`, holding what the agent knows about you and your world. It changes only through small edits, never wholesale rewrites:
+- `remember` during a conversation;
+- a reflection at the end of each slice, which also marks things that stopped being true.
+
+The directory is a git repo, so every change is a commit you can read and undo. Everything said before is searchable (`data/history.sqlite`, rebuilt from the transcript if lost).
+
+### Default extensions
+
+Each one can be switched off in `/settings`:
+
+| Extension | Gives | Hooks into |
+|---|---|---|
+| Telegram | the channel: messages, replies, buttons | `channel`, `start`/`stop`, renders UI cards |
+| Memory | `remember`, `search_history`, memory in the prompt | the chief of staff; `onSliceEnd` (reflection) |
+| Approvals | review before every tool call, the buttons, the audit log | every agent (`beforeTool`); UI cards; `wake`; holds |
+| Web | `web_search`, `web_fetch` (Parallel, fast mode) | every agent; a key in `/settings` |
+| Computer, Screen | bash and files; the `computer` tool on the workbench's desktop | every agent |
+| Claude Code, Codex | `claude_code`, `codex` | job agents only; a key is passed to one command, never stored on the workbench |
+
+### Writing an extension
+
+```ts
+export function weatherExtension(host: Host): JarvisExtension {
+  return {
+    name: "weather",
+    title: "Weather",
+    about: "Morning forecast, and a forecast tool.",
+    settings: [{ key: "city", label: "City", kind: "text" }],   // appears in /settings
+    defaults: { city: "Singapore" },
+    chief: [forecastTools(host)],                                // Pi tools, prompt sections, hooks, durable tasks
+    jobs: [forecastTools(host)],
+    safeTools: ["forecast"],                                     // never needs approval
+    triggers: [{ name: "morning", when: { at: "07:30" }, prompt: "Check today's forecast; tell me only if it matters." }],
+  };
+}
+```
+
+An extension can also:
+- run work when a slice ends (`onSliceEnd`);
+- start and stop as it's switched (`start`/`stop`);
+- show cards and handle their buttons (`host.ui`);
+- wake an agent (`host.wake`) or raise an event that fires triggers (`host.emit`);
+- be a messaging channel (`channel`). A channel reaches the agent only through `host.inbox(platform)`, so it gets the allowlist for free.
+
+The only other configurable abstraction is the **backend**, meaning which machine is the workbench. It's infrastructure, not a capability, so it's set in `machines.workbench` in `data/settings.json`:
+- `boat`: built in;
+- `local`: for development;
+- any provider an extension registers.
+
+## Configuration
+
+Send `/settings` to the bot. It's a button menu for the models, your name and time zone, and each extension's switch and options. Keys are set by replying to the bot's question, and that message is then deleted. Changes apply immediately.
+
+Files in `data/` (gitignored, readable only by you):
+
+| File | Holds |
+|---|---|
+| `settings.json` | settings, re-read on change. The **allowlist** is edited only here: per platform, the user ids that may talk to the agent. An empty list lets no one in. |
+| `auth.json` | model credentials (API keys or subscription logins) |
+| `secrets.json`, `.env` | extension keys and the bot token. Environment variables also work: `TELEGRAM_BOT_TOKEN`, `BOAT_API_KEY`, `PARALLEL_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `CODEX_API_KEY` |
+| `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
+| `audit.jsonl`, `jarvis.log` | every reviewed action; the log |
+
+**The workbench** on boat.dev is set with `{ "provider": "boat", "type": "small", "screen": true, "idleSeconds": 7200 }`. It sleeps after `idleSeconds` unused, and each command pushes that deadline back. The next command wakes it with the same disk.
+
+## Security
+
+- **Only the allowlist gets in.** Every channel goes through the same gate, and the agent has no tool to change the list.
+- **Secrets never live on the workbench.** Model credentials and keys stay in the harness. A key a coding agent needs is passed to that one command's environment.
+- **Agent code never runs in the harness.** Shell, files and coding agents run on the workbench. Without one, the agent has no shell at all.
+- **Consequential actions need you,** through Approvals. Standing permissions come only from your "Always" taps and can be removed in `/settings`.
+
+## Development
 
 ```bash
 npm install
-mkdir -p data
-npx @earendil-works/pi-ai login anthropic && mv auth.json data/   # or any provider pi-ai supports
-export TELEGRAM_BOT_TOKEN=...                                       # from @BotFather; later changeable in /settings → Telegram
-npm start
+npm test          # the whole agent on pi-ai's faux provider: no API key needed
+npm run check     # type-check
 ```
 
-Send `/whoami` to the bot in a private chat, then put the ID it gives you on the allowlist in `data/settings.json`:
-
-```json
-{ "allowlist": { "telegram": [123456789] } }
+```
+src/
+  main.ts          the default extensions, and start
+  jarvis.ts        the core, assembled; builds the Host
+  core/            our formats and services: UI cards, schedules, approvals, memory, state (no Pi imports)
+  pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host)
+  channels/        the Inbox (allowlist gate), /settings, Telegram
+  backends/        workbench providers: boat, local
 ```
 
-The allowlist is a hard gate: anyone not on it is refused before anything runs, an empty list lets no one in, and only private chats count. It can only be edited in that file (not in `/settings`, and the agent has no tool for it). The first ID is where the agent sends its own messages. Every messaging channel goes through the same gate (`src/channels/inbox.ts`), with its own list per platform.
+Pi is pinned at 1.0.2 (`pi-durable`, `pi-ai`, `chord`). Pi is experimental, so our data formats live in `src/core`, and only `src/pi` imports Pi.
 
-Memory, the agent's own notes about you, lives in `~/jarvis-home/memory.md` (set `JARVIS_HOME` to put it elsewhere). It's yours to read and edit, and if that directory is a git repo, every change the agent makes becomes a commit. Search over everything said before is in `data/history.sqlite`, and it can be rebuilt from the transcript.
+## Next
 
-The agent's own computer (the workbench) is configured in `data/settings.json`. For boat.dev, set `BOAT_API_KEY` and use:
+The bar is daily use, compared with the agent it replaces:
+- a quick question gets a reply in seconds;
+- it recalls things from weeks ago without being reminded;
+- one thread is enough;
+- the base prompt stays small.
 
-```json
-{ "machines": { "workbench": { "provider": "boat", "type": "small", "idleSeconds": 7200, "screen": true } } }
-```
-
-`idleSeconds` puts the machine to sleep after that long unused: every command pushes boat's auto-stop deadline back, so it never stops mid-work, and the next command wakes it with the same disk. Free-trial accounts require it (at most 7200).
-
-`screen: true` lets the agent see and use the machine's desktop as well. The machine is created on first start (with none of your boat account's secrets), remembered in `data/boat-machines.json`, and resumed whenever it's needed. For local development, use `{ "provider": "local", "home": "data/machines/workbench" }`.
-
-Send `/settings` to the bot for everything else: models, your name and time zone, and every extension with its on/off switch and options. Default extensions are Web (Parallel), Claude Code, Codex, Approvals (smart mode), Memory, Computer and Screen. Keys are set there too, by replying to the bot's question. They're stored in `data/secrets.json`, not in settings, and the message is deleted. Environment variables also work: `PARALLEL_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`, and `CODEX_API_KEY`.
-
-Settings live in `data/settings.json` and are re-read on every message, so there's no restart. Every action reviewed for approval is logged in `data/audit.jsonl`.
-
-`npm test` runs the tests against pi-ai's faux provider, so no API key is needed. `npm run check` type-checks.
+What comes next:
+- **Habits.** Email and calendar as extensions, skills (remembered how-tos), behaviours (extensions with triggers), and digests instead of interruptions.
+- **It extends itself.** The agent builds its own extensions, which run outside the harness, are proven, then switched on in `/settings`. The first test is WhatsApp.
+- **Voice.**
