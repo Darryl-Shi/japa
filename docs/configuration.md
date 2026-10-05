@@ -17,7 +17,7 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 | `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
 | `memory/` | its memory of you, a git repo |
 | `open-items.json`, `working-set.json` | what's in progress, and the short working set each slice starts from |
-| `extensions/` | extensions installed from chat: each one's code, what it declared, and its provider's last model list |
+| `extensions/` | extensions installed from chat: each one's code (and its own npm packages) in `<name>/<version>/` |
 | `approvals.json`, `audit.jsonl` | standing permissions; every reviewed action |
 | `boat-machines.json` | which boat.dev machine belongs to each role |
 | `japa.log` | the log |
@@ -30,7 +30,6 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 | `delegateModel` | a job's model when the chief doesn't pick one. The default is the chief's model. |
 | `jobModels` | named models the chief can assign to a job, such as `fast` or `strong` |
 | `machines.workbench` | the agent's own computer, by machine provider name, with that provider's options |
-| `machines.extensions` | where extensions installed from chat run. The default is the workbench's provider, as a machine of its own. |
 | `user`, `timezone` | your name, and the time zone stamped on messages |
 | `context` | when a new slice starts: `idleMinutes` without a message, or when a request would pass `sliceTokens` |
 | `allowlist` | per platform, who may talk to it. It's edited only in this file. |
@@ -47,4 +46,3 @@ A machine is opened when it's first needed, and again when its settings change.
 
 **The workbench** on boat.dev is set with `{ "provider": "boat", "type": "small", "screen": true, "idleSeconds": 7200 }`, and its key in `/settings` → boat.dev. It sleeps after `idleSeconds` unused, and each command pushes that deadline back. The next command wakes it with the same disk.
 
-**The extensions machine** follows the workbench's settings unless `machines.extensions` says otherwise. On boat.dev that gives it a VM of its own; locally, a directory of its own (`data/machines/extensions`). Each installed extension lives under `~/.japa/extensions/<name>/` there, with its own data in `data/`. Node 24 is installed under `~/.japa/node` if the machine doesn't have it.

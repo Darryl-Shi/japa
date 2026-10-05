@@ -44,14 +44,14 @@ Just message it. A few commands help:
 ## Keeping you safe
 
 - **Only you get in.** People not on its allowlist are turned away before anything runs, and the assistant can't change that list.
-- **Your keys stay put.** Passwords and API keys stay on the machine japa runs on. Its own computer, and any ability it builds for itself, never hold them.
-- **New abilities run apart.** Anything it builds for itself is tested on a separate machine before you're asked, and it keeps running there, away from your keys and data.
+- **Your keys stay put.** Passwords and API keys stay on the machine japa runs on. Its own computer never holds them.
+- **New abilities need your yes.** Anything it builds for itself is checked first, then waits for your tap. Once installed, it works exactly like a built-in ability, with the same access, so only install what you'd trust.
 - **You decide what matters.** Consequential actions wait for your tap. "Always" permissions come only from you, and you can remove them in `/settings`.
 
 ## Learn more
 
 - [How it works](docs/architecture.md): the main parts and how a message flows through them
-- [Abilities (extensions)](docs/extensions.md): what's built in, how to add more, and how new ones are kept apart
+- [Abilities (extensions)](docs/extensions.md): what's built in, and how to add more
 - [Configuration](docs/configuration.md): settings, where data lives, and machines
 - [Security](docs/security.md): the lines it holds, and where
 - [Development](docs/development.md): running the tests and finding your way around the code

@@ -1,7 +1,7 @@
 // A whole agent (core plus the given extensions) on pi-ai's faux provider, with a fake channel surface that records
 // every card it's asked to show.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -9,7 +9,6 @@ import type { AssistantMessage, JsonObject, Context as PiContext } from "@earend
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { Inbox } from "../src/channels/inbox.ts";
-import { LocalBackend } from "../src/backends/local.ts";
 import type { Backend } from "../src/core/backend.ts";
 import type { Incoming } from "../src/core/message.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
@@ -124,20 +123,4 @@ export async function agent(options: {
 			await rm(dataDir, { recursive: true, force: true });
 		},
 	};
-}
-
-/**
- * A machine as a test's extensions run on: the workbench (extensions installed from chat run on its provider unless
- * settings say otherwise), with the packages japa's own extensions use already there, as a machine may come with them.
- */
-export async function machineWithPackages(dataDir: string): Promise<LocalBackend> {
-	const machine = new LocalBackend(join(dataDir, "machine"));
-	await symlink(join(import.meta.dirname, "..", "node_modules"), join(machine.home, "node_modules"), "dir");
-	return machine;
-}
-
-/** Wait longer than `until` does: a sandbox starts a process on its machine. */
-export async function eventually(check: () => boolean, what: string, seconds = 60): Promise<void> {
-	for (let i = 0; i < seconds * 20 && !check(); i++) await sleep(50);
-	assert.ok(check(), `timed out waiting for ${what}`);
 }

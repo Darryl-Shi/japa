@@ -4,7 +4,7 @@ Everything beyond the core is an extension: one kind, `JapaExtension` (`src/pi/e
 
 ## Built in
 
-Each one can be switched off in `/settings`. Built-in extensions run inside japa.
+Each one can be switched off in `/settings`. Every extension runs inside japa, built in or installed from chat.
 
 | Extension | Gives | Hooks into |
 |---|---|---|
@@ -52,25 +52,12 @@ A key never goes in code: it goes in a secret settings field, which the user set
 The agent extends itself while running:
 
 1. A job writes the extension on the workbench. It can be one `.ts` file, or a directory with a `package.json` for its own npm packages. Its default export is `(host: Host) => JapaExtension`.
-2. The chief of staff calls `install_extension`. The code is copied to `extensions/` in the data directory and loaded in its sandbox, to see what it declares. If it doesn't load, the agent hears why and you're never asked.
-3. If it loads, you get a card saying what it would get: its tools, hooks, providers, channel, keys and npm packages. It has Install and Don't install buttons, every time, whatever the approvals mode.
-4. When you tap Install it's on from your next message, with no restart.
+2. The chief of staff calls `install_extension`. The code is copied to `extensions/` in the data directory and checked without running it: where it starts, that its imports resolve, and its own npm packages installed (without their scripts). Packages japa has are japa's, so it runs against what japa runs. If it wouldn't load, the agent hears why and you're never asked.
+3. Otherwise you get a card: where it's from, its size, the web addresses in it, and its own packages. It has Install and Don't install buttons, every time, whatever the approvals mode.
+4. When you tap Install it's loaded, and on from your next message, with no restart.
 
-Installing a new version replaces the old one in place. At start, installed extensions are registered again from what they declared, without waiting for their machine. `remove_extension` takes one out.
+Installing a new version replaces the old one in place. At start, installed extensions load again; one that no longer loads is reported to the chief of staff. `remove_extension` takes one out.
 
 ## How installed extensions run
 
-The agent loop, saved state, keys and your consent stay in japa, but an installed extension's code doesn't run there. Each one is split in two (`src/pi/sandbox.ts`):
-- **On the extensions machine,** its code runs in a small host process (`src/sandbox/host.mjs`), with its own npm packages. Its Host is a set of requests back to japa, and its keys are placeholders.
-- **In japa,** a stand-in is registered from what the code declared. Every tool, prompt section, hook, channel call and lifecycle call is forwarded to the code through nothing but the machine's `exec`: one command per call, plus a long poll for what the code asks of japa.
-
-japa holds the trust lines on its side:
-- **Keys.** The code's `host.secrets.get` returns a placeholder such as `japa-secret:weather.key`. A web request carrying one goes out through japa, which fills in the real value (only for the extension's own keys) and masks it again in the answer.
-- **Hooks.** A hook can rewrite only the extension's own tools' calls and results. For anyone else's tool it can only block.
-- **Safe tools.** An extension vouches only for its own tools.
-- **Cards and channels.** Its cards' buttons must start with its own name. A channel's messages still come in only through its platform's inbox.
-- **Providers.** A model provider becomes a provider in japa, on pi-ai's built-in API for each model, with its key from `/login`. Its last model list is kept, so its models are available before its machine is.
-
-An extension with a life of its own (a channel, or something it starts) keeps its process running. If the process dies, the chief of staff hears about it and the process is brought back. One that won't start is tried three times, then left until it's turned off and on or reinstalled. An extension that only answers calls starts on its first call, so its machine can sleep.
-
-Durable tasks and machine providers are only for built-in extensions.
+Exactly like the built-in ones: inside japa, made from the same Host, through the same adapters. An installed extension can do anything a built-in can (tools, hooks, wraps, durable tasks, model providers, machine providers, a channel) and reads its keys with `host.secrets.get`. That's why only your tap installs one.
