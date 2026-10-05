@@ -346,7 +346,7 @@ test("jobs: /jobs lists what the team is working on, shows a job's detail and re
 	await h.done();
 });
 
-test("messages: message_user while replying to the user is refused (no double message); message_job reaches the job, never the user", async () => {
+test("messages: an answer goes back the way its input came, once; message_job reaches the job, never the user", async () => {
 	let job = "";
 	const h = await agent({
 		extensions: () => [],
@@ -358,18 +358,20 @@ test("messages: message_user while replying to the user is refused (no double me
 			if (turn.text.includes("look into flights")) return call("delegate", { title: "Flights", brief: "Compare fares for May." });
 			if (turn.text.startsWith("Started job")) {
 				job = /Started job (\w+)/.exec(turn.text)![1]!;
-				return call("message_user", { text: "Use the QR login instead.", urgency: "now", job });
+				return say("On it.");
 			}
-			if (turn.text.startsWith("Not sent")) return say("On it.");
 			if (turn.text.includes("— done] Working on it.")) return call("message_job", { id: job, text: "Check May 3 too." });
+			if (turn.text.startsWith("Sent to")) return say("");
+			if (turn.text.includes("May 3 is cheaper.")) return say("May 3 is the cheaper day.");
 			return say("Noted.");
 		},
 	});
 	assert.deepEqual(await h.ask("1", "[Mon 10:00] look into flights"), { text: "On it." });
-	await h.until(() => h.turns.some((turn) => turn.text.includes("May 3 is cheaper.")), "the job's answer to the chief of staff's message");
-	const shown = h.cards.map((card) => card.card.text).join("\n");
-	assert.doesNotMatch(shown, /QR login/, "the duplicate never reached the user");
-	assert.doesNotMatch(shown, /Check May 3/, "nor did the message to the job");
+	await h.until(() => h.cards.some((card) => card.card.text === "May 3 is the cheaper day."), "the answer to the job's report");
+	await sleep(200);
+	const shown = h.cards.map((card) => card.card.text);
+	assert.deepEqual(shown, ["May 3 is the cheaper day."], "the empty answer said nothing; the message to the job never reached the user; the answer went once");
+	assert.deepEqual(h.cards[0]!.card.replyTo, { channel: "test", chatId: "1", messageId: "1" }, "threaded under the request");
 	await h.done();
 });
 
@@ -460,7 +462,7 @@ test("triggers: a time trigger wakes the chief of staff on schedule (durably), a
 		extensions: () => [
 			{ name: "pinger", title: "Pinger", about: "", triggers: [{ name: "tick", when: { every: "1s" }, prompt: "Check the oven." }, { name: "mail", when: { event: "mail.arrived" }, prompt: "New mail; decide if it matters." }] },
 		],
-		script: (turn) => (turn.text.startsWith("[Trigger") ? call("message_user", { text: `About: ${turn.text.slice(0, 60)}`, urgency: "silent" }) : say("ok")),
+		script: (turn) => (turn.text.startsWith("[Trigger") ? say(`About: ${turn.text.slice(0, 60)}`) : say("ok")),
 	});
 	await h.until(() => h.turns.some((turn) => turn.text.startsWith("[Trigger pinger/tick,") && turn.text.endsWith("] Check the oven.")), "the time trigger");
 	await h.until(() => h.cards.some((shown) => shown.card.text.startsWith("About: [Trigger pinger/tick")), "the chief of staff's message about it");

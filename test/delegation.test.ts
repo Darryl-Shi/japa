@@ -8,7 +8,8 @@ import type { AssistantMessage, JsonObject, Context as PiContext } from "@earend
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { OpenItems, WorkingSetFile } from "../src/core/state.ts";
-import { delegationExtensions, type OutboxMessage } from "../src/pi/delegation.ts";
+import { delegationExtensions } from "../src/pi/delegation.ts";
+import type { OutboxMessage } from "../src/pi/inputs.ts";
 import { MainThread } from "../src/pi/harness.ts";
 import { stateExtension } from "../src/pi/state.ts";
 import { DEFAULTS } from "../src/settings.ts";
@@ -51,7 +52,6 @@ async function setup(script: (turn: Turn) => AssistantMessage | Promise<Assistan
 		openItems: state.openItems,
 		settings: () => ({ delegateModel: { provider: "faux", modelId: "faux-1" }, jobModels: { fast: { provider: "faux", modelId: "faux-fast" } } }),
 		origin: (callContext) => thread!.origin(callContext),
-		send: (id, message, callContext) => thread!.send(id, message, callContext),
 		withhold: () => [thread!.core, stateTools, team.chief],
 	});
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" }, context: { idleMinutes: 60, sliceTokens: 1_000_000 } });
@@ -87,15 +87,14 @@ test("a job reports to the chief of staff, who decides what the user hears; repo
 		}
 		if (turn.text.includes("research the venue")) return call("delegate", { title: "Venue research", brief: "Find three venues near the office." });
 		if (turn.text.startsWith("Started job")) return say("On it.");
-		if (turn.text.startsWith("[Report from job t1")) return call("message_user", { text: "Venues: A, B, C. I'd pick B, it's closest.", urgency: "silent", job: "t1" });
-		if (turn.text === "Sent.") return say("(handled)");
+		if (turn.text.startsWith("[Report from job t1")) return say("Venues: A, B, C. I'd pick B, it's closest.");
 		if (turn.text.includes("check parking")) return call("message_job", { id: "t1", text: "Also check parking at B." });
 		if (turn.text.startsWith("Sent to t1")) return say("Checking.");
 		return say("Done.");
 	});
 	assert.deepEqual(await h.thread.ask("tg:1:7", "[Mon 10:00] research the venue", target(7), context), { text: "On it." });
 	await h.until(() => h.sent.length === 1, "the chief of staff's message");
-	assert.deepEqual(h.sent[0], { text: "Venues: A, B, C. I'd pick B, it's closest.", buzz: false, replyTo: { channel: "test", chatId: "1", messageId: "7" }, itemId: "t1" });
+	assert.deepEqual(h.sent[0], { text: "Venues: A, B, C. I'd pick B, it's closest.", buzz: true, replyTo: { channel: "test", chatId: "1", messageId: "7" }, itemId: "t1" });
 	assert.ok(h.turns.some((turn) => turn.role === "chief" && turn.text.startsWith('[Report from job t1 "Venue research" — done] Three venues')), "the report went to the chief of staff");
 	assert.equal(h.state.openItems.open().length, 0, "reporting done closed it");
 	assert.equal(h.state.openItems.forMessage("1000")?.outcome, "done: Three venues: A, B, C. B is closest.", "a reply to the result finds its job");

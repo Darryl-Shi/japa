@@ -23,7 +23,8 @@ import type { OpenItems, WorkingSetFile } from "../core/state.ts";
 import type { Settings } from "../settings.ts";
 import type { Content } from "../core/message.ts";
 import type { CardRef } from "../core/ui.ts";
-import { Outbox, type OutboxMessage, REPORT_PREFIX } from "./delegation.ts";
+import { REPORT_PREFIX } from "./delegation.ts";
+import { Address, claim, Outbox, type OutboxMessage } from "./inputs.ts";
 import type { SliceEnd } from "./extension.ts";
 import { summarizeSlice, transcriptText } from "./state.ts";
 import { TRIGGER_PREFIX } from "./triggers.ts";
@@ -42,10 +43,14 @@ const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
 	initial: () => ({ byRequest: {} }),
 });
 
-/** Who the agent is and who it works for. The user's name comes from settings; everything else says "the user". */
+/**
+ * Who the agent is and who it works for (the user's name comes from settings; everything else says "the user"), and
+ * the task every input not from the user comes in by, so its answer goes back the way it came.
+ */
 function coreExtension(settings: () => Settings): Extension {
 	return defineExtension({
 		name: "jarvis.core",
+		tasks: [Address],
 		sections: [
 			section(
 				"preamble",
@@ -67,6 +72,7 @@ function coreExtension(settings: () => Settings): Extension {
 	});
 }
 
+/** An empty text: nothing to say (or it was already said). */
 export type Answer = { text: string } | { error: string };
 
 /** What the channel knows about an incoming message that bears on where it belongs. */
@@ -239,9 +245,11 @@ export class MainThread {
 		if (settled.status !== "done" || settled.type !== "input") {
 			return { error: settled.status === "unanswered" ? settled.reason : settled.status };
 		}
-		const entry = await this.root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+		// An answer is sent once: if it also answered a report (the user joined that run), it may have gone already.
+		const [entry, first] = await this.root.commit(async (tx) => [await tx.entry(AssistantEntry, settled.answer), await claim(tx, Number(settled.answer), requestId)] as const, context);
 		const message = entry?.model?.[0];
 		if (message?.role !== "assistant") return { error: "no answer" };
+		if (!first) return { text: "" };
 		const { usage } = message;
 		this.log(
 			`${requestId} slice=${boundary ?? "continued"} input=${usage.input} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} output=${usage.output} cost=$${usage.cost.total.toFixed(5)} (last request)`,
@@ -349,13 +357,6 @@ export class MainThread {
 		if (target?.chatId === undefined || target.messageId === undefined) return undefined;
 		// String() and "": answers admitted before ids were strings and channels were recorded.
 		return { channel: target.channel ?? "", chatId: String(target.chatId), messageId: String(target.messageId) };
-	}
-
-	/** Queue a message for the user; the outbox delivers it. The id makes queuing it twice harmless. */
-	async send(id: string, message: OutboxMessage, context: Context): Promise<void> {
-		await this.root.commit(async (tx) => {
-			(await tx.doc(Outbox)).messages[id] = message;
-		}, context);
 	}
 
 	/**

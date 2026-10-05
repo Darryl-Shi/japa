@@ -70,10 +70,11 @@ export type Host = {
 	workbench(): Backend | undefined;
 	ui: UI;
 	/**
-	 * A new turn in a conversation: the chief of staff (as if from the user; its answer is shown threaded under
-	 * `replyTo`) or a job agent (a new run of its job, seen through as usual). `id` makes it happen once.
+	 * A new turn in a conversation: the chief of staff (addressed from `from`, e.g. the extension's name; its answer goes
+	 * to the user threaded under `replyTo`) or a job agent (a new run of its job, seen through as usual). `id` makes it
+	 * happen once.
 	 */
-	wake(conversationId: string, text: string, options: { replyTo?: CardRef; id: string }): Promise<void>;
+	wake(conversationId: string, text: string, options: { replyTo?: CardRef; id: string; from: string }): Promise<void>;
 	/** The chief of staff's conversation. */
 	chiefId(): string;
 	/** Full-text search over the main conversation's whole record (the core keeps it). */

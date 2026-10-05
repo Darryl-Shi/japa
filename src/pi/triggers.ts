@@ -1,11 +1,12 @@
 // Triggers: extensions waking the chief of staff by themselves. A time trigger is a durable task that sleeps until
 // its next time (surviving restarts), then sends the chief of staff its prompt; an event trigger fires when an
-// extension emits the event. Either way the prompt arrives as a message starting "[Trigger", and the chief of staff
-// decides what, if anything, the user hears.
+// extension emits the event. Either way the prompt is addressed to the chief of staff as a message starting
+// "[Trigger", and what it replies goes to the user.
 import type { Context } from "@earendil-works/chord";
 import { type Conversation, type ConversationId, defineDoc, defineExtension, defineTask, type Extension, type Tx } from "@earendil-works/pi-durable";
 import { nextFire, stamp } from "../core/schedule.ts";
 import type { Trigger } from "./extension.ts";
+import { address } from "./inputs.ts";
 
 export const TRIGGER_PREFIX = "[Trigger ";
 
@@ -58,10 +59,12 @@ export function triggers(options: { triggers: () => ReadonlyMap<string, Trigger>
 			fire: async (task, runtime, context) => {
 				const trigger = timed(task.input.key);
 				if (trigger === undefined) return runtime.commit(end(task.input.key), context);
+				const { key } = task.input;
 				const at = task.state.checkpoint.at;
-				const chief = await runtime.conversation(task.input.chief, context);
-				await chief?.submit({ type: "input", content: triggerText(task.input.key, trigger, at, options.timeZone()), requestId: `trigger:${task.input.key}:${at}`, whenBusy: "followUp" }, context);
-				await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait" } }), context);
+				await runtime.commit(async (tx) => {
+					await address(tx, task.input.chief, { requestId: `trigger:${key}:${at}`, content: triggerText(key, trigger, at, options.timeZone()), cause: { from: `trigger ${key}` } });
+					return { status: "running", checkpoint: { phase: "wait" } };
+				}, context);
 			},
 		},
 		abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
@@ -84,7 +87,8 @@ export function triggers(options: { triggers: () => ReadonlyMap<string, Trigger>
 			for (const [key, trigger] of options.triggers()) {
 				if (!("event" in trigger.when) || trigger.when.event !== event) continue;
 				const at = Date.now();
-				await chief.submit({ type: "input", content: triggerText(key, trigger, at, options.timeZone(), detail), requestId: `trigger:${key}:${at}`, whenBusy: "followUp" }, context);
+				const content = triggerText(key, trigger, at, options.timeZone(), detail);
+				await chief.commit((tx) => address(tx, chief.id, { requestId: `trigger:${key}:${at}`, content, cause: { from: `trigger ${key}` } }), context);
 			}
 		},
 	};

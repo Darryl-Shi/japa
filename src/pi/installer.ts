@@ -160,7 +160,7 @@ export function installer(options: {
 	};
 
 	const tell = (pending: Pending, message: string, replyTo: Parameters<Host["wake"]>[2]["replyTo"]) =>
-		host.wake(host.chiefId(), `${EXTENSION_PREFIX}${pending.name}] ${message}`, { id: `extension:${pending.id}`, ...(replyTo === undefined ? {} : { replyTo }) });
+		host.wake(host.chiefId(), `${EXTENSION_PREFIX}${pending.name}] ${message}`, { id: `extension:${pending.id}`, from: "installer", ...(replyTo === undefined ? {} : { replyTo }) });
 
 	host.ui.handle("extensions", {
 		press: async (payload, ref) => {

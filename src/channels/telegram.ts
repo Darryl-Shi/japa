@@ -60,7 +60,9 @@ export function telegramExtension(host: Host): JapaExtension {
 			void live.api.sendChatAction(chatId, "typing").catch(() => {});
 			try {
 				const answer = await get();
-				await send(chatId, "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, messageId);
+				// An empty answer says nothing (or was already sent, as the answer to a report it also answered).
+				const text = "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`;
+				if (text.trim() !== "") await send(chatId, text, messageId);
 				await inbox.delivered(requestId, context);
 				host.log(`${requestId} answered in ${Date.now() - started}ms`);
 			} finally {

@@ -93,7 +93,7 @@ export function approvalsExtension(host: Host, approvals: Approvals): JapaExtens
 
 	/** Tell whoever asked, once: the chief of staff as a message from the user, a job agent as a new run of its job. */
 	const tell = async (request: ApprovalRequest, decision: Decision) => {
-		await host.wake(request.conversationId, decisionText(request, decision), { id: `approval:${request.id}`, ...(request.card === undefined ? {} : { replyTo: request.card }) });
+		await host.wake(request.conversationId, decisionText(request, decision), { id: `approval:${request.id}`, from: "approvals", ...(request.card === undefined ? {} : { replyTo: request.card }) });
 		approvals.update(request.id, { told: true });
 		host.holds.remove(request.conversationId, request.id);
 	};

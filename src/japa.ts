@@ -22,6 +22,7 @@ import { delegationExtensions } from "./pi/delegation.ts";
 import { ExtensionSet, type Host, type JapaExtension } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
 import { installer } from "./pi/installer.ts";
+import { address } from "./pi/inputs.ts";
 import { indexHistory } from "./pi/memory.ts";
 import { stateExtension } from "./pi/state.ts";
 import { triggers } from "./pi/triggers.ts";
@@ -121,15 +122,15 @@ export async function startJapa(
 			await indexHistory(main().root, history, callContext);
 			return history.search(query);
 		},
-		wake: async (conversationId, text, { replyTo, id }) => {
-			if (conversationId !== String(main().root.id)) {
-				await team.resume(main().root, conversationId, text, context);
+		wake: async (conversationId, text, { replyTo, id, from }) => {
+			const root = main().root;
+			if (conversationId !== String(root.id)) {
+				await team.resume(root, conversationId, text, context);
 				return;
 			}
-			// The chief of staff: as if from the user, answered where the card that prompted it is.
-			const answer = await main().ask(id, `[${stamp(Date.now(), settings.get().timezone)}] ${text}`, replyTo, context);
-			await ui.show({ text: "text" in answer ? answer.text : `Couldn't answer that: ${answer.error}`, ...(replyTo === undefined ? {} : { replyTo }) });
-			await main().delivered(id, context);
+			// The chief of staff: addressed, so its answer goes to the user under the card that prompted it.
+			const content = `[${stamp(Date.now(), settings.get().timezone)}] ${text}`;
+			await root.commit((tx) => address(tx, root.id, { requestId: id, content, cause: { from, ...(replyTo === undefined ? {} : { replyTo }) } }), context);
 		},
 		emit: (event, detail) => void schedule.emit(main().root, event, detail, context).catch((error: unknown) => log(`trigger ${event}: ${String(error)}`)),
 		// The core's own tools only touch the agent's own state (installing an extension asks the user by itself).
@@ -142,7 +143,6 @@ export async function startJapa(
 		openItems: state.openItems,
 		settings: () => settings.get(),
 		origin: (callContext) => main().origin(callContext),
-		send: (id, message, callContext) => main().send(id, message, callContext),
 		withhold: () => [main().core, stateTools, team.chief, schedule.extension, installs.extension, ...extensions!.withheldFromJobs()],
 		waitingOnUser: (conversationId) => holds.has(String(conversationId)),
 	});
