@@ -10,6 +10,8 @@ const HOME = "/home/user";
 /** boat's synchronous command limit. */
 const SYNC_LIMIT_S = 600;
 const READY = new Set(["ready", "idle", "running"]);
+/** What boat answers a command with while the machine is asleep or still starting: the command didn't run. */
+const ASLEEP = new Set(["machine_not_running", "sandbox_not_ready"]);
 /** How often the sleep deadline is pushed back while the machine is in use. */
 const TOUCH_EVERY_MS = 5 * 60_000;
 
@@ -36,7 +38,8 @@ export class BoatApi {
 			// Worded for the agent, which only knows it has a computer.
 			throw Object.assign(new Error(`the computer is unavailable right now (${response.status} ${detail.code ?? ""} ${detail.message ?? ""})`.replace(/ +\)/, ")")), {
 				status: response.status,
-				...detail,
+				...(detail.code === undefined ? {} : { code: detail.code }),
+				...(detail.retryable === undefined ? {} : { retryable: detail.retryable }),
 			} satisfies BoatError);
 		}
 		return response;
@@ -135,7 +138,7 @@ export class BoatBackend implements Backend {
 			// Asleep (or gone): wake it, or replace it, once and run again. A command that may already be running is
 			// never retried.
 			const { code, status } = error as BoatError;
-			if (code !== "sandbox_not_ready" && status !== 404) throw error;
+			if (!ASLEEP.has(code ?? "") && status !== 404) throw error;
 			await this.ensureRunning(options.signal);
 			return seconds > SYNC_LIMIT_S ? await this.execDetached(full, seconds, options) : await this.execStreamed(full, seconds, options);
 		} finally {

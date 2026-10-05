@@ -67,7 +67,7 @@ function fakeBoat(machine: LocalBackend) {
 			return json({ ok: true });
 		}
 		if (method === "POST" && path.endsWith("/commands")) {
-			if (state !== "idle") return json({ ok: false, code: "sandbox_not_ready", retryable: false, message: "stopped" }, 409);
+			if (state !== "idle") return json({ ok: false, code: "machine_not_running", message: "Sandbox machine is not running." }, 409);
 			if (body.detached === true) {
 				const id = processes.size + 1;
 				const entry = { running: true, exitCode: null as number | null, log: "" };
