@@ -18,7 +18,7 @@ function describe(event: AuthEvent): string {
 
 export function attachLogin(ui: UI, models: Models): void {
 	/** Prompts the login flows are waiting on: an answer by reply, or a choice by button. */
-	const waiting = new Map<string, { answer: (text: string) => void; options?: readonly { id: string }[] }>();
+	const waiting = new Map<string, { answer: (text: string) => void; message: string; options?: readonly { id: string; label: string }[] }>();
 	let next = 0;
 
 	const list = async (from: number): Promise<Card> => {
@@ -43,7 +43,7 @@ export function attachLogin(ui: UI, models: Models): void {
 					new Promise<string>((resolve, reject) => {
 						const id = String(next++);
 						const options = prompt.type === "select" ? prompt.options : undefined;
-						waiting.set(id, { answer: resolve, ...(options === undefined ? {} : { options }) });
+						waiting.set(id, { answer: resolve, message: prompt.message, ...(options === undefined ? {} : { options }) });
 						const cancel = () => {
 							waiting.delete(id);
 							reject(new Error("cancelled"));
@@ -102,7 +102,8 @@ export function attachLogin(ui: UI, models: Models): void {
 				const option = prompt?.options?.[Number(b)];
 				if (prompt === undefined || option === undefined) return;
 				waiting.delete(a);
-				return prompt.answer(option.id);
+				prompt.answer(option.id);
+				return void (await ui.show({ text: `${prompt.message}\n✓ ${option.label}` }, ref));
 			}
 			const provider = models.getProvider(a);
 			if (provider === undefined) return;
@@ -116,12 +117,14 @@ export function attachLogin(ui: UI, models: Models): void {
 			}
 			await login(provider, type, ref);
 		},
-		reply: async (payload, text) => {
+		reply: async (payload, text, ref, asked) => {
 			const [action, id = ""] = payload.split(":");
 			const prompt = waiting.get(id);
-			if (action !== "a" || prompt === undefined) return;
+			// A login that's gone (it timed out, or japa restarted since it asked) can't take the answer.
+			if (action !== "a" || prompt === undefined) return void (await ui.show({ text: "That login isn't waiting any more. Start it again with /login.", replyTo: ref }));
 			waiting.delete(id);
 			prompt.answer(text.trim());
+			await ui.show({ text: `${prompt.message} ✓` }, asked);
 		},
 	});
 }

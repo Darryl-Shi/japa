@@ -27,7 +27,8 @@ export interface Surface {
 
 export type CardHandler = {
 	press?: (payload: string, ref: CardRef) => void | Promise<void>;
-	reply?: (payload: string, text: string, ref: CardRef) => void | Promise<void>;
+	/** `ref`: the user's reply; `asked`: the card it answers. */
+	reply?: (payload: string, text: string, ref: CardRef, asked: CardRef) => void | Promise<void>;
 };
 
 /** A slash command, as a channel advertises it (e.g. Telegram's command menu). */
@@ -88,9 +89,9 @@ export class UI {
 		await handler(payload, ref);
 	}
 
-	async reply(data: string, text: string, ref: CardRef): Promise<void> {
+	async reply(data: string, text: string, ref: CardRef, asked: CardRef): Promise<void> {
 		const [owner, payload] = split(data);
-		await this.handlers.get(owner)?.reply?.(payload, text, ref);
+		await this.handlers.get(owner)?.reply?.(payload, text, ref, asked);
 	}
 
 	/** Run a command if one is registered under that name; false means it's an ordinary message. */

@@ -207,8 +207,20 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	await press("Parallel API key: not set");
 	const prompt = h.cards.at(-1)!.card;
 	assert.ok(prompt.ask?.secret === true);
-	await ui.reply(prompt.ask!.data, "pk-live", { channel: "test", chatId: "7", messageId: "99" });
+	const menu = h.cards.at(-2)!.ref;
+	await ui.reply(prompt.ask!.data, "pk-live", { channel: "test", chatId: "7", messageId: "99" }, h.cards.at(-1)!.ref);
 	assert.equal(h.secrets.get("web.apiKey"), "pk-live");
+	// Answered: the question says so, and the menu it came from shows the value, in place (no new menu).
+	assert.deepEqual(h.cards.at(-2)!, { card: { text: "Parallel API key: saved." }, ref: h.cards.at(-3)!.ref, replaced: h.cards.at(-3)!.ref });
+	assert.deepEqual(h.cards.at(-1)!.replaced, menu);
+	assert.ok(labels().includes("Parallel API key: set"));
+	// A value that won't do is asked for again, saying why.
+	await press("Results per search: 8");
+	await ui.reply(h.cards.at(-1)!.card.ask!.data, "lots", { channel: "test", chatId: "7", messageId: "100" }, h.cards.at(-1)!.ref);
+	assert.match(h.cards.at(-1)!.card.text, /^That's not a number\. Send the new value for "Results per search"/);
+	await ui.reply(h.cards.at(-1)!.card.ask!.data, "5", { channel: "test", chatId: "7", messageId: "101" }, h.cards.at(-1)!.ref);
+	assert.equal(h.settings.options("web", {}).maxResults, 5);
+	assert.deepEqual(h.cards.at(-1)!.replaced, menu, "the same menu, updated");
 	assert.ok(!JSON.stringify(h.settings.get()).includes("pk-live"), "secrets never land in settings.json");
 	assert.ok(!JSON.stringify(h.cards.map((shown) => shown.card)).includes("allowlist"), "the allowlist isn't in the menu");
 
@@ -437,7 +449,7 @@ test("login: /login runs a provider's own login from chat; then its models are o
 	const pressed = press("Dyn");
 	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the provider's own prompt for its key");
 	assert.equal(h.cards.at(-1)!.card.ask!.secret, true, "asked for as a secret");
-	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: "7", messageId: "99" });
+	await ui.reply(h.cards.at(-1)!.card.ask!.data, "dk-1", { channel: "test", chatId: "7", messageId: "99" }, h.cards.at(-1)!.ref);
 	await pressed;
 	assert.equal(h.cards.at(-1)!.card.text, "Logged in to Dyn.");
 

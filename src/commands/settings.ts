@@ -5,7 +5,7 @@
 // pi's /model, and their thinking levels another, opened by pi's /thinking. Models are picked from the ones pi can
 // actually use (providers with credentials), a page at a time, rather than by typing an id; thinking levels from the
 // ones the model supports.
-import type { Button, CardRef, UI } from "../core/ui.ts";
+import type { Button, Card, CardRef, UI } from "../core/ui.ts";
 import type { SecretsFile } from "../credentials.ts";
 import type { ExtensionSet, Field } from "../pi/extension.ts";
 import type { ModelChoice, SettingsFile } from "../settings.ts";
@@ -30,6 +30,9 @@ const show = (value: unknown): string => {
 	if (typeof value === "object" && "provider" in value && "modelId" in value) return `${(value as ModelChoice).provider}/${(value as ModelChoice).modelId}`;
 	return String(value);
 };
+
+/** A page, saying so if a change on it couldn't be applied (it's saved; it applies once the problem is fixed). */
+const noted = (view: View, problem: string | undefined): View => (problem === undefined ? view : { ...view, text: `Saved, but it couldn't be applied: ${problem}\n\n${view.text}` });
 
 export class SettingsMenu {
 	private readonly settings: SettingsFile;
@@ -68,22 +71,46 @@ export class SettingsMenu {
 		ui.command("thinking", "How hard each model thinks", async (at) => void (await ui.show({ ...this.page("thinking"), replyTo: at })));
 		ui.handle("settings", {
 			press: async (payload, ref) => {
+				const before = JSON.stringify(this.settings.get());
 				const next = await this.press(payload);
-				await this.changed();
-				if ("buttons" in next) return void (await ui.show(next, ref));
-				await ui.show({
-					text: `Send the new value for "${next.label}" as a reply to this message ("-" to clear).${next.secret ? " I'll delete your message once it's saved." : ""}`,
-					ask: { data: `settings:${next.page}:${next.field}`, placeholder: next.label, secret: next.secret },
-					replyTo: ref,
-				});
+				// Only a change is applied; a page turn just shows the next page.
+				const problem = JSON.stringify(this.settings.get()) === before ? undefined : await this.apply();
+				if ("buttons" in next) return void (await ui.show(noted(next, problem), ref));
+				await ui.show({ ...this.ask(next, ref), replyTo: ref });
 			},
-			reply: async (payload, text, ref: CardRef) => {
-				const [page = "", field] = payload.split(":");
-				const result = this.answer({ page, field: Number(field), label: "", secret: false }, text);
-				await this.changed();
-				await ui.show("error" in result ? { text: result.error } : { ...result, replyTo: ref });
+			// A typed value: the card that asked says it's saved, and the menu it came from shows it, in place.
+			reply: async (payload, text, ref, asked) => {
+				const [page = "", at = "", chatId, messageId] = payload.split(":");
+				const field = this.fields(page)[Number(at)];
+				if (field === undefined) return;
+				const menu = chatId === undefined || messageId === undefined ? undefined : { channel: ref.channel, chatId: decodeURIComponent(chatId), messageId: decodeURIComponent(messageId) };
+				const prompt: Prompt = { page, field: Number(at), label: field.label, secret: field.kind === "secret" };
+				const result = this.answer(prompt, text);
+				if ("error" in result) return void (await ui.show({ ...this.ask(prompt, menu, result.error), replyTo: ref }));
+				const problem = await this.apply();
+				await ui.show({ text: `${field.label}: ${text.trim() === "-" ? "cleared" : "saved"}.` }, asked);
+				await ui.show(menu === undefined ? { ...noted(result, problem), replyTo: ref } : noted(result, problem), menu);
 			},
 		});
+	}
+
+	/** The card asking for a field's value by reply; it carries the menu card it came from, to update once answered. */
+	private ask(prompt: Prompt, menu: CardRef | undefined, error?: string): Card {
+		const from = menu === undefined ? "" : `:${encodeURIComponent(menu.chatId)}:${encodeURIComponent(menu.messageId)}`;
+		return {
+			text: `${error === undefined ? "" : `${error} `}Send the new value for "${prompt.label}" as a reply to this message ("-" to clear).${prompt.secret ? " I'll delete your message once it's saved." : ""}`,
+			ask: { data: `settings:${prompt.page}:${prompt.field}${from}`, placeholder: prompt.label, secret: prompt.secret },
+		};
+	}
+
+	/** Apply a change; what went wrong, if anything, for the card to say. */
+	private async apply(): Promise<string | undefined> {
+		try {
+			await this.changed();
+			return undefined;
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
 	}
 
 	/**

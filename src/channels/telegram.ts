@@ -3,6 +3,13 @@
 // refused by the first middleware, and again at the Inbox), answers each message as a reply to it, and renders the
 // UI's cards: buttons, questions answered by reply, and slash commands such as /settings. It knows nothing about which
 // extension a card belongs to.
+//
+// grammY's polling handles one update at a time, waiting for each, so nothing here waits on the UI: a press, a reply
+// or a command is handed over and the next update comes in. Otherwise a card that waits for the user (a login asking
+// for a key) would hold back the very reply it waits for. The questions cards ask are kept in the data directory, so
+// an answer sent across a restart still goes to its card, never to the agent.
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Bot } from "grammy";
 import type { Message } from "grammy/types";
@@ -22,6 +29,9 @@ const OWN: Command[] = [
 	{ name: "whoami", description: "Your Telegram user id" },
 ];
 
+/** Questions waiting for a reply, newest last; only the latest are kept. */
+const ASKS_KEPT = 50;
+
 const keyboard = (buttons: Button[][]) => ({ inline_keyboard: buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) });
 
 export function telegramExtension(host: Host): JapaExtension {
@@ -38,7 +48,23 @@ export function telegramExtension(host: Host): JapaExtension {
 		// The UI's ids are strings; Telegram's are numbers, converted here at its edge.
 		const ref = (chatId: number, messageId: number): CardRef => ({ channel: PLATFORM, chatId: String(chatId), messageId: String(messageId) });
 		/** Messages that asked for a reply: the reply goes to the card's owner, not the agent. */
+		const asksFile = join(host.dataDir, "telegram-asks.json");
 		const asks = new Map<number, NonNullable<Card["ask"]>>();
+		try {
+			for (const [id, ask] of Object.entries(JSON.parse(readFileSync(asksFile, "utf8")) as Record<string, NonNullable<Card["ask"]>>)) asks.set(Number(id), ask);
+		} catch {
+			// None yet.
+		}
+		const keepAsks = () => {
+			for (const id of [...asks.keys()].slice(0, Math.max(0, asks.size - ASKS_KEPT))) asks.delete(id);
+			try {
+				writeFileSync(asksFile, JSON.stringify(Object.fromEntries(asks)), { mode: 0o600 });
+			} catch (error) {
+				host.log(`telegram: couldn't keep the open questions: ${String(error)}`);
+			}
+		};
+		/** Hand work to the UI without holding up the next update. */
+		const dispatch = (what: string, work: () => Promise<unknown>) => void work().catch((error: unknown) => host.log(`telegram: ${what}: ${String(error)}`));
 
 		/** Send, split to Telegram's limit; resolves with the last message's id. Silent unless `buzz`. */
 		const send = async (chatId: number, text: string, replyTo?: number, buzz = true): Promise<number> => {
@@ -82,9 +108,11 @@ export function telegramExtension(host: Host): JapaExtension {
 		live.command("whoami", (ctx) => ctx.reply(`Your Telegram user id is ${ctx.from?.id}; you're on the allowlist.`));
 
 		live.on("callback_query:data", async (ctx) => {
-			await ctx.answerCallbackQuery();
+			// Telegram stops the button's spinner; a press that waited out a restart is too old to answer, but still counts.
+			void ctx.answerCallbackQuery().catch(() => {});
 			const message = ctx.callbackQuery.message;
-			if (message !== undefined) await ui.press(ctx.callbackQuery.data, ref(message.chat.id, message.message_id));
+			const data = ctx.callbackQuery.data;
+			if (message !== undefined) dispatch(`press ${data}`, () => ui.press(data, ref(message.chat.id, message.message_id)));
 		});
 
 		/** A message on its way to the agent: /new, what it replies to, the time it was sent; answered as a reply to it. */
@@ -139,10 +167,12 @@ export function telegramExtension(host: Host): JapaExtension {
 			if (ask !== undefined) {
 				if (ask.secret === true) await ctx.deleteMessage().catch(() => {});
 				asks.delete(replied!.message_id);
-				return void (await ui.reply(ask.data, ctx.message.text, here));
+				keepAsks();
+				const text = ctx.message.text;
+				return dispatch(`reply ${ask.data}`, () => ui.reply(ask.data, text, here, ref(ctx.chat.id, replied!.message_id)));
 			}
 			const command = /^\/(\w+)(?:@\w+)?\s*$/.exec(ctx.message.text)?.[1];
-			if (command !== undefined && command !== "new" && (await ui.run(command, here))) return;
+			if (command !== undefined && command !== "new" && ui.commands().some((each) => each.name === command)) return dispatch(`/${command}`, () => ui.run(command, here));
 			await arrive(ctx.message, ctx.message.text, []);
 		});
 
@@ -169,8 +199,14 @@ export function telegramExtension(host: Host): JapaExtension {
 		render = async (card, replace) => {
 			const markup = card.buttons === undefined ? {} : { reply_markup: keyboard(card.buttons) };
 			if (replace !== undefined) {
-				await live.api.editMessageText(Number(replace.chatId), Number(replace.messageId), card.text, markup).catch(() => {});
-				return replace;
+				try {
+					await live.api.editMessageText(Number(replace.chatId), Number(replace.messageId), card.text.slice(0, LIMIT), markup);
+					return replace;
+				} catch (error) {
+					// Unchanged is shown already; anything else is sent as a new card, so a press never seems to do nothing.
+					if (String(error).includes("message is not modified")) return replace;
+					host.log(`telegram: couldn't update a card, sending it anew: ${String(error)}`);
+				}
 			}
 			const owner = inbox.owner();
 			const chatId = card.replyTo?.channel === PLATFORM ? Number(card.replyTo.chatId) : owner === undefined ? undefined : Number(owner);
@@ -182,7 +218,10 @@ export function telegramExtension(host: Host): JapaExtension {
 				disable_notification: card.buzz === false,
 				...(card.ask === undefined ? markup : { reply_markup: { force_reply: true, input_field_placeholder: card.ask.placeholder ?? "" } }),
 			});
-			if (card.ask !== undefined) asks.set(sent.message_id, card.ask);
+			if (card.ask !== undefined) {
+				asks.set(sent.message_id, card.ask);
+				keepAsks();
+			}
 			return ref(chatId, sent.message_id);
 		};
 

@@ -20,6 +20,7 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 | `open-items.json`, `working-set.json` | what's in progress, and the short working set each slice starts from |
 | `extensions/` | extensions installed from chat: each one's code (and its own npm packages) in `<name>/<version>/` |
 | `approvals.json`, `audit.jsonl` | standing permissions; every reviewed action |
+| `telegram-asks.json` | Telegram's questions waiting for your reply (a value for `/settings`, a login's key), so an answer sent across a restart still reaches its card, not the agent |
 | `japa.log` | the log |
 
 ## Settings
