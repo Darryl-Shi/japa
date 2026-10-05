@@ -53,14 +53,25 @@ Run the same command again to update; it also moves data from older layouts. For
 - **the UI**, with `/settings` and `/login`;
 - **the installer,** which adds extensions from chat.
 
-**Everything else is an extension.** Each extension is built from one shape, `JapaExtension` in `src/pi/extension.ts`, and is hooked in only through the **Host**. It never touches the main thread directly.
+**Everything else is an extension.** There is one kind, `JapaExtension` in `src/pi/extension.ts`. It's made from the **Host**, which is everything an extension may use: settings, secrets, the data directory, models, the workbench, UI cards, `wake`, holds, `emit`, history search and inboxes. It never touches the main thread directly.
 
-**What japa is built from has one typed adapter in the core,** and every implementation goes through it, built-in or not:
-- **a channel** is a `Surface` attached to the UI (it renders cards) plus an `Inbox` (the allowlist gate);
-- **a model provider** is a pi-ai `Provider`, declared in an extension's `providers`. Its key comes from `/login`;
-- **a machine** is an `OpenBackend`, declared in an extension's `backends` and picked by name in `machines.workbench`.
+### Core abstractions and their adapters
 
-The core registers them while their extension is on and drops them when it's off. Telegram, boat.dev and the local machine are ordinary extensions on these adapters.
+Each thing japa is built from has one typed adapter in the core, and every implementation goes through it, built-in or not. A default has no privilege an extension you install lacks, so you can replace any of them.
+
+| Abstraction | Adapter in the core | An extension provides one with | Built in |
+|---|---|---|---|
+| **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: `chief`, `jobs`, `settings`, `safeTools`, `onSliceEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen, Claude Code, Codex |
+| **Channel** | a `Surface` on the `UI` (`src/core/ui.ts`) plus an `Inbox` (`src/channels/inbox.ts`) | `channel: "<platform>"`; `host.ui.attach(surface)` in `start`; each message to `host.inbox(platform).ask(...)`; presses, replies and commands to `host.ui.press`, `reply` and `run` | Telegram |
+| **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in `auth.json` through `/login` | `providers: [createProvider(...)]` | pi-ai's providers |
+| **Machine** | `Backend` (`exec`, optionally `viewUrl`), opened by an `OpenBackend` (`src/core/backend.ts`) | `backends: { "<name>": (role, config) => backend }`, picked by name in `machines.workbench` | boat.dev, Local machine |
+
+The core registers providers and machines while their extension is on and drops them when it's off. A channel attaches its own surface in `start` and detaches it in `stop`.
+
+What's built on each adapter is generic and never names an implementation:
+- **on `Backend`:** shell, files, the screen and the coding agents. They only run commands;
+- **on `Models`:** `/login`, the model picker in `/settings`, and every agent's model;
+- **on the `UI`:** `/settings`, approvals and install cards, and the commands a channel advertises.
 
 ### One message, end to end
 
