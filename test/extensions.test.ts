@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Type } from "@earendil-works/pi-ai";
+import { createProvider, envApiKeyAuth, Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { LocalBackend } from "../src/backends/local.ts";
 import { Approvals } from "../src/core/approvals.ts";
@@ -186,16 +186,16 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	assert.deepEqual(lifecycle, ["web on"], "started at startup");
 	assert.deepEqual(ui.commands(), [{ name: "settings", description: "Models, extensions and their options" }], "advertised, with what it does");
 	assert.equal(await ui.run("settings", { channel: "test", chatId: 7, messageId: 1 }), true);
-	assert.deepEqual(labels(), ["General", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
+	assert.deepEqual(labels(), ["General", "🔑 Model keys", "✅ Test channel", "✅ Web (Parallel)", "⚙", "✅ Email"]);
 	assert.ok((await tools()).includes("web_search"));
 
 	await press("✅ Web (Parallel)");
-	assert.deepEqual(labels().slice(2, 3), ["⬜ Web (Parallel)"]);
+	assert.deepEqual(labels().slice(3, 4), ["⬜ Web (Parallel)"]);
 	assert.ok(!(await tools()).includes("web_search"), "turned off: gone from the chief of staff's tools");
 	assert.deepEqual(lifecycle, ["web on", "web off"], "and stopped");
 	await press("✅ Test channel");
 	assert.match(h.cards.at(-1)!.card.text, /only channel/);
-	assert.deepEqual(labels().slice(1, 2), ["✅ Test channel"], "the last channel can't be turned off");
+	assert.deepEqual(labels().slice(2, 3), ["✅ Test channel"], "the last channel can't be turned off");
 
 	await press("⚙");
 	assert.deepEqual(labels(), ["Search mode: fast ▸", "Results per search: 8", "Parallel API key: not set", "« Back"]);
@@ -218,6 +218,65 @@ test("settings: /settings is a card; extensions turn on and off (tools follow, s
 	assert.deepEqual(h.settings.get().model, { provider: "faux", modelId: "faux-fast" });
 	assert.ok(labels().includes("Chief of staff model: faux/faux-fast"), "back on the page, showing the choice");
 	assert.equal((await h.thread.root.agent(context)).model?.modelId, "faux-fast", "and the chief of staff switched to it");
+	await h.done();
+});
+
+test("settings: a provider an extension adds gets its key in Model keys, and then its models are in the picker", async () => {
+	const big = { id: "dyn-big", name: "Dyn Big", api: "openai-completions" as const, provider: "dyn", baseUrl: "http://dyn.invalid", input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, reasoning: false, contextWindow: 1000, maxTokens: 100 };
+	const unused = () => {
+		throw new Error("not in this test");
+	};
+	const h = await agent({
+		extensions: (host) => [
+			{
+				name: "dyn",
+				title: "Dyn",
+				about: "",
+				start: () =>
+					host.models.setProvider(
+						createProvider({
+							id: "dyn",
+							name: "Dyn",
+							auth: { apiKey: envApiKeyAuth("Dyn API key", ["JAPA_TEST_DYN_KEY_UNSET"]) },
+							models: [],
+							// Dynamic: its models come from the service, with the key from wherever pi keeps it.
+							fetchModels: async (context) => (context.credential?.type === "api_key" && context.credential.key === "dk-1" ? [big] : []),
+							api: { stream: unused, streamSimple: unused },
+						}),
+					),
+			},
+		],
+		script: () => say("ok"),
+	});
+	const ui = h.host.ui;
+	const labels = () => h.cards.at(-1)!.card.buttons!.flat().map((button) => button.text);
+	const press = (label: string) => {
+		const last = h.cards.at(-1)!;
+		const button = last.card.buttons!.flat().find((candidate) => candidate.text === label);
+		assert.ok(button !== undefined, `no button "${label}" in ${labels().join(" | ")}`);
+		return ui.press(button.data, last.ref);
+	};
+	const at = { channel: "test", chatId: 7, messageId: 1 };
+
+	await ui.run("settings", at);
+	await press("General");
+	await press("Chief of staff model: faux/faux-1");
+	assert.ok(!labels().some((label) => label.startsWith("dyn")), "no key yet: not offered");
+
+	await ui.run("settings", at);
+	await press("🔑 Model keys");
+	await press("⬜ Dyn");
+	const prompt = h.cards.at(-1)!.card;
+	assert.ok(prompt.ask?.secret === true, "asked for as a secret");
+	await ui.reply(prompt.ask!.data, "dk-1", { channel: "test", chatId: 7, messageId: 99 });
+	assert.ok(labels().includes("✅ Dyn"), "shown as set");
+	assert.match(await readFile(join(h.dataDir, "auth.json"), "utf8"), /"dk-1"/, "kept where pi keeps credentials");
+
+	await ui.run("settings", at);
+	await press("General");
+	await press("Chief of staff model: faux/faux-1");
+	await press("dyn (1)");
+	assert.ok(labels().includes("Dyn Big"), "its models are in the picker");
 	await h.done();
 });
 

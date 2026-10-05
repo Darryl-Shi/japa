@@ -2,7 +2,8 @@
 // and every extension with its switch; each extension's page is built from the fields it declares, so an extension
 // adds its own settings just by listing them. Values go to settings.json, secrets to data/secrets.json. The allowlist
 // is deliberately not here. Model fields pick from the models pi can actually use (providers with credentials), a
-// page at a time, rather than asking for an id.
+// page at a time, rather than asking for an id. Model keys sets a provider's API key (built in or added by an
+// extension) where pi keeps credentials, so its models show up.
 import type { Button, CardRef, UI } from "../core/ui.ts";
 import type { SecretsFile } from "../credentials.ts";
 import type { ExtensionSet, Field } from "../pi/extension.ts";
@@ -11,8 +12,10 @@ import type { ModelChoice, SettingsFile } from "../settings.ts";
 export type View = { text: string; buttons: Button[][] };
 /** A model pi can use now: its provider has credentials. `vision`: it takes images. */
 export type AvailableModel = { provider: string; id: string; name?: string; vision?: boolean };
+/** A model provider that takes an API key, and whether one is set. */
+export type ProviderKey = { id: string; name: string; set: boolean };
 /** A field waiting for a typed value. */
-export type Prompt = { page: string; field: number; label: string; secret: boolean };
+export type Prompt = { page: string; field: number; label: string; secret: boolean; provider?: string };
 
 const GENERAL: readonly Field[] = [
 	{ key: "model", label: "Chief of staff model", kind: "model" },
@@ -39,6 +42,7 @@ export class SettingsMenu {
 	private readonly modelExists: (choice: ModelChoice) => boolean;
 	private readonly available: () => Promise<readonly AvailableModel[]>;
 	private readonly changed: () => Promise<void>;
+	private readonly keys: { list: () => Promise<readonly ProviderKey[]>; set: (provider: string, key: string | undefined) => Promise<void> } | undefined;
 
 	constructor(options: {
 		settings: SettingsFile;
@@ -49,6 +53,8 @@ export class SettingsMenu {
 		available?: () => Promise<readonly AvailableModel[]>;
 		/** After any change: apply it (extensions started or stopped, the model switched). */
 		changed?: () => Promise<void>;
+		/** Model providers' API keys: which take one, and setting one (undefined clears it). */
+		keys?: { list: () => Promise<readonly ProviderKey[]>; set: (provider: string, key: string | undefined) => Promise<void> };
 	}) {
 		this.settings = options.settings;
 		this.secrets = options.secrets;
@@ -56,6 +62,7 @@ export class SettingsMenu {
 		this.modelExists = options.modelExists ?? (() => true);
 		this.available = options.available ?? (async () => []);
 		this.changed = options.changed ?? (async () => {});
+		this.keys = options.keys;
 	}
 
 	/** Show it through the UI: /settings opens it, its buttons and replies come back here. */
@@ -68,12 +75,16 @@ export class SettingsMenu {
 				if ("buttons" in next) return void (await ui.show(next, ref));
 				await ui.show({
 					text: `Send the new value for "${next.label}" as a reply to this message ("-" to clear).${next.secret ? " I'll delete your message once it's saved." : ""}`,
-					ask: { data: `settings:${next.page}:${next.field}`, placeholder: next.label, secret: next.secret },
+					ask: { data: `settings:${next.page}:${next.provider ?? next.field}`, placeholder: next.label, secret: next.secret },
 					replyTo: ref,
 				});
 			},
 			reply: async (payload, text, ref: CardRef) => {
 				const [page = "", field] = payload.split(":");
+				if (page === "key") {
+					await this.keys?.set(field ?? "", text.trim() === "-" ? undefined : text.trim());
+					return void (await ui.show({ ...(await this.keyPage(0)), replyTo: ref }));
+				}
 				const result = this.answer({ page, field: Number(field), label: "", secret: false }, text);
 				await this.changed();
 				await ui.show("error" in result ? { text: result.error } : { ...result, replyTo: ref });
@@ -101,7 +112,7 @@ export class SettingsMenu {
 	}
 
 	main(): View {
-		const rows: Button[][] = [[{ text: "General", data: "settings:p:general" }]];
+		const rows: Button[][] = [[{ text: "General", data: "settings:p:general" }, ...(this.keys === undefined ? [] : [{ text: "🔑 Model keys", data: "settings:kp:0" }])]];
 		for (const entry of this.extensions.entries) {
 			const row: Button[] = [{ text: `${this.extensions.enabled(entry) ? "✅" : "⬜"} ${entry.title}`, data: `settings:t:${entry.name}` }];
 			if ((entry.settings ?? []).length > 0) row.push({ text: "⚙", data: `settings:p:${entry.name}` });
@@ -125,6 +136,19 @@ export class SettingsMenu {
 		});
 		rows.push([{ text: "« Back", data: "settings:m" }]);
 		return { text: [title, entry?.about].filter(Boolean).join("\n\n"), buttons: rows };
+	}
+
+	/** Providers that take an API key, the ones with a key first, a page at a time. */
+	private async keyPage(from: number): Promise<View> {
+		const all = [...((await this.keys?.list()) ?? [])].sort((a, b) => Number(b.set) - Number(a.set));
+		const start = Math.max(0, Math.min(from, all.length - 1));
+		const rows: Button[][] = all.slice(start, start + PER_PAGE).map((provider) => [{ text: `${provider.set ? "✅" : "⬜"} ${provider.name}`, data: `settings:ks:${provider.id}` }]);
+		const nav: Button[] = [];
+		if (start > 0) nav.push({ text: "◀", data: `settings:kp:${Math.max(0, start - PER_PAGE)}` });
+		if (start + PER_PAGE < all.length) nav.push({ text: "▶", data: `settings:kp:${start + PER_PAGE}` });
+		if (nav.length > 0) rows.push(nav);
+		rows.push([{ text: "« Back", data: "settings:m" }]);
+		return { text: "Model keys. Set a provider's API key and its models appear in the model lists.", buttons: rows };
 	}
 
 	/** The available models, grouped by provider in pi's order. */
@@ -174,6 +198,12 @@ export class SettingsMenu {
 		const [action, name = "", a, b, c] = payload.split(":");
 		if (action === "m") return this.main();
 		if (action === "p") return this.page(name);
+		if (action === "kp") return this.keyPage(Number(name));
+		if (action === "ks") {
+			const provider = ((await this.keys?.list()) ?? []).find((candidate) => candidate.id === name);
+			if (provider === undefined) return this.keyPage(0);
+			return { page: "key", field: 0, label: `${provider.name} API key`, secret: true, provider: provider.id };
+		}
 		if (action === "t") {
 			const entry = this.extensions.get(name);
 			if (entry === undefined) return this.main();

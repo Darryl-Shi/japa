@@ -4,7 +4,7 @@
 // end, its triggers, its lifecycle. Channels are extensions too, and reach the agent only through an Inbox.
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import type { MutableModels } from "@earendil-works/pi-ai";
+import type { CredentialStore, MutableModels } from "@earendil-works/pi-ai";
 import { createRegistry, type Storage } from "@earendil-works/pi-durable";
 import { Inbox } from "./channels/inbox.ts";
 import { SettingsMenu } from "./channels/settings-menu.ts";
@@ -43,6 +43,8 @@ export async function startJarvis(
 		settings: SettingsFile;
 		secrets: SecretsFile;
 		models: MutableModels;
+		/** Where pi keeps model credentials; with it, /settings can set a provider's API key. */
+		credentials?: CredentialStore;
 		workbench?: Backend;
 		/** Default: SQLite in dataDir. */
 		storage?: Storage;
@@ -138,7 +140,11 @@ export async function startJarvis(
 		team,
 		apply: async (callContext) => {
 			await main().applySettings(settings.get(), callContext);
+			// A provider an extension adds as it starts lists its models only once refreshed.
+			const known = new Set(models.getProviders().map((provider) => provider.id));
 			await set.sync();
+			const added = models.getProviders().filter((provider) => !known.has(provider.id)).map((provider) => provider.id);
+			if (added.length > 0) await models.refresh({ providers: added, signal: AbortSignal.timeout(10_000) });
 			await schedule.sync(main().root, callContext);
 		},
 		close: async (callContext) => {
@@ -153,9 +159,29 @@ export async function startJarvis(
 		secrets,
 		extensions: set,
 		modelExists: (choice) => models.getModel(choice.provider, choice.modelId) !== undefined,
-		available: async () =>
-			(await models.getAvailable()).map((model) => ({ provider: model.provider, id: model.id, name: model.name, vision: model.input.includes("image") })),
+		available: async () => {
+			await models.refresh({ signal: AbortSignal.timeout(5_000) });
+			return (await models.getAvailable()).map((model) => ({ provider: model.provider, id: model.id, name: model.name, vision: model.input.includes("image") }));
+		},
 		changed: () => jarvis.apply(context),
+		...(options.credentials === undefined
+			? {}
+			: {
+					keys: {
+						list: async () =>
+							Promise.all(
+								models
+									.getProviders()
+									.filter((provider) => provider.auth.apiKey !== undefined)
+									.map(async (provider) => ({ id: provider.id, name: provider.name, set: (await options.credentials!.read(provider.id))?.type === "api_key" })),
+							),
+						set: async (provider, key) => {
+							if (key === undefined) await options.credentials!.delete(provider);
+							else await options.credentials!.modify(provider, async () => ({ type: "api_key", key }));
+							await models.refresh({ providers: [provider], force: true, signal: AbortSignal.timeout(10_000) });
+						},
+					},
+				}),
 	}).attach(ui);
 	// What the chief of staff sends on its own (results, questions, news) goes out as cards on whichever channel is on.
 	await thread.deliverOutbox(async (message) => {
