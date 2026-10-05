@@ -8,7 +8,7 @@ It should feel like texting one competent person who just gets it done.
 
 - **One chat.** You talk to one assistant in one conversation. It never makes you wait while it works, and you never need a new thread for a new topic.
 - **A team behind it.** Longer work goes to job agents. They can browse the web, write and run code, and use a desktop, all on the computer japa runs on. Each one reports back to your chief of staff, who checks the work and tells you what matters.
-- **It remembers.** It keeps a running memory of you and your world, which you can read and correct. It can also search everything you've ever said to it.
+- **It remembers.** It keeps a short memory of you and your world, brought up to date after each conversation, which you can read and correct. It can also search everything you've ever said to it.
 - **It asks first.** Anything that acts on the world for you (sending a message, spending money, deleting your things) comes to you as a card with Approve, Deny and Always buttons. Reading, researching and work on its own computer just go ahead.
 - **It acts on its own when asked.** It can wake itself on a schedule or when something happens, and decides whether it's worth telling you.
 - **It grows.** Ask it to learn something new, such as connecting to a service you use, and it can build that ability itself. You approve each one with a tap, and it's available from your next message.

@@ -3,21 +3,27 @@
 japa has a **core**, which is what japa is and can't be turned off. Everything else is an **extension** of one kind, plugged in through one typed adapter per thing japa is built from. It all runs on one machine, which is also the agent's computer: its shell, files and screen are that machine's. Every extension runs inside japa, built in or installed from chat once you've tapped Install.
 
 ```
-                    ┌──────────────────────────── core (always on) ─────────────────────────────┐
- Channel ─► Inbox ──┤  Main thread ── the chief of staff: one conversation, worked in slices     │
- (allowlist)        │       │  every input has a cause; its answer goes back the way it came ───┼─► cards back
-                    │       ▼  delegate / message_job / cancel_job                               │   on the channel
-                    │  Team: one job agent per job ── report ──► back to the chief of staff      │
-                    │  Open items · Triggers · UI cards · /settings · /login · /jobs · Installer │
-                    │  Adapters: channels · models                                               │
-                    └───────────────▲─────────────────────────────────────────────▲──────────────┘
-                                    │ the Host: settings, secrets, models, cards,    │
-                                    │ wake, holds, emit, history                     │
-                    ┌───────────────┴───────────── extensions ───────────────────────┴───────────┐
-                    │ in-process, all alike: Telegram · Memory · Approvals · Web · Computer ·     │
-                    │ Screen · installed ones                                                     │
-                    └─────────────────────────────────────────────────────────────────────────────┘
-          All on one machine, which is the agent's computer: bash, files and the screen run there.
+                  ┌──────────────────────────── core (always on) ────────────────────────────┐
+ you ─► Channel ─►│ Inbox (allowlist) ─► Main thread: the chief of staff                     │
+                  │                      one conversation, worked in slices                  │
+                  │                      answers · decides · delegates · synthesizes         │
+                  │                         │ delegate             ▲ report                  │
+                  │                         ▼                      │                         │
+                  │                      Team: one job agent per job (+ subagents)           │
+                  │                                                                          │
+                  │ Open items · Working set · Triggers · Installer · Models (/login)        │
+ you ◄─ Channel ◄─│ UI cards ◄─ /settings · /login · /jobs · approvals · install cards       │
+                  └───────────────────▲─────────────────────────────────────▲────────────────┘
+                                      │ Host: settings · secrets · models   │
+                                      │ ui · wake · holds · emit · history  │
+                  ┌───────────────────┴──── extensions, all in-process ─────┴────────────────┐
+                  │ each = a Pi extension (tools · sections · hooks · tasks)                 │
+                  │      + japa's fields (for · settings · safeTools · onExchangeEnd ·       │
+                  │                       triggers · channel · start/stop)                   │
+                  │                                                                          │
+                  │ Telegram · Memory · Approvals · Web · Computer · Screen · installed ones │
+                  └──────────────────────────────────────────────────────────────────────────┘
+          One machine, which is the agent's computer: bash, files and screen run here.
 ```
 
 ## The core

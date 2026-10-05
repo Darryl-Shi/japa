@@ -58,7 +58,7 @@ const SUMMARY_PROMPT = [
 	"Under 120 words.",
 ].join(" ");
 
-/** Serialize a slice's conversation as plain text for reflection. Tool traffic is cut short. */
+/** A slice's conversation as plain text, for the working set and the exchange's reflection. Tool traffic is cut short. */
 export function transcriptText(messages: readonly Message[]): string {
 	return messages
 		.flatMap((message) => {

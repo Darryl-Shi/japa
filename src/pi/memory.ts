@@ -5,7 +5,7 @@ import type { Context } from "@earendil-works/chord";
 import { type Models, Type } from "@earendil-works/pi-ai";
 import { type Conversation, defineExtension, defineTool, type Extension, section } from "@earendil-works/pi-durable";
 import type { History, HistoryLine, HistoryHit } from "../core/history.ts";
-import { type MemoryEdit, type Portrait, wordCount } from "../core/portrait.ts";
+import { type MemoryEdit, type MemoryFile, wordCount } from "../core/memory.ts";
 import type { ModelChoice } from "../settings.ts";
 import type { ExchangeEnd, Host, JapaExtension } from "./extension.ts";
 import { parseJson } from "./state.ts";
@@ -38,23 +38,23 @@ const text = (value: string) => ({ content: [{ type: "text" as const, text: valu
  * The tools and sections: `search` finds earlier lines of the main conversation (the core keeps that record); `words`
  * is how long memory may get.
  */
-export function memoryTools(options: { portrait: Portrait; search: (query: string, context: Context) => Promise<HistoryHit[]>; words?: () => number }): Extension {
-	const { portrait } = options;
+export function memoryTools(options: { memory: MemoryFile; search: (query: string, context: Context) => Promise<HistoryHit[]>; words?: () => number }): Extension {
+	const { memory } = options;
 	return defineExtension({
 		name: "memory",
-		sections: [section("memory_guide", () => GUIDE, { tag: false }), section("memory", () => portrait.read() || undefined)],
+		sections: [section("memory_guide", () => GUIDE, { tag: false }), section("memory", () => memory.read() || undefined)],
 		tools: [
 			defineTool({
 				name: "remember",
 				description: "When the user asks: add something to your memory, or correct it. To correct or forget, pass the exact existing text as `replaces` (an empty `note` forgets it).",
 				parameters: Type.Object({ note: Type.String(), replaces: Type.Optional(Type.String()) }),
 				execute: async (args) => {
-					const current = portrait.read();
+					const current = memory.read();
 					if (args.replaces === undefined && current.includes(args.note.trim())) return text("Already in memory.");
 					if (args.replaces !== undefined && !current.includes(args.replaces)) return text("That text isn't in memory; read <memory> and quote it exactly.");
 					const edit = args.replaces === undefined ? { add: args.note } : { replace: args.replaces, with: args.note };
 					const words = options.words?.();
-					if (portrait.apply([edit], "conversation", words === undefined ? {} : { words }).length > 0) return text("Saved.");
+					if (memory.apply([edit], "conversation", words === undefined ? {} : { words }).length > 0) return text("Saved.");
 					return text(`Memory is full (${wordCount(current)} of ${words} words): make room first by merging or removing something (remember with \`replaces\`).`);
 				},
 			}),
@@ -96,19 +96,19 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice | unde
 	});
 }
 
-export function memoryExtension(host: Host, portrait: Portrait): JapaExtension {
+export function memoryExtension(host: Host, memory: MemoryFile): JapaExtension {
 	const words = () => Number(host.settings.options("memory", DEFAULTS).words) || DEFAULTS.words;
 	return {
-		...memoryTools({ portrait, search: (query, context) => host.searchHistory(query, context), words }),
+		...memoryTools({ memory, search: (query, context) => host.searchHistory(query, context), words }),
 		title: "Memory",
-		about: `Its memory of you (${portrait.path}, yours to edit), kept short and current after each exchange, and search over everything said before.`,
+		about: `Its memory of you (${memory.path}, yours to edit), kept short and current after each exchange, and search over everything said before.`,
 		for: "chief",
 		settings: [{ key: "words", label: "Memory size (words)", kind: "number" }],
 		defaults: DEFAULTS,
 		safeTools: ["remember", "search_history"],
 		onExchangeEnd: async (exchange) => {
-			const edits = await reflectOnMemory(host.models, host.settings.get().model, { memory: portrait.read(), words: words(), ...exchange });
-			const applied = portrait.apply(edits, "reflection", { words: words() });
+			const edits = await reflectOnMemory(host.models, host.settings.get().model, { memory: memory.read(), words: words(), ...exchange });
+			const applied = memory.apply(edits, "reflection", { words: words() });
 			if (applied.length > 0) host.log(`memory: ${applied.length} edit(s) from reflection`);
 		},
 	};

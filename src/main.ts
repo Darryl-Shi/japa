@@ -10,12 +10,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { telegramExtension } from "./channels/telegram.ts";
 import { Approvals } from "./core/approvals.ts";
-import { Portrait } from "./core/portrait.ts";
+import { MemoryFile } from "./core/memory.ts";
 import { FileCredentialStore, SecretsFile } from "./credentials.ts";
 import { startJapa } from "./japa.ts";
 import { approvalsExtension } from "./pi/approvals.ts";
 import { memoryExtension } from "./pi/memory.ts";
-import { computerExtensions } from "./pi/shell.ts";
+import { screenExtension } from "./pi/screen.ts";
+import { computerExtension } from "./pi/computer.ts";
 import { webExtension } from "./pi/web.ts";
 import { SettingsFile } from "./settings.ts";
 
@@ -36,10 +37,11 @@ const japa = await startJapa(
 		// The default extensions, each of which can be turned off in /settings.
 		extensions: (host) => [
 			telegramExtension(host),
-			memoryExtension(host, new Portrait(join(dataDir, "memory"))),
+			memoryExtension(host, new MemoryFile(join(dataDir, "memory"))),
 			approvalsExtension(host, new Approvals(join(dataDir, "approvals.json"), join(dataDir, "audit.jsonl"))),
 			webExtension(host),
-			...computerExtensions({ own: [resolve(import.meta.dirname, ".."), dataDir], display, hasDisplay: existsSync(`/tmp/.X11-unix/X${display.replace(/^.*:(\d+).*$/, "$1")}`) }),
+			computerExtension([resolve(import.meta.dirname, ".."), dataDir]),
+			screenExtension({ display, hasDisplay: existsSync(`/tmp/.X11-unix/X${display.replace(/^.*:(\d+).*$/, "$1")}`) }),
 		],
 	},
 	context,

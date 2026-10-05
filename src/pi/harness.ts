@@ -303,7 +303,7 @@ export class MainThread {
 			if (ended) delete doc.carried;
 			else doc.carried = said;
 		}, context);
-		if (messages.some((message) => message.role === "user")) this.inBackground(this.reflect(version, departing, ended ? said : undefined));
+		if (messages.some((message) => message.role === "user")) this.inBackground(this.endSlice(version, departing, ended ? said : undefined));
 	}
 
 	private async handoff(arrival: Arrival, context: Context): Promise<string> {
@@ -340,7 +340,7 @@ export class MainThread {
 	 * The end of a slice: a new working set (versioned), then, if the exchange ended with it, the extensions' own work
 	 * (e.g. memory reflection) over everything the exchange said.
 	 */
-	private async reflect(version: number, departing: string, exchange: string | undefined): Promise<void> {
+	private async endSlice(version: number, departing: string, exchange: string | undefined): Promise<void> {
 		const state = this.state;
 		const openItems = state?.openItems.projection();
 		const today = new Date().toISOString().slice(0, 10);

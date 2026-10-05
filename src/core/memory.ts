@@ -12,7 +12,7 @@ export type MemoryEdit = { add: string } | { replace: string; with: string };
 
 export const wordCount = (text: string) => text.split(/\s+/).filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
 
-export class Portrait {
+export class MemoryFile {
 	readonly path: string;
 	private readonly home: string;
 

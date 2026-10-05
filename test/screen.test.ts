@@ -11,7 +11,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ShellExecOptions } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { computerExtension, xdotoolCommand } from "../src/pi/computer.ts";
+import { screenTools, xdotoolCommand } from "../src/pi/screen.ts";
 import { MainThread } from "../src/pi/harness.ts";
 import { DEFAULTS } from "../src/settings.ts";
 
@@ -60,7 +60,7 @@ test("the agent sees a real X display through its computer tool, downscaled, wit
 		fauxAssistantMessage("Looked."),
 	]);
 	const settings = () => ({ ...DEFAULTS, model: { provider: "faux", modelId: "faux-1" } });
-	const thread = await MainThread.open({ dataDir, models, settings, installed: [computerExtension({ display: ":97" })], env: () => computer }, context);
+	const thread = await MainThread.open({ dataDir, models, settings, installed: [screenTools({ display: ":97" })], env: () => computer }, context);
 	try {
 		await thread.ask("1", "look at the screen", { channel: "test", chatId: "1", messageId: "1" }, context);
 		const results = (await thread.root.context(context)).messages.filter((message): message is ToolResultMessage => message.role === "toolResult");

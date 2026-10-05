@@ -29,9 +29,9 @@ Everything japa keeps is in one directory, `JAPA_DATA`. The default is `data/` i
 | `delegateModel` | a job's model when the chief doesn't pick one. The default is the chief's model. |
 | `jobModels` | named models the chief can assign to a job, such as `fast` or `strong` |
 | `user`, `timezone` | your name, and the time zone stamped on messages |
-| `context` | when a new slice starts: `idleMinutes` without a message, or when a request would pass `sliceTokens` |
+| `context` | when a new slice starts: `idleMinutes` without a message, or when a request would pass `sliceTokens`. The first (like `/new`, or a reply to an earlier message) also ends an exchange, which is when memory is brought up to date. |
 | `allowlist` | per platform, who may talk to it. It's edited only in this file. |
-| `extensions` | per extension: `enabled`, and its own options |
+| `extensions` | per extension: `enabled`, and its own options (for example `memory.words`, how long memory may get) |
 
 ## The machine
 
