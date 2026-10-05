@@ -34,7 +34,7 @@ export function stateExtension(options: { openItems: OpenItems; workingSet: Work
 			}),
 			defineTool({
 				name: "resolve",
-				description: "Close an open item by id once it's done, answered, or no longer relevant.",
+				description: "Close an open item by id once it's done, answered, or no longer relevant. A job's item: once the user has accepted or dropped its result; that finishes the job.",
 				parameters: Type.Object({ id: Type.String(), outcome: Type.Optional(Type.String()) }),
 				execute: async (args) => {
 					openItems.close(args.id, args.outcome);
