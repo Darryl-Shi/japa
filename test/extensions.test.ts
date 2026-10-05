@@ -11,9 +11,8 @@ import { Approvals } from "../src/core/approvals.ts";
 import { approvalsExtension } from "../src/pi/approvals.ts";
 import { CLAUDE_CODE, CODEX, codingAgentExtension } from "../src/pi/coding-agents.ts";
 import type { Channel, JapaExtension } from "../src/pi/extension.ts";
-import { problems } from "../src/pi/installer.ts";
 import { webExtension } from "../src/pi/web.ts";
-import { agent, call, context, say, sleep } from "./helpers.ts";
+import { agent, call, context, eventually, machineWithPackages, say, sleep } from "./helpers.ts";
 
 /** A tool that acts on the world, counting its runs. */
 function emailExtension(sent: string[]): JapaExtension {
@@ -542,13 +541,13 @@ export default function (host: Host): JapaExtension {
 }
 `;
 
-test("installer: an extension written on the workbench is installed from chat on the user's tap, hot, replaced in place, and back after a restart", async () => {
+test("installer: an extension written on the workbench is loaded in its sandbox, installed from chat on the user's tap, hot, replaced in place, and back after a restart", async () => {
 	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
-	const workbench = new LocalBackend(join(dataDir, "machine"));
+	const workbench = await machineWithPackages(dataDir);
 	const file = join(workbench.home, "greet.ts");
 	const script = (turn: { text: string }) => {
 		if (turn.text.includes("install greet")) return call("install_extension", { path: file, name: "greet", summary: "Says hi." });
-		if (turn.text.startsWith("Asked the user")) return say("I've asked you.");
+		if (turn.text.startsWith("Loading it in its sandbox")) return say("I've asked you.");
 		if (turn.text.includes("[Extension greet]")) return say(turn.text.includes("Installed") ? "Greet is on." : `Not installed: ${turn.text}`);
 		if (turn.text.includes("say hi")) return call("greet", {});
 		if (turn.text.startsWith("Hi from greet")) return say(turn.text);
@@ -558,11 +557,13 @@ test("installer: an extension written on the workbench is installed from chat on
 	const install = async (id: string) => {
 		const before = h.cards.length;
 		assert.deepEqual(await h.ask(id, "[Mon 10:00] install greet"), { text: "I've asked you." });
-		await h.until(() => h.cards.slice(before).some((shown) => shown.card.buttons !== undefined), "the install card");
+		await eventually(() => h.cards.slice(before).some((shown) => shown.card.buttons !== undefined), "the install card");
 		const card = h.cards.slice(before).find((shown) => shown.card.buttons !== undefined)!;
 		assert.match(card.card.text, /^Install extension\? greet/);
+		assert.match(card.card.text, /• Tools for you: greet/, "the card says what it would get, as its code declared it");
+		assert.match(card.card.text, /npm packages: @earendil-works\/pi-ai, @earendil-works\/pi-durable/);
 		await h.host.ui.press(card.card.buttons![0]![0]!.data, card.ref);
-		await h.until(() => h.cards.slice(before).some((shown) => shown.card.text === "Greet is on."), "the chief of staff hearing it's installed");
+		await eventually(() => h.cards.slice(before).some((shown) => shown.card.text === "Greet is on."), "the chief of staff hearing it's installed");
 	};
 
 	await writeFile(file, greetSource("v1"));
@@ -583,7 +584,7 @@ test("installer: an extension written on the workbench is installed from chat on
 
 test("installer: the user saying no installs nothing, and a built-in can't be replaced from chat", async () => {
 	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
-	const workbench = new LocalBackend(join(dataDir, "machine"));
+	const workbench = await machineWithPackages(dataDir);
 	const file = join(workbench.home, "greet.ts");
 	await writeFile(file, greetSource("v1"));
 	const h = await agent({
@@ -593,49 +594,44 @@ test("installer: the user saying no installs nothing, and a built-in can't be re
 		script: (turn) => {
 			if (turn.text.includes("install greet")) return call("install_extension", { path: file, name: "greet", summary: "Says hi." });
 			if (turn.text.includes("replace web")) return call("install_extension", { path: file, name: "web", summary: "A new web." });
-			if (turn.text.startsWith("Asked the user")) return say("I've asked you.");
+			if (turn.text.startsWith("Loading it in its sandbox")) return say("I've asked you.");
 			if (turn.text.includes("[Extension greet]")) return say(turn.text.includes("chose not") ? "Okay, not installed." : "?");
 			return say(turn.text);
 		},
 	});
 	await h.ask("1", "[Mon 10:00] install greet");
+	await eventually(() => h.cards.some((shown) => shown.card.buttons !== undefined), "the install card");
 	const card = h.cards.find((shown) => shown.card.buttons !== undefined)!;
 	await h.host.ui.press(card.card.buttons![0]![1]!.data, card.ref);
-	await h.until(() => h.cards.some((shown) => shown.card.text === "Okay, not installed."), "the chief of staff hearing no");
+	await eventually(() => h.cards.some((shown) => shown.card.text === "Okay, not installed."), "the chief of staff hearing no");
 	assert.equal(h.japa.extensions.get("greet"), undefined);
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] replace web"), { text: '"web" is built in; pick another name.' });
 	await h.done();
 });
 
-test("installer: a file that wouldn't load is sent back to the agent with why, before the user is asked", async () => {
-	assert.deepEqual(problems(greetSource("v1")), [], "a good one passes (type imports from anywhere are fine)");
-	const piStyle = `import {
-	createProvider,
-	type Model,
-} from "@earendil-works/pi-ai";
-import { envApiKeyAuth } from "@earendil-works/pi-ai/auth/helpers";
+test("installer: code that doesn't load in its sandbox goes back to the agent with why, and the user isn't asked", async () => {
+	const piStyle = `import { createProvider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.nope";
-import { helper } from "./helper.ts";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-export default function (pi: ExtensionAPI) {}
+export default function () {}
 `;
-	const found = problems(piStyle);
-	assert.equal(found.length, 3, found.join("\n"));
-	assert.match(found[0]!, /"@earendil-works\/pi-ai\/auth\/helpers" isn't available \(@earendil-works\/pi-ai exports \., \.\/models/);
-	assert.match(found[1]!, /openai-completions\.nope/, "a wildcard export pointing at no file");
-	assert.match(found[2]!, /"\.\/helper\.ts": it must be one file/);
-	assert.deepEqual(problems("export const x = 1;"), ["it has no default export"]);
-
 	const dataDir = await mkdtemp(join(tmpdir(), "japa-"));
-	const workbench = new LocalBackend(join(dataDir, "machine"));
+	const workbench = await machineWithPackages(dataDir);
 	await writeFile(join(workbench.home, "bad.ts"), piStyle);
 	const h = await agent({
 		workbench,
 		dataDir,
 		extensions: () => [],
-		script: (turn) => (turn.text.includes("install it") ? call("install_extension", { path: join(workbench.home, "bad.ts"), name: "bad", summary: "Bad." }) : say(turn.text.split("\n")[0]!)),
+		script: (turn) => {
+			if (turn.text.includes("install it")) return call("install_extension", { path: "bad.ts", name: "bad", summary: "Bad." });
+			if (turn.text.startsWith("Loading it")) return say("Loading.");
+			if (turn.text.includes("[Extension bad]")) return say(turn.text.slice(turn.text.indexOf("[Extension bad]")));
+			return say("Loading.");
+		},
 	});
-	assert.deepEqual(await h.ask("1", "[Mon 10:00] install it"), { text: "Not asking the user: it wouldn't load." });
+	assert.deepEqual(await h.ask("1", "[Mon 10:00] install it"), { text: "Loading." });
+	await eventually(() => h.cards.some((shown) => shown.card.text.startsWith("[Extension bad]")), "the agent hearing why");
+	const told = h.cards.find((shown) => shown.card.text.startsWith("[Extension bad]"))!.card.text;
+	assert.match(told, /It didn't load in its sandbox, so the user wasn't asked: .*openai-completions\.nope/s);
 	assert.ok(!h.cards.some((shown) => shown.card.buttons !== undefined), "no card");
 	await h.done();
 });

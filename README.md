@@ -27,22 +27,24 @@ Run the same command again to update; it also moves data from older layouts. For
 
 ```
                     ┌──────────────────────────── core (always on) ─────────────────────────────┐
- Channel ─► Inbox ──┤  Main thread ──── the chief of staff: one conversation, worked in slices   │
- (allowlist)        │       │  delegate / message_job / cancel_job          message_user ─► UI ─┼─► cards back
-                    │       ▼                                                                    │   on the channel
-                    │  Team: one job agent per job ──── report ──► back to the chief of staff    │
-                    │  Open items · Triggers · UI cards · /settings · /login · /jobs             │
+ Channel ─► Inbox ──┤  Main thread ── the chief of staff: one conversation, worked in slices     │
+ (allowlist)        │       │  every input has a cause; its answer goes back the way it came ───┼─► cards back
+                    │       ▼  delegate / message_job / cancel_job                               │   on the channel
+                    │  Team: one job agent per job ── report ──► back to the chief of staff      │
+                    │  Open items · Triggers · UI cards · /settings · /login · /jobs · Installer │
                     │  Adapters: channels · model providers · machines                           │
                     └───────────────▲─────────────────────────────────────────────▲──────────────┘
                                     │ the Host: settings, secrets, models, workbench,│
                                     │ cards, wake, holds, emit, history              │
                     ┌───────────────┴───────────── extensions ───────────────────────┴───────────┐
-                    │ Telegram · Memory · Approvals · Web · Computer · Screen · Claude Code ·     │
-                    │ Codex · boat.dev · Local machine · whatever you install from chat          │
-                    └────────────────────────────────────────────────────────────────────────────┘
-                                              │ bash, files, screen, coding agents
-                                              ▼
-                       Workbench: its own machine (boat.dev, by default), holding none of your secrets
+                    │ built in, in-process: Telegram · Memory · Approvals · Web · Computer ·      │
+                    │ Screen · Claude Code · Codex · boat.dev · Local machine                    │
+                    │ installed from chat: a stand-in here, forwarding to its code ─────────┐    │
+                    └───────────────────────────────────────────────────────────────────────┼────┘
+                             │ bash, files, screen, coding agents                exec only  │
+                             ▼                                                              ▼
+       Workbench: the agent's own machine (boat.dev,       Extensions machine: each installed extension's
+       by default), holding none of your secrets           code in its own process, keys as placeholders
 ```
 
 **The core** can't be turned off. It's made of:
@@ -64,7 +66,7 @@ Each thing japa is built from has one typed adapter in the core, and every imple
 | **Capability:** tools, prompt, hooks | `JapaExtension`, made from the `Host` (`src/pi/extension.ts`) | the extension itself: `chief`, `jobs`, `settings`, `safeTools`, `onSliceEnd`, `triggers`, `start`/`stop` | Memory, Approvals, Web, Computer, Screen, Claude Code, Codex |
 | **Channel** | `Channel` (`src/pi/extension.ts`): `platform`, `open({ inbox, ui })`, `show(card)`, `close()`. Messages go in through the `Inbox`, the allowlist gate (`src/channels/inbox.ts`); presses, replies and commands go to the `UI` (`src/core/ui.ts`) | `channel: { platform, open, show, close }` | Telegram |
 | **Model provider** | pi-ai's `Provider` on the core's `Models`; credentials in `auth.json` through `/login` | `providers: [createProvider(...)]` | pi-ai's providers |
-| **Machine** | `Backend` (`exec`, optionally `viewUrl`), opened by an `OpenBackend` (`src/core/backend.ts`) | `backends: { "<name>": (role, config) => backend }`, picked by name in `machines.workbench` | boat.dev, Local machine |
+| **Machine** | `Backend` (`exec`, optionally `viewUrl`), opened by an `OpenBackend` (`src/core/backend.ts`) | `backends: { "<name>": (role, config) => backend }`, picked by name in `machines.workbench` (and `machines.extensions`) | boat.dev, Local machine |
 
 While an extension is on, the core registers its providers and machines, and opens its channel and shows cards on it. When the extension is turned off, the core drops them and closes the channel.
 
@@ -151,9 +153,22 @@ An extension can also:
 
 ### Extensions from chat
 
-The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file whose default export is `(host: Host) => JapaExtension`, importing values only from packages. Then the chief of staff calls `install_extension`, and you get a card with Install and Don't install buttons, every time, whatever the approvals mode, because the code runs inside the agent with its keys. When you tap Install it's loaded, saved to `extensions/` in the data directory, and on from your next message, with no restart. Installing a new version replaces the old one in place, and installed extensions load again at start. `remove_extension` takes one out.
+The agent extends itself while running. A job writes the extension on the workbench: one `.ts` file, or a directory with a `package.json` for its own npm packages, whose default export is `(host: Host) => JapaExtension`. Then the chief of staff calls `install_extension`. The code is copied to `extensions/` in the data directory and loaded in its sandbox, to see what it declares; if it doesn't load, the agent hears why and you're never asked. If it loads, you get a card saying what it would get (its tools, hooks, providers, channel, keys and npm packages) with Install and Don't install buttons, every time, whatever the approvals mode. When you tap Install it's on from your next message, with no restart. Installing a new version replaces the old one in place, and at start installed extensions are registered again from what they declared, without waiting for their machine. `remove_extension` takes one out.
 
-Which machine is the workbench is set in `machines.workbench` in `settings.json`, by the name of a machine provider:
+**Installed extensions run sandboxed.** The agent loop, durable state, keys and your consent stay in japa, but the extension's code doesn't run there. Each one is split in two (`src/pi/sandbox.ts`):
+- **there,** on the extensions machine, its code runs in a small host process (`src/sandbox/host.mjs`). Its Host is a set of requests back to japa, and its keys are placeholders;
+- **here,** japa registers a stand-in built from what the code declared. Every tool, prompt section, hook, channel and lifecycle call is forwarded there through nothing but the machine's `exec`.
+
+The trust lines are held on japa's side:
+- **Keys.** A request to the web that carries a key placeholder goes out through japa, which fills in the real value, only for the extension's own keys, and takes it back out of the answer.
+- **Hooks.** A hook can rewrite only the extension's own tools' calls. For anyone else's tool it can only block.
+- **Safe tools.** An extension vouches only for its own tools.
+- **Cards and channels.** Its cards' buttons are its own. A channel's messages still come in only through its platform's inbox.
+- **Providers.** A model provider becomes a provider in japa, on pi-ai's built-in API for each model, with its key from `/login`. Its last model list is kept, so its models are there before its machine is.
+
+An extension with a life of its own (a channel, or something it starts) keeps its process running. If it dies, that's reported to the chief of staff, and it's brought back. One that only answers calls comes up on its first call, so its machine can sleep. Durable tasks and machine providers are for built-in extensions only.
+
+Which machine is the workbench is set in `machines.workbench` in `settings.json`, by the name of a machine provider. Where installed extensions run is `machines.extensions`, which defaults to the workbench's provider as a machine of its own (its own VM on boat.dev, its own directory locally). The provider can be:
 - `boat`: boat.dev;
 - `local`: this machine, for development;
 - any provider an installed extension declares.
@@ -173,7 +188,7 @@ Everything it keeps is in one directory, `JAPA_DATA` (default `data/` in the che
 | `secrets.json`, `.env` | extension keys, as `<extension>.<key>` (Telegram's bot token is one). An extension's secret field can name an environment variable to fall back on; the defaults use `TELEGRAM_BOT_TOKEN`, `BOAT_API_KEY`, `PARALLEL_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `CODEX_API_KEY` |
 | `session.sqlite`, `history.sqlite` | the durable state of every conversation and task; history search |
 | `memory/` | its memory of you, a git repo |
-| `extensions/` | extensions installed from chat |
+| `extensions/` | extensions installed from chat: each one's code, and what it declared |
 | `audit.jsonl`, `japa.log` | every reviewed action; the log |
 
 **The workbench** on boat.dev is set with `{ "provider": "boat", "type": "small", "screen": true, "idleSeconds": 7200 }`, and its key in `/settings` → boat.dev. It sleeps after `idleSeconds` unused, and each command pushes that deadline back. The next command wakes it with the same disk.
@@ -182,7 +197,7 @@ Everything it keeps is in one directory, `JAPA_DATA` (default `data/` in the che
 
 - **Only the allowlist gets in.** Every channel goes through the same gate, and the agent has no tool to change the list.
 - **Secrets never live on the workbench.** Model credentials and keys stay in the harness. A key a coding agent needs is passed to that one command's environment.
-- **Agent code never runs in the harness.** Shell, files and coding agents run on the workbench. Without one, the agent has no shell at all. The one exception is an extension, which runs inside japa with its keys, so only your tap installs one, after the file has been checked.
+- **Agent code never runs in the harness.** Shell, files and coding agents run on the workbench. Without one, the agent has no shell at all. Extensions installed from chat run on the extensions machine and never see a key. Only your tap installs one, after it has loaded in its sandbox and the card has said what it gets.
 - **Consequential actions need you,** through Approvals. Standing permissions come only from your "Always" taps and can be removed in `/settings`.
 
 ## Development
@@ -198,7 +213,8 @@ src/
   main.ts          the default extensions, and start
   japa.ts          the core, assembled; builds the Host and opens the workbench through its provider
   core/            our formats and services: messages, UI cards, schedules, approvals, memory, state (no Pi imports)
-  pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host; installer.ts: extensions from chat)
+  pi/              Pi adapters and the built-in extensions (extension.ts: the one unit type and the Host; installer.ts: extensions from chat; sandbox.ts: their stand-ins)
+  sandbox/         host.mjs: an installed extension's process on its machine (plain JS, node:* only)
   channels/        the Inbox (allowlist gate), /settings, /login, /jobs, Telegram
   backends/        machine providers, as extensions: boat, local
 ```

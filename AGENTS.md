@@ -75,9 +75,11 @@ owner's name (that comes from settings); a person is "they". The base prompt sta
 - Secrets never go in code or `settings.json`. Model credentials live in `auth.json`, through `/login`. Extension keys
   live in `secrets.json`, through a secret settings field.
 - Secrets never go on the workbench. A key a command needs is passed to that one command.
-- Agent-written code runs on the workbench, not in the harness. The one exception is an extension, which runs inside
-  japa with its keys. So the user approves every install with a card, whatever the approvals mode, and the file is
-  checked before they're asked.
+- Agent-written code runs on a machine, not in the harness: shell and coding agents on the workbench, extensions
+  installed from chat on the extensions machine (`src/pi/sandbox.ts`), where keys are placeholders that japa fills in
+  on a request to the web. The harness keeps what an extension extends (the loop, state, keys, consent) and holds the
+  lines there: a sandboxed hook rewrites only its own tools' calls, safeTools vouch only for its own tools. The user
+  still approves every install with a card, after it has loaded in its sandbox, whatever the approvals mode.
 - The allowlist is edited only in `settings.json`; no tool can change it.
 
 ## Continuity
