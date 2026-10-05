@@ -68,16 +68,25 @@ done
 
 # --- The code --------------------------------------------------------------------------------------------------------
 
-if [ -d "$DIR/.git" ]; then
-	say "Updating $DIR"
-	git -C "$DIR" pull --ff-only --quiet origin "$BRANCH"
-elif [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
-	die "$DIR exists and isn't a japa checkout; set JAPA_DIR to install elsewhere"
-else
-	say "Cloning into $DIR"
-	git clone --quiet --branch "$BRANCH" "$REPO" "$DIR"
+# Pulled (or cloned) once; the handed-over run below finds it done.
+if [ -z "${JAPA_HANDED_OVER:-}" ]; then
+	if [ -d "$DIR/.git" ]; then
+		say "Updating $DIR"
+		git -C "$DIR" pull --ff-only --quiet origin "$BRANCH"
+	elif [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+		die "$DIR exists and isn't a japa checkout; set JAPA_DIR to install elsewhere"
+	else
+		say "Cloning into $DIR"
+		git clone --quiet --branch "$BRANCH" "$REPO" "$DIR"
+	fi
 fi
 cd "$DIR"
+
+# Carry on with the installer just pulled, so an update always runs the latest one (the copy piped in can be minutes
+# stale behind GitHub's cache).
+if [ -z "${JAPA_HANDED_OVER:-}" ]; then
+	JAPA_HANDED_OVER=1 exec bash "$DIR/install.sh"
+fi
 
 # --- Node 24: the machine's own if it's new enough, otherwise a private copy in .node/ ---------------------------------
 
