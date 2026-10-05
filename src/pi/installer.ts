@@ -4,12 +4,13 @@
 // the Host, keys included, so only the user's tap installs it. On Install it is loaded, copied into
 // data/extensions, and on from the next message, with no restart; the chief of staff hears how it went. At start,
 // what was installed before loads again. A new version replaces the old one in place.
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
-import { defineExtension, defineTool, type Extension, type Registry } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
 import type { Card } from "../core/ui.ts";
 import { BackendExecutionEnv } from "./backend-env.ts";
 import type { ExtensionSet, Host, JarvisExtension } from "./extension.ts";
@@ -17,6 +18,26 @@ import type { ExtensionSet, Host, JarvisExtension } from "./extension.ts";
 export const EXTENSION_PREFIX = "[Extension ";
 const NAME = /^[a-z][a-z0-9-]{0,39}$/;
 const CODE_DIR = resolve(import.meta.dirname, "../..");
+
+function origin(): string {
+	try {
+		return execFileSync("git", ["-C", CODE_DIR, "remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "the agent's repo";
+	} catch {
+		return "the agent's repo";
+	}
+}
+
+/** How to write one: what a job's brief must say. In the tool description, read when it's needed, not every turn. */
+const guide = (repo: string) =>
+	[
+		"A job writes it; its brief must say: clone",
+		`${repo} on the workbench and npm ci; the contract is src/pi/extension.ts, src/pi/web.ts is an example; write`,
+		"src/ext/<name>.ts, one file whose default export is (host: Host) => JarvisExtension; import values only from packages",
+		"(@earendil-works/pi-ai, @earendil-works/pi-durable, node:*), types only with `import type`; a key goes in a secret",
+		'settings field the user sets in /settings, read with host.secrets.get("<name>.<key>"), never in the code; a model',
+		"provider is an extension whose start() calls host.models.setProvider; npm run check passes. Not a Pi coding-agent",
+		"extension. The file is checked before the user is asked.",
+	].join(" ");
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
 
@@ -87,6 +108,7 @@ export function installer(options: {
 	context: Context;
 }): Installer {
 	const { host, registry } = options;
+	const repo = origin();
 	const dir = resolve(options.dataDir, "extensions");
 	const pendingDir = join(dir, ".pending");
 	/** Installed from chat (the rest are built in and can't be replaced from here). */
@@ -173,11 +195,17 @@ export function installer(options: {
 
 	const extension = defineExtension({
 		name: "jarvis.installer",
+		sections: [
+			section(
+				"extending",
+				() =>
+					"You are built to be customized: beyond your core (this conversation, open items, the team, triggers), everything you can do is an extension the user turns on or off in /settings. You can't change your own settings. You can add extensions yourself: have a job write one, then install_extension; it's on from the next message once the user approves. Never say something is installed before you hear it is.",
+			),
+		],
 		tools: [
 			defineTool({
 				name: "install_extension",
-				description:
-					"Install an extension written on your computer (the workbench) into yourself, hot: the user is asked with buttons, and on Install it's on from the next message. A new version of an installed one replaces it. The file must be a japa extension, not a Pi coding-agent one: default export (host: Host) => JarvisExtension (src/pi/extension.ts in the repo), values imported only from packages japa has. It's checked before the user is asked.",
+				description: `Install an extension written on your computer (the workbench) into yourself, hot: the user is asked with buttons, and on Install it's on from the next message. A new version of an installed one replaces it. ${guide(repo)}`,
 				parameters: Type.Object({
 					path: Type.String({ description: "The .ts file on the workbench" }),
 					name: Type.String({ description: "The extension's name (lowercase-with-dashes), as in the file" }),

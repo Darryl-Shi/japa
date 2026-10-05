@@ -31,7 +31,7 @@ export type Settings = {
 	/** IANA zone for the time stamped on each message; default: the machine's. */
 	timezone?: string;
 	/**
-	 * The main thread is one Telegram DM, but the model works in short slices of it. A new slice starts (decided when
+	 * The main thread is one chat, but the model works in short slices of it. A new slice starts (decided when
 	 * the next message from the user arrives) after idleMinutes without one, when the next request would pass
 	 * sliceTokens, on /new, or on a reply to a message from an earlier slice. A slice starts from state — open items,
 	 * the working set, the last few visible messages — not from a summary of history.

@@ -20,7 +20,6 @@ import { ExtensionSet, type Host, type JarvisExtension } from "./pi/extension.ts
 import { MainThread } from "./pi/harness.ts";
 import { installer } from "./pi/installer.ts";
 import { indexHistory } from "./pi/memory.ts";
-import { setupExtension } from "./pi/setup.ts";
 import { stateExtension } from "./pi/state.ts";
 import { triggers } from "./pi/triggers.ts";
 import type { SettingsFile } from "./settings.ts";
@@ -101,12 +100,11 @@ export async function startJarvis(
 	};
 
 	const stateTools = stateExtension(state);
-	const setup = setupExtension({ settings: () => settings.get(), extensions: () => extensions!, workbench, dataDir });
 	const team = delegationExtensions({
 		openItems: state.openItems,
 		settings: () => settings.get(),
 		origin: (callContext) => main().origin(callContext),
-		withhold: () => [main().core, setup, stateTools, team.chief, schedule.extension, installs.extension, ...extensions!.withheldFromJobs()],
+		withhold: () => [main().core, stateTools, team.chief, schedule.extension, installs.extension, ...extensions!.withheldFromJobs()],
 		waitingOnUser: (conversationId) => holds.has(String(conversationId)),
 	});
 	const schedule = triggers({ triggers: () => extensions!.triggers(), timeZone: () => settings.get().timezone });
@@ -114,7 +112,7 @@ export async function startJarvis(
 	const installs = installer({ host, dataDir, extensions: () => extensions!, registry, apply: (callContext) => jarvis.apply(callContext), context });
 	const set = new ExtensionSet([...options.extensions(host), ...(await installs.loadInstalled())], settings, log);
 	extensions = set;
-	const core = [setup, stateTools, team.chief, schedule.extension, installs.extension];
+	const core = [stateTools, team.chief, schedule.extension, installs.extension];
 
 	thread = await MainThread.open(
 		{

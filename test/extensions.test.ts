@@ -242,9 +242,9 @@ test("triggers: a time trigger wakes the chief of staff on schedule (durably), a
 	await h.done();
 });
 
-test("setup: the chief of staff is told how it's set up from live state; job agents aren't", async () => {
+test("prompt: the chief of staff gets its role and how it extends itself, naming no channel or setup; job agents don't", async () => {
 	const h = await agent({
-		extensions: () => [emailExtension([]), { name: "calendar", title: "Calendar", about: "Your calendar.", enabledByDefault: false }],
+		extensions: () => [emailExtension([])],
 		script: (turn) => {
 			if (turn.job !== undefined) return call("report", { summary: "Done." });
 			if (turn.text.includes("hand it off")) return call("delegate", { title: "Errand", brief: "Do the errand." });
@@ -254,11 +254,12 @@ test("setup: the chief of staff is told how it's set up from live state; job age
 	await h.ask("1", "[Mon 10:00] hand it off");
 	await h.until(() => h.turns.some((turn) => turn.job !== undefined), "the job agent's turn");
 	const chief = h.turns.find((turn) => turn.job === undefined)!.request;
-	assert.match(chief, /You are japa/);
-	assert.match(chief, /you run on faux\/faux-1/);
-	assert.match(chief, /Calendar \(off\): Your calendar\./);
-	assert.match(chief, /Email \(on\)/);
-	assert.ok(!h.turns.find((turn) => turn.job !== undefined)!.request.includes("You are japa"), "job agents aren't told");
+	assert.match(chief, /Your role is to answer, decide, delegate, and synthesize/);
+	assert.match(chief, /You are built to be customized/);
+	assert.match(chief, /clone .* on the workbench/, "the how-to is in install_extension's description");
+	assert.doesNotMatch(chief, /Telegram|faux-1/, "no channel or setup named");
+	const job = h.turns.find((turn) => turn.job !== undefined)!.request;
+	assert.ok(!job.includes("You are built to be customized") && !job.includes("Your role is to answer"), "job agents aren't the chief of staff");
 	await h.done();
 });
 

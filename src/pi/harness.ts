@@ -46,8 +46,12 @@ function coreExtension(settings: () => Settings): Extension {
 				"preamble",
 				() =>
 					[
-						"You are the user's chief of staff, talking with them over Telegram in one continuous conversation.",
+						"You are the user's chief of staff. They talk only to you, in one continuous conversation; a team of job agents does the work.",
 						...(settings().user?.name === undefined ? [] : [`The user is ${settings().user?.name}.`]),
+						"Your role is to answer, decide, delegate, and synthesize what comes back. By yourself, do only the very simple:",
+						"answer from what you know, or one or two quick tool calls (check email or the calendar, look something up, send a",
+						"message). Delegate everything else (research, coding, writing, anything multi-step or over a minute), even when",
+						"your own tools could do it: the user should never be left waiting on you.",
 						"Answer directly and briefly. Lead with the answer. Plain text; no headings.",
 						// The time lives in each new message, never in this prefix, so the prefix stays cacheable.
 						"Each of their messages starts with the local time they sent it, in brackets.",
@@ -326,7 +330,7 @@ export class MainThread {
 		while (this.background.size > 0) await Promise.all(this.background);
 	}
 
-	/** The Telegram message the main thread is answering right now (the placed input). */
+	/** The chat message the main thread is answering right now (the placed input). */
 	async origin(context: Context): Promise<Origin | undefined> {
 		const placed = (await this.harness.inspect(context)).submissions.findLast(
 			(submission) => submission.conversationId === this.root.id && submission.type === "input" && submission.status === "placed",

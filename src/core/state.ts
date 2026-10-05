@@ -19,7 +19,7 @@ export type OpenItem = {
 	kind: OpenItemKind;
 	text: string;
 	openedAt: number;
-	/** The Telegram messages it belongs to (the request, the report), so a reply to any of them finds it. */
+	/** The chat messages it belongs to (the request, the report), so a reply to any of them finds it. */
 	messageIds?: number[];
 	closedAt?: number;
 	outcome?: string;
@@ -80,7 +80,7 @@ export class OpenItems {
 		});
 	}
 
-	/** Remember another Telegram message that belongs to this item. */
+	/** Remember another chat message that belongs to this item. */
 	link(id: string, messageId: number): void {
 		this.change(id, (item) => {
 			item.messageIds = [...new Set([...(item.messageIds ?? []), messageId])];

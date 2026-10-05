@@ -95,10 +95,6 @@ const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean) => 
 });
 
 const CHIEF_GUIDE = [
-	"Your own work is talking with the user, delegating, and synthesizing what comes back. By yourself, do only what",
-	"takes a step or two: check email or the calendar, look something up, send a message, answer from what you know.",
-	"Anything more (research, coding, a multi-step task, anything over a minute or two) is a job: delegate it, even",
-	"when your own tools could do it, so the user is never left waiting on you.",
 	"You run a team. delegate hands a self-contained job to a job agent (its own computer and model; pick a model",
 	"name only when the job needs it). Job agents can have tools you don't, such as coding agents: hand them coding work.",
 	"Job agents report back to you as messages starting with \"[Report from job\" —",
@@ -131,7 +127,7 @@ export type Delegation = {
 export function delegationExtensions(options: {
 	openItems: OpenItems;
 	settings: () => { delegateModel: ModelChoice; jobModels: Record<string, ModelChoice> };
-	/** The Telegram message the chief of staff is answering right now. */
+	/** The chat message the chief of staff is answering right now. */
 	origin: (context: Context) => Promise<Origin | undefined>;
 	/** What a new job agent must not have (the chief of staff's own extensions, anything turned off). */
 	withhold: () => readonly Extension[];
