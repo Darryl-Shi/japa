@@ -33,7 +33,8 @@ export class BoatApi {
 		});
 		if (!response.ok) {
 			const detail = (await response.json().catch(() => ({}))) as { code?: string; retryable?: boolean; message?: string };
-			throw Object.assign(new Error(`boat ${method} ${path}: ${response.status} ${detail.code ?? ""} ${detail.message ?? ""}`.trim()), {
+			// Worded for the agent, which only knows it has a computer.
+			throw Object.assign(new Error(`the computer is unavailable right now (${response.status} ${detail.code ?? ""} ${detail.message ?? ""})`.replace(/ +\)/, ")")), {
 				status: response.status,
 				...detail,
 			} satisfies BoatError);
@@ -46,22 +47,40 @@ export class BoatApi {
 	}
 }
 
+/**
+ * One role's machine. Nothing happens until it's used: the first command creates the machine (or finds the one
+ * remembered for this role), wakes it if it's asleep, and runs. Whoever uses it only ever sees a computer.
+ */
 export class BoatBackend implements Backend {
 	readonly id: string;
 	readonly home = HOME;
-	readonly sandboxId: string;
 	private readonly api: BoatApi;
+	/** The machine's id: the remembered one, or a new machine (`fresh`: the remembered one is gone). */
+	private readonly find: (fresh: boolean) => Promise<string>;
+	private machine: Promise<string> | undefined;
 	/** Sleep (archive) after this long unused; undefined: never. */
 	private readonly idleSeconds: number | undefined;
 	private readonly touchEveryMs: number;
 	private touchedAt = 0;
 
-	constructor(api: BoatApi, sandboxId: string, idleSeconds?: number, touchEveryMs = TOUCH_EVERY_MS) {
+	constructor(api: BoatApi, role: string, find: (fresh: boolean) => Promise<string>, idleSeconds?: number, touchEveryMs = TOUCH_EVERY_MS) {
 		this.api = api;
-		this.sandboxId = sandboxId;
-		this.id = `boat:${sandboxId}`;
+		this.id = `boat:${role}`;
+		this.find = find;
 		this.idleSeconds = idleSeconds;
 		this.touchEveryMs = touchEveryMs;
+	}
+
+	/** The machine's id, creating the machine on first use. */
+	sandboxId(fresh = false): Promise<string> {
+		if (this.machine === undefined || fresh) {
+			const found = this.find(fresh);
+			this.machine = found;
+			found.catch(() => {
+				if (this.machine === found) this.machine = undefined; // try again next time
+			});
+		}
+		return this.machine;
 	}
 
 	/**
@@ -70,26 +89,31 @@ export class BoatBackend implements Backend {
 	 * `idleSeconds` without use, never in the middle of work.
 	 */
 	private touch(): void {
-		if (this.idleSeconds === undefined || Date.now() - this.touchedAt < this.touchEveryMs) return;
+		// Not used yet since start: the first command either finds it awake or wakes it with a fresh deadline.
+		if (this.machine === undefined || this.idleSeconds === undefined || Date.now() - this.touchedAt < this.touchEveryMs) return;
 		this.touchedAt = Date.now();
-		void this.api.json("PATCH", `/sandboxes/${this.sandboxId}`, { ttlSeconds: this.idleSeconds }).catch(() => {
+		void this.sandboxId().then((id) => this.api.json("PATCH", `/sandboxes/${id}`, { ttlSeconds: this.idleSeconds })).catch(() => {
 			this.touchedAt = 0; // try again next time
 		});
 	}
 
-	private state(): Promise<string> {
-		return this.api.json<{ sandbox: { state: string } }>("GET", `/sandboxes/${this.sandboxId}`).then((body) => body.sandbox.state);
+	private async state(): Promise<string> {
+		return (await this.api.json<{ sandbox: { state: string } }>("GET", `/sandboxes/${await this.sandboxId()}`)).sandbox.state;
 	}
 
-	/** Bring a stopped machine back, and wait until it accepts commands. */
+	/** Bring a stopped machine back (or a new one, if it's gone), and wait until it accepts commands. */
 	async ensureRunning(signal?: AbortSignal): Promise<void> {
-		let state = await this.state();
+		let state = await this.state().catch(async (error: unknown) => {
+			if ((error as BoatError).status !== 404) throw error;
+			await this.sandboxId(true);
+			return this.state();
+		});
 		if (state === "archived" || state === "error") {
-			await this.api.json("POST", `/sandboxes/${this.sandboxId}/resume`, { ttlSeconds: this.idleSeconds ?? null }, signal);
+			await this.api.json("POST", `/sandboxes/${await this.sandboxId()}/resume`, { ttlSeconds: this.idleSeconds ?? null }, signal);
 			this.touchedAt = Number.POSITIVE_INFINITY; // the resume set a fresh deadline
 		}
 		for (const started = Date.now(); !READY.has(state); state = await this.state()) {
-			if (Date.now() - started > 180_000) throw new Error(`boat machine ${this.sandboxId} not ready (${state})`);
+			if (Date.now() - started > 180_000) throw new Error(`the computer didn't start (${state})`);
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 			signal?.throwIfAborted();
 		}
@@ -108,8 +132,10 @@ export class BoatBackend implements Backend {
 		try {
 			return seconds > SYNC_LIMIT_S ? await this.execDetached(full, seconds, options) : await this.execStreamed(full, seconds, options);
 		} catch (error) {
-			// A stopped machine: resume it once and run again. A command that may already be running is never retried.
-			if ((error as BoatError).code !== "sandbox_not_ready") throw error;
+			// Asleep (or gone): wake it, or replace it, once and run again. A command that may already be running is
+			// never retried.
+			const { code, status } = error as BoatError;
+			if (code !== "sandbox_not_ready" && status !== 404) throw error;
 			await this.ensureRunning(options.signal);
 			return seconds > SYNC_LIMIT_S ? await this.execDetached(full, seconds, options) : await this.execStreamed(full, seconds, options);
 		} finally {
@@ -118,8 +144,8 @@ export class BoatBackend implements Backend {
 	}
 
 	private async execStreamed(command: string, timeoutSeconds: number, options: ExecOptions): Promise<ExecResult> {
-		const response = await this.api.request("POST", `/sandboxes/${this.sandboxId}/commands`, { command, timeoutSeconds, stream: true }, options.signal);
-		if (response.body === null) throw new Error("boat: empty command stream");
+		const response = await this.api.request("POST", `/sandboxes/${await this.sandboxId()}/commands`, { command, timeoutSeconds, stream: true }, options.signal);
+		if (response.body === null) throw new Error("the computer returned no output stream");
 		const decoder = new TextDecoder();
 		let buffered = "";
 		let result: ExecResult | undefined;
@@ -133,25 +159,26 @@ export class BoatBackend implements Backend {
 				const frame = JSON.parse(line) as { type: string; data?: string; exitCode?: number | null; timedOut?: boolean; message?: string };
 				if (frame.type === "stdout" || frame.type === "stderr") options.onOutput?.(frame.data ?? "");
 				else if (frame.type === "exit") result = { exitCode: frame.exitCode ?? 137, ...(frame.timedOut === true ? { timedOut: true } : {}) };
-				else if (frame.type === "error") throw new Error(`boat: ${frame.message ?? "command failed"}`);
+				else if (frame.type === "error") throw new Error(frame.message ?? "the command failed");
 			}
 		}
-		if (result === undefined) throw new Error("boat: command stream ended without an exit");
+		if (result === undefined) throw new Error("the command ended without an exit code");
 		return result;
 	}
 
 	/** Past boat's synchronous limit: start detached, poll, then read the logs. */
 	private async execDetached(command: string, timeoutSeconds: number, options: ExecOptions): Promise<ExecResult> {
+		const id = await this.sandboxId();
 		const started = await this.api.json<{ processId: number; pid: number; logPath?: string; errLogPath?: string }>(
 			"POST",
-			`/sandboxes/${this.sandboxId}/commands`,
+			`/sandboxes/${id}/commands`,
 			{ command, detached: true },
 			options.signal,
 		);
 		const deadline = Date.now() + timeoutSeconds * 1000;
 		let status: { running: boolean; exitCode: number | null; logPath?: string; errLogPath?: string };
 		for (let wait = 250; ; wait = Math.min(wait * 2, 5000)) {
-			status = await this.api.json("GET", `/sandboxes/${this.sandboxId}/commands/${started.processId}`);
+			status = await this.api.json("GET", `/sandboxes/${id}/commands/${started.processId}`);
 			if (!status.running) break;
 			if (Date.now() > deadline || options.signal?.aborted === true) {
 				await this.execStreamed(`kill -TERM -- -${started.pid} 2>/dev/null || kill -TERM ${started.pid}`, 30, {});
@@ -165,23 +192,26 @@ export class BoatBackend implements Backend {
 	}
 
 	async viewUrl(): Promise<string> {
+		await this.ensureRunning();
 		for (let attempt = 0; attempt < 30; attempt++) {
-			const body = await this.api.json<{ desktopUrl?: string; provisioning?: boolean }>("POST", `/sandboxes/${this.sandboxId}/desktop?vnc=1`, {});
+			const body = await this.api.json<{ desktopUrl?: string; provisioning?: boolean }>("POST", `/sandboxes/${await this.sandboxId()}/desktop?vnc=1`, {});
 			if (body.desktopUrl !== undefined) return body.desktopUrl;
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 		}
-		throw new Error("boat: desktop not available");
+		throw new Error("the screen link isn't available");
 	}
 
 	async suspend(): Promise<void> {
-		await this.api.json("POST", `/sandboxes/${this.sandboxId}/stop`, {});
+		if (this.machine === undefined) return;
+		await this.api.json("POST", `/sandboxes/${await this.sandboxId()}/stop`, {});
 	}
 }
 
 /**
- * Config per role: `sandboxId` to use an existing machine, else one is created (`type`, default "small") and its id
- * remembered in `stateFile`, so the same machine — and everything on it — comes back next time. `idleSeconds`: sleep
- * after that long unused (free trials require ≤ 7200); it wakes, same disk, on the next command.
+ * Config per role: `sandboxId` to use an existing machine, else one is created on first use (`type`, default "small")
+ * and its id remembered in `stateFile`, so the same machine — and everything on it — comes back next time; if it's
+ * gone, the next command gets a new one. `idleSeconds`: sleep after that long unused (free trials require ≤ 7200); it
+ * wakes, same disk, on the next command. Opening costs nothing: no machine starts until something runs on it.
  */
 export function boatProvider(options: { apiKey: string; stateFile: string; fetch?: typeof fetch; touchEveryMs?: number }): BackendProvider {
 	const api = new BoatApi(options.apiKey, options.fetch);
@@ -190,19 +220,19 @@ export function boatProvider(options: { apiKey: string; stateFile: string; fetch
 		name: "boat",
 		async open(role, config) {
 			const idleSeconds = typeof config.idleSeconds === "number" ? config.idleSeconds : undefined;
-			let sandboxId = typeof config.sandboxId === "string" ? config.sandboxId : remembered()[role];
-			if (sandboxId === undefined) {
+			const configured = typeof config.sandboxId === "string" ? config.sandboxId : undefined;
+			const find = async (fresh: boolean) => {
+				const known = fresh ? undefined : (configured ?? remembered()[role]);
+				if (known !== undefined) return known;
 				const created = await api.json<{ sandbox: { id: string } }>("POST", "/sandboxes", {
 					type: typeof config.type === "string" ? config.type : "small",
 					ttlSeconds: idleSeconds ?? null,
 					noEnv: true,
 				});
-				sandboxId = created.sandbox.id;
-				writeFileSync(options.stateFile, `${JSON.stringify({ ...remembered(), [role]: sandboxId }, null, "\t")}\n`);
-			}
-			const backend = new BoatBackend(api, sandboxId, idleSeconds, options.touchEveryMs);
-			await backend.ensureRunning();
-			return backend;
+				writeFileSync(options.stateFile, `${JSON.stringify({ ...remembered(), [role]: created.sandbox.id }, null, "\t")}\n`);
+				return created.sandbox.id;
+			};
+			return new BoatBackend(api, role, find, idleSeconds, options.touchEveryMs);
 		},
 	};
 }

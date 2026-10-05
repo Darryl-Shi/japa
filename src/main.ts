@@ -27,13 +27,14 @@ const dataDir = process.env.JARVIS_DATA ?? "data";
 mkdirSync(dataDir, { recursive: true });
 const settings = new SettingsFile(dataDir);
 
-// The one configured abstraction besides extensions: the computer the agent works on.
+// The one configured abstraction besides extensions: the computer the agent works on. Opening it starts nothing; the
+// machine is created or woken by the first command that needs it.
 const providers = new BackendProviders();
 providers.register(localProvider);
 if (process.env.BOAT_API_KEY !== undefined) providers.register(boatProvider({ apiKey: process.env.BOAT_API_KEY, stateFile: join(dataDir, "boat-machines.json") }));
 const workbenchConfig = settings.get().machines.workbench;
 const workbench = workbenchConfig === undefined ? undefined : await providers.open("workbench", workbenchConfig);
-if (workbench !== undefined) console.log(`workbench: ${workbench.id}`);
+if (workbench !== undefined) console.log(`workbench: ${workbench.id} (starts on first use)`);
 
 const jarvis = await startJarvis(
 	{

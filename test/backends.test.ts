@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -51,6 +51,7 @@ function fakeBoat(machine: LocalBackend) {
 		const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
 		calls.push(`${method} ${path}`);
 		bodies.push({ call: `${method} ${path}`, body });
+		if (/^\/sandboxes\/(?!bx_aaaaaaaa)/.test(path)) return json({ ok: false, code: "not_found" }, 404);
 		if (method === "PATCH" && path === "/sandboxes/bx_aaaaaaaa") return json({ ok: true, sandbox: { id: "bx_aaaaaaaa", state } });
 		if (method === "POST" && path === "/sandboxes") return json({ ok: true, sandbox: { id: "bx_aaaaaaaa", state: "provisioning" } }, 202);
 		if (method === "GET" && path === "/sandboxes/bx_aaaaaaaa") {
@@ -97,14 +98,16 @@ test("boat provider: creates a no-env machine once, streams commands, resumes a 
 	const boat = fakeBoat(machine);
 	const provider = boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl });
 	const backend = await provider.open("workbench", { provider: "boat" });
-	assert.equal(backend.id, "boat:bx_aaaaaaaa");
-	assert.deepEqual(JSON.parse(await readFile(join(dataDir, "boat.json"), "utf8")), { workbench: "bx_aaaaaaaa" });
+	assert.equal(backend.id, "boat:workbench");
+	assert.equal(boat.calls.length, 0, "opening starts nothing");
 
+	// The first command creates the machine, waits for it, and runs.
 	const env = new BackendExecutionEnv(backend, machine.home);
 	let output = "";
 	const run = await env.exec("echo hello; exit 4", { onOutput: (text) => (output += text) }, context);
 	assert.ok(run.ok && run.value.exitCode === 4);
 	assert.equal(output, "hello\n");
+	assert.deepEqual(JSON.parse(await readFile(join(dataDir, "boat.json"), "utf8")), { workbench: "bx_aaaaaaaa" });
 
 	// Stopped between uses: the next command resumes it and runs, invisibly to the agent.
 	await backend.suspend?.();
@@ -119,7 +122,7 @@ test("boat provider: creates a no-env machine once, streams commands, resumes a 
 	assert.equal(long, "long-running\n");
 
 	// Opening the same role again reuses the machine instead of creating another.
-	await provider.open("workbench", { provider: "boat" });
+	await (await provider.open("workbench", { provider: "boat" })).exec("true");
 	assert.equal(boat.calls.filter((call) => call === "POST /sandboxes").length, 1);
 	assert.equal(await backend.viewUrl?.(), "https://desktop.example/vnc.html?_token=x");
 	await rm(dataDir, { recursive: true, force: true });
@@ -129,9 +132,9 @@ test("boat provider: with idleSeconds the machine sleeps only after that long un
 	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
 	const boat = fakeBoat(new LocalBackend(join(dataDir, "machine")));
 	const backend = await boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl, touchEveryMs: 300 }).open("workbench", { provider: "boat", idleSeconds: 7200 });
-	assert.deepEqual(boat.bodies.find((request) => request.call === "POST /sandboxes")?.body, { type: "small", ttlSeconds: 7200, noEnv: true });
 	const touches = () => boat.bodies.filter((request) => request.call === "PATCH /sandboxes/bx_aaaaaaaa").map((request) => request.body);
 	await backend.exec("true");
+	assert.deepEqual(boat.bodies.find((request) => request.call === "POST /sandboxes")?.body, { type: "small", ttlSeconds: 7200, noEnv: true });
 	assert.deepEqual(touches(), [], "just woken: the deadline is already fresh");
 	await new Promise((resolve) => setTimeout(resolve, 350));
 	await backend.exec("true");
@@ -142,5 +145,18 @@ test("boat provider: with idleSeconds the machine sleeps only after that long un
 	await backend.suspend?.();
 	await backend.exec("true");
 	assert.deepEqual(boat.bodies.find((request) => request.call.endsWith("/resume"))?.body, { ttlSeconds: 7200 }, "a resumed machine keeps sleeping when idle");
+	await rm(dataDir, { recursive: true, force: true });
+});
+
+test("boat provider: a remembered machine that's gone is replaced on the next command", async () => {
+	const dataDir = await mkdtemp(join(tmpdir(), "jarvis-"));
+	const boat = fakeBoat(new LocalBackend(join(dataDir, "machine")));
+	await writeFile(join(dataDir, "boat.json"), JSON.stringify({ workbench: "bx_gone" }));
+	const backend = await boatProvider({ apiKey: "test", stateFile: join(dataDir, "boat.json"), fetch: boat.fetchImpl }).open("workbench", { provider: "boat" });
+	let output = "";
+	const result = await backend.exec("echo hi", { cwd: "/tmp", onOutput: (text) => (output += text) });
+	assert.equal(result.exitCode, 0);
+	assert.equal(output, "hi\n");
+	assert.deepEqual(JSON.parse(await readFile(join(dataDir, "boat.json"), "utf8")), { workbench: "bx_aaaaaaaa" });
 	await rm(dataDir, { recursive: true, force: true });
 });

@@ -29,7 +29,7 @@ export function workbenchExtensions(host: Pick<Host, "workbench">, options: { sc
 		{
 			name: "computer",
 			title: "Computer",
-			about: `Shell and files on its own machine (${workbench.id}), which holds none of your secrets.`,
+			about: "Shell and files on its own machine, which holds none of your secrets. It starts when needed and sleeps when idle.",
 			safeTools: ["read"],
 			chief: [shell],
 			jobs: [shell],
