@@ -81,7 +81,7 @@ function recentActivity(messages: readonly Message[], count: number): string[] {
 	}
 	return lines.slice(-count);
 }
-const Jobs = defineDoc<{ jobs: Record<string, Job> }>({ kind: "jarvis.jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
+const Jobs = defineDoc<{ jobs: Record<string, Job> }>({ kind: "japa.jobs", version: 1, scope: "session", initial: () => ({ jobs: {} }) });
 
 /** The prefix of a report as it reaches its parent, so the main thread can tell reports from the user. */
 export const REPORT_PREFIX = "[Report from job ";
@@ -92,7 +92,7 @@ const background = { ownership: { kind: "conversation" }, background: true } as 
 
 /** Owns a job's conversation; a background task, so the chief of staff's aborts and idle waits stop at it. */
 const Anchor = defineTask<null, { phase: "done" }, null>({
-	name: "jarvis.job-anchor",
+	name: "japa.job-anchor",
 	version: 1,
 	initial: () => ({ phase: "done" }),
 	phases: { done: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context) },
@@ -116,7 +116,7 @@ type RunInput = { jobId: string; message: string; startedAt: number };
 /** A checkpoint saved before reports had a kind has only its text. */
 type RunState = { phase: "run" } | { phase: "report"; kind?: Kind; text?: string };
 const makeRun = (waitingOnUser: (conversationId: ConversationId) => boolean, finished: (job: Job) => boolean, report: Report) => defineTask<RunInput, RunState, null>({
-	name: "jarvis.job-run",
+	name: "japa.job-run",
 	version: 1,
 	initial: () => ({ phase: "run" }),
 	phases: {
@@ -162,11 +162,11 @@ const CHIEF_GUIDE = [
 	"Job agents report back to you as messages starting with \"[Report from job\": your team, not the user. On a",
 	"report: check it, ask the job agent more or redirect it (message_job) if it's thin or wrong, and connect it with",
 	"other jobs and what you know of the user. Then reply with what the user should hear. Whatever you're answering (the",
-	"user, a report, a trigger), your reply goes to the user, threaded under what it answers; a reply to progress",
+	"user, a report, a schedule), your reply goes to the user, threaded under what it answers; a reply to progress",
 	"reports alone stays with you, and an empty reply sends nothing. A job closes when its agent reports done; more",
 	"for work a job already did goes to that job with message_job, even once it's closed: it opens again and keeps what",
 	"it learned. cancel_job one that's no longer wanted. delegate tracks the job itself: don't track it as well.",
-	"Messages starting \"[Trigger\" are your own schedule or an event, not the user: do what they ask.",
+	"Messages starting \"[Schedule\" are a schedule's, not the user: do what they ask.",
 ].join(" ");
 
 const JOB_GUIDE = [
@@ -247,7 +247,7 @@ export function delegationExtensions(options: {
 	};
 
 	const helper = defineExtension({
-		name: "jarvis.job-report",
+		name: "japa.job-report",
 		sections: [section("job_guide", () => JOB_GUIDE, { tag: false })],
 		tools: [
 			defineTool({
@@ -268,7 +268,7 @@ export function delegationExtensions(options: {
 	});
 
 	const job: Extension = defineExtension({
-		name: "jarvis.job",
+		name: "japa.job",
 		tools: [
 			defineTool({
 				name: "subagent",
@@ -288,7 +288,7 @@ export function delegationExtensions(options: {
 	});
 
 	const chief: Extension = defineExtension({
-		name: "jarvis.delegation",
+		name: "japa.delegation",
 		tasks: [Anchor, Run],
 		sections: [section("team", () => CHIEF_GUIDE, { tag: false })],
 		tools: [

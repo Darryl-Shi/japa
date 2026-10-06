@@ -159,7 +159,7 @@ test("what japa doesn't have of pi's API fails at once, saying so, and the chief
 	const h = await agent({
 		extensions: {
 			forky: (pi) => void pi.on("session_before_fork" as "session_start", () => {}),
-			mcp: (pi) => void (pi as unknown as { registerMcpServer(): void }).registerMcpServer(),
+			naming: (pi) => void (pi as unknown as { setSessionName(name: string): void }).setSessionName("trip"),
 			terminal: (pi) => {
 				pi.registerShortcut("ctrl+x", { handler: () => {} });
 				pi.registerFlag("verbose", { type: "boolean", default: true });
@@ -171,7 +171,7 @@ test("what japa doesn't have of pi's API fails at once, saying so, and the chief
 	await h.until(() => h.cards.filter((shown) => shown.card.text.startsWith("[Problem with")).length >= 2, "both problems");
 	const told = h.cards.map((shown) => shown.card.text).join("\n");
 	assert.match(told, /\[Problem with extension forky\].*japa has no "session_before_fork" event/);
-	assert.match(told, /\[Problem with extension mcp\].*pi\.registerMcpServer isn't available in japa/);
+	assert.match(told, /\[Problem with extension naming\].*pi\.setSessionName isn't available in japa/);
 	assert.doesNotMatch(told, /extension terminal/, "what only a terminal shows is accepted");
 	assert.ok(h.japa.extensions.get("terminal"));
 	await h.done();

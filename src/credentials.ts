@@ -1,7 +1,8 @@
-// Model credentials (API keys, Claude/ChatGPT subscription OAuth) in data/auth.json, the same shape pi uses.
-// Only japa reads this file; the agent's commands never get it in their environment.
+// Credentials, the same shape pi uses: data/auth.json holds every login's (model providers' and accounts': API keys,
+// OAuth tokens), set with /login. Only japa reads this file; the agent's commands never get it, nor the environment
+// variables a login falls back on (KeyEnvironment).
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
+import { type AuthContext, type Credential, type CredentialInfo, type CredentialStore, defaultProviderAuthContext } from "@earendil-works/pi-ai";
 
 export class FileCredentialStore implements CredentialStore {
 	private chain: Promise<unknown> = Promise.resolve();
@@ -35,12 +36,13 @@ export class FileCredentialStore implements CredentialStore {
 		return Object.entries(this.load()).map(([providerId, credential]) => ({ providerId, type: credential.type }));
 	}
 
+	/** `fn` returning undefined leaves the credential as it is (pi-ai's contract: a refresh that found it fresh). */
 	modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
 		return this.serialized(async () => {
 			const all = this.load();
 			const next = await fn(all[providerId]);
-			if (next === undefined) delete all[providerId];
-			else all[providerId] = next;
+			if (next === undefined) return all[providerId];
+			all[providerId] = next;
 			this.save(all);
 			return next;
 		});
@@ -56,31 +58,25 @@ export class FileCredentialStore implements CredentialStore {
 }
 
 /**
- * Extension secrets (API keys, tokens) in data/secrets.json, set from /settings or the environment. An extension
- * whose command needs one passes it to that one command, never into every command's environment.
+ * pi-ai's auth context (the environment and files a login falls back on), remembering which environment variables
+ * held a key when a login read them: those are japa's keys, and its commands start without them.
  */
-export class SecretsFile {
-	private readonly path: string;
+export class KeyEnvironment implements AuthContext {
+	private readonly base = defaultProviderAuthContext();
+	private readonly read = new Set<string>();
 
-	constructor(path: string) {
-		this.path = path;
+	async env(name: string): Promise<string | undefined> {
+		const value = await this.base.env(name);
+		if (value !== undefined) this.read.add(name);
+		return value;
 	}
 
-	private load(): Record<string, string> {
-		return existsSync(this.path) ? (JSON.parse(readFileSync(this.path, "utf8")) as Record<string, string>) : {};
+	fileExists(path: string): Promise<boolean> {
+		return this.base.fileExists(path);
 	}
 
-	/** `name` is "<extension>.<key>"; the environment variable, when given, is the fallback. */
-	get(name: string, env?: string): string | undefined {
-		return this.load()[name] ?? (env === undefined ? undefined : process.env[env]);
-	}
-
-	set(name: string, value: string | undefined): void {
-		const all = this.load();
-		if (value === undefined || value === "") delete all[name];
-		else all[name] = value;
-		const temporary = `${this.path}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(all, null, "\t")}\n`, { mode: 0o600 });
-		renameSync(temporary, this.path);
+	/** The environment variables that held a key. */
+	names(): string[] {
+		return [...this.read];
 	}
 }

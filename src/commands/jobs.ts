@@ -1,9 +1,12 @@
 // /jobs: the team at a glance, independent of the channel that shows it. The open jobs with their subagents, each a
 // button to its detail: status, model, when it started, last reported and was last active, and the last few things it
 // was told, said and ran. From there the user can refresh, close a job that has reported (it's done with), or cancel
-// one still working (after a confirming tap); the chief of staff sees it closed in its open items.
+// one still working (after a confirming tap); the chief of staff sees it closed in its open items. Below the jobs,
+// what's scheduled: what will come to the chief of staff, and when.
+import { stamp } from "../core/schedule.ts";
 import type { Button, Card, CardRef, UI } from "../core/ui.ts";
 import type { JobDetail, JobSummary } from "../pi/delegation.ts";
+import type { Scheduled } from "../pi/schedules.ts";
 
 const SHOWN = 10;
 
@@ -12,6 +15,10 @@ export type JobsSource = {
 	detail(id: string): Promise<JobDetail | undefined>;
 	cancel(id: string): Promise<boolean>;
 	close(id: string): Promise<boolean>;
+	/** What's scheduled. */
+	schedules?(): Scheduled[];
+	/** The user's time zone, for when. */
+	timezone?(): string | undefined;
 };
 
 const open = (job: JobSummary) => job.status === "working" || job.status === "reported";
@@ -39,6 +46,9 @@ export function attachJobs(ui: UI, source: JobsSource): void {
 		});
 		const done = all.filter((job) => job.depth === 1 && !open(job)).length;
 		const heading = finished ? "Finished jobs, newest first." : shown.length === 0 ? "No jobs running." : "Jobs running:";
+		const scheduled = finished ? [] : (source.schedules?.() ?? []);
+		const when = (next: number | undefined) => (next === undefined ? "done" : `next ${stamp(next, source.timezone?.())}`);
+		if (scheduled.length > 0) lines.push("", "Scheduled:", ...scheduled.map((each) => `• ${each.name} (${each.when}): ${when(each.next)}`));
 		const rows: Button[][] = shown.map((job) => [{ text: job.title, data: `jobs:d:${job.id}` }]);
 		rows.push(finished ? [{ text: "« Running", data: "jobs:l" }] : [{ text: "↻ Refresh", data: "jobs:l" }, ...(done === 0 ? [] : [{ text: `Finished (${done})`, data: "jobs:f" }])]);
 		return { text: [heading, ...lines].join("\n"), buttons: rows };

@@ -11,15 +11,17 @@ Use the smallest change that does the job:
 | --- | --- | --- |
 | you to always (or never) do something | a **standing instruction** | nobody: it's in your home; tell the user what you added |
 | you to know how to do a task that you do now and then | a **skill** | nobody: it's in your home; tell the user what you added |
-| something you can't do with your tools: an API, a new command, a channel, a model provider, a check before tool calls | an **extension** | the user, with a tap, every time |
+| you to do something at a time, once or every so often (a reminder, a routine) | a **schedule**: your `schedule` tool | nobody; tell the user when it's next |
+| something you can't do with your tools: an API, a new command, a channel, a model provider, an MCP server, a check before tool calls | an **extension** | the user, with a tap, every time |
 
-All three apply from the next message, with no restart. Paths below are on your computer. `~` is your home, and this
-file's directory is in japa's own code, two directories up from here (`../..`).
+All of them apply from the next message, with no restart. Paths below are on your computer. `~` is your home. This
+file is in japa's own code, two directories up from here (`../..`), on the machine japa runs on, which is your computer
+unless an extension gave you another.
 
 ## A standing instruction (a behaviour)
 
 Standing instructions live in `~/.pi/agent/AGENTS.md`, pi's file for them, and are in every prompt, yours and your
-jobs'. Keep each one to a line or two, in the user's terms ("Sign emails as Darryl's assistant", "Never book before
+jobs'. Keep each one to a line or two, in the user's terms ("Keep replies to two lines", "Never book before
 9am"), and edit the file rather than piling lines on. A fact about the user belongs in memory, not here. Never put a
 secret in it.
 
@@ -46,12 +48,12 @@ An extension is code that runs inside you, with your keys, so the user approves 
 yourself. Delegate a job, and its brief says to read this skill (give it this file's path). The job then does the
 following.
 
-1. **Get a working copy of japa** in a directory of its own: `git clone <japa's code dir> ~/japa-dev` (or copy it,
-   leaving `node_modules` out), then `npm ci` there. japa's code is two directories up from this file. Read japa's
-   code there, never change it in place.
-2. **Write it** as `~/japa-dev/src/extensions/<name>.ts`, or as a directory there with an `index.ts` and a
+1. **Get a working copy of japa** in a new directory of its own in your home (any name not already taken; call it
+   `<dev>` here): `git clone <japa's code dir> <dev>` (or copy it, leaving `node_modules` out; on another computer,
+   clone japa's repository), then `npm ci` there. Read japa's code there, never change it in place.
+2. **Write it** as `<dev>/src/extensions/<name>.ts`, or as a directory there with an `index.ts` and a
    `package.json` if it needs npm packages of its own. Write it in pi's extension shape, below.
-3. **Check it**: `npm run check` in `~/japa-dev` passes. If it reaches a service, try the calls there first.
+3. **Check it**: `npm run check` in `<dev>` passes. If it reaches a service, try the calls there first.
 4. **Install it**: report the path, and the chief of staff calls `install_extension` (path, name, a sentence for the
    user). It's checked again. The user gets a card showing what it reaches, and on their tap it's on. If it wouldn't
    load, the reason comes back. Fix it and install again. Installing again with the same name replaces it.
@@ -63,10 +65,15 @@ It's a pi coding-agent extension, with the same API, names and meanings (see pi'
 with what japa adds, is `src/pi/extension.ts` in japa's code.
 
 ```ts
-import { Type } from "@earendil-works/pi-ai";
+import { envApiKeyAuth, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "../pi/extension.ts"; // types only: `import type`
 
 export default function (pi: ExtensionAPI) {
+	// Its key is a login: /login offers it, auth.json keeps it, WEATHER_API_KEY in the environment works too.
+	pi.registerAccount({ id: "weather", name: "Weather", auth: { apiKey: envApiKeyAuth("Weather API key", ["WEATHER_API_KEY"]) } });
+	// Its settings: on its page in /settings.
+	pi.registerFlag("units", { description: "Units (metric or imperial)", type: "string", default: "metric" });
+
 	pi.registerTool({
 		name: "weather",
 		label: "Weather",
@@ -75,20 +82,11 @@ export default function (pi: ExtensionAPI) {
 		// openWorldHint: false only if it touches nothing but your own state; anything else is reviewed before it runs.
 		annotations: { readOnlyHint: true, openWorldHint: true },
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const key = pi.secrets.get("apiKey", "WEATHER_API_KEY");
-			if (key === undefined) throw new Error("No weather key: the user sets one with /weather.");
-			const response = await fetch(`https://api.example.com/forecast?q=${encodeURIComponent(params.place)}`, { headers: { authorization: key }, signal });
+			// Not logged in: the user gets a card to log in with, and this throws saying so.
+			const { auth } = await pi.accounts.get("weather", { signal });
+			const url = `https://api.example.com/forecast?q=${encodeURIComponent(params.place)}&units=${pi.getFlag("units")}`;
+			const response = await fetch(url, { headers: { authorization: String(auth.apiKey) }, signal });
 			return { content: [{ type: "text", text: await response.text() }] };
-		},
-	});
-
-	// Its settings are its own command's, drawn as cards with buttons and replies.
-	pi.registerCommand("weather", {
-		description: "Weather: its API key",
-		handler: async (_args, ctx) => {
-			const key = await ctx.ui.input("Send your weather API key as a reply to this message.", "API key", { secret: true });
-			if (key) pi.secrets.set("apiKey", key.trim());
-			ctx.ui.notify("Saved.");
 		},
 	});
 }
@@ -102,6 +100,9 @@ What it can use (`pi.`), with pi's meanings:
   `setActiveTools` names it.
 - `registerCommand(name, { description, handler(args, ctx) })`: a slash command the user can run. `ctx.ui` has
   `select`, `confirm`, `input` (with `{ signal, timeout }`), `editor` and `notify`.
+- `registerFlag(name, { description, type: "boolean" | "string", default })` and `getFlag(name)`: its settings,
+  shown on its page in `/settings` (where the user also turns it on and off) and kept in `settings.json`. A setting
+  isn't a key.
 - `on(event, handler)` (returns a function that unsubscribes), where the event is one of:
   - `session_start` and `session_shutdown`: it's turned on or off. Start and stop long-lived things here, not in the
     factory.
@@ -114,8 +115,10 @@ What it can use (`pi.`), with pi's meanings:
   - `resources_discover`: return `{ skillPaths }` for skills it brings.
   - `exchange_end`: an exchange with the user ended.
 - `sendUserMessage(text, { to? })`: wake the chief of staff (or, with `to`, an agent's conversation), as if the user
-  wrote. To act on a schedule, set a timer in `session_start` and clear it in `session_shutdown`. Times missed while
-  japa was down are skipped.
+  wrote.
+- `registerSchedule(name, { when, message, timezone? })`: the chief of staff gets `message` at `when`, a cron
+  expression or an ISO date and time for once, in the user's time zone unless it says. It's kept across restarts: a
+  time missed while japa was down runs once when it's back. Use this rather than a timer.
 - `sendMessage({ customType, content }, { triggerTurn?, to? })`: put a message in the conversation for its next turn,
   or (`triggerTurn`) start one.
 - `appendEntry(customType, data)`: keep state in the session, never sent to the model. Read it back with
@@ -124,28 +127,36 @@ What it can use (`pi.`), with pi's meanings:
 - `setModel(model)`, `getThinkingLevel()`, `setThinkingLevel(level)`: the chief of staff's, as `/model` sets them.
 - `exec(command, args, { signal, timeout, cwd })`: run a program on your computer, without japa's keys in its
   environment.
+- `registerAccount({ id, name, auth })`: something it logs in to (a service's API key, or an OAuth login), with
+  pi-ai's auth (`envApiKeyAuth` for a key, with an environment variable to fall back on). `/login` offers it, and
+  its credential is kept in `auth.json`. `accounts.get(id, { signal })` gives the credentials (an OAuth token
+  refreshed when it needs it), a model provider's too. Never put a key in code, settings, or a prompt.
 - `registerProvider(provider)`: a pi-ai model provider (`createProvider`, `envApiKeyAuth` from
   `@earendil-works/pi-ai`). Its credential comes through `/login`, and its models appear in `/model`.
+- `registerMcpServer(name, config)`, `unregisterMcpServer(name)`, `getMcpServers()`: an MCP server, with pi's config
+  (`command`, `args`, `env`, `cwd` for one it starts; `url`, `headers`, `oauth` for one it reaches). Its tools are
+  the extension's, named `mcp__<server>__<tool>`. A started one gets only the `env` it's given.
 - `registerChannel({ platform, open({ inbox, ui }), show(card, replace?), close() })`: a messaging channel. Its
   messages go to `inbox`, and button presses, replies and commands go to `ui`. Who may talk is the allowlist in
   `settings.json`, never the extension's.
+- `registerEnvironment(env)`: a Pi Durable `ExecutionEnv` to be your computer (a container, another machine). The
+  last one turned on is the one in use.
 - Its own things:
-  - `secrets.get(key, ENV_VAR?)` and `secrets.set`: its keys, kept in `secrets.json`. Never put a key in code,
-    settings, or a prompt.
-  - `getSettings()`: settings are read-only. Its own options are under `extensions.<name>`.
+  - `getSettings()`: settings are read-only.
   - `dataDir`: where it keeps its files, named after itself.
   - `events`: messages between extensions.
 
-What only a terminal shows (`registerShortcut`, `registerFlag`, which then reads its default, renderers, and
-`ctx.ui`'s status, widgets and title) is accepted and not drawn. Anything else of pi's API isn't in japa: using it
-fails at once, saying which (in the factory, the extension doesn't load, and you hear why).
+What only a terminal shows (`registerShortcut`, renderers, and `ctx.ui`'s status, widgets and title) is accepted and
+not drawn. Anything else of pi's API isn't in japa: using it fails at once, saying which (in the factory, the
+extension doesn't load, and you hear why).
 
 What it can import:
 
-- `@earendil-works/pi-ai` (`Type`, `createProvider`, ...) and node's own modules are there already.
+- `@earendil-works/pi-ai` (`Type`, `createProvider`, `envApiKeyAuth`, ...) and node's own modules are there already.
 - Any other package import is installed beside it.
 - Types come only through `import type`.
 - It isn't japa's own code, and it can't import from japa except types.
 
-It's named by its install name, which is also its key in `/settings` (where the user turns it on and off), in secrets
-and in settings. Once it's installed, tell the user what it does and the commands it added.
+It's named by its install name, which is also its page in `/settings` (where the user turns it on and off, and sets
+its settings) and its key in settings. Once it's installed, tell the user what it does, the commands it added, and
+what to log in to with `/login`.

@@ -1,6 +1,7 @@
-// /settings as a menu of cards, independent of the channel that shows it: the general settings, and every extension
-// with its switch. An extension's own options are its own: it offers a command for them (as a pi extension does), and
-// its keys go to secrets.json. Values go to settings.json. The allowlist is deliberately not here. The model slots
+// /settings as a menu of cards, independent of the channel that shows it: the general settings, and a page for every
+// extension: its switch, and its own settings (the flags it registered, pi's registerFlag), each a switch or a value
+// the user sends. Values go to settings.json; keys never do (they're logins, in /login). The allowlist is deliberately
+// not here. The model slots
 // (the chief of staff's, the jobs') have a page of their own, also opened by pi's /model, and their thinking levels
 // another, opened by pi's /thinking. Models are picked from the ones pi can actually use (providers with
 // credentials), a page at a time, rather than by typing an id; thinking levels from the ones the model supports.
@@ -11,8 +12,8 @@ import type { ModelChoice, SettingsFile } from "../settings.ts";
 export type View = { text: string; buttons: Button[][] };
 /** A model pi can use now: its provider has credentials. `vision`: it takes images. */
 export type AvailableModel = { provider: string; id: string; name?: string; vision?: boolean };
-/** One of the core's settings. */
-type Field = { key: string; label: string; kind: "text" | "number" | "model" };
+/** One setting: the core's, or (on an extension's page) one of the extension's flags. */
+type Field = { key: string; label: string; kind: "text" | "number" | "model" | "switch"; default?: unknown };
 
 /** A field waiting for a typed value. */
 export type Prompt = { page: string; field: number; label: string };
@@ -64,7 +65,7 @@ export class SettingsMenu {
 
 	/** Show it through the UI: /settings opens it, its buttons and replies come back here. */
 	attach(ui: UI): void {
-		ui.command("settings", "Models, and which extensions are on", async (at) => void (await ui.show({ ...this.main(), replyTo: at })));
+		ui.command("settings", "Models, and the extensions: which are on, and their settings", async (at) => void (await ui.show({ ...this.main(), replyTo: at })));
 		ui.command("model", "The models it and its jobs use", async (at) => void (await ui.show({ ...this.page("models"), replyTo: at })));
 		ui.command("thinking", "How hard each model thinks", async (at) => void (await ui.show({ ...this.page("thinking"), replyTo: at })));
 		ui.handle("settings", {
@@ -124,17 +125,28 @@ export class SettingsMenu {
 		];
 	}
 
+	/** An extension's page is "@<its name>". */
+	private extensionOf(page: string) {
+		return page.startsWith("@") ? this.extensions.get(page.slice(1)) : undefined;
+	}
+
 	private fields(page: string): readonly Field[] {
 		if (page === "general") return GENERAL;
 		if (page === "models" || page === "thinking") return this.slots();
-		return [];
+		const entry = this.extensionOf(page);
+		if (entry === undefined) return [];
+		return [...entry.flags].map(([name, flag]): Field => ({ key: name, label: flag.description ?? name, kind: flag.type === "boolean" ? "switch" : "text", ...(flag.default === undefined ? {} : { default: flag.default }) }));
 	}
 
-	private get(_page: string, field: Field): unknown {
+	private get(page: string, field: Field): unknown {
+		const entry = this.extensionOf(page);
+		if (entry !== undefined) return this.settings.get().extensions[entry.name]?.[field.key] ?? field.default;
 		return field.key.split(".").reduce<unknown>((value, key) => (value as Record<string, unknown> | undefined)?.[key], this.settings.get());
 	}
 
-	private set(_page: string, field: Field, value: unknown): void {
+	private set(page: string, field: Field, value: unknown): void {
+		const entry = this.extensionOf(page);
+		if (entry !== undefined) return this.settings.setOption(entry.name, field.key, value);
 		const [head, tail] = field.key.split(".") as [string, string | undefined];
 		const current = this.settings.get() as unknown as Record<string, unknown>;
 		const next = tail === undefined ? value : { ...(current[head] as Record<string, unknown> | undefined), [tail]: value };
@@ -144,10 +156,27 @@ export class SettingsMenu {
 	main(): View {
 		const rows: Button[][] = [[{ text: "General", data: "settings:p:general" }]];
 		for (const entry of this.extensions.entries) {
-			const commands = [...entry.commands.keys()].map((name) => `/${name}`).join(" ");
-			rows.push([{ text: `${this.extensions.enabled(entry) ? "✅" : "⬜"} ${entry.name}${commands === "" ? "" : ` (${commands})`}`, data: `settings:t:${entry.name}` }]);
+			const failed = this.extensions.enabled(entry) && this.extensions.failure(entry.name) !== undefined;
+			rows.push([{ text: `${this.extensions.enabled(entry) ? (failed ? "⚠️" : "✅") : "⬜"} ${entry.name}`, data: `settings:p:@${entry.name}` }]);
 		}
-		return { text: "Settings. Tap an extension to turn it on or off; its options are in its own command.", buttons: rows };
+		return { text: "Settings. Tap an extension for its switch and its settings.", buttons: rows };
+	}
+
+	/** An extension's page: its switch, its settings, and what it offers. */
+	private extensionPage(name: string): View {
+		const entry = this.extensions.get(name);
+		if (entry === undefined) return this.main();
+		const on = this.extensions.enabled(entry);
+		const failure = on ? this.extensions.failure(name) : undefined;
+		const commands = [...entry.registered.commands.keys()].map((command) => `/${command}`);
+		const rows: Button[][] = [[{ text: on ? "✅ On (tap to turn off)" : "⬜ Off (tap to turn on)", data: `settings:t:${name}` }]];
+		this.fields(`@${name}`).forEach((field, index) => {
+			const value = this.get(`@${name}`, field);
+			rows.push([{ text: field.kind === "switch" ? `${value === true ? "✅" : "⬜"} ${field.label}` : `${field.label}: ${show(value)}`, data: `settings:f:@${name}:${index}` }]);
+		});
+		rows.push([{ text: "« Back", data: "settings:m" }]);
+		const text = [name, ...(failure === undefined ? [] : [`⚠️ It isn't working: ${failure}`]), ...(commands.length === 0 ? [] : [`Its commands: ${commands.join(" ")}`])].join("\n");
+		return { text, buttons: rows };
 	}
 
 	/** Each model slot and its thinking level; a slot opens the levels its model supports. */
@@ -176,6 +205,7 @@ export class SettingsMenu {
 
 	page(name: string): View {
 		if (name === "thinking") return this.thinking();
+		if (name.startsWith("@")) return this.extensionPage(name.slice(1));
 		const title = name === "general" ? "General" : name === "models" ? "Models" : name;
 		const rows: Button[][] = name === "general" ? [[{ text: "Models ▸", data: "settings:p:models" }], [{ text: "Thinking ▸", data: "settings:p:thinking" }]] : [];
 		this.fields(name).forEach((field, index) => {
@@ -236,13 +266,13 @@ export class SettingsMenu {
 		if (action === "t") {
 			const entry = this.extensions.get(name);
 			if (entry === undefined) return this.main();
-			const refusal = this.extensions.cannotTurnOff(entry);
+			const refusal = this.extensions.enabled(entry) ? this.extensions.cannotTurnOff(entry) : undefined;
 			if (refusal !== undefined) {
-				const main = this.main();
-				return { ...main, text: `${refusal} Turn another channel on first.\n\n${main.text}` };
+				const page = this.extensionPage(name);
+				return { ...page, text: `${refusal}\n\n${page.text}` };
 			}
 			this.settings.setOption(name, "enabled", !this.extensions.enabled(entry));
-			return this.main();
+			return this.extensionPage(name);
 		}
 		if (action === "th") return this.levels(Number(a));
 		const field = this.fields(name)[Number(a)];
@@ -264,6 +294,10 @@ export class SettingsMenu {
 		}
 		if (action === "k") return { page: name, field: Number(a), label: field.label };
 		if (field.kind === "model") return this.picker(name, Number(a));
+		if (field.kind === "switch") {
+			this.set(name, field, this.get(name, field) !== true);
+			return this.page(name);
+		}
 		return { page: name, field: Number(a), label: field.label };
 	}
 

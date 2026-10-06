@@ -1,8 +1,8 @@
-// Start the agent: the core (src/japa.ts) plus the default extensions, on this machine, which is its computer: its
-// tools run here, from the home directory of the user it runs as. Everything it keeps is in one data directory
+// Start the agent: the core (src/japa.ts) plus the default extensions. Everything it keeps is in one data directory
 // (JAPA_DATA, default ./data): settings.json (live, also edited through /settings; the allowlist only here), auth.json
-// (model credentials, set with /login), secrets.json (extension keys, each set through its extension's command or the
-// environment), and memory/ (its memory of the user: yours to read and edit, a git repo when it is one).
+// (every login's credentials, model providers' and accounts', set with /login), and memory/ (its memory of the user:
+// yours to read and edit, a git repo when it is one). Its computer, by default, is the machine it runs on: its tools
+// run here, from the home directory of the user it runs as.
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,9 +11,10 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { telegramExtension } from "./channels/telegram.ts";
 import { Approvals } from "./core/approvals.ts";
 import { MemoryFile } from "./core/memory.ts";
-import { FileCredentialStore, SecretsFile } from "./credentials.ts";
+import { FileCredentialStore, KeyEnvironment } from "./credentials.ts";
 import { startJapa } from "./japa.ts";
 import { approvalsExtension } from "./pi/approvals.ts";
+import { localComputer } from "./pi/computer.ts";
 import { memoryExtension } from "./pi/memory.ts";
 import { screenExtension } from "./pi/screen.ts";
 import { webExtension } from "./pi/web.ts";
@@ -26,19 +27,22 @@ const settings = new SettingsFile(dataDir);
 const log = (line: string) => console.log(line);
 // The X display its screen is on: the one it's given, else the first one's, if the machine has a desktop.
 const display = process.env.DISPLAY ?? ":0";
+const credentials = new FileCredentialStore(join(dataDir, "auth.json"));
+const keys = new KeyEnvironment();
 
 const japa = await startJapa(
 	{
 		dataDir,
-		home: homedir(),
 		settings,
-		secrets: new SecretsFile(join(dataDir, "secrets.json")),
-		models: builtinModels({ credentials: new FileCredentialStore(join(dataDir, "auth.json")) }),
+		models: builtinModels({ credentials, authContext: keys }),
+		credentials,
+		keys,
 		// The default extensions, by name, each of which can be turned off in /settings.
 		extensions: {
+			local: localComputer(homedir()),
 			telegram: telegramExtension(log),
 			memory: memoryExtension(new MemoryFile(join(dataDir, "memory")), log),
-			// Its own code and data, on the machine its tools run on.
+			// Its own code and data, on the machine it runs on.
 			approvals: approvalsExtension(new Approvals(join(dataDir, "approvals.json"), join(dataDir, "audit.jsonl")), { code: [resolve(import.meta.dirname, "..")], data: [dataDir] }, log),
 			web: webExtension(),
 			screen: screenExtension({ display, hasDisplay: existsSync(`/tmp/.X11-unix/X${display.replace(/^.*:(\d+).*$/, "$1")}`) }),

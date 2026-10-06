@@ -3,16 +3,16 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | bash
 #
-# It clones (or updates) the repo, brings its own Node 24 if the machine has none, asks for the keys on first install,
-# and runs the agent as a systemd service that restarts on failure and on boot. The machine it's installed on is the
-# agent's computer: its shell, files and screen are this machine's, as the user it's installed as. Run it again to
-# update: it pulls the latest code, reinstalls dependencies, keeps your settings, keys and data (moving any from older
-# layouts), and restarts the service.
+# It clones (or updates) the repo, brings its own Node 24 if the machine has none, asks for the keys on first install
+# (kept in auth.json, as /login keeps them), and runs the agent as a systemd service that restarts on failure and on
+# boot. The machine it's installed on is the agent's computer by default: its shell, files and screen are this
+# machine's, as the user it's installed as. Run it again to update: it pulls the latest code, reinstalls dependencies,
+# keeps your settings, keys and data (moving any from older layouts), and restarts the service.
 #
-# This sets up the defaults: Telegram as the channel, optionally one pi-ai model provider (or later, with /login),
-# and optionally Parallel for web search.
-# Everything else (other providers through /login, other channels as extensions) is done from chat. Every question can
-# be answered ahead of time through the environment:
+# This sets up the defaults: Telegram as the channel, optionally one pi-ai model provider, and optionally Parallel for
+# web search (any of them can be logged in to later, with /login). Everything else (other providers and accounts
+# through /login, other channels as extensions) is done from chat. Every question can be answered ahead of time
+# through the environment:
 #   TELEGRAM_BOT_TOKEN, JAPA_TELEGRAM_ID   the bot, and your own Telegram user id (the allowlist)
 #   JAPA_PROVIDER, JAPA_MODEL_KEY          a pi-ai provider and its API key
 #   JAPA_MODEL, JAPA_FAST_MODEL            the main model and the fast one (reviews, summaries)
@@ -57,6 +57,18 @@ ask() {
 }
 
 sudo_ok() { [ "$(id -u)" = 0 ] || { have sudo && { sudo -n true 2>/dev/null || [ -n "$TTY" ]; }; }; }
+
+# save_login ID KEY: an API key for a model provider or an account, in auth.json as /login keeps it.
+save_login() {
+	LOGIN_ID="$1" LOGIN_KEY="$2" "$NODE" -e '
+		const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+		const file = `${process.env.JAPA_DATA}/auth.json`;
+		const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+		all[process.env.LOGIN_ID] = { type: "api_key", key: process.env.LOGIN_KEY };
+		writeFileSync(file, JSON.stringify(all, null, "\t") + "\n", { mode: 0o600 });
+	'
+	chmod 600 "$DATA/auth.json"
+}
 as_root() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- Tools -----------------------------------------------------------------------------------------------------------
@@ -140,6 +152,55 @@ if [ -d "$OLD_MEMORY" ] && [ ! -e "$DATA/memory" ]; then
 fi
 if [ -f "$DATA/jarvis.log" ] && [ ! -e "$DATA/japa.log" ]; then mv "$DATA/jarvis.log" "$DATA/japa.log"; fi
 
+# Older layouts: the built-in extensions' keys in secrets.json or .env. They're logins now, in auth.json, as /login
+# keeps them (a login already there wins, as it would at run time).
+"$NODE" -e '
+	const fs = require("node:fs");
+	const data = process.env.JAPA_DATA;
+	const note = (line) => console.error(`  ${line}`);
+	const read = (file, fallback) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : fallback);
+	// Its name in secrets.json, its variable in .env, and the login that has it now.
+	const moved = [["telegram.token", "TELEGRAM_BOT_TOKEN", "telegram"], ["web.apiKey", "PARALLEL_API_KEY", "parallel"]];
+	const authFile = `${data}/auth.json`;
+	const auth = JSON.parse(read(authFile, "{}"));
+	const keep = (id, key, from) => {
+		if (!key) return;
+		if (auth[id] === undefined) {
+			auth[id] = { type: "api_key", key };
+			note(`Moving ${from} into auth.json (${id})`);
+		} else if (auth[id].key !== key) note(`Dropping ${from}: auth.json has a login for ${id} already`);
+	};
+
+	const secretsFile = `${data}/secrets.json`;
+	const secrets = JSON.parse(read(secretsFile, "{}"));
+	for (const [name, , id] of moved) if (name in secrets) keep(id, secrets[name], `${name} from secrets.json`);
+	const envFile = `${data}/.env`;
+	const lines = read(envFile, "").split("\n");
+	const rest = lines.filter((line) => {
+		const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+		const found = match === null ? undefined : moved.find(([, variable]) => variable === match[1]);
+		if (found === undefined) return true;
+		keep(found[2], match[2].trim().replace(/^(["\x27])(.*)\1$/, "$2"), `${found[1]} from .env`);
+		return false;
+	});
+
+	// auth.json first, so a key is never only in a file about to lose it.
+	if (Object.keys(auth).length > 0) fs.writeFileSync(authFile, JSON.stringify(auth, null, "\t") + "\n", { mode: 0o600 });
+	for (const [name] of moved) delete secrets[name];
+	if (fs.existsSync(secretsFile)) {
+		const left = Object.keys(secrets);
+		if (left.length === 0) fs.rmSync(secretsFile);
+		else {
+			fs.writeFileSync(secretsFile, JSON.stringify(secrets, null, "\t") + "\n", { mode: 0o600 });
+			note(`secrets.json still has ${left.join(", ")}: an extension keeps its keys as an account now (/login), so rewrite the ones that used it.`);
+		}
+	}
+	if (rest.length !== lines.length) {
+		if (rest.join("\n").trim() === "") fs.rmSync(envFile);
+		else fs.writeFileSync(envFile, rest.join("\n"), { mode: 0o600 });
+	}
+'
+
 # --- First install: keys and settings ----------------------------------------------------------------------------------
 
 if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
@@ -176,13 +237,7 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 		done
 		ask JAPA_MODEL_KEY "$JAPA_PROVIDER API key (empty: log in with a subscription instead)" "" secret
 		if [ -n "$JAPA_MODEL_KEY" ]; then
-			JAPA_PROVIDER="$JAPA_PROVIDER" JAPA_MODEL_KEY="$JAPA_MODEL_KEY" "$NODE" -e '
-				const { existsSync, readFileSync, writeFileSync } = require("node:fs");
-				const file = `${process.env.JAPA_DATA}/auth.json`;
-				const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-				all[process.env.JAPA_PROVIDER] = { type: "api_key", key: process.env.JAPA_MODEL_KEY };
-				writeFileSync(file, JSON.stringify(all, null, "\t") + "\n", { mode: 0o600 });
-			'
+			save_login "$JAPA_PROVIDER" "$JAPA_MODEL_KEY"
 		else
 			[ -n "$TTY" ] || die "set JAPA_MODEL_KEY for an unattended install"
 			(cd "$DATA" && "$DIR/node_modules/.bin/pi-ai" login "$JAPA_PROVIDER" <"$TTY")
@@ -195,16 +250,11 @@ if [ ! -f "$DATA/settings.json" ] || [ "${JAPA_CONFIGURE:-}" = 1 ]; then
 	ask JAPA_TIMEZONE "Your time zone" "$("$NODE" -p 'Intl.DateTimeFormat().resolvedOptions().timeZone')"
 
 	say "Optional extras (Enter to skip; all of them can be set later)"
-	note "Parallel powers web search (also settable later in /settings → Web)."
+	note "Parallel powers web search (or log in to it later with /login)."
 	ask PARALLEL_API_KEY "Parallel API key" "" secret
 
-	umask 077
-	{
-		if [ -n "$TELEGRAM_BOT_TOKEN" ]; then echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"; fi
-		if [ -n "$PARALLEL_API_KEY" ]; then echo "PARALLEL_API_KEY=$PARALLEL_API_KEY"; fi
-	} >"$DATA/.env"
-	umask 022
-	chmod 600 "$DATA/.env"
+	if [ -n "$TELEGRAM_BOT_TOKEN" ]; then save_login telegram "$TELEGRAM_BOT_TOKEN"; fi
+	if [ -n "$PARALLEL_API_KEY" ]; then save_login parallel "$PARALLEL_API_KEY"; fi
 
 	JAPA_PROVIDER="${JAPA_PROVIDER:-}" JAPA_MODEL="${JAPA_MODEL:-}" JAPA_FAST_MODEL="${JAPA_FAST_MODEL:-}" JAPA_NAME="${JAPA_NAME:-}" \
 		JAPA_TIMEZONE="${JAPA_TIMEZONE:-}" JAPA_TELEGRAM_ID="${JAPA_TELEGRAM_ID:-}" "$NODE" --input-type=module -e '
@@ -296,7 +346,9 @@ case "$SERVICE" in
 		;;
 	none)
 		say "Installed. No systemd here, so start it yourself:"
-		note "cd $DIR && set -a && . $DATA/.env && set +a && JAPA_DATA=$DATA $NODE src/main.ts"
+		if [ -f "$DATA/.env" ]; then note "cd $DIR && set -a && . $DATA/.env && set +a && JAPA_DATA=$DATA $NODE src/main.ts"
+		else note "cd $DIR && JAPA_DATA=$DATA $NODE src/main.ts"
+		fi
 		exit 0
 		;;
 	*) die "JAPA_SERVICE must be auto, system, user or none" ;;
@@ -349,7 +401,7 @@ fi
 
 say "Installed in $DIR"
 note "Settings: /settings in chat, or $DATA/settings.json (live, no restart)"
-note "Model logins: /login in chat; models and thinking: /model, /thinking"
+note "Logins (model providers, accounts): /login in chat; models and thinking: /model, /thinking"
 note "Log: $LOG"
 note "Service: $manage"
 note "Update: run the same install command again"

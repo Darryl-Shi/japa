@@ -1,11 +1,14 @@
 // The web, through Parallel (docs.parallel.ai): search with several queries at once, and reading pages. A default
-// extension; fast mode by default, the most accurate of the $1-per-1000 modes (~700ms). Its key is set with its own
-// command, /web; its mode and results per search are its options in settings.json (extensions.web).
-import { Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionFactory } from "./extension.ts";
+// extension. Parallel is an account (its API key, through /login, or PARALLEL_API_KEY in the environment); its mode
+// (fast by default, the most accurate of the $1-per-1000 modes, ~700ms) and results per search are its settings, on
+// its page in /settings.
+import { envApiKeyAuth, Type } from "@earendil-works/pi-ai";
+import type { ExtensionFactory } from "./extension.ts";
 
 const API = "https://api.parallel.ai/v1";
-const DEFAULTS = { mode: "fast", maxResults: 8 };
+const ACCOUNT = "parallel";
+/** Results per search, unless its settings say. */
+const RESULTS = 8;
 const OUTPUT_CHARS = 12_000;
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
@@ -26,16 +29,15 @@ function render(pages: readonly Page[], full = false): string {
 	return out.trim();
 }
 
-/** Its options: settings.json's extensions.web, over the defaults. */
-const optionsOf = (pi: ExtensionAPI) => ({ ...DEFAULTS, ...pi.getSettings().extensions.web });
-
 export const webExtension =
 	(options: { fetch?: typeof fetch } = {}): ExtensionFactory =>
 	(pi) => {
-		const key = () => pi.secrets.get("apiKey", "PARALLEL_API_KEY");
+		pi.registerAccount({ id: ACCOUNT, name: "Parallel (web search)", auth: { apiKey: envApiKeyAuth("Parallel API key", ["PARALLEL_API_KEY"]) } });
+		pi.registerFlag("mode", { description: "Search mode (fast, one-shot or agentic)", type: "string", default: "fast" });
+		pi.registerFlag("maxResults", { description: "Results per search", type: "string", default: String(RESULTS) });
+
 		const request = async (path: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> => {
-			const apiKey = key();
-			if (apiKey === undefined) throw new Error("No Parallel API key: the user sets one with /web.");
+			const apiKey = (await pi.accounts.get(ACCOUNT, signal === undefined ? {} : { signal })).auth.apiKey ?? "";
 			const response = await (options.fetch ?? fetch)(`${API}${path}`, {
 				method: "POST",
 				headers: { "content-type": "application/json", "x-api-key": apiKey },
@@ -45,9 +47,6 @@ export const webExtension =
 			if (!response.ok) throw new Error(`Parallel ${path}: ${response.status} ${(await response.text()).slice(0, 300)}`);
 			return (await response.json()) as Record<string, unknown>;
 		};
-
-		// Read now, so its environment variable is kept out of commands' environment from the start.
-		pi.on("session_start", () => void key());
 
 		pi.registerTool({
 			name: "web_search",
@@ -59,8 +58,8 @@ export const webExtension =
 			}),
 			annotations: { readOnlyHint: true, openWorldHint: true },
 			execute: async (_id, args, signal) => {
-				const { mode, maxResults } = optionsOf(pi);
-				const result = await request("/search", { objective: args.objective, search_queries: args.queries, mode, advanced_settings: { max_results: Number(maxResults) } }, signal);
+				const maxResults = Number(pi.getFlag("maxResults")) || RESULTS;
+				const result = await request("/search", { objective: args.objective, search_queries: args.queries, mode: pi.getFlag("mode"), advanced_settings: { max_results: maxResults } }, signal);
 				const pages = (result.results ?? []) as Page[];
 				return text(pages.length === 0 ? "No results." : render(pages));
 			},
@@ -81,19 +80,6 @@ export const webExtension =
 				const result = await request("/extract", { urls: args.urls, ...(args.objective === undefined ? {} : { objective: args.objective }), advanced_settings: { full_content: full } }, signal);
 				const errors = ((result.errors ?? []) as Array<{ url: string; error_type: string }>).map((error) => `${error.url}: couldn't read (${error.error_type})`);
 				return text([render((result.results ?? []) as Page[], full), ...errors].filter(Boolean).join("\n\n") || "Nothing read.");
-			},
-		});
-
-		pi.registerCommand("web", {
-			description: "Web search: its Parallel API key",
-			handler: async (_args, ctx) => {
-				const setKey = `Parallel API key: ${key() === undefined ? "not set" : "set"}`;
-				const choice = await ctx.ui.select(`Web search (Parallel), ${optionsOf(pi).mode} mode. Fast costs about $1 per 1000 searches.`, [setKey, "Done"]);
-				if (choice !== setKey) return;
-				const value = await ctx.ui.input("Send your Parallel API key as a reply to this message.", "Parallel API key", { secret: true });
-				if (value === undefined || value.trim() === "") return;
-				pi.secrets.set("apiKey", value.trim());
-				ctx.ui.notify("Parallel API key saved.");
 			},
 		});
 	};

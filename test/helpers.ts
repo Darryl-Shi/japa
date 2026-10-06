@@ -11,8 +11,9 @@ import { fauxAssistantMessage, fauxProvider, type FauxResponseFactory, fauxToolC
 import type { Inbox } from "../src/channels/inbox.ts";
 import type { Incoming } from "../src/core/message.ts";
 import type { Card, CardRef } from "../src/core/ui.ts";
-import { SecretsFile } from "../src/credentials.ts";
+import { FileCredentialStore, KeyEnvironment } from "../src/credentials.ts";
 import { type Japa, startJapa } from "../src/japa.ts";
+import { localComputer } from "../src/pi/computer.ts";
 import type { ExtensionFactory } from "../src/pi/extension.ts";
 import type { Arrival } from "../src/pi/harness.ts";
 import { SettingsFile } from "../src/settings.ts";
@@ -49,7 +50,9 @@ export async function agent(options: {
 }) {
 	const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), "japa-")));
 	const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }, { id: "faux-fast" }] });
-	const models = createModels();
+	const credentials = new FileCredentialStore(join(dataDir, "auth.json"));
+	const keys = new KeyEnvironment();
+	const models = createModels({ credentials, authContext: keys });
 	models.setProvider(faux.provider);
 	for (const provider of options.providers ?? []) models.setProvider(provider);
 	const turns: Turn[] = [];
@@ -70,7 +73,6 @@ export async function agent(options: {
 		allowlist: { test: [7] },
 		...options.settings,
 	});
-	const secrets = new SecretsFile(join(dataDir, "secrets.json"));
 	const home = options.home ?? join(dataDir, "home");
 	await mkdir(home, { recursive: true });
 	const cards: Array<{ card: Card; replaced?: CardRef; ref: CardRef }> = [];
@@ -79,12 +81,14 @@ export async function agent(options: {
 	const japa: Japa = await startJapa(
 		{
 			dataDir,
-			home,
 			settings,
-			secrets,
 			models,
+			credentials,
+			keys,
 			extensions: {
-				// A stand-in channel, on the same adapter as any: messages go in through the inbox it's opened with, and cards
+				// Its computer: this machine, from a home of its own.
+				local: localComputer(home),
+				// A stand-in channel, through the same owner as any: messages go in through the inbox it's opened with, and cards
 				// are shown by recording them.
 				"test-channel": (pi) =>
 					pi.registerChannel({
@@ -111,7 +115,8 @@ export async function agent(options: {
 		thread: japa.thread,
 		runtime: japa.runtime,
 		settings,
-		secrets,
+		credentials,
+		home,
 		turns,
 		cards,
 		dataDir,

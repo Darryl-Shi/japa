@@ -6,20 +6,24 @@ npm test          # the whole agent on pi-ai's faux provider: no API key needed
 npm run check     # type-check
 ```
 
-Tests reach japa the way a user's code would. A test's agent gets a home of its own on this machine.
+Tests reach japa the way a user's code would. A test's agent gets a home of its own on this machine (the built-in
+`local` computer, pointed there), and anything else it needs is an extension. `test/fixtures/` has what tests start,
+such as an MCP server.
 
 ## Layout
 
 ```
 src/
   main.ts          the default extensions, and start
-  japa.ts          the core, assembled: what extensions are given (pi's API), and the agent's computer (this
-                   machine, in its home)
+  japa.ts          the core, assembled: the owners of what extensions register, and what extensions are given
+                   (pi's API)
+  credentials.ts   auth.json, and the keys logins read from the environment
   core/            our formats and services: messages, UI cards and dialogs, approvals, memory, state (no Pi imports)
-  pi/              Pi adapters and the built-in extensions
-                   extension.ts: pi's ExtensionAPI, on Pi Durable · harness.ts: the main thread · inputs.ts:
-                   addressed inputs · delegation.ts: the team · computer.ts, skills.ts, history.ts: the rest of the
-                   core · installer.ts: extensions from chat
+  pi/              everything that uses Pi, and the built-in extensions
+                   extension.ts: pi's ExtensionAPI on Pi Durable, and the lifecycle · owners.ts, accounts.ts,
+                   schedules.ts, mcp.ts: the owners of each kind · harness.ts: the main thread · inputs.ts:
+                   addressed inputs · delegation.ts: the team · computer.ts (with the local computer), skills.ts,
+                   history.ts: the rest of the core · installer.ts: extensions from chat
                    memory.ts · approvals.ts · web.ts · screen.ts: the built-in extensions, one file each
   commands/        japa's /settings (with pi's /model and /thinking) and /jobs, and pi's /login, /logout and /session:
                    cards on the UI, on whichever channel is open

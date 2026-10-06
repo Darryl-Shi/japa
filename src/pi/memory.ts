@@ -27,8 +27,8 @@ const reflectPrompt = (words: number, limit: number) =>
 		"Most exchanges need no edits: return []. Never more than a few.",
 	].join(" ");
 
-/** Its options when settings.json (extensions.memory) says nothing: how long memory may get, in words. */
-export const DEFAULTS = { words: 300 };
+/** How long memory may get, in words, unless its settings say. */
+export const WORDS = 300;
 
 const text = (value: string) => ({ content: [{ type: "text" as const, text: value }] });
 
@@ -59,7 +59,8 @@ export async function reflectOnMemory(models: Models, choice: ModelChoice | unde
 export const memoryExtension =
 	(memory: MemoryFile, log: (line: string) => void = () => {}): ExtensionFactory =>
 	(pi) => {
-		const words = () => Number(pi.getSettings().extensions.memory?.words) || DEFAULTS.words;
+		pi.registerFlag("words", { description: "How long memory may get (words)", type: "string", default: String(WORDS) });
+		const words = () => Number(pi.getFlag("words")) || WORDS;
 
 		pi.on("before_agent_start", (event, ctx) => {
 			if (ctx.agent !== "chief") return;

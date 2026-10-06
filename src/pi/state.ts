@@ -20,7 +20,7 @@ const text = (value: string) => ({ content: [{ type: "text" as const, text: valu
 export function stateExtension(options: { openItems: OpenItems; workingSet: WorkingSetFile }): Extension {
 	const { openItems, workingSet } = options;
 	return defineExtension({
-		name: "jarvis.state",
+		name: "japa.state",
 		sections: [
 			section("state_guide", () => GUIDE, { tag: false }),
 			section("open_items", () => openItems.projection()),

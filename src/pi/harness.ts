@@ -1,6 +1,8 @@
 // The Pi Durable side of the main conversation. Everything Pi-specific about opening the harness, the root
 // conversation and getting answers back to a channel lives here.
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Context } from "@earendil-works/chord";
 import type { Message, Models } from "@earendil-works/pi-ai";
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
@@ -37,7 +39,7 @@ import { summarizeSlice, transcriptText } from "./state.ts";
 type PendingReply = Partial<CardRef> & { content: Content };
 
 const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
-	kind: "jarvis.pending-replies",
+	kind: "japa.pending-replies",
 	version: 1,
 	scope: "session",
 	initial: () => ({ byRequest: {} }),
@@ -49,7 +51,7 @@ const PendingReplies = defineDoc<{ byRequest: Record<string, PendingReply> }>({
  */
 function coreExtension(settings: () => Settings): Extension {
 	return defineExtension({
-		name: "jarvis.core",
+		name: "japa.core",
 		tasks: [Address],
 		sections: [
 			section(
@@ -72,6 +74,27 @@ function coreExtension(settings: () => Settings): Extension {
 	});
 }
 
+/**
+ * State saved before japa was named japa: Pi Durable keeps each document's and task's kind, and those were `jarvis.*`.
+ * They're renamed `japa.*` before the storage opens, so the jobs, outbox and replies they hold carry on (every start;
+ * once none are left, it changes nothing).
+ */
+export function renameSavedKinds(path: string): void {
+	if (!existsSync(path)) return;
+	const db = new DatabaseSync(path);
+	try {
+		const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
+		const renamed = "'japa.' || substr(json_extract(record, '$.kind'), 8)";
+		db.exec("BEGIN");
+		for (const table of ["tasks", "documents"].filter((name) => tables.has(name))) {
+			db.exec(`UPDATE ${table} SET kind = json_quote(${renamed}), record = json_set(record, '$.kind', ${renamed}) WHERE json_extract(record, '$.kind') LIKE 'jarvis.%'`);
+		}
+		db.exec("COMMIT");
+	} finally {
+		db.close();
+	}
+}
+
 /** An empty text: nothing to say (or it was already said). */
 export type Answer = { text: string } | { error: string };
 
@@ -90,10 +113,10 @@ export type SliceState = { openItems: OpenItems; workingSet: WorkingSetFile };
  * When the current slice started (a reply to anything older anchors a new one), and what was said in the slices of
  * this exchange that were cut for size: the exchange isn't over, so it waits for the end.
  */
-const Slice = defineDoc<{ startedAt: number; carried?: string }>({ kind: "jarvis.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
+const Slice = defineDoc<{ startedAt: number; carried?: string }>({ kind: "japa.slice", version: 1, scope: "session", initial: () => ({ startedAt: 0 }) });
 
 /** When the user last wrote. Reports from the team are inputs too, so the idle clock can't be read off the transcript. */
-const Heard = defineDoc<{ at: number }>({ kind: "jarvis.heard", version: 1, scope: "session", initial: () => ({ at: 0 }) });
+const Heard = defineDoc<{ at: number }>({ kind: "japa.heard", version: 1, scope: "session", initial: () => ({ at: 0 }) });
 
 const RECENT_MESSAGES = 6;
 const RECENT_CHARS = 4000;
@@ -143,7 +166,8 @@ export class MainThread {
 
 	static async open(
 		options: {
-			dataDir?: string;
+			/** Where its state is kept (session.sqlite), unless `storage` is given. */
+			dataDir: string;
 			storage?: Storage;
 			models: Models;
 			settings: () => Settings;
@@ -170,7 +194,9 @@ export class MainThread {
 		const core = coreExtension(options.settings);
 		registry.install(core);
 		for (const extension of options.installed ?? []) registry.install(extension);
-		const storage = options.storage ?? (await openNodeSqliteStorage(join(options.dataDir ?? "data", "session.sqlite")));
+		const path = join(options.dataDir, "session.sqlite");
+		if (options.storage === undefined) renameSavedKinds(path);
+		const storage = options.storage ?? (await openNodeSqliteStorage(path));
 		// Default (short) provider caching only: the context is kept small by construction instead.
 		const env = options.env;
 		const harness = await Harness.open(

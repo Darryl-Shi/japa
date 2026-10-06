@@ -1,5 +1,5 @@
-// Live settings: data/settings.json, re-read whenever the file changes. Secrets never live here: model credentials
-// are in auth.json, extension secrets (a channel's token among them) in secrets.json, all in the same data directory.
+// Live settings: data/settings.json, re-read whenever the file changes. Secrets never live here: every login's
+// credentials (model providers' and accounts', a channel's token among them) are in auth.json, in the same directory.
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -33,7 +33,7 @@ export type Settings = {
 	 * the working set, the last few visible messages — not from a summary of history.
 	 */
 	context: { idleMinutes: number; sliceTokens: number };
-	/** Per extension, by name: `enabled` and the extension's own options (see each extension's settings fields). */
+	/** Per extension, by name: `enabled`, and its own settings (the flags it registers, on its page in /settings). */
 	extensions: Record<string, ExtensionOptions>;
 };
 
@@ -45,6 +45,12 @@ export const DEFAULTS: Settings = {
 	context: { idleMinutes: 10, sliceTokens: 8000 },
 	extensions: {},
 };
+
+/** What the file says, over the defaults (a partial `context` keeps the other defaults). */
+function read(path: string): Settings {
+	const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<Settings>;
+	return { ...DEFAULTS, ...saved, context: { ...DEFAULTS.context, ...saved.context } };
+}
 
 export class SettingsFile {
 	readonly path: string;
@@ -63,15 +69,10 @@ export class SettingsFile {
 			return this.cached;
 		}
 		if (mtimeMs !== this.mtimeMs) {
-			this.cached = { ...DEFAULTS, ...(JSON.parse(readFileSync(this.path, "utf8")) as Partial<Settings>) };
+			this.cached = read(this.path);
 			this.mtimeMs = mtimeMs;
 		}
 		return this.cached;
-	}
-
-	/** An extension's options: its defaults, overridden by what settings say. */
-	options<T extends Record<string, unknown>>(name: string, defaults: T): T & ExtensionOptions {
-		return { ...defaults, ...this.get().extensions[name] };
 	}
 
 	setOption(name: string, key: string, value: unknown): void {
@@ -83,7 +84,7 @@ export class SettingsFile {
 		const next = { ...this.get(), ...change };
 		writeFileSync(this.path, `${JSON.stringify(next, null, "\t")}\n`);
 		// Writes can land within the file system's mtime resolution, so read back what was written rather than trust it.
-		this.cached = { ...DEFAULTS, ...(JSON.parse(readFileSync(this.path, "utf8")) as Partial<Settings>) };
+		this.cached = read(this.path);
 		this.mtimeMs = statSync(this.path).mtimeMs;
 		return this.cached;
 	}

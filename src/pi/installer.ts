@@ -7,13 +7,14 @@
 // message, with no restart; the chief of staff hears how it went. At start, what was installed before loads again. A
 // new version replaces the old one in place. How to write one is the extending-japa skill.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, type Registry, section } from "@earendil-works/pi-durable";
+import { type ExecutionEnv, getOrThrow } from "@earendil-works/pi-durable/env";
 import type { Card, CardRef, UI } from "../core/ui.ts";
 import type { ExtensionFactory, ExtensionSet, Loaded } from "./extension.ts";
 
@@ -28,15 +29,31 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 type Pending = { id: string; name: string; summary: string; from: string; entry?: string; lines?: number; packages?: string[]; hosts?: string[] };
 
-/** Copy a file, or a directory's contents, into `into` (its node_modules and .git left behind). */
-function copyFrom(path: string, into: string): void {
-	if (!existsSync(path)) throw new Error(`no such file or directory: ${path}`);
-	const directory = statSync(path).isDirectory();
-	const size = directory ? files(path).filter((file) => !file.split("/").includes(".git")).reduce((sum, file) => sum + statSync(join(path, file)).size, 0) : statSync(path).size;
-	if (size > LIMIT) throw new Error("it's too big");
+/**
+ * Copy a file, or a directory's contents, from the agent's computer into `into` (its node_modules and .git left
+ * behind). A relative path, or one starting with ~, is from the agent's home.
+ */
+async function copyFrom(env: ExecutionEnv, path: string, into: string, context: Context): Promise<void> {
+	const at = getOrThrow(await env.absolutePath(path.replace(/^~(?=\/|$)/, env.cwd), context));
+	const info = getOrThrow(await env.fileInfo(at, context));
 	mkdirSync(into, { recursive: true });
-	if (!directory) return cpSync(path, join(into, basename(path)));
-	cpSync(path, into, { recursive: true, filter: (from) => from === path || ![".git", "node_modules"].includes(basename(from)) });
+	let size = 0;
+	const take = async (from: string, to: string, bytes: number) => {
+		size += bytes;
+		if (size > LIMIT) throw new Error("it's too big");
+		writeFileSync(to, getOrThrow(await env.readBinaryFile(from, context)));
+	};
+	if (info.kind !== "directory") return take(at, join(into, basename(at)), info.size);
+	const walk = async (dir: string, to: string): Promise<void> => {
+		for (const entry of getOrThrow(await env.listDir(dir, context))) {
+			if (entry.name === ".git" || entry.name === "node_modules") continue;
+			if (entry.kind === "directory") {
+				mkdirSync(join(to, entry.name), { recursive: true });
+				await walk(entry.path, join(to, entry.name));
+			} else if (entry.kind === "file") await take(entry.path, join(to, entry.name), entry.size);
+		}
+	};
+	await walk(at, into);
 }
 
 /** Every file under a directory, relative to it, in a stable order. */
@@ -152,11 +169,11 @@ export function installer(options: {
 	load: (name: string, factory: ExtensionFactory) => Promise<Loaded>;
 	log: (line: string) => void;
 	dataDir: string;
-	/** The agent's home: where a relative path it gives is from. */
-	home: string;
+	/** The agent's computer, where it writes them. */
+	computer: () => ExecutionEnv | undefined;
 	extensions: () => ExtensionSet;
 	registry: Registry;
-	/** Apply the change: the chief of staff's extensions, what's started, triggers. */
+	/** Apply the change: the chief of staff's extensions, and what's started. */
 	apply: (context: Context) => Promise<void>;
 	/** A problem the chief of staff should hear (an installed extension that no longer loads). */
 	problem: (about: string, text: string | undefined) => void;
@@ -244,8 +261,8 @@ export function installer(options: {
 				await ui.show(card(pending, "Installed:"), ref);
 				// One that failed to start is reported as a problem, with why; that's the chief of staff's news.
 				if (options.extensions().failure(entry.name) !== undefined) return;
-				const tools = entry.tools.map((tool) => tool.name);
-				const commands = [...entry.commands.keys()].map((name) => `/${name}`);
+				const tools = entry.allTools().map((tool) => tool.name);
+				const commands = [...entry.registered.commands.keys()].map((name) => `/${name}`);
 				await tell(pending, `Installed and on from now.${tools.length === 0 ? "" : ` Tools: ${tools.join(", ")}.`}${commands.length === 0 ? "" : ` Commands for the user: ${commands.join(", ")}.`}`, ref);
 			} catch (error) {
 				rmSync(target, { recursive: true, force: true });
@@ -256,7 +273,7 @@ export function installer(options: {
 	});
 
 	const extension = defineExtension({
-		name: "jarvis.installer",
+		name: "japa.installer",
 		sections: [
 			section(
 				"extending",
@@ -280,7 +297,9 @@ export function installer(options: {
 					prepare();
 					const pending: Pending = { id: Date.now().toString(36), name: args.name, summary: args.summary, from: args.path };
 					try {
-						copyFrom(resolve(options.home, args.path.replace(/^~(?=\/|$)/, options.home)), join(pendingDir, pending.id));
+						const computer = options.computer();
+						if (computer === undefined) throw new Error("there's no computer");
+						await copyFrom(computer, args.path, join(pendingDir, pending.id), options.context);
 					} catch (error) {
 						rmSync(join(pendingDir, pending.id), { recursive: true, force: true });
 						return text(`Couldn't read ${args.path}: ${message(error)}`);

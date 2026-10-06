@@ -1,26 +1,27 @@
 // A message with files, made into what the chief of staff sees. Every file is put on its computer, in inbox/ under
 // the agent's home, and the message says where, so it or a job can work with it in whatever way the file needs.
 // An image is also shown to the model directly when the model takes images.
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import type { Context } from "@earendil-works/chord";
+import { type ExecutionEnv, getOrThrow as value } from "@earendil-works/pi-durable/env";
 import type { Attachment, Content, Incoming } from "../core/message.ts";
 
 const size = (bytes: number) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`);
 
-/** Write a file under <home>/inbox, without clobbering one already there; returns the path. */
-async function keep(home: string, file: Attachment, now: number): Promise<string> {
+/** Write a file to inbox/ on its computer, without clobbering one already there; returns where it is. */
+async function keep(env: ExecutionEnv, file: Attachment, now: number, context: Context): Promise<string> {
 	const safe = file.name.replace(/[^\w.-]+/g, "_").replace(/^\.+/, "") || "file";
 	const stem = `${new Date(now).toISOString().slice(0, 19).replace(/[:T]/g, "-")}-${safe}`;
-	await mkdir(join(home, "inbox"), { recursive: true });
+	const inbox = value(await env.absolutePath("inbox", context));
+	value(await env.createDir(inbox, { recursive: true }, context));
 	let name = stem;
-	for (let n = 2; existsSync(join(home, "inbox", name)); n++) name = `${stem}-${n}`;
-	await writeFile(join(home, "inbox", name), file.data);
-	return join(home, "inbox", name);
+	for (let n = 2; value(await env.exists(value(await env.joinPath([inbox, name], context)), context)); n++) name = `${stem}-${n}`;
+	const path = value(await env.joinPath([inbox, name], context));
+	value(await env.writeFile(path, file.data, context));
+	return path;
 }
 
-/** `home`: the agent's home directory, where its working files are. */
-export async function toInput(message: Incoming, options: { home: string; seesImages: boolean; now?: number }): Promise<Content> {
+/** `env`: the agent's computer, if there is one. */
+export async function toInput(message: Incoming, options: { env: ExecutionEnv | undefined; seesImages: boolean; context: Context; now?: number }): Promise<Content> {
 	const files = message.attachments ?? [];
 	if (files.length === 0) return message.text;
 	const now = options.now ?? Date.now();
@@ -30,7 +31,8 @@ export async function toInput(message: Incoming, options: { home: string; seesIm
 		const what = `${file.name} (${file.mimeType}, ${size(file.data.byteLength)})`;
 		let where: string;
 		try {
-			where = `on your computer at ${await keep(options.home, file, now)}`;
+			if (options.env === undefined) throw new Error("there's no computer");
+			where = `on your computer at ${await keep(options.env, file, now, options.context)}`;
 		} catch (error) {
 			where = `couldn't be put on your computer (${error instanceof Error ? error.message : String(error)})`;
 		}

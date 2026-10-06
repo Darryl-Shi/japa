@@ -1,6 +1,6 @@
 // Addressed inputs: the one rule for where the chief of staff's words go. Every input it gets says who it's from
 // (a Cause), and its answer goes back the way it came: to the user, threaded under what it answers. A message from
-// the user is answered to the channel that brought it; anything else (a job's report, a trigger, a decision, a
+// the user is answered to the channel that brought it; anything else (a job's report, a schedule, a decision, a
 // problem with an extension) is submitted by an Address task, which waits for the answer and puts it in the outbox.
 // An empty answer says nothing, and an answer is sent once however many inputs it answered.
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -11,14 +11,14 @@ import type { CardRef } from "../core/ui.ts";
 /** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose one. */
 export type OutboxMessage = { text: string; replyTo?: CardRef; buzz: boolean; itemId?: string };
 export const Outbox = defineDoc<{ messages: Record<string, OutboxMessage> }>({
-	kind: "jarvis.outbox",
+	kind: "japa.outbox",
 	version: 1,
 	scope: "session",
 	initial: () => ({ messages: {} }),
 });
 
 /** Answers already sent: entry id and who sent it, so one answering several inputs goes out once. */
-const Answered = defineDoc<{ entries: Array<[number, string]> }>({ kind: "jarvis.answered", version: 1, scope: "session", initial: () => ({ entries: [] }) });
+const Answered = defineDoc<{ entries: Array<[number, string]> }>({ kind: "japa.answered", version: 1, scope: "session", initial: () => ({ entries: [] }) });
 const REMEMBERED = 500;
 
 /**
@@ -44,7 +44,7 @@ type State = { phase: "submit" } | { phase: "deliver"; answer?: number };
 
 /** Submit an input to the chief of staff and send its answer back to whoever it's from. */
 export const Address = defineTask<Input, State, null>({
-	name: "jarvis.address",
+	name: "japa.address",
 	version: 1,
 	initial: () => ({ phase: "submit" }),
 	phases: {
@@ -82,7 +82,7 @@ export async function address(tx: Tx, chief: ConversationId, input: Input): Prom
 export const PROBLEM_PREFIX = "[Problem with ";
 
 /** The problems already reported, by what they're about, so each distinct one is heard once (across restarts too). */
-const Problems = defineDoc<{ reported: Record<string, string> }>({ kind: "jarvis.problems", version: 1, scope: "session", initial: () => ({ reported: {} }) });
+const Problems = defineDoc<{ reported: Record<string, string> }>({ kind: "japa.problems", version: 1, scope: "session", initial: () => ({ reported: {} }) });
 
 /**
  * A problem with something japa runs (an extension that won't start, a process that died), addressed to the chief

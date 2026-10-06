@@ -1,5 +1,7 @@
-// Telegram as a channel (pi.registerChannel): one private chat with the user, long polling (no public endpoint). It reaches the agent only through the Inbox the core opens it with (anyone not on allowlist.telegram is
-// refused by the first middleware, and again at the Inbox), answers each message as a reply to it, and renders the
+// Telegram as a channel (pi.registerChannel): one private chat with the user, long polling (no public endpoint). Its bot
+// is an account (pi.registerAccount): the token is logged in to like any other (auth.json, through /login, or
+// TELEGRAM_BOT_TOKEN in the environment). It reaches the agent only through the Inbox the core opens it with (anyone
+// not on allowlist.telegram is refused by the first middleware, and again at the Inbox), answers each message as a reply to it, and renders the
 // UI's cards: buttons, questions answered by reply, and slash commands such as /settings. It knows nothing about which
 // extension a card belongs to.
 //
@@ -10,6 +12,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { envApiKeyAuth } from "@earendil-works/pi-ai";
 import { Bot } from "grammy";
 import type { Message } from "grammy/types";
 import { stamp } from "../core/schedule.ts";
@@ -40,9 +43,11 @@ export const telegramExtension = (log: (line: string) => void): ExtensionFactory
 	/** How cards are rendered, once open. */
 	let render: Channel["show"] | undefined;
 
+	pi.registerAccount({ id: PLATFORM, name: "Telegram bot", auth: { apiKey: envApiKeyAuth("Telegram bot token", ["TELEGRAM_BOT_TOKEN"]) } });
+
 	const open: Channel["open"] = async ({ inbox, ui }) => {
-		const token = pi.secrets.get("token", "TELEGRAM_BOT_TOKEN");
-		if (token === undefined) throw new Error("no bot token (TELEGRAM_BOT_TOKEN, or telegram.token in secrets.json)");
+		const token = (await pi.accounts.get(PLATFORM)).auth.apiKey;
+		if (token === undefined) throw new Error("its account has no bot token");
 		const live = new Bot(token);
 		bot = live;
 		// The UI's ids are strings; Telegram's are numbers, converted here at its edge.

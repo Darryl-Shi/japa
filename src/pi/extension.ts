@@ -1,7 +1,6 @@
 // An extension is what it is in pi: a module whose default export is a factory given `pi` (pi's ExtensionAPI), on
-// which it registers what it adds (tools, commands, model providers) and handles pi's events. The names, shapes and
-// meanings are pi's (packages/coding-agent/src/core/extensions/types.ts), so pi's own docs apply; japa implements them
-// on Pi Durable:
+// which it registers what it adds and handles pi's events. The names, shapes and meanings are pi's
+// (packages/coding-agent/src/core/extensions/types.ts), so pi's own docs apply; japa implements them on Pi Durable:
 //
 //   before_agent_start   a prompt section, rendered before each request (systemPromptOptions.sections)
 //   tool_call            the tool task's beforeTool hook (block, terminate, or input mutated in place)
@@ -14,22 +13,26 @@
 //   appendEntry          a durable document of the session, read back through ctx.sessionManager
 //   sendMessage          a message written into the conversation (or, with triggerTurn, one that starts a turn)
 //   setActiveTools       the tools the conversation offers the model
+//   registerFlag         one of its settings, on its page in /settings (there's no command line)
 //
-// What only a terminal can show (shortcuts, flags, renderers, widgets, the status line) is accepted and not drawn, as
-// in pi without a terminal. Anything else of pi's API that japa doesn't have fails at once, saying so: an unknown event
-// when the factory subscribes to it, an unknown method when it's used.
+// What only a terminal can show (shortcuts, renderers, widgets, the status line) is accepted and not drawn, as in pi
+// without a terminal. Anything else of pi's API that japa doesn't have fails at once, saying so: an unknown event when
+// the factory subscribes to it, an unknown method when it's used.
 //
-// Where japa is built from something pi isn't, it's in the same API: a messaging channel (registerChannel), the end
-// of an exchange with the user (the exchange_end event), more than one agent (ctx.agent, and `to` on sendUserMessage
-// and sendMessage), and keys that aren't model credentials (secrets). Everything else beyond the core is an extension;
-// the core (the main thread, open items, the team, the computer) is not, and can't be turned off.
+// Each kind of thing an extension registers has one typed interface here and one owner in the core (Owners), and one
+// lifecycle: what it registered is put in use while it's on and taken out when it's off, the built-in ones included.
+// Where japa is built from something pi isn't, it's one more kind in the same API: a messaging channel
+// (registerChannel), something the user logs in to (registerAccount), the agent's computer (registerEnvironment), a
+// schedule (registerSchedule); and one more event or option: the end of an exchange with the user (exchange_end),
+// more than one agent (ctx.agent, and `to` on sendUserMessage and sendMessage). The core itself (the main thread, open
+// items, the team, the computer's tools) is not an extension, and can't be turned off.
 import type { Context } from "@earendil-works/chord";
-import type { Api, ImageContent, Message, Model, Models, ModelThinkingLevel, MutableModels, Provider, Static, TextContent, TSchema, Usage } from "@earendil-works/pi-ai";
+import type { Api, AuthResult, ImageContent, Message, Model, Models, ModelThinkingLevel, MutableModels, Provider, ProviderAuth, Static, TextContent, TSchema, Usage } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension, GenerationTask, hook, type JsonObject, section, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { Inbox } from "../channels/inbox.ts";
 import type { Content } from "../core/message.ts";
 import type { Card, CardRef, Command, Dialogs, UI } from "../core/ui.ts";
-import type { SecretsFile } from "../credentials.ts";
 import type { Settings, SettingsFile } from "../settings.ts";
 
 /** pi's tool annotations (MCP's hints): what a tool does, for whoever decides which calls need a look first. */
@@ -210,12 +213,54 @@ export interface Channel {
 /** pi's CustomMessage, as sendMessage takes it. */
 export type CustomMessage = { customType: string; content: string | Parts; display?: boolean; details?: unknown };
 
+/** pi's command options: a slash command the user runs, with pi's dialogs on `ctx.ui`. */
+export type CommandOptions = { description?: string; handler: (args: string, ctx: ExtensionContext) => void | Promise<void> };
+
+/** pi's flag options. In japa a flag is one of the extension's settings. */
+export type FlagOptions = { description?: string; type: "boolean" | "string"; default?: boolean | string };
+
+/**
+ * japa: something the user logs in to for an extension's own use: a service it calls, a channel's bot. Its auth is
+ * pi-ai's, as a model provider's is (an API key, OAuth, or a token from the environment), so the core runs its login
+ * from /login, keeps its credential in auth.json, and refreshes it; the extension only asks for it.
+ */
+export type Account = { id: string; name: string; auth: ProviderAuth };
+
+/**
+ * japa: a message the chief of staff gets on a schedule, and answers like any other (its answer reaches the user).
+ * `when`: a cron expression ("0 9 * * 1-5"), or a date and time for once ("2026-10-09T17:00"), in `timezone` (default:
+ * the user's, from settings). A time missed while japa was down runs once when it's back.
+ */
+export type Schedule = { when: string; message: string; timezone?: string };
+
+/** pi's MCP server entry (mcp.json's shape): a command it starts (stdio), or a URL (streamable HTTP). */
+export type McpServerConfig = {
+	type?: "stdio" | "http" | "streamable-http";
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	/** Relative to the agent's home. */
+	cwd?: string;
+	url?: string;
+	headers?: Record<string, string>;
+	/** OAuth for an HTTP server: its login is an account (`mcp:<name>`), in /login. */
+	oauth?: { clientId?: string; clientSecret?: string; clientName?: string; scope?: string; callbackUrl?: string; callbackPort?: number; authServerMetadataUrl?: string };
+	/** Per request, in seconds (default 60). */
+	timeout?: number;
+	enabled?: boolean;
+	description?: string;
+	/** "hidden": its tools are offered only once setActiveTools names them; anything else offers them. */
+	exposure?: string;
+	toolExposure?: Record<string, string>;
+};
+
 /** pi's ExtensionAPI, as japa has it. */
 export interface ExtensionAPI {
 	on<E extends keyof ExtensionEvents>(event: E, handler: Handler<E>): () => void;
+	/** A tool for every agent; registered while it's on, it's offered from the next request. */
 	registerTool<P extends TSchema, TDetails = unknown>(tool: ToolDefinition<P, TDetails>): void;
-	registerCommand(name: string, options: { description?: string; handler: (args: string, ctx: ExtensionContext) => void | Promise<void> }): void;
-	/** A pi-ai Provider: on the core's Models while the extension is on; its credential through /login. */
+	registerCommand(name: string, options: CommandOptions): void;
+	/** A pi-ai Provider: its models on the core's Models while the extension is on; its login through /login. */
 	registerProvider(provider: Provider): void;
 	unregisterProvider(name: string): void;
 	/** A message to the chief of staff (or, with `to`, to that agent's conversation), as if the user had sent it. */
@@ -224,9 +269,9 @@ export interface ExtensionAPI {
 	sendMessage(message: CustomMessage, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn"; to?: string }): void;
 	/** Keep state in the session (never sent to the model); read back with ctx.sessionManager.getEntries(). */
 	appendEntry(customType: string, data?: unknown): void;
-	/** Run a command on the agent's computer (from its home, without japa's keys in its environment). */
+	/** Run a program on the agent's computer (from its home, without japa's keys in its environment). */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
-	/** japa's settings (settings.json), live; an extension's own options are under `extensions[<its name>]`. */
+	/** japa's settings (settings.json), live. */
 	getSettings(): Settings;
 	getAllTools(): ToolInfo[];
 	getActiveTools(): string[];
@@ -242,32 +287,75 @@ export interface ExtensionAPI {
 	registerEntryRenderer(customType: string, renderer: unknown): void;
 	registerMarkdownTransformer(transformer: unknown): void;
 	registerToolRenderer(resolver: unknown): void;
-	/** A CLI flag: there's no command line, so it's always its default. */
-	registerFlag(name: string, options: { description?: string; type: "boolean" | "string"; default?: boolean | string }): void;
+	/**
+	 * One of its settings: on its page in /settings (a switch, or a value the user sends), kept in settings.json under
+	 * extensions.<its name>.<name>. getFlag reads it: the user's value, or the default.
+	 */
+	registerFlag(name: string, options: FlagOptions): void;
 	getFlag(name: string): boolean | string | undefined;
+	/** pi's MCP server: connected while it's on, its tools named mcp__<server>__<tool> and kept current. */
+	registerMcpServer(name: string, config: McpServerConfig): void;
+	unregisterMcpServer(name: string): void;
+	/** The MCP servers registered by the extensions that are on. */
+	getMcpServers(): Record<string, McpServerConfig>;
 	events: EventBus;
 	/** japa: a messaging channel. */
 	registerChannel(channel: Channel): void;
-	/** japa: where its own files go (the data directory; name them after the extension). */
-	readonly dataDir: string;
+	/** japa: something the user logs in to (a service it calls, a channel's bot), offered in /login. */
+	registerAccount(account: Account): void;
+	unregisterAccount(id: string): void;
 	/**
-	 * japa: its keys, in secrets.json as "<its name>.<key>", never in settings.json or a command's environment. `env`
-	 * is the environment variable to fall back on (taken out of the environment japa's commands run in).
+	 * japa: an account's credentials (a model provider's too), refreshed when they need it. Not logged in, the user is
+	 * asked to log in with a card, and `get` throws, saying so.
 	 */
-	readonly secrets: { get(key: string, env?: string): string | undefined; set(key: string, value: string | undefined): void };
+	readonly accounts: { get(id: string, options?: { signal?: AbortSignal }): Promise<AuthResult> };
+	/** japa: the agent's computer, where its tools run. Of the ones that are on, the last turned on is in use. */
+	registerEnvironment(env: ExecutionEnv): void;
+	/** japa: a message the chief of staff gets on a schedule, kept across restarts. */
+	registerSchedule(name: string, schedule: Schedule): void;
+	unregisterSchedule(name: string): void;
+	/** japa: where its own files go (japa's data directory; name them after the extension). */
+	readonly dataDir: string;
 }
 
 export type ExtensionFactory = (pi: ExtensionAPI) => unknown;
+
+/** What the core does with one kind of thing an extension registers, while the extension is on. */
+export type Owner<T> = {
+	/** Put it in use. Throwing is a problem the chief of staff hears; the rest of the extension still starts. */
+	add(name: string, item: T, from: Loaded): void | Promise<void>;
+	/** Take it out of use (also for one that never got in). */
+	remove(name: string, item: T, from: Loaded): void | Promise<void>;
+	/** Why it can't be taken out of use now (the agent has no other of its kind), if it can't. */
+	needed?(item: T): string | undefined;
+};
+
+/** The owner of each kind, in the order they're put in use (an account before the channel that logs in with it). */
+export type Owners = {
+	commands: Owner<CommandOptions>;
+	providers: Owner<Provider>;
+	accounts: Owner<Account>;
+	environments: Owner<ExecutionEnv>;
+	channels: Owner<Channel>;
+	schedules: Owner<Schedule>;
+	mcpServers: Owner<McpServerConfig>;
+};
+type Kind = keyof Owners;
+type Item<K extends Kind> = Owners[K] extends Owner<infer T> ? T : never;
+const KINDS = ["commands", "providers", "accounts", "environments", "channels", "schedules", "mcpServers"] as const satisfies readonly Kind[];
+const LABELS: Record<Kind, string> = { commands: "command", providers: "model provider", accounts: "account", environments: "computer", channels: "channel", schedules: "schedule", mcpServers: "MCP server" };
 
 /** What the core gives every extension, and does for it. */
 export type Runtime = {
 	ui: UI;
 	models: MutableModels;
 	settings: SettingsFile;
-	secrets: SecretsFile;
 	dataDir: string;
-	home: string;
 	events: EventBus;
+	owners: Owners;
+	accounts: ExtensionAPI["accounts"];
+	/** The agent's computer: the environment in use, if there is one. */
+	computer(): ExecutionEnv | undefined;
 	chiefId(): string;
 	/** A message to a conversation (default: the chief of staff), once: a turn of its own, or (`write`) kept for the next one. */
 	send(content: Content, options: { to?: string; from: string; write?: boolean }): void;
@@ -287,8 +375,11 @@ export type Runtime = {
 	appendEntry(entry: CustomEntry): void;
 	/** Apply a change to what agents run with (the model, the active tools). */
 	apply(): void;
-	/** An environment variable holding a key, to keep out of commands' environment. */
-	keyEnv(name: string): void;
+	/** What agents get of it changed (a tool added): from their next request. */
+	rebuilt(entry: Loaded): void;
+	mcpServers(): Record<string, McpServerConfig>;
+	/** A problem the chief of staff hears once (undefined: it's fixed). */
+	problem(about: string, text: string | undefined): void;
 	log(line: string): void;
 };
 
@@ -350,13 +441,15 @@ function extensionUI(dialogs: Dialogs): ExtensionUI {
 export class Loaded {
 	readonly name: string;
 	readonly tools: ToolDefinition[] = [];
-	readonly commands = new Map<string, { description?: string; handler: (args: string, ctx: ExtensionContext) => void | Promise<void> }>();
-	readonly providers = new Map<string, Provider>();
-	channel: Channel | undefined;
+	/** What it registered of each kind, by name; in use while it's on. */
+	readonly registered: { [K in Kind]: Map<string, Item<K>> } = { commands: new Map(), providers: new Map(), accounts: new Map(), environments: new Map(), channels: new Map(), schedules: new Map(), mcpServers: new Map() };
+	/** Its settings (registerFlag), by name. */
+	readonly flags = new Map<string, FlagOptions>();
+	/** The tools of each of its MCP servers, while connected. */
+	readonly mcpTools = new Map<string, ToolDefinition[]>();
 	durable!: Extension;
 	running = false;
 	private readonly handlers = new Map<keyof ExtensionEvents, Handler<never>[]>();
-	private readonly flags = new Map<string, boolean | string | undefined>();
 	/** Rounds per conversation, for turn_start and turn_end. */
 	private readonly turns = new Map<string, number>();
 	private readonly runtime: Runtime;
@@ -366,13 +459,18 @@ export class Loaded {
 		this.runtime = runtime;
 	}
 
+	/** Its own tools and its MCP servers'. */
+	allTools(): ToolDefinition[] {
+		return [...this.tools, ...[...this.mcpTools.values()].flat()];
+	}
+
 	/** A context for a handler: in an agent's turn (`conversationId`), or a command's (`at`). */
 	async context(options: { conversationId?: string; signal?: AbortSignal; at?: CardRef } = {}): Promise<ExtensionContext> {
 		const { runtime } = this;
 		const entries = () => runtime.entries();
 		return strict<ExtensionContext>(
 			{
-				cwd: runtime.home,
+				cwd: runtime.computer()?.cwd ?? "",
 				ui: extensionUI(runtime.ui.dialogs(options.at)),
 				mode: "rpc",
 				hasUI: true,
@@ -414,6 +512,38 @@ export class Loaded {
 		return this.emit(event, payload, await this.context({ conversationId: String(conversationId) }));
 	}
 
+	/** Register one of a kind: in use at once while it's on (replacing one of its name), or once it's turned on. */
+	private put<K extends Kind>(kind: K, name: string, item: Item<K>): void {
+		const map = this.registered[kind] as Map<string, Item<K>>;
+		const old = map.get(name);
+		map.set(name, item);
+		if (!this.running) return;
+		const owner = this.runtime.owners[kind] as Owner<Item<K>>;
+		void (async () => {
+			if (old !== undefined) await owner.remove(name, old, this);
+			await owner.add(name, item, this);
+		})().catch((error: unknown) => this.runtime.problem(`extension ${this.name}`, `its ${LABELS[kind]} ${name} didn't start: ${message(error)}`));
+	}
+
+	private drop<K extends Kind>(kind: K, name: string): void {
+		const map = this.registered[kind] as Map<string, Item<K>>;
+		const item = map.get(name);
+		if (item === undefined) return;
+		map.delete(name);
+		if (!this.running) return;
+		void Promise.resolve((this.runtime.owners[kind] as Owner<Item<K>>).remove(name, item, this)).catch((error: unknown) => this.runtime.log(`${this.name}: ${LABELS[kind]} ${name}: ${message(error)}`));
+	}
+
+	/** One of its settings: the user's value (settings.json), or its default. */
+	flag(name: string): boolean | string | undefined {
+		const flag = this.flags.get(name);
+		if (flag === undefined) return undefined;
+		const value = this.runtime.settings.get().extensions[this.name]?.[name];
+		// A number saved before its setting was a flag reads as the string it is.
+		if (flag.type === "string" && typeof value === "number") return String(value);
+		return typeof value === flag.type ? (value as boolean | string) : flag.default;
+	}
+
 	api(): ExtensionAPI {
 		const { runtime } = this;
 		const nothing = () => {};
@@ -427,18 +557,15 @@ export class Loaded {
 					this.handlers.set(event, list);
 					return () => void list.splice(list.indexOf(handler as unknown as Handler<never>), 1);
 				},
-				registerTool: (tool) => void this.tools.push(tool as unknown as ToolDefinition),
-				registerCommand: (name, options) => {
-					this.commands.set(name, options);
-					if (this.running) this.offer(name);
+				registerTool: (tool) => {
+					const index = this.tools.findIndex((each) => each.name === tool.name);
+					if (index === -1) this.tools.push(tool as unknown as ToolDefinition);
+					else this.tools[index] = tool as unknown as ToolDefinition;
+					if (this.durable !== undefined) this.rebuild();
 				},
-				registerProvider: (provider) => {
-					this.providers.set(provider.id, provider);
-					if (this.running) runtime.models.setProvider(provider);
-				},
-				unregisterProvider: (name) => {
-					if (this.providers.delete(name) && this.running) runtime.models.deleteProvider(name);
-				},
+				registerCommand: (name, options) => this.put("commands", name, options),
+				registerProvider: (provider) => this.put("providers", provider.id, provider),
+				unregisterProvider: (name) => this.drop("providers", name),
 				sendUserMessage: (content, options) => runtime.send(content, { ...to(options), from: this.name }),
 				sendMessage: (custom, options) =>
 					runtime.send(custom.content, { ...to(options), from: this.name, ...(options?.triggerTurn === true && options.deliverAs !== "nextTurn" ? {} : { write: true }) }),
@@ -469,18 +596,23 @@ export class Loaded {
 				registerEntryRenderer: nothing,
 				registerMarkdownTransformer: nothing,
 				registerToolRenderer: nothing,
-				registerFlag: (name, options) => void this.flags.set(name, options.default),
-				getFlag: (name) => this.flags.get(name),
-				events: runtime.events,
-				registerChannel: (channel) => void (this.channel = channel),
-				dataDir: runtime.dataDir,
-				secrets: {
-					get: (key, env) => {
-						if (env !== undefined) runtime.keyEnv(env);
-						return runtime.secrets.get(`${this.name}.${key}`, env);
-					},
-					set: (key, value) => runtime.secrets.set(`${this.name}.${key}`, value),
+				registerFlag: (name, options) => {
+					if (name === "enabled") throw new Error(`"enabled" is japa's own switch for the extension; name the flag something else`);
+					this.flags.set(name, options);
 				},
+				getFlag: (name) => this.flag(name),
+				registerMcpServer: (name, config) => this.put("mcpServers", name, config),
+				unregisterMcpServer: (name) => this.drop("mcpServers", name),
+				getMcpServers: () => runtime.mcpServers(),
+				events: runtime.events,
+				registerChannel: (channel) => this.put("channels", channel.platform, channel),
+				registerAccount: (account) => this.put("accounts", account.id, account),
+				unregisterAccount: (id) => this.drop("accounts", id),
+				accounts: runtime.accounts,
+				registerEnvironment: (env) => this.put("environments", env.id, env),
+				registerSchedule: (name, schedule) => this.put("schedules", name, schedule),
+				unregisterSchedule: (name) => this.drop("schedules", name),
+				dataDir: runtime.dataDir,
 			},
 			"pi",
 		);
@@ -520,13 +652,20 @@ export class Loaded {
 		});
 	}
 
+	/** Its tools changed while loaded (one registered, an MCP server's listed): agents get them from their next request. */
+	rebuild(): void {
+		this.build();
+		this.runtime.rebuilt(this);
+	}
+
 	/**
 	 * What agents get of it, on Pi Durable: its tools, a prompt section (before_agent_start, and its tools' guidelines),
 	 * and hooks on the tool and generation tasks for the events it handles.
 	 */
 	build(): void {
-		const tools = this.tools.map((tool) => this.durableTool(tool));
-		const guidelines = this.tools.flatMap((tool) => (tool.promptGuidelines ?? []).map((line) => [tool.name, line] as const));
+		const all = this.allTools();
+		const tools = all.map((tool) => this.durableTool(tool));
+		const guidelines = all.flatMap((tool) => (tool.promptGuidelines ?? []).map((line) => [tool.name, line] as const));
 		const sections =
 			this.has("before_agent_start") || guidelines.length > 0
 				? [
@@ -604,26 +743,56 @@ export class Loaded {
 		this.durable = defineExtension({ name: this.name, tools, sections, hooks });
 	}
 
-	/** Offer one of its commands on the UI. */
-	private offer(name: string): void {
-		const command = this.commands.get(name);
-		if (command === undefined) return;
-		this.runtime.ui.command(name, command.description ?? name, async (at, args) => command.handler(args, await this.context({ at })));
-	}
-
-	/** It's on: its providers on Models, its commands offered, then session_start. */
-	async start(): Promise<void> {
+	/**
+	 * It's on: what it registered, put in use by each kind's owner, then session_start. Returns what didn't start; the
+	 * rest still does.
+	 */
+	async start(): Promise<string[]> {
 		this.running = true;
-		for (const provider of this.providers.values()) this.runtime.models.setProvider(provider);
-		for (const name of this.commands.keys()) this.offer(name);
-		await this.emit("session_start", { type: "session_start", reason: "startup" }, await this.context());
+		const problems: string[] = [];
+		for (const kind of KINDS) {
+			const owner = this.runtime.owners[kind] as Owner<unknown>;
+			for (const [name, item] of this.registered[kind]) {
+				try {
+					await owner.add(name, item, this);
+				} catch (error) {
+					problems.push(`its ${LABELS[kind]} ${name} didn't start: ${message(error)}`);
+				}
+			}
+		}
+		try {
+			await this.emit("session_start", { type: "session_start", reason: "startup" }, await this.context());
+		} catch (error) {
+			problems.push(`it didn't start: ${message(error)}`);
+		}
+		return problems;
 	}
 
+	/** It's off: session_shutdown, then what it registered taken out of use, in reverse. */
 	async stop(): Promise<void> {
+		await this.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, await this.context()).catch((error: unknown) => this.runtime.log(`${this.name}: session_shutdown: ${message(error)}`));
 		this.running = false;
-		await this.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, await this.context());
-		for (const name of this.commands.keys()) this.runtime.ui.removeCommand(name);
-		for (const name of this.providers.keys()) this.runtime.models.deleteProvider(name);
+		for (const kind of [...KINDS].reverse()) {
+			const owner = this.runtime.owners[kind] as Owner<unknown>;
+			for (const [name, item] of this.registered[kind]) {
+				await Promise.resolve()
+					.then(() => owner.remove(name, item, this))
+					.catch((error: unknown) => this.runtime.log(`${this.name}: ${LABELS[kind]} ${name}: ${message(error)}`));
+			}
+		}
+	}
+
+	/** Why it can't be turned off now, if it can't: something it has in use is the agent's only one of its kind. */
+	needed(): string | undefined {
+		if (!this.running) return undefined;
+		for (const kind of KINDS) {
+			const owner = this.runtime.owners[kind] as Owner<unknown>;
+			for (const item of this.registered[kind].values()) {
+				const why = owner.needed?.(item);
+				if (why !== undefined) return why;
+			}
+		}
+		return undefined;
 	}
 }
 
@@ -643,17 +812,16 @@ export async function loadExtension(name: string, factory: ExtensionFactory, run
 export class ExtensionSet {
 	private list: Loaded[];
 	private readonly settings: SettingsFile;
-	private readonly adapters: Adapters;
+	/** A problem with one (undefined: it works now), for whoever can fix it: the chief of staff hears it. */
+	private readonly problem: (entry: Loaded, text: string | undefined) => void;
 	/** Why each one that's on isn't working, if it isn't (its last failure to start). */
 	private readonly failures = new Map<string, string>();
-	/** Channels that opened, so only those are shown on and closed. */
-	private readonly open = new Set<Channel>();
 	private readonly log: (line: string) => void;
 
-	constructor(entries: readonly Loaded[], settings: SettingsFile, adapters: Adapters, log: (line: string) => void = (line) => console.log(line)) {
+	constructor(entries: readonly Loaded[], settings: SettingsFile, problem: (entry: Loaded, text: string | undefined) => void, log: (line: string) => void = (line) => console.log(line)) {
 		this.list = [...entries];
 		this.settings = settings;
-		this.adapters = adapters;
+		this.problem = problem;
 		this.log = log;
 	}
 
@@ -692,10 +860,9 @@ export class ExtensionSet {
 		return this.failures.get(name);
 	}
 
-	/** Why it can't be turned off, if it can't: it's the only channel that's actually open. */
+	/** Why it can't be turned off, if it can't. */
 	cannotTurnOff(entry: Loaded): string | undefined {
-		if (entry.channel === undefined || !this.open.has(entry.channel)) return undefined;
-		return [...this.open].some((channel) => channel !== entry.channel) ? undefined : "It's the only channel you can reach me on.";
+		return entry.needed();
 	}
 
 	/** What agents get of the ones that are on. */
@@ -709,7 +876,7 @@ export class ExtensionSet {
 	}
 
 	tools(): ToolInfo[] {
-		return this.on().flatMap((entry) => entry.tools.map((tool) => ({ name: tool.name, description: tool.description, ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }) })));
+		return this.on().flatMap((entry) => entry.allTools().map((tool) => ({ name: tool.name, description: tool.description, ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }) })));
 	}
 
 	/** The ones that are on: where their skills are (resources_discover). */
@@ -735,51 +902,35 @@ export class ExtensionSet {
 		}
 	}
 
-	async stopAll(): Promise<void> {
-		for (const entry of this.entries) if (entry.running) await this.stop(entry);
+	/** Start again the ones that are on but didn't fully start (a login may have fixed them). */
+	async retry(): Promise<void> {
+		for (const entry of this.on()) {
+			if (!this.failures.has(entry.name) || !entry.running) continue;
+			await this.stop(entry);
+			await this.start(entry);
+		}
 	}
 
-	/**
-	 * Start it; a failure is a problem for whoever can fix it (the adapters' `problem`: the chief of staff hears it),
-	 * not just a line in the log.
-	 */
+	async stopAll(): Promise<void> {
+		for (const entry of [...this.entries].reverse()) if (entry.running) await this.stop(entry);
+	}
+
+	/** Start it; what didn't start is a problem for whoever can fix it, not just a line in the log. */
 	private async start(entry: Loaded): Promise<void> {
-		const { ui, inbox } = this.adapters;
-		const problems: string[] = [];
-		const channel = entry.channel;
-		if (channel !== undefined) {
-			try {
-				await channel.open({ inbox: inbox(channel.platform), ui });
-				this.open.add(channel);
-				ui.attach({ channel: channel.platform, show: (card, replace) => channel.show(card, replace) });
-			} catch (error) {
-				problems.push(`its channel didn't open: ${message(error)}`);
-			}
-		}
-		await entry.start().catch((error: unknown) => problems.push(`it didn't start: ${message(error)}`));
+		const problems = await entry.start();
 		if (problems.length === 0) {
 			this.failures.delete(entry.name);
-			this.adapters.problem(entry, undefined);
+			this.problem(entry, undefined);
 			return;
 		}
 		const text = problems.join("; ");
 		this.log(`${entry.name}: ${text}`);
 		this.failures.set(entry.name, text);
-		this.adapters.problem(entry, text);
+		this.problem(entry, text);
 	}
 
 	private async stop(entry: Loaded): Promise<void> {
 		await entry.stop().catch((error: unknown) => this.log(`${entry.name}: stop: ${String(error)}`));
-		const channel = entry.channel;
-		if (channel !== undefined && this.open.delete(channel)) {
-			this.adapters.ui.detach(channel.platform);
-			await Promise.resolve()
-				.then(() => channel.close())
-				.catch((error: unknown) => this.log(`${entry.name}: close: ${String(error)}`));
-		}
 		this.failures.delete(entry.name);
 	}
 }
-
-/** The core's side of the adapters: where channels are shown, messages let in, and problems reported (undefined: it works now). */
-export type Adapters = { ui: UI; inbox(platform: string): Inbox; problem(entry: Loaded, text: string | undefined): void };

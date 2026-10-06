@@ -123,7 +123,7 @@ test("approvals: a job agent waiting on the user is held (not reported as gone q
 	await h.done();
 });
 
-test("web: one search sends the objective and all queries in fast mode, and renders pages with excerpts", async () => {
+test("web: one search sends the objective and all queries in fast mode, and renders pages with excerpts; without its account, the user is asked to log in", async () => {
 	const requests: Array<{ url: string; body: Record<string, unknown>; key: string | null }> = [];
 	const fakeFetch = (async (url: string | URL, init?: RequestInit) => {
 		requests.push({ url: String(url), body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get("x-api-key") });
@@ -136,21 +136,23 @@ test("web: one search sends the objective and all queries in fast mode, and rend
 		extensions: { web: webExtension({ fetch: fakeFetch }) },
 		script: (turn) => {
 			if (turn.text.includes("look it up")) return call("web_search", { objective: "Find alpha", queries: ["alpha", "alpha fact"] });
-			if (turn.text.includes("No Parallel API key")) return say("No key.");
+			if (turn.text.includes("Not logged in to Parallel")) return say("No key.");
 			if (turn.text.includes("Alpha fact.")) return call("web_fetch", { urls: ["https://b.example"] });
 			if (turn.text.includes("Whole page.")) return say("Found it.");
 			return say("?");
 		},
 	});
 	assert.deepEqual(await h.ask("1", "[Mon 10:00] look it up"), { text: "No key." });
-	h.secrets.set("web.apiKey", "pk-test");
+	const asked = h.cards.find((shown) => shown.card.buttons?.flat().some((button) => button.text === "Log in to Parallel (web search)") === true);
+	assert.ok(asked !== undefined, "the user is asked to log in, with a card");
+	await h.credentials.modify("parallel", async () => ({ type: "api_key", key: "pk-test" }));
 	assert.deepEqual(await h.ask("2", "[Mon 10:01] look it up again"), { text: "Found it." });
 	assert.deepEqual(requests[0], { url: "https://api.parallel.ai/v1/search", body: { objective: "Find alpha", search_queries: ["alpha", "alpha fact"], mode: "fast", advanced_settings: { max_results: 8 } }, key: "pk-test" });
 	assert.deepEqual(requests[1]?.body, { urls: ["https://b.example"], advanced_settings: { full_content: true } });
 	await h.done();
 });
 
-test("settings: /settings is a card where extensions turn on and off (tools and commands follow, start and stop run); an extension's own options are its command's; the last channel stays on", async () => {
+test("settings: /settings has a page per extension: its switch (tools and commands follow, start and stop run) and its own settings (its flags); its key is a login; the last channel and computer stay on", async () => {
 	const lifecycle: string[] = [];
 	const h = await agent({
 		extensions: {
@@ -178,46 +180,60 @@ test("settings: /settings is a card where extensions turn on and off (tools and 
 	assert.deepEqual(
 		ui.commands(),
 		[
-			{ name: "settings", description: "Models, and which extensions are on" },
+			{ name: "settings", description: "Models, and the extensions: which are on, and their settings" },
 			{ name: "model", description: "The models it and its jobs use" },
 			{ name: "thinking", description: "How hard each model thinks" },
-			{ name: "login", description: "Log in to a model provider" },
-			{ name: "logout", description: "Log out of a model provider" },
+			{ name: "login", description: "Log in to a model provider or an account" },
+			{ name: "logout", description: "Log out of a model provider or an account" },
 			{ name: "jobs", description: "What the team is working on" },
 			{ name: "session", description: "What it has spent, by job" },
-			{ name: "web", description: "Web search: its Parallel API key" },
 		],
-		"advertised, with what they do, an extension's own among them",
+		"advertised, with what they do",
 	);
 	assert.equal(await ui.run("settings", at), true);
-	assert.deepEqual(labels(), ["General", "✅ test-channel", "✅ web (/web)", "✅ email"]);
+	assert.deepEqual(labels(), ["General", "✅ local", "✅ test-channel", "✅ web", "✅ email"]);
 	assert.ok((await tools()).includes("web_search"));
 
-	await press("✅ web (/web)");
-	assert.deepEqual(labels().slice(2, 3), ["⬜ web (/web)"]);
+	await press("✅ web");
+	assert.deepEqual(labels(), ["✅ On (tap to turn off)", "Search mode (fast, one-shot or agentic): fast", "Results per search: 8", "« Back"], "its switch and its settings, at their defaults");
+	await press("✅ On (tap to turn off)");
+	assert.equal(labels()[0], "⬜ Off (tap to turn on)");
 	assert.ok(!(await tools()).includes("web_search"), "turned off: gone from the chief of staff's tools");
-	assert.ok(!ui.commands().some((command) => command.name === "web"), "and its command");
 	assert.deepEqual(lifecycle, ["web on", "web off"], "and stopped");
-	await press("✅ test-channel");
-	assert.match(h.cards.at(-1)!.card.text, /only channel/);
-	assert.deepEqual(labels().slice(1, 2), ["✅ test-channel"], "the last channel can't be turned off");
-	await press("⬜ web (/web)");
+	await press("⬜ Off (tap to turn on)");
 	assert.deepEqual(lifecycle, ["web on", "web off", "web on"]);
 
-	// Its key, through its own command: pi's dialogs, drawn as cards.
-	const running = ui.run("web", at);
-	await h.until(() => h.cards.at(-1)!.card.buttons?.flat().some((button) => button.text === "Parallel API key: not set") === true, "the web's own menu");
-	await press("Parallel API key: not set");
+	// One of its settings, sent by reply; the page it came from shows it.
+	await press("Search mode (fast, one-shot or agentic): fast");
+	const question = h.cards.at(-1)!;
+	assert.ok(question.card.ask !== undefined);
+	await ui.reply(question.card.ask.data, "one-shot", { channel: "test", chatId: "7", messageId: "98" }, question.ref);
+	assert.equal(h.settings.get().extensions.web?.mode, "one-shot");
+	assert.ok(h.cards.some((shown) => shown.card.buttons?.flat().some((button) => button.text === "Search mode (fast, one-shot or agentic): one-shot") === true));
+
+	// The last channel, and the only computer, can't be turned off.
+	for (const [name, why] of [["test-channel", /only channel/], ["local", /only computer/]] as const) {
+		await ui.run("settings", at);
+		await press(`✅ ${name}`);
+		await press("✅ On (tap to turn off)");
+		assert.match(h.cards.at(-1)!.card.text, why);
+		assert.equal(labels()[0], "✅ On (tap to turn off)", `${name} stays on`);
+	}
+
+	// Its key is a login, like a model provider's: /login, its own prompt, answered by reply, kept in auth.json.
+	await ui.run("login", at);
+	assert.equal(labels()[0], "Parallel (web search)", "accounts first, then model providers");
+	const logging = press("Parallel (web search)");
 	await h.until(() => h.cards.at(-1)!.card.ask !== undefined, "the question for the key");
 	const prompt = h.cards.at(-1)!;
 	assert.ok(prompt.card.ask?.secret === true, "asked for as a secret");
 	await ui.reply(prompt.card.ask!.data, "pk-live", { channel: "test", chatId: "7", messageId: "99" }, prompt.ref);
-	await running;
-	assert.equal(h.secrets.get("web.apiKey"), "pk-live");
-	assert.equal(h.cards.at(-1)!.card.text, "Parallel API key saved.");
+	await logging;
+	assert.equal(h.cards.at(-1)!.card.text, "Logged in to Parallel (web search).");
+	assert.deepEqual(await h.credentials.read("parallel"), { type: "api_key", key: "pk-live" });
 	await ui.reply(prompt.card.ask!.data, "again", { channel: "test", chatId: "7", messageId: "100" }, prompt.ref);
-	assert.equal(h.cards.at(-1)!.card.text, "That's no longer waiting.", "answered once");
-	assert.ok(!JSON.stringify(h.settings.get()).includes("pk-live"), "secrets never land in settings.json");
+	assert.match(h.cards.at(-1)!.card.text, /isn't waiting any more/, "answered once");
+	assert.ok(!JSON.stringify(h.settings.get()).includes("pk-live"), "keys never land in settings.json");
 	assert.ok(!JSON.stringify(h.cards.map((shown) => shown.card)).includes("allowlist"), "the allowlist isn't in the menu");
 
 	// A model is picked from the models pi can use, not typed.

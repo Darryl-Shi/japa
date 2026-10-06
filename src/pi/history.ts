@@ -33,7 +33,7 @@ export async function indexHistory(conversation: Conversation, history: History,
 /** search_history, over `search` (the main conversation's record). */
 export function historyExtension(search: (query: string, context: Context) => Promise<HistoryHit[]>): Extension {
 	return defineExtension({
-		name: "jarvis.history",
+		name: "japa.history",
 		tools: [
 			defineTool({
 				name: "search_history",
