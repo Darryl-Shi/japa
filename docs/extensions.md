@@ -2,13 +2,33 @@
 
 Everything beyond the core is an extension, and an extension is what it is in pi: a module whose default export is a
 factory given `pi`, pi's `ExtensionAPI` (`src/pi/extension.ts`). On it, the extension registers what it adds (tools,
-commands, model providers) and handles pi's events (`session_start`, `session_shutdown`, `before_agent_start`,
-`tool_call`, `resources_discover`). The names and meanings are pi's, so pi's extension docs apply. Where japa is built
-from something pi isn't, it's in the same API:
+commands, model providers) and handles pi's events. The names and meanings are pi's, so pi's extension docs apply.
+japa implements them on Pi Durable:
+
+| pi | on Pi Durable |
+|---|---|
+| `before_agent_start` (`systemPromptOptions.sections`), tools' `promptGuidelines` | a prompt section |
+| `tool_call` (block, terminate, input patched in place), `tool_execution_start` | the tool task's `beforeTool` hook |
+| `tool_result`, `tool_execution_end` | its `afterTool` hook |
+| `context`, `turn_start` | the generation task's `beforeRequest` hook |
+| `message_end`, `turn_end`, `agent_end` | its `afterResponse`, `afterTools` and `onYield` hooks |
+| a tool's `details`, `terminate`, `onUpdate`, `prepareArguments`, `executionMode` | the tool's result, control, output and details |
+| `sendUserMessage`, `sendMessage` (`triggerTurn`) | an input that starts a turn |
+| `sendMessage` without `triggerTurn` | a write into the conversation, for its next turn |
+| `appendEntry`, `ctx.sessionManager.getEntries()` | entries kept in the data directory |
+| `setActiveTools`, `defaultActive` | the agent's tool filter (job agents start with the chief of staff's) |
+| `setModel`, `setThinkingLevel` | the chief of staff's model in settings, as `/model` sets it |
+| `session_start`, `session_shutdown`, `resources_discover` | turned on and off; skills |
+
+What only a terminal shows (shortcuts, flags, renderers, `ctx.ui`'s status, widgets and title) is accepted and not
+drawn, as in pi without a terminal; a flag is always its default. Anything else of pi's API japa doesn't have fails when
+it's used, saying which; in the factory, the extension doesn't load, and the chief of staff hears why.
+
+Where japa is built from something pi isn't, it's in the same API:
 
 - a messaging channel: `registerChannel`;
 - the end of an exchange with the user: the `exchange_end` event;
-- more than one agent: `ctx.agent` (`"chief"` or `"job"`), and `sendUserMessage`'s `to`;
+- more than one agent: `ctx.agent` (`"chief"` or `"job"`), and `to` on `sendUserMessage` and `sendMessage`;
 - keys that aren't model credentials: `secrets`.
 
 ## Built in

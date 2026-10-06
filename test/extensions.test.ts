@@ -546,7 +546,7 @@ test("prompt: the chief of staff gets its role and how it extends itself, naming
 	const chief = h.turns.find((turn) => turn.job === undefined)!.request;
 	assert.match(chief, /Your role is to answer, decide, delegate, and synthesize/);
 	assert.match(chief, /You are built to be customized/);
-	assert.match(chief, /<name>extending-japa<\/name>/, "the skill that says how");
+	assert.match(chief, /\\n- extending-japa: How to change how you work[^\\]*\(\/[^)]*SKILL\.md\)/, "the skill that says how, in one line");
 	assert.match(chief, /extending-japa skill/, "install_extension points to it");
 	assert.match(chief, /<note>\\nA note for the chief of staff alone\.\\n<\/note>/);
 	assert.doesNotMatch(chief, /Telegram|faux-1/, "no channel or setup named");
@@ -555,7 +555,8 @@ test("prompt: the chief of staff gets its role and how it extends itself, naming
 	assert.ok(!job.includes("A note for the chief of staff alone"), "an extension tells them apart by ctx.agent");
 	for (const request of [chief, job]) {
 		assert.match(request, /Sign off every report with the date\./, "standing instructions, for everyone");
-		assert.match(request, /<name>packing<\/name>\\n\s*<description>How the user likes a trip packed\.<\/description>/, "and its skills");
+		assert.match(request, /\\n- packing: How the user likes a trip packed\. \(\/[^)]*packing\/SKILL\.md\)/, "and its skills, one line each");
+		assert.doesNotMatch(request, /Roll, don't fold/, "a skill's body only when it's read");
 	}
 	await h.done();
 });

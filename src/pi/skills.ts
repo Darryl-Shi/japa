@@ -1,6 +1,6 @@
 // Skills and context files, as pi has them, read fresh each turn so what's added applies from the next message. A
 // skill is a directory with a SKILL.md (name and description in its frontmatter), listed in the prompt and read when a
-// task needs it; they're in pi's places in the agent's home (~/.pi/agent/skills, ~/.agents/skills), in japa's own
+// task needs it, each one line (its description) until then; they're in pi's places in the agent's home (~/.pi/agent/skills, ~/.agents/skills), in japa's own
 // skills/, and wherever an extension's resources_discover says. A context file is pi's AGENTS.md (or CLAUDE.md) in
 // ~/.pi/agent: standing instructions, in every prompt. Both are the agent's own, in its home, so it can add them itself.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -40,8 +40,6 @@ function skillAt(path: string): Skill | undefined {
 	return { name: meta.name || (basename(path) === "SKILL.md" ? basename(dirname(path)) : basename(path, ".md")), description: meta.description, location: path };
 }
 
-const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
 export function skillsExtension(options: { home: string; builtIn: string; discovered: () => Promise<string[]> }): Extension {
 	const agentDir = join(options.home, ".pi", "agent");
 	return defineExtension({
@@ -63,14 +61,10 @@ export function skillsExtension(options: { home: string; builtIn: string; discov
 					const seen = new Set<string>();
 					const skills = dirs.flatMap((dir) => skillsIn(dir)).filter((skill) => !seen.has(skill.name) && seen.add(skill.name));
 					if (skills.length === 0) return undefined;
+					// One line each: what it's for, and where it is. The rest is read only when the agent chooses to.
 					return [
-						"The following skills provide specialized instructions for specific tasks.",
-						"Use the read tool to load a skill's file when the task matches its description.",
-						"When a skill file references a relative path, resolve it against the skill's directory.",
-						"",
-						"<available_skills>",
-						...skills.map((skill) => `  <skill>\n    <name>${escape(skill.name)}</name>\n    <description>${escape(skill.description)}</description>\n    <location>${escape(skill.location)}</location>\n  </skill>`),
-						"</available_skills>",
+						"Skills: read one's file when a task matches it.",
+						...skills.map((skill) => `- ${skill.name}: ${skill.description.replace(/\s+/g, " ")} (${skill.location})`),
 					].join("\n");
 				},
 				{ tag: false },

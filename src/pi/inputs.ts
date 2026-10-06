@@ -5,6 +5,7 @@
 // An empty answer says nothing, and an answer is sent once however many inputs it answered.
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type ConversationId, defineDoc, defineTask, type Tx } from "@earendil-works/pi-durable";
+import type { Content } from "../core/message.ts";
 import type { CardRef } from "../core/ui.ts";
 
 /** Messages waiting for the channel to deliver. Durable, so a restart doesn't lose one. */
@@ -38,7 +39,7 @@ export async function claim(tx: Tx, entry: number, claimant: string): Promise<bo
 
 const textOf = (message: AssistantMessage | undefined) => (message?.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join("").trim();
 
-type Input = { requestId: string; content: string; cause: Cause };
+type Input = { requestId: string; content: Content; cause: Cause };
 type State = { phase: "submit" } | { phase: "deliver"; answer?: number };
 
 /** Submit an input to the chief of staff and send its answer back to whoever it's from. */

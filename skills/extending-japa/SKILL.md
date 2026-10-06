@@ -1,6 +1,6 @@
 ---
 name: extending-japa
-description: How to extend yourself when the user wants you to do something new or differently, by adding a standing instruction (a behaviour), a skill (a how-to), or an extension (code that adds tools, commands, a channel or a model provider). Read it before changing how you work, and give it to any job that writes an extension.
+description: How to change how you work, with a standing instruction, a skill, or an extension (give it to a job that writes one).
 ---
 
 # Extending yourself
@@ -94,22 +94,34 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-What it can use (`pi.`):
+What it can use (`pi.`), with pi's meanings:
 
-- `registerTool`: a tool, for you and your jobs. Throwing returns the error to the agent.
+- `registerTool`: a tool, for you and your jobs. Throwing returns the error to the agent. A result can carry
+  `details` and `terminate: true` (the run ends after this round); `onUpdate` streams partial output.
+  `promptGuidelines` go in the prompt while the tool is active; `defaultActive: false` keeps it out until
+  `setActiveTools` names it.
 - `registerCommand(name, { description, handler(args, ctx) })`: a slash command the user can run. `ctx.ui` has
-  `select`, `confirm`, `input` and `notify`.
-- `on(event, handler)`, where the event is one of:
+  `select`, `confirm`, `input` (with `{ signal, timeout }`), `editor` and `notify`.
+- `on(event, handler)` (returns a function that unsubscribes), where the event is one of:
   - `session_start` and `session_shutdown`: it's turned on or off. Start and stop long-lived things here, not in the
     factory.
   - `before_agent_start`: add prompt text, `event.systemPromptOptions.sections.<key> = "..."`. `ctx.agent` is `"chief"`
     or `"job"`.
-  - `tool_call`: return `{ block: true, reason }` to stop a call.
+  - `tool_call`: return `{ block: true, reason }` to stop a call, or change `event.input` in place to patch it.
+  - `tool_result`: return `{ content, details, isError }` to change a result.
+  - `tool_execution_start`, `tool_execution_end`, `turn_start`, `turn_end`, `message_end`, `agent_end`: to observe.
+  - `context`: return `{ messages }` to change what one request sends.
   - `resources_discover`: return `{ skillPaths }` for skills it brings.
   - `exchange_end`: an exchange with the user ended.
 - `sendUserMessage(text, { to? })`: wake the chief of staff (or, with `to`, an agent's conversation), as if the user
   wrote. To act on a schedule, set a timer in `session_start` and clear it in `session_shutdown`. Times missed while
   japa was down are skipped.
+- `sendMessage({ customType, content }, { triggerTurn?, to? })`: put a message in the conversation for its next turn,
+  or (`triggerTurn`) start one.
+- `appendEntry(customType, data)`: keep state in the session, never sent to the model. Read it back with
+  `ctx.sessionManager.getEntries()`, in `session_start` after a restart.
+- `getAllTools()`, `getActiveTools()`, `setActiveTools(names)`, `getCommands()`.
+- `setModel(model)`, `getThinkingLevel()`, `setThinkingLevel(level)`: the chief of staff's, as `/model` sets them.
 - `exec(command, args, { signal, timeout, cwd })`: run a program on your computer, without japa's keys in its
   environment.
 - `registerProvider(provider)`: a pi-ai model provider (`createProvider`, `envApiKeyAuth` from
@@ -123,6 +135,10 @@ What it can use (`pi.`):
   - `getSettings()`: settings are read-only. Its own options are under `extensions.<name>`.
   - `dataDir`: where it keeps its files, named after itself.
   - `events`: messages between extensions.
+
+What only a terminal shows (`registerShortcut`, `registerFlag`, which then reads its default, renderers, and
+`ctx.ui`'s status, widgets and title) is accepted and not drawn. Anything else of pi's API isn't in japa: using it
+fails at once, saying which (in the factory, the extension doesn't load, and you hear why).
 
 What it can import:
 

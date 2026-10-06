@@ -110,6 +110,7 @@ export class MainThread {
 	private readonly models: Models;
 	private readonly settings: () => Settings;
 	private readonly selected: () => readonly Extension[];
+	private readonly inactiveTools: () => ReadonlySet<string>;
 	private readonly state: SliceState | undefined;
 	private readonly onExchangeEnd: (exchange: ExchangeEnd) => Promise<void>;
 	private readonly log: (line: string) => void;
@@ -123,6 +124,7 @@ export class MainThread {
 		models: Models;
 		settings: () => Settings;
 		selected: () => readonly Extension[];
+		inactiveTools: () => ReadonlySet<string>;
 		state: SliceState | undefined;
 		onExchangeEnd: (exchange: ExchangeEnd) => Promise<void>;
 		log: (line: string) => void;
@@ -133,6 +135,7 @@ export class MainThread {
 		this.models = options.models;
 		this.settings = options.settings;
 		this.selected = options.selected;
+		this.inactiveTools = options.inactiveTools;
 		this.state = options.state;
 		this.onExchangeEnd = options.onExchangeEnd;
 		this.log = options.log;
@@ -150,6 +153,8 @@ export class MainThread {
 			registry?: Registry;
 			/** The ones the chief of staff has right now; re-read with the settings, so a toggle applies on the next message. */
 			selected?: () => readonly Extension[];
+			/** The tools no agent offers the model now; a new job agent starts with the chief of staff's. */
+			inactiveTools?: () => ReadonlySet<string>;
 			/** The environment the agent's tools run in (Pi's bash/read/write/edit act through it). */
 			env?: () => ExecutionEnv | undefined;
 			/** Open items and working set a new slice starts from. */
@@ -189,6 +194,7 @@ export class MainThread {
 			models: options.models,
 			settings: options.settings,
 			selected: () => [core, ...selected()],
+			inactiveTools: options.inactiveTools ?? (() => new Set()),
 			state: options.state,
 			onExchangeEnd: options.onExchangeEnd ?? (async () => {}),
 			log: options.log ?? (() => {}),
@@ -198,7 +204,7 @@ export class MainThread {
 		return thread;
 	}
 
-	/** Follow the settings' main model and the extensions that are on; a change applies from the next request. */
+	/** Follow the settings' main model, the extensions that are on, and the tools that are active; a change applies from the next request. */
 	async applySettings(settings: Settings, context: Context): Promise<void> {
 		const agent = await this.root.agent(context);
 		const current = agent.model;
@@ -211,6 +217,11 @@ export class MainThread {
 		const wanted = this.selected();
 		const names = (list: readonly Extension[]) => list.map((extension) => extension.name).join(",");
 		if (names(agent.extensions) !== names(wanted)) await this.root.configure({ extensions: wanted }, context);
+		const inactive = this.inactiveTools();
+		const all = wanted.flatMap((extension) => extension.tools ?? []);
+		const offered = (await this.root.agent(context)).tools.map((tool) => tool.name).sort().join(",");
+		const remove = all.filter((tool) => inactive.has(tool.name));
+		if (offered !== all.filter((tool) => !inactive.has(tool.name)).map((tool) => tool.name).sort().join(",")) await this.root.configure({ tools: remove.length === 0 ? null : { remove } }, context);
 	}
 
 	/** Submit a message from a channel and resolve with its answer. Idempotent per requestId. */

@@ -4,11 +4,12 @@
 // extension factory, given pi's ExtensionAPI (src/pi/extension.ts), built-in or installed from chat alike. The agent's
 // computer is the machine this runs on: its tools run here, in `home`.
 import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { getSupportedThinkingLevels, type MutableModels } from "@earendil-works/pi-ai";
-import { createRegistry, type Extension, type Storage } from "@earendil-works/pi-durable";
+import { type ConversationId, createRegistry, type Extension, type Storage } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Inbox } from "./channels/inbox.ts";
 import { attachJobs } from "./commands/jobs.ts";
@@ -16,6 +17,7 @@ import { attachLogin } from "./commands/login.ts";
 import { attachSession } from "./commands/session.ts";
 import { SettingsMenu } from "./commands/settings.ts";
 import { History } from "./core/history.ts";
+import type { Content } from "./core/message.ts";
 import { stamp } from "./core/schedule.ts";
 import { OpenItems, WorkingSetFile } from "./core/state.ts";
 import { type CardRef, Holds, UI } from "./core/ui.ts";
@@ -23,7 +25,7 @@ import type { SecretsFile } from "./credentials.ts";
 import { toInput } from "./pi/attachments.ts";
 import { computerExtension } from "./pi/computer.ts";
 import { delegationExtensions } from "./pi/delegation.ts";
-import { EventBus, type ExecResult, type ExtensionFactory, ExtensionSet, type Loaded, loadExtension, type Runtime, type ToolInfo } from "./pi/extension.ts";
+import { type CustomEntry, EventBus, type ExecResult, type ExtensionFactory, ExtensionSet, type Loaded, loadExtension, type Runtime, type ToolInfo } from "./pi/extension.ts";
 import { MainThread } from "./pi/harness.ts";
 import { historyExtension, indexHistory } from "./pi/history.ts";
 import { address, problem } from "./pi/inputs.ts";
@@ -98,17 +100,37 @@ export async function startJapa(
 	/**
 	 * A new turn in a conversation, once per `id`: the chief of staff (addressed from `from`; its answer goes to the user
 	 * threaded under `replyTo`) or a job agent (a new run of its job, seen through as usual), which is no longer held.
+	 * `write`: no turn, the message is kept for the conversation's next one.
 	 */
-	const wake = async (conversationId: string, text: string, { id, from, replyTo }: { id: string; from: string; replyTo?: CardRef }) => {
-		holds.release(conversationId);
+	const wake = async (conversationId: string, content: Content, { id, from, replyTo, write }: { id: string; from: string; replyTo?: CardRef; write?: boolean }) => {
 		const root = main().root;
-		if (conversationId !== String(root.id)) {
-			await team.resume(root, conversationId, text, context);
+		if (write === true) {
+			const conversation = conversationId === String(root.id) ? root : await main().harness.conversation(Number(conversationId) as ConversationId, context);
+			if (conversation === undefined) throw new Error(`no conversation ${conversationId}`);
+			await conversation.submit({ type: "write", requestId: id, entry: { kind: "pi.user", model: [{ role: "user", content, timestamp: Date.now() }] } }, context);
 			return;
 		}
-		const content = `[${stamp(Date.now(), settings.get().timezone)}] ${text}`;
-		await root.commit((tx) => address(tx, root.id, { requestId: id, content, cause: { from, ...(replyTo === undefined ? {} : { replyTo }) } }), context);
+		holds.release(conversationId);
+		if (conversationId !== String(root.id)) {
+			await team.resume(root, conversationId, typeof content === "string" ? content : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"), context);
+			return;
+		}
+		const at = `[${stamp(Date.now(), settings.get().timezone)}]`;
+		const stamped: Content = typeof content === "string" ? `${at} ${content}` : [{ type: "text", text: at }, ...content];
+		await root.commit((tx) => address(tx, root.id, { requestId: id, content: stamped, cause: { from, ...(replyTo === undefined ? {} : { replyTo }) } }), context);
 	};
+
+	/** What extensions appended to the session (pi's custom entries), kept in the data directory. */
+	const entriesFile = join(dataDir, "extension-entries.jsonl");
+	const entries: CustomEntry[] = existsSync(entriesFile)
+		? readFileSync(entriesFile, "utf8")
+				.split("\n")
+				.filter((line) => line.trim() !== "")
+				.map((line) => JSON.parse(line) as CustomEntry)
+		: [];
+	/** The tools setActiveTools chose, while one has; otherwise every tool but those not active by default. */
+	let activeTools: ReadonlySet<string> | undefined;
+	let japa: Japa;
 
 	// Its commands run here, in its home, without japa's own keys in their environment: a key a command needs is passed
 	// to that command. An extension's keys are taken out as it reads them.
@@ -135,10 +157,36 @@ export async function startJapa(
 		home,
 		events: new EventBus(),
 		chiefId: () => String(main().root.id),
-		send: (text, { to, from }) => void wake(to ?? String(main().root.id), text, { id: `${from}:${randomUUID()}`, from }).catch((error: unknown) => log(`${from}: ${String(error)}`)),
+		send: (content, { to, from, write }) =>
+			void wake(to ?? String(main().root.id), content, { id: `${from}:${randomUUID()}`, from, ...(write === true ? { write } : {}) }).catch((error: unknown) => log(`${from}: ${String(error)}`)),
 		hold: (conversationId, reason) => holds.add(conversationId, reason),
 		exec,
 		tools: () => [...coreTools, ...(extensions?.tools() ?? [])],
+		inactive: () => {
+			const all = runtime.tools();
+			if (activeTools !== undefined) return new Set(all.map((tool) => tool.name).filter((name) => !activeTools!.has(name)));
+			return new Set((extensions?.on() ?? []).flatMap((entry) => entry.tools.filter((tool) => tool.defaultActive === false).map((tool) => tool.name)));
+		},
+		setActiveTools: (names) => {
+			activeTools = new Set(names);
+			void japa.apply(context).catch((error: unknown) => log(`setActiveTools: ${String(error)}`));
+		},
+		model: async (conversationId) => {
+			const conversation = conversationId === undefined || conversationId === String(main().root.id) ? main().root : await main().harness.conversation(Number(conversationId) as ConversationId, context);
+			const ref = conversation === undefined ? undefined : (await conversation.agent(context)).model;
+			return ref === undefined ? undefined : models.getModel(ref.provider, ref.modelId);
+		},
+		messages: async (conversationId, entryIds) => {
+			const conversation = await main().harness.conversation(Number(conversationId) as ConversationId, context);
+			const found = (await conversation?.context(context))?.entries ?? [];
+			return entryIds.flatMap((id) => found.find((entry) => entry.id === id)?.model ?? []);
+		},
+		entries: () => [...entries],
+		appendEntry: (entry) => {
+			entries.push(entry);
+			appendFileSync(entriesFile, `${JSON.stringify(entry)}\n`);
+		},
+		apply: () => void japa.apply(context).catch((error: unknown) => log(`apply: ${String(error)}`)),
 		keyEnv: (name) => void (shellEnv[name] = undefined),
 		log,
 	};
@@ -210,6 +258,7 @@ export async function startJapa(
 			settings: () => settings.get(),
 			installed: [...core, team.job, team.helper, ...set.entries.map((entry) => entry.durable)],
 			selected: () => [...core, ...set.selected()],
+			inactiveTools: () => runtime.inactive(),
 			env: () => computerEnv,
 			state,
 			onExchangeEnd: (exchange) => set.exchangeEnded(exchange),
@@ -220,7 +269,7 @@ export async function startJapa(
 
 	for (const [about, text] of early.splice(0)) report(about, text);
 
-	const japa: Japa = {
+	japa = {
 		thread,
 		runtime,
 		extensions: set,
