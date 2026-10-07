@@ -1,10 +1,10 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
+import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
-import { bootTest, tempHome, testKit } from "./helpers.ts";
+import { bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
 
 test("the CoS answers in the root conversation", async () => {
   const { daemon, faux } = await bootTest();
@@ -107,4 +107,17 @@ test("history survives a restart on sqlite", async () => {
   const page = await d.root.entries({}, 100, undefined, ctx);
   expect(JSON.stringify(page.items)).toContain("remember me");
   await d.close();
+});
+
+test("a CoS model whose provider has no key is reported, naming the env var and the secrets file", async () => {
+  const kit = testKit();
+  const provider = { ...kit.faux.provider, auth: { apiKey: envApiKeyAuth("Test", ["JAPA_TEST_API_KEY"]) } };
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  const extension = { ...kit.extension, provides: { ...kit.extension.provides, provider: [provider] } };
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [extension] });
+  const file = join(home, "secrets", `${kit.model.provider}.apiKey`);
+  expect(daemon.status().errors).toEqual([
+    { name: "models", error: `No API key for ${kit.model.provider}. Set JAPA_TEST_API_KEY or write it to ${file}, then restart.` },
+  ]);
+  await daemon.close();
 });

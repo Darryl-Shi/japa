@@ -1,7 +1,6 @@
 // Public API for extension authors, imported as "japa/sdk".
 export {
   defineDoc,
-  defineExtension,
   defineTask,
   defineTool,
   GenerationTask,
@@ -11,7 +10,7 @@ export {
   ToolTask,
   wrapTool,
 } from "@earendil-works/pi-durable";
-export { StringEnum, Type } from "@earendil-works/pi-ai";
+export { Type } from "@earendil-works/pi-ai";
 export { logChange } from "./kernel/changes.ts";
 export { CORE_CONTRACTS } from "./kernel/contracts.ts";
 export type {

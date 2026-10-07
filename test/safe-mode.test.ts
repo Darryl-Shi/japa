@@ -1,10 +1,11 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { enterSafeMode } from "../src/kernel/safety.ts";
 import { readUserSettings } from "../src/kernel/settings.ts";
-import { commit, ensureWorkspace, LKG, tag } from "../src/kernel/workspace.ts";
+import { commit, ensureWorkspace, head, LKG, tag } from "../src/kernel/workspace.ts";
 import { REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { texts } from "./jobs-helpers.ts";
 
@@ -35,6 +36,20 @@ test("repeated crashes boot in safe mode, at the last known good workspace", asy
   expect(existsSync(join(home, "boots.json"))).toBe(false);
 });
 
+test("repeated failed boots with nothing changed since the last known good setup neither commit nor post", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  const before = head(home);
+  const now = Date.now();
+  writeFileSync(join(home, "boots.json"), JSON.stringify([now - 3000, now - 2000, now - 1000]));
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(head(home)).toBe(before);
+  expect(await texts(daemon.root, "user")).toEqual([]);
+  await daemon.close();
+});
+
 test("a broken boot adapter names safe mode, which restores the default adapters", async () => {
   const kit = testKit();
   const home = tempHome({ storage: { adapter: "broken" }, models: { cos: kit.model } });
@@ -45,5 +60,20 @@ test("a broken boot adapter names safe mode, which restores the default adapters
   enterSafeMode(home, { defaultAdapters: true });
   expect(readUserSettings(home).storage).toEqual({ adapter: "sqlite" });
   const daemon = await boot({ home, extensions: [kit.extension] });
+  await daemon.close();
+});
+
+test("a boot tags the last known good setup once it has run for goodAfterMinutes", async () => {
+  const kit = testKit();
+  const safety = { toolErrorThreshold: 5, goodAfterMinutes: 0.001 };
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, safety });
+  ensureWorkspace(home);
+  write(home, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\nDo s.");
+  commit(home, ["skills"], "Install skill s"); // installed, but the daemon stopped before its tag
+  const lkg = () => execFileSync("git", ["-C", home, "rev-parse", `${LKG}^{commit}`], { encoding: "utf8" }).trim();
+  expect(lkg()).not.toBe(head(home));
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  await waitFor(() => lkg() === head(home));
   await daemon.close();
 });

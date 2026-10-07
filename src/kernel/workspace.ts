@@ -72,6 +72,17 @@ export function restorePath(home: string, ref: string, path: string): void {
   else rmSync(join(home, path), { recursive: true, force: true }); // `commit` stages the removal
 }
 
+/** Whether `paths` in the working tree are as at `ref`, with no untracked files. */
+export function matches(home: string, ref: string, paths: string[]): boolean {
+  if (git(home, "ls-files", "--others", "--exclude-standard", "--", ...paths)) return false;
+  try {
+    git(home, "diff", "--quiet", ref, "--", ...paths);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function tag(home: string, name: string): void {
   git(home, "tag", "-f", name, "HEAD");
 }

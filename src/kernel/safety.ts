@@ -6,7 +6,7 @@ import { logChange } from "./changes.ts";
 import { rollBack } from "./install.ts";
 import { message } from "./loader.ts";
 import { readUserSettings, saveSettings, setPath, type Settings } from "./settings.ts";
-import { commit, hasTag, head, LKG, restorePath, tag } from "./workspace.ts";
+import { commit, hasTag, head, LKG, matches, restorePath, tag } from "./workspace.ts";
 
 const bootsFile = (home: string) => join(home, "boots.json");
 const readBoots = (home: string): number[] =>
@@ -23,11 +23,17 @@ export const clearBoots = (home: string) => rmSync(bootsFile(home), { force: tru
 
 /**
  * Restores the workspace's extensions, skills and worker profiles to `LKG` and, with `defaultAdapters`, selects the
- * packaged storage and secrets adapters; commits and clears the crash log. Returns the new HEAD.
+ * packaged storage and secrets adapters; commits and clears the crash log. Returns the new HEAD, or undefined when
+ * there was nothing to restore: the crash log is just cleared.
  */
-export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapters: boolean }): string {
+export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapters: boolean }): string | undefined {
+  const paths = ["extensions", "skills", "workers"];
+  if (!defaultAdapters && hasTag(home, LKG) && matches(home, LKG, paths)) {
+    clearBoots(home);
+    return undefined;
+  }
   if (hasTag(home, LKG)) {
-    for (const path of ["extensions", "skills", "workers"]) {
+    for (const path of paths) {
       rmSync(join(home, path), { recursive: true, force: true }); // untracked files too
       restorePath(home, LKG, path);
     }

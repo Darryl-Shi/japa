@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
 /** The kernel keys' schema; `extensions.<name>` is checked against that extension's own schema. */
 const Ref = Type.Object({ provider: Type.String(), modelId: Type.String() });
-export const settingsSchema = Type.Object({
+const settingsSchema = Type.Object({
   models: Type.Object({ cos: Ref, worker: Type.Optional(Ref), consolidation: Type.Optional(Ref) }),
   storage: Type.Object({ adapter: Type.String() }),
   secrets: Type.Object({ adapter: Type.String() }),

@@ -25,6 +25,7 @@ Commands:
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
   console.log(`japa is running (${socketPath(home)})`);
+  for (const e of d.status().errors) console.error(`${e.name}: ${e.error}`);
   const stop = () => void d.close();
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
@@ -62,8 +63,8 @@ async function rollback(home: string): Promise<void> {
 }
 
 async function safeMode(home: string): Promise<void> {
-  enterSafeMode(home, { defaultAdapters: process.argv.includes("--default-adapters") });
-  console.log("Restored the last working setup. Start the daemon with: japa daemon");
+  const restored = enterSafeMode(home, { defaultAdapters: process.argv.includes("--default-adapters") });
+  console.log(restored === undefined ? "Already at the last working setup." : "Restored the last working setup. Start the daemon with: japa daemon");
 }
 
 const commands: Record<string, (home: string) => Promise<void>> = {

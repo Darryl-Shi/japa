@@ -245,10 +245,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     if (settings.models.consolidation !== undefined) checkModel(models, settings.models.consolidation);
 
     const { dir } = settings.secrets;
-    const env = createEnvDispatcher(environments, [
-      join(home, "secrets"),
-      ...(typeof dir === "string" ? [dir.replace(/^~/, homedir())] : []),
-    ]);
+    const secretsDirs = [join(home, "secrets"), ...(typeof dir === "string" ? [dir.replace(/^~/, homedir())] : [])];
+    const keyError = await missingKey(models, model.provider, secretsDirs.at(-1)!);
+    if (keyError !== undefined) rt.errors.push({ name: "models", error: keyError });
+    const env = createEnvDispatcher(environments, secretsDirs);
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     registry.install(cos);
@@ -286,6 +286,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     };
     const timer = setInterval(() => checkConsolidation().catch(() => {}), 60_000).unref();
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
+    safety.scheduleGood(); // a pending tag doesn't survive a restart
 
     return {
       harness: opened,
@@ -342,6 +343,20 @@ async function withSafeModeHint<T>(open: () => Promise<T>): Promise<T> {
   } catch (error) {
     throw new Error(`${message(error)} — run "japa safe-mode --default-adapters" to restore the defaults.`, { cause: error });
   }
+}
+
+/**
+ * The error for a `provider` without credentials, naming its API key env var (the first `*_API_KEY` its auth
+ * looks up) and its file in `secretsDir`; undefined when it has credentials.
+ */
+export async function missingKey(models: Models, provider: string, secretsDir: string): Promise<string | undefined> {
+  if ((await models.checkAuth(provider)) !== undefined) return undefined;
+  const asked: string[] = [];
+  const ctx = { env: async (name: string) => void asked.push(name), fileExists: async () => false };
+  await models.getProvider(provider)?.auth.apiKey?.resolve({ ctx, signal: new AbortController().signal }).catch(() => {});
+  const envVar = asked.find((name) => name.endsWith("_API_KEY"));
+  const file = join(secretsDir, `${provider}.apiKey`);
+  return `No API key for ${provider}. ${envVar === undefined ? "Write it" : `Set ${envVar} or write it`} to ${file}, then restart.`;
 }
 
 function resolveCosModel(settings: Settings, models: Models, home: string): ModelRef {
