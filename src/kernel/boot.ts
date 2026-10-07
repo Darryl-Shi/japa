@@ -1,10 +1,21 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type Conversation, createRegistry, Harness, type ModelRef, type Storage } from "@earendil-works/pi-durable";
+import {
+  type Conversation,
+  createRegistry,
+  defineExtension,
+  Harness,
+  type ModelRef,
+  ROOT_CONVERSATION_ID,
+  type Storage,
+  type ToolRegistration,
+  watchEvents,
+} from "@earendil-works/pi-durable";
 import { createModels, type Models } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ACTIVATION_ORDER,
   CORE_CONTRACTS,
   type Dispose,
   type EnvironmentAdapter,
@@ -16,7 +27,7 @@ import {
 import { cosExtension, ensureRoot } from "./cos.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
-import { discoverExtensions, linkSdk, loadExtensions } from "./loader.ts";
+import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { loadSettings, type Settings } from "./settings.ts";
 
@@ -37,12 +48,13 @@ export type Daemon = {
   close(): Promise<void>;
 };
 
-/** Boots japa in `home`: opens storage, registers providers, ensures the CoS root conversation, resumes work. */
+/** Boots japa in `home`: opens storage, activates contracts, ensures the CoS root conversation, resumes work. */
 export async function boot(options: BootOptions): Promise<Daemon> {
   const { home } = options;
   mkdirSync(home, { recursive: true });
   const release = acquireLock(home);
-  const activations: Dispose[] = [];
+  const activations: Dispose[] = []; // provider and environment: disposed after the harness closes
+  const runtime: Dispose[] = []; // the other contracts: disposed before it closes
   let storage: Storage | undefined;
   let harness: Harness | undefined;
 
@@ -54,6 +66,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const dirs = options.extensionDirs ?? [join(packageRoot, "extensions"), join(home, "extensions")];
     const loaded = await loadExtensions(discoverExtensions(dirs), contracts);
     const extensions = withOverrides(loaded.extensions, options.extensions ?? []);
+    const defined = extensions.flatMap((e) => e.contracts ?? []);
+    for (const c of defined) contracts.set(c.name, c);
+    const order = ACTIVATION_ORDER.flatMap((name) => (name === "tool" ? [name, ...defined.map((c) => c.name)] : name));
 
     await adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(settings.secrets, { home });
     storage = await adapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, {
@@ -62,14 +77,61 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     const models = createModels();
     const environments = new Map<string, EnvironmentAdapter>();
-    // Surface and trigger contexts are not built yet: nothing activates those contracts.
-    const kernel = { home, models, environments } as Omit<KernelContext, "extension">;
-    const activate = async (contractName: string) => {
-      const contract = contracts.get(contractName)!;
+    const errors = [...loaded.errors];
+    const status = (): Status => ({
+      model,
+      extensions: extensions.map((e) => ({
+        name: e.name,
+        summary: e.summary,
+        provides: Object.keys(e.provides ?? {}),
+      })),
+      errors,
+    });
+    // `root` and `opened` are set before any surface or trigger starts.
+    const kernel = (extension: string): KernelContext => ({
+      home,
+      extension,
+      models,
+      environments,
+      surface: {
+        home,
+        root: {
+          submit: async (text, mode) => {
+            await root.submit({ type: "input", content: text, whenBusy: mode ?? "followUp" }, ctx);
+          },
+          abort: () => root.abort(ctx),
+          events: async (listener) => {
+            const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
+            stream.start(async (events) => listener(events));
+            return {
+              snapshot: stream.snapshot,
+              stop: async () => {
+                await stream.stop();
+              },
+            };
+          },
+        },
+        status,
+      },
+      trigger: {
+        home,
+        emit: async ({ key, text }) => {
+          const requestId = `trigger:${extension}:${key}`;
+          await root.submit({ type: "input", content: `[${extension}] ${text}`, requestId }, ctx);
+        },
+      },
+    });
+    const activate = async (name: string) => {
+      const contract = contracts.get(name)!;
+      const disposers = name === "provider" || name === "environment" ? activations : runtime;
       for (const e of extensions) {
-        for (const c of e.provides?.[contractName] ?? []) {
-          const dispose = await contract.activate?.(c, { ...kernel, extension: e.name });
-          if (dispose) activations.push(dispose);
+        for (const c of e.provides?.[name] ?? []) {
+          try {
+            const dispose = await contract.activate?.(c, kernel(e.name));
+            if (dispose) disposers.push(dispose);
+          } catch (err) {
+            errors.push({ name: e.name, error: `${name}: ${message(err)}` });
+          }
         }
       }
     };
@@ -79,28 +141,30 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     const registry = createRegistry();
     harness = await Harness.open(storage, { models, registry, env: createEnvDispatcher(environments) }, ctx);
+    const opened = harness;
     registry.install(cosExtension());
+    for (const e of extensions) {
+      if (e.provides?.tool || e.durable) {
+        const tools = e.provides?.tool as ToolRegistration[] | undefined;
+        registry.install(defineExtension({ name: e.name, tools, ...e.durable }));
+      }
+    }
     const root = await ensureRoot(harness, model, ctx);
-    await activate("environment");
+    for (const name of order) if (name !== "provider") await activate(name);
     harness.resume();
 
-    const opened = harness;
     return {
       harness: opened,
       root,
-      status: () => ({
-        model,
-        extensions: extensions.map((e) => ({
-          name: e.name,
-          summary: e.summary,
-          provides: Object.keys(e.provides ?? {}),
-        })),
-        errors: loaded.errors,
-      }),
+      status,
       close: async () => {
-        await disposeAll(activations);
-        await opened.close(ctx);
-        release();
+        try {
+          await disposeAll(runtime);
+          await opened.close(ctx);
+          await disposeAll(activations);
+        } finally {
+          release();
+        }
       },
     };
   } catch (error) {

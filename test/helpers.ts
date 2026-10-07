@@ -3,10 +3,11 @@ import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 
-const REPO_EXTENSIONS = new URL("../extensions", import.meta.url).pathname;
+const REPO_EXTENSIONS = fileURLToPath(new URL("../extensions", import.meta.url));
 
 /** Creates a temp `japa` home dir; writes `settings.json` when `settings` is given. */
 export function tempHome(settings?: object): string {

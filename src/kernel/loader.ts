@@ -20,7 +20,8 @@ export function discoverExtensions(dirs: string[]): FoundExtension[] {
   return [...found].sort(([a], [b]) => a.localeCompare(b)).map(([name, file]) => ({ name, file }));
 }
 
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+/** The message of a thrown value. */
+export const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 const isContract = (c: unknown) =>
   typeof c === "object" &&
