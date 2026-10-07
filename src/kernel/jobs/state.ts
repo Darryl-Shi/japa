@@ -56,11 +56,13 @@ function cut(text: string): string {
   return text.length > 120 ? `${text.slice(0, 119)}…` : text;
 }
 
-export function board(jobs: Record<string, Job>): string | undefined {
+/** Active jobs, and finished ones updated after `since`. */
+export function board(jobs: Record<string, Job>, since = Infinity): string | undefined {
+  const active = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
   const lines = byId(jobs)
-    .filter((j) => j.status === "queued" || j.status === "running" || j.status === "needs_input")
+    .filter((j) => active(j) || j.updatedAt > since)
     .map((j) => {
-      const detail = j.status === "running" ? j.progress : j.status === "needs_input" ? j.result : undefined;
+      const detail = j.status === "running" ? j.progress : j.status === "queued" ? undefined : j.result;
       return `- ${j.id} "${j.title}" ${j.status}${detail ? `: ${cut(detail)}` : ""}`;
     });
   return lines.length ? lines.join("\n") : undefined;

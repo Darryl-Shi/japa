@@ -32,6 +32,7 @@ import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
+import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { loadSettings, type Settings } from "./settings.ts";
@@ -162,7 +163,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const env = createEnvDispatcher(environments);
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
-    const cos = cosExtension();
+    const cos = cosExtension(settings);
     registry.install(cos);
     const built = new Map<string, Extension>();
     for (const e of extensions) {
@@ -180,6 +181,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const root = await ensureRoot(harness, model, ctx);
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
+      await tx.doc(MemoryDoc, root.id);
     }, ctx);
     // Profiles need the activated environments; pending job tasks resume once `japa-jobs` is installed.
     const installJobs = () => {

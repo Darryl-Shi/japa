@@ -51,3 +51,8 @@ test("board lists active jobs and truncates their text", () => {
     [`- 2 "t2" running: ${"x".repeat(119)}…`, '- 3 "t3" queued', '- 10 "t10" needs_input: which branch?'].join("\n"),
   );
 });
+
+test("board also lists jobs finished since the given time", () => {
+  const jobs = jobsOf(job(1, "done", { result: "ok" }), job(5, "failed", { result: "boom" }), job(6, "cancelled"));
+  expect(board(jobs, 4)).toBe(['- 5 "t5" failed: boom', '- 6 "t6" cancelled'].join("\n"));
+});
