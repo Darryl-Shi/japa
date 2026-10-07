@@ -39,6 +39,13 @@ test("unknown model is one clear error", async () => {
   );
 });
 
+test("unknown consolidation model is one clear error", async () => {
+  const kit = testKit();
+  const models = { cos: kit.model, consolidation: { provider: "faux", modelId: "nope" } };
+  const home = tempHome({ storage: { adapter: "memory" }, models });
+  await expect(boot({ home, extensions: [kit.extension] })).rejects.toThrow("Unknown model faux/nope");
+});
+
 test("missing adapters are clear errors", async () => {
   const kit = testKit();
   const extensions = [kit.extension];

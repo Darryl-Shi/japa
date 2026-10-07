@@ -159,6 +159,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     await activate("provider");
     const model = resolveCosModel(settings, models, home);
     if (settings.models.worker !== undefined) checkModel(models, settings.models.worker);
+    if (settings.models.consolidation !== undefined) checkModel(models, settings.models.consolidation);
 
     const registry = createRegistry();
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.

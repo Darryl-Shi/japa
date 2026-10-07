@@ -7,7 +7,6 @@ import {
   ResetEntry,
   ROOT_CONVERSATION_ID,
   type TaskId,
-  type Tx,
 } from "@earendil-works/pi-durable";
 import { line } from "../jobs/cos.ts";
 import { BACKGROUND } from "../jobs/run.ts";
@@ -77,10 +76,6 @@ export function consolidation({ models, settings }: { models: Models; settings: 
     return answer.content.find((c) => c.type === "toolCall")?.arguments as T | undefined;
   }
 
-  async function finish(tx: Tx) {
-    delete (await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID)).consolidating;
-  }
-
   const Consolidate = defineTask<null, { phase: "consolidate" }, null>({
     name: "japa.consolidate",
     version: 1,
@@ -122,11 +117,9 @@ export function consolidation({ models, settings }: { models: Models; settings: 
         }
         // One commit checks that the root is still idle and unchanged, saves the memory and resets the context.
         await runtime.commit(async (tx) => {
-          await finish(tx);
           const busy = (await tx.doc(LiveDoc, ROOT_CONVERSATION_ID)).run !== undefined;
           const latest = (await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, 1)).items[0]?.id;
           if (saved !== undefined && !busy && latest === head) {
-            delete memory.consolidating;
             memory.episodes.push({ id: String(memory.nextId++), at: now, text: saved.episode });
             memory.previousResetAt = memory.lastResetAt ?? 0;
             memory.lastResetAt = now;
@@ -139,18 +132,18 @@ export function consolidation({ models, settings }: { models: Models; settings: 
       },
     },
     abort: (_task, runtime, context) =>
-      runtime.commit(async (tx) => {
-        await finish(tx);
-        return { status: "terminal", outcome: { status: "aborted" } };
-      }, context),
+      runtime.commit(async () => ({ status: "terminal", outcome: { status: "aborted" } }), context),
   });
 
   /** Starts `Consolidate` on `root` unless one is live; returns its id. */
   function startConsolidation(root: Conversation): Promise<TaskId> {
     return root.commit(async (tx) => {
       const memory = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
-      memory.consolidating ??= await tx.createTask(Consolidate, null, BACKGROUND);
-      return memory.consolidating;
+      const last = memory.consolidating && (await tx.task(memory.consolidating));
+      if (!last || last.state.status === "terminal") {
+        memory.consolidating = await tx.createTask(Consolidate, null, BACKGROUND);
+      }
+      return memory.consolidating!;
     }, ctx);
   }
 

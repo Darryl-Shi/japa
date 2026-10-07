@@ -92,7 +92,7 @@ test("a consolidation overtaken by new messages is discarded", async () => {
   answer.release();
   await done;
 
-  expect(await memory(daemon)).toEqual(before);
+  expect({ ...(await memory(daemon)), consolidating: undefined }).toEqual(before);
   expect(await texts(daemon.root, "user")).toEqual(["hello", "one more thing"]);
   await daemon.close();
 });
@@ -152,6 +152,17 @@ test("facts over the cap are merged", async () => {
   );
   expect(prompts).toEqual(["You", "Merge"]);
   expect(await factTexts(daemon)).toEqual(["Ada lives in Oslo", "Ada has two cats", "Ada is sporty and likes tea"]);
+  await daemon.close();
+});
+
+test("a consolidation that faults does not block the next one", async () => {
+  let calls = 0;
+  // `save` without its fields makes the phase throw, which faults the task
+  const { daemon } = await consolidated(() =>
+    calls++ === 0 ? save({}) : save(facts({ op: "add", text: "Ada likes tea" })),
+  );
+  await daemon.consolidate();
+  expect(await factTexts(daemon)).toEqual(["Ada likes tea"]);
   await daemon.close();
 });
 

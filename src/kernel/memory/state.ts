@@ -11,7 +11,7 @@ export type Memory = {
   episodes: Episode[];
   lastResetAt?: number;
   previousResetAt?: number; // the board lists jobs finished since then: their reports left the window at the last reset
-  consolidating?: TaskId; // the live `Consolidate` task
+  consolidating?: TaskId; // the latest `Consolidate` task, live unless terminal
 };
 export type Limits = { maxFacts: number; maxTokens: number };
 
