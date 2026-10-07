@@ -50,6 +50,11 @@ test("a worker naming an unknown tool fails", async () => {
   expect(await check("worker", "scout", home, home)).toEqual([`unknown tool "fly"`]);
 });
 
+test("a worker whose name does not match its file fails", async () => {
+  const home = staged({ "workers/scout.md": "---\nname: other\ndescription: Looks around\ntools: [read]\n---\nLook." });
+  expect(await check("worker", "scout", home, home)).toEqual([`name "other" must match the file name "scout"`]);
+});
+
 test("a good worker passes", async () => {
   const home = staged({
     "skills/notes/SKILL.md": "---\nname: notes\ndescription: Takes notes\n---\nBody",

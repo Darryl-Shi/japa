@@ -57,6 +57,7 @@ async function checkWorker(name: string, dir: string, home: string): Promise<str
   } catch (error) {
     return [message(error)];
   }
+  if (profile.name !== name) return [`name "${profile.name}" must match the file name "${name}"`];
   const found = discoverExtensions([packaged, join(dir, "extensions")]);
   const { extensions } = await loadExtensions(found, contracts);
   const environments = extensions.flatMap((e) => (e.provides?.environment ?? []) as EnvironmentAdapter[]);

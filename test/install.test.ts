@@ -80,6 +80,17 @@ test("a staged skill installs, and undo removes it", async () => {
   await daemon.close();
 });
 
+test("undoing an install that a later install changed is refused plainly", async () => {
+  const { daemon, faux, home } = await bootTest();
+  stage(home, "skills/s/SKILL.md", "---\nname: s\ndescription: Does s\n---\nDo s.");
+  await tool(daemon, faux, "install", { kind: "skill", name: "s" });
+  stage(home, "skills/s/SKILL.md", "---\nname: s\ndescription: Does s better\n---\nDo s.");
+  await tool(daemon, faux, "install", { kind: "skill", name: "s" });
+  expect(await tool(daemon, faux, "change_undo", { id: "1" })).toMatch(/^Not undone: /);
+  expect(readFileSync(join(home, "skills", "s", "SKILL.md"), "utf8")).toContain("Does s better");
+  await daemon.close();
+});
+
 test("a skill that fails its check is not installed", async () => {
   const { daemon, faux, home } = await bootTest();
   stage(home, "skills/s/SKILL.md", "---\nname: other\ndescription: Does s\n---\nDo s.");

@@ -100,7 +100,11 @@ export function settingsTools(
       const change = changes.find((c) => c.id === id);
       if (change === undefined) return reply(`No change ${id}.`);
       if (change.undo.commits.length > 0) {
-        revert(home, change.undo.commits);
+        try {
+          revert(home, change.undo.commits);
+        } catch (error) {
+          return reply(`Not undone: ${message(error)}`);
+        }
         await reconcile();
       }
       const { configOps } = change.undo;
