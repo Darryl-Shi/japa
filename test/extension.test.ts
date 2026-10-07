@@ -2,7 +2,7 @@ import { defineTool } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import { expect, test } from "vitest";
 import { CORE_CONTRACTS } from "../src/kernel/contracts.ts";
-import { defineJapaExtension, validateExtension } from "../src/kernel/extension.ts";
+import { defineJapaExtension, type JapaExtension, validateExtension } from "../src/kernel/extension.ts";
 
 const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
 const tool = defineTool({ name: "t", description: "d", parameters: Type.Object({}), execute: async () => ({}) });
@@ -48,6 +48,16 @@ test("all seven core contracts exist", () => {
 
 test("name must be kebab-case", () => {
   expect(validateExtension({ name: "Bad_Name", summary: "s" }, contracts)).toContain("name must be kebab-case");
+});
+
+test("name is required", () => {
+  const e = { summary: "s" } as unknown as JapaExtension;
+  expect(validateExtension(e, contracts)).toContain("name must be kebab-case");
+});
+
+test("a non-array provides entry is rejected", () => {
+  const e = { name: "x", summary: "s", provides: { surface: {} } } as unknown as JapaExtension;
+  expect(validateExtension(e, contracts)).toContain("surface: must be an array");
 });
 
 test("defineJapaExtension returns its argument unchanged", () => {

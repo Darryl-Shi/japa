@@ -24,7 +24,7 @@ const KEBAB_CASE = /^[a-z][a-z0-9-]*$/;
 export function validateExtension(e: JapaExtension, contracts: ReadonlyMap<string, Contract>): string[] {
   const errors: string[] = [];
 
-  if (!KEBAB_CASE.test(e.name)) errors.push("name must be kebab-case");
+  if (typeof e.name !== "string" || !KEBAB_CASE.test(e.name)) errors.push("name must be kebab-case");
   if (!e.summary) errors.push("summary is required");
 
   const tools = e.provides?.tool;
@@ -37,6 +37,10 @@ export function validateExtension(e: JapaExtension, contracts: ReadonlyMap<strin
     const contract = contracts.get(name);
     if (!contract) {
       errors.push(`unknown contract "${name}"`);
+      continue;
+    }
+    if (!Array.isArray(contributions)) {
+      errors.push(`${name}: must be an array`);
       continue;
     }
     contributions.forEach((c, i) => {

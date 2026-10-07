@@ -1,6 +1,6 @@
 import type { AgentEvent, JsonObject, ModelRef, SnapshotEvent, Storage } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { Models, MutableModels, Provider } from "@earendil-works/pi-ai";
+import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 
 /** Releases what an `activate()` set up. */
 export type Dispose = () => void | Promise<void>;
@@ -52,7 +52,7 @@ export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispos
 export type KernelContext = {
   home: string;
   extension: string;
-  models: Models;
+  models: MutableModels;
   environments: Map<string, EnvironmentAdapter>;
   surface: SurfaceContext;
   trigger: TriggerContext;
@@ -88,10 +88,9 @@ export const CORE_CONTRACTS: Contract[] = [
     validate: (c) => requireFields(c, { id: "string" }),
     activate: async (c, ctx) => {
       const provider = c as Provider;
-      const models = ctx.models as MutableModels;
-      models.setProvider(provider);
+      ctx.models.setProvider(provider);
       return () => {
-        models.deleteProvider(provider.id);
+        ctx.models.deleteProvider(provider.id);
       };
     },
   },
