@@ -31,6 +31,17 @@ yet do.
 - **General purpose.** Coding and knowledge/personal work are both just
   extensions and content; the core is domain-agnostic.
 
+### Code principles
+
+- **Simple, minimal, readable** over clever or general. The kernel should be
+  small enough to read in one sitting.
+- Small files with one purpose each; plain functions and data over class
+  hierarchies and frameworks.
+- No abstraction without a second real use; no speculative options.
+- Lean on Pi Durable instead of re-implementing what it already does.
+- Names and short comments explain *why*; code explains *what*.
+- Few dependencies: Pi Durable, pi-ai, pi-tui, TypeBox, vitest.
+
 ### Non-goals (v1)
 
 Messaging surfaces (Slack/Telegram/iMessage), multiple users, out-of-process
