@@ -5,6 +5,7 @@ import {
   defineExtension,
   type Extension,
   Harness,
+  LiveDoc,
   type ModelRef,
   ROOT_CONVERSATION_ID,
   type Storage,
@@ -32,8 +33,9 @@ import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
-import { consolidation } from "./memory/consolidate.ts";
-import { MemoryDoc } from "./memory/state.ts";
+import { consolidation, windowText } from "./memory/consolidate.ts";
+import { estimateTokens, MemoryDoc } from "./memory/state.ts";
+import { shouldConsolidate } from "./memory/trigger.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { loadSettings, type Settings } from "./settings.ts";
@@ -55,6 +57,8 @@ export type Daemon = {
   status(): Status;
   /** Consolidates the CoS's context and waits for it. */
   consolidate(): Promise<void>;
+  /** Consolidates when the CoS is idle and its live window is full or stale. */
+  checkConsolidation(now?: number): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -210,14 +214,26 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     }
     harness.resume();
 
+    const consolidate = async () => {
+      await opened.waitForTask(await startConsolidation(root), ctx);
+    };
+    const checkConsolidation = async (now = Date.now()) => {
+      const busy = (await opened.snapshot(LiveDoc, root.id, ctx))?.run !== undefined;
+      const { messages } = await root.context(ctx);
+      const windowTokens = estimateTokens(windowText(messages));
+      const lastUserAt = messages.findLast((m) => m.role === "user")?.timestamp;
+      if (shouldConsolidate({ busy, windowTokens, lastUserAt, now }, settings.context)) await consolidate();
+    };
+    const timer = setInterval(() => checkConsolidation().catch(() => {}), 60_000).unref();
+
     return {
       harness: opened,
       root,
       status,
-      consolidate: async () => {
-        await opened.waitForTask(await startConsolidation(root), ctx);
-      },
+      consolidate,
+      checkConsolidation,
       close: async () => {
+        clearInterval(timer);
         try {
           await disposeAll(runtime);
           await opened.close(ctx);

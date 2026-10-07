@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type Models, type TSchema, type Tool, Type } from "@earendil-works/pi-ai";
+import { type Message, type Models, type TSchema, type Tool, Type } from "@earendil-works/pi-ai";
 import {
   type Conversation,
   defineTask,
@@ -60,6 +60,13 @@ const saveFacts = saveTool({ facts: factOps });
 
 type Saved = { facts: FactOp[]; loops: LoopOp[]; episode: string; handoff: string };
 
+/** The text of a context's live window: its non-system messages, one per line. */
+export const windowText = (messages: readonly Message[]) =>
+  messages
+    .filter((m) => m.role !== "system")
+    .map(line)
+    .join("\n");
+
 const listed = (items: { id: string; text: string }[]) => items.map((i) => `${i.id}: ${i.text}`).join("\n") || "(none)";
 
 /**
@@ -86,11 +93,7 @@ export function consolidation({ models, settings }: { models: Models; settings: 
         const head = view.entries.at(-1)?.id;
         const memory = structuredClone((await runtime.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context))!) as Memory;
         const now = runtime.now();
-        const window = view.messages
-          .filter((m) => m.role !== "system")
-          .map(line)
-          .join("\n");
-        const text = `Conversation since the last reset:\n${window}\n\nFacts:\n${listed(memory.facts)}\n\nOpen loops:\n${listed(memory.loops)}`;
+        const text = `Conversation since the last reset:\n${windowText(view.messages)}\n\nFacts:\n${listed(memory.facts)}\n\nOpen loops:\n${listed(memory.loops)}`;
         const saved = await ask<Saved>(REFLECT, text, save, runtime.signal);
         if (saved !== undefined) {
           const { tooLong } = applyFactOps(memory, saved.facts, now);

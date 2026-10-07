@@ -12,6 +12,7 @@ import { type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durabl
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
+import { shouldConsolidate } from "../src/kernel/memory/trigger.ts";
 import { bootTest, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, reported, say, textOf, texts } from "./jobs-helpers.ts";
 
@@ -183,5 +184,34 @@ test("a job finished before a reset stays on the board until the next reset", as
   await daemon.consolidate();
   await ask(daemon, "next");
   expect(systemOf(requests.at(-1)!)).not.toMatch(/"Report"/);
+  await daemon.close();
+});
+
+const HOUR = 3_600_000;
+test.each([
+  ["busy", { busy: true, windowTokens: 30000, lastUserAt: 0, now: 3 * HOUR }, false],
+  ["an empty window", { busy: false, windowTokens: 0, lastUserAt: 0, now: 3 * HOUR }, false],
+  ["over the token limit", { busy: false, windowTokens: 20001, lastUserAt: 0, now: 0 }, true],
+  ["idle past the hours limit", { busy: false, windowTokens: 10, lastUserAt: 0, now: 2 * HOUR + 1 }, true],
+  ["neither", { busy: false, windowTokens: 10, lastUserAt: 0, now: 2 * HOUR }, false],
+])("shouldConsolidate: %s", (_name, inputs, expected) => {
+  expect(shouldConsolidate(inputs, { resetTokens: 20000, idleResetHours: 2, toolResultTokens: 2000 })).toBe(expected);
+});
+
+test("checkConsolidation consolidates a window over the token limit", async () => {
+  const { daemon, faux } = await bootTest({ context: { resetTokens: 10 } });
+  route(faux, (system) => (system.startsWith("You consolidate") ? save(facts()) : undefined));
+  await ask(daemon, "hello, here is a fairly long message");
+  await daemon.checkConsolidation();
+  expect((await memory(daemon)).episodes).toHaveLength(1);
+  await daemon.close();
+});
+
+test("checkConsolidation leaves a fresh exchange alone", async () => {
+  const { daemon, faux } = await bootTest();
+  route(faux, (system) => (system.startsWith("You consolidate") ? save(facts()) : undefined));
+  await ask(daemon, "hello");
+  await daemon.checkConsolidation();
+  expect((await memory(daemon)).episodes).toHaveLength(0);
   await daemon.close();
 });
