@@ -70,9 +70,8 @@ test("the root sees all skills; a job sees only its profile's", async () => {
   );
   await ask(daemon, "start");
   await waitFor(async () => (await reported(daemon)).length > 0);
-  expect(sections.start).toBe(
-    ["- b: Skill B", "- a: Skill A", "Load one with skill_read when it applies."].join("\n"),
-  );
+  // After the packaged skills.
+  expect(sections.start).toMatch(/\n- b: Skill B\n- a: Skill A\nLoad one with skill_read when it applies\.$/);
   expect(sections.brief).toBe(["- a: Skill A", "Load one with skill_read when it applies."].join("\n"));
   expect((await jobs(daemon))["1"]!.status).toBe("done");
   await daemon.close();
@@ -87,7 +86,7 @@ test("skill_read returns the body or a file inside the skill, and refuses others
     "Do A.",
     "Reference.",
     "Not part of skill a.",
-    'No skill "nope". Skills: b, a.',
+    expect.stringMatching(/^No skill "nope"\. Skills: .*, b, a\.$/),
   ]);
   await daemon.close();
 });

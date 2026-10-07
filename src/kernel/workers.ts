@@ -3,15 +3,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import type { Models } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel, Models } from "@earendil-works/pi-ai";
 import { KEBAB_CASE } from "./extension.ts";
 import { parseFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
+
+// pi-ai exports only the `ModelThinkingLevel` type, not a list.
+const THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export type WorkerProfile = {
   name: string;
   description: string;
   model?: ModelRef;
-  thinking?: string;
+  thinking?: ModelThinkingLevel;
   environment: string;
   tools: string[];
   extensions?: string[]; // undefined = all
@@ -56,6 +59,9 @@ function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; bod
   if (model !== undefined && (typeof model !== "object" || Array.isArray(model) || !model.provider || !model.modelId)) {
     throw new Error("model must be { provider, modelId }");
   }
+  if (thinking !== undefined && !THINKING_LEVELS.includes(thinking as ModelThinkingLevel)) {
+    throw new Error(`thinking must be one of ${THINKING_LEVELS.join(", ")}`);
+  }
   for (const [key, value] of Object.entries({ tools, extensions, skills })) {
     if (value !== undefined && !Array.isArray(value)) throw new Error(`${key} must be a list`);
   }
@@ -63,7 +69,7 @@ function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; bod
     name,
     description,
     ...(model && { model: { provider: model.provider, modelId: model.modelId } }),
-    ...(thinking !== undefined && { thinking: thinking as string }),
+    ...(thinking !== undefined && { thinking: thinking as ModelThinkingLevel }),
     environment: (environment as string | undefined) ?? "local",
     tools: (tools as string[] | undefined) ?? [],
     ...(extensions && { extensions: extensions as string[] }),

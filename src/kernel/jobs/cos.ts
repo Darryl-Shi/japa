@@ -1,4 +1,4 @@
-import { type Message, StringEnum, Type, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { type Message, StringEnum, Type } from "@earendil-works/pi-ai";
 import {
   configure,
   defineExtension,
@@ -36,7 +36,7 @@ export type JobsOptions = {
 function agentOf({ settings, extensions, skills, safety }: JobsOptions, profile: WorkerProfile) {
   return {
     model: profile.model ?? settings.models.worker ?? settings.models.cos,
-    thinkingLevel: profile.thinking as ModelThinkingLevel | undefined,
+    thinkingLevel: profile.thinking,
     cwd: profile.cwd,
     instructions: profile.instructions,
     extensions: [

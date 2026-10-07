@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parseFrontmatter } from "../src/kernel/frontmatter.ts";
 import { loadWorkers } from "../src/kernel/workers.ts";
+import { bootTest } from "./helpers.ts";
 
 function dirWith(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "japa-workers-"));
@@ -74,6 +75,26 @@ test("cwd expands a leading ~", () => {
 test("cwd expands a leading $JAPA_HOME", () => {
   const dir = dirWith({ "g.md": "---\nname: g\ndescription: d\ncwd: $JAPA_HOME/.staging\n---\n" });
   expect(loadWorkers([dir], "/h").profiles.get("g")?.cwd).toBe("/h/.staging");
+});
+
+test("thinking must be a pi-ai thinking level", () => {
+  const dir = dirWith({
+    "bad.md": "---\nname: bad\ndescription: d\nthinking: huge\n---\n",
+    "good.md": "---\nname: good\ndescription: d\nthinking: high\n---\n",
+  });
+  const { profiles, errors } = loadWorkers([dir], "/h");
+  expect(profiles.get("good")?.thinking).toBe("high");
+  expect(errors).toEqual([
+    { name: "worker:bad.md", error: "thinking must be one of off, minimal, low, medium, high, xhigh, max" },
+  ]);
+});
+
+test("the shipped coder and researcher profiles pass at boot", async () => {
+  const { daemon } = await bootTest();
+  expect(daemon.status().errors.filter((e) => e.name.startsWith("worker:"))).toEqual([]);
+  expect(daemon.capabilities()).toContain("- coder: Writes and changes code and files on this computer, and runs commands.");
+  expect(daemon.capabilities()).toContain("- researcher: Researches a question on the web and writes a sourced report.");
+  await daemon.close();
 });
 
 test("the shipped general and builder profiles load", () => {
