@@ -3,6 +3,7 @@ import { runChat } from "../../extensions/gateway/chat.ts";
 import { connect } from "../../extensions/gateway/client.ts";
 import { socketPath } from "../../extensions/gateway/protocol.ts";
 import { boot } from "../kernel/boot.ts";
+import { check, CHECK_KINDS } from "../kernel/check.ts";
 import { japaHome } from "../kernel/settings.ts";
 import type { Status } from "../kernel/contracts.ts";
 
@@ -11,7 +12,9 @@ const USAGE = `Usage: japa <command>
 Commands:
   daemon   Run japa in the foreground
   chat     Chat with japa
-  status   Show the model, extensions, and errors`;
+  status   Show the model, extensions, and errors
+  check <skill|worker|extension> <name>
+           Check a skill, worker profile or extension in the current directory`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
@@ -35,7 +38,16 @@ async function status(home: string): Promise<void> {
   for (const e of s.errors) console.log(`  ${e.name}: ${e.error}`);
 }
 
-const commands: Record<string, (home: string) => Promise<void>> = { daemon, chat: runChat, status };
+async function checkCommand(home: string): Promise<void> {
+  const [kind, name] = process.argv.slice(3);
+  const known = CHECK_KINDS.find((k) => k === kind);
+  if (known === undefined || name === undefined) throw new Error("Usage: japa check <skill|worker|extension> <name>");
+  const problems = await check(known, name, process.cwd(), home);
+  console.log(problems.length === 0 ? "ok" : problems.join("\n"));
+  if (problems.length > 0) process.exitCode = 1;
+}
+
+const commands: Record<string, (home: string) => Promise<void>> = { daemon, chat: runChat, status, check: checkCommand };
 const command = commands[process.argv[2]];
 if (command === undefined) {
   console.error(USAGE);

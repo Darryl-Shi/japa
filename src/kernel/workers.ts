@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ModelRef } from "@earendil-works/pi-durable";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+import type { Models } from "@earendil-works/pi-ai";
 import { KEBAB_CASE } from "./extension.ts";
 import { parseFrontmatter, type FrontmatterValue } from "./frontmatter.ts";
 
@@ -32,7 +34,7 @@ export function loadWorkers(dirs: string[], home: string): {
     if (!existsSync(dir)) continue;
     for (const file of readdirSync(dir).filter((f) => f.endsWith(".md"))) {
       try {
-        const profile = toProfile(parseFrontmatter(readFileSync(join(dir, file), "utf8")), home);
+        const profile = readProfile(join(dir, file), home);
         profiles.set(profile.name, profile);
       } catch (error) {
         errors.push({ name: `worker:${file}`, error: error instanceof Error ? error.message : String(error) });
@@ -40,6 +42,11 @@ export function loadWorkers(dirs: string[], home: string): {
     }
   }
   return { profiles, errors };
+}
+
+/** Reads and validates the worker profile in `file`; throws when it is invalid. */
+export function readProfile(file: string, home: string): WorkerProfile {
+  return toProfile(parseFrontmatter(readFileSync(file, "utf8")), home);
 }
 
 function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; body: string }, home: string): WorkerProfile {
@@ -64,4 +71,25 @@ function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; bod
     ...(cwd !== undefined && { cwd: (cwd as string).replace(/^~/, homedir()).replace(/^\$JAPA_HOME/, home) }),
     instructions: body,
   };
+}
+
+/** Why `profile` cannot run here: an unknown model, environment, built-in tool, extension or skill. */
+export function profileError(
+  profile: WorkerProfile,
+  models: Models,
+  environments: ReadonlyMap<string, unknown>,
+  extensions: ReadonlyMap<string, unknown>,
+  skills: ReadonlyMap<string, unknown>,
+): string | undefined {
+  if (profile.model && models.getModel(profile.model.provider, profile.model.modelId) === undefined) {
+    return `unknown model "${profile.model.provider}/${profile.model.modelId}"`;
+  }
+  if (!environments.has(profile.environment)) return `unknown environment "${profile.environment}"`;
+  const tool = profile.tools.find((t) => !CodingTools.tools!.some((builtin) => builtin.name === t));
+  if (tool !== undefined) return `unknown tool "${tool}"`;
+  const extension = profile.extensions?.find((e) => !extensions.has(e));
+  if (extension !== undefined) return `unknown extension "${extension}"`;
+  const skill = profile.skills?.find((s) => !skills.has(s));
+  if (skill !== undefined) return `unknown skill "${skill}"`;
+  return undefined;
 }

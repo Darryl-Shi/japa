@@ -1,11 +1,11 @@
-import { MemoryStorage, type ModelRef } from "@earendil-works/pi-durable";
-import { type FauxProviderHandle, fauxProvider, type RegisterFauxProviderOptions } from "@earendil-works/pi-ai";
+import type { FauxProviderHandle } from "@earendil-works/pi-ai";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
+import { fauxKit } from "../src/kernel/kit.ts";
 
 export const REPO_EXTENSIONS = fileURLToPath(new URL("../extensions", import.meta.url));
 
@@ -18,20 +18,7 @@ export function tempHome(settings?: object): string {
   return home;
 }
 
-/** A faux model provider and in-memory storage, packaged as the extension "test-kit". */
-export function testKit(options?: RegisterFauxProviderOptions): { faux: FauxProviderHandle; extension: JapaExtension; model: ModelRef } {
-  const faux = fauxProvider(options);
-  const extension: JapaExtension = {
-    name: "test-kit",
-    summary: "Faux models and in-memory storage for tests",
-    provides: {
-      storage: [{ name: "memory", open: async () => new MemoryStorage() }],
-      provider: [faux.provider],
-    },
-  };
-  const { provider, id } = faux.getModel();
-  return { faux, extension, model: { provider, modelId: id } };
-}
+export const testKit = fauxKit;
 
 /** Polls `fn` every 20 ms until it returns true; throws `waitFor timed out` after `timeoutMs`. */
 export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 5000): Promise<void> {

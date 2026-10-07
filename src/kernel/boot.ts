@@ -8,6 +8,7 @@ import {
   Harness,
   LiveDoc,
   type ModelRef,
+  type RegistryReader,
   ROOT_CONVERSATION_ID,
   type Storage,
   watchEvents,
@@ -57,7 +58,11 @@ export type BootOptions = {
 export type Daemon = {
   harness: Harness;
   root: Conversation;
+  /** The installed Pi Durable extensions and their tools. */
+  registry: RegistryReader;
   status(): Status;
+  /** The CoS's current capabilities text. */
+  capabilities(): string;
   /** Consolidates the CoS's context and waits for it. */
   consolidate(): Promise<void>;
   /** Consolidates when the CoS is idle and its live window is full or stale. */
@@ -255,7 +260,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     return {
       harness: opened,
       root,
+      registry,
       status,
+      capabilities: () => rt.capabilities,
       consolidate,
       checkConsolidation,
       reconcile: () => rt.reconcile(root),

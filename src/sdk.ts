@@ -5,10 +5,11 @@ export {
   defineTask,
   defineTool,
   hook,
+  ROOT_CONVERSATION_ID,
   section,
   wrapTool,
 } from "@earendil-works/pi-durable";
-export { Type } from "@earendil-works/pi-ai";
+export { StringEnum, Type } from "@earendil-works/pi-ai";
 export { logChange } from "./kernel/changes.ts";
 export { CORE_CONTRACTS } from "./kernel/contracts.ts";
 export type {

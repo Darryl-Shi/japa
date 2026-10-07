@@ -6,7 +6,6 @@ import {
   type Registry,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Models } from "@earendil-works/pi-ai";
 import { cpSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,8 +15,8 @@ import type { JapaExtension } from "./extension.ts";
 import { jobsExtension, type JobsOptions, reconfigureJobs } from "./jobs/cos.ts";
 import { discoverExtensions, type LoadError, loadExtensions, message } from "./loader.ts";
 import type { Settings } from "./settings.ts";
-import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
-import { loadWorkers, type WorkerProfile } from "./workers.ts";
+import { loadSkills, skillsExtension } from "./skills.ts";
+import { loadWorkers, profileError } from "./workers.ts";
 import { dirHash } from "./workspace.ts";
 
 export type Runtime = ReturnType<typeof createRuntime>;
@@ -202,25 +201,4 @@ export function createRuntime(input: {
   }
 
   return runtime;
-}
-
-/** Why `profile` cannot run here: an unknown model, environment, built-in tool, extension or skill. */
-function profileError(
-  profile: WorkerProfile,
-  models: Models,
-  environments: ReadonlyMap<string, EnvironmentAdapter>,
-  extensions: ReadonlyMap<string, Extension>,
-  skills: ReadonlyMap<string, Skill>,
-): string | undefined {
-  if (profile.model && models.getModel(profile.model.provider, profile.model.modelId) === undefined) {
-    return `unknown model "${profile.model.provider}/${profile.model.modelId}"`;
-  }
-  if (!environments.has(profile.environment)) return `unknown environment "${profile.environment}"`;
-  const tool = profile.tools.find((t) => !CodingTools.tools!.some((builtin) => builtin.name === t));
-  if (tool !== undefined) return `unknown tool "${tool}"`;
-  const extension = profile.extensions?.find((e) => !extensions.has(e));
-  if (extension !== undefined) return `unknown extension "${extension}"`;
-  const skill = profile.skills?.find((s) => !skills.has(s));
-  if (skill !== undefined) return `unknown skill "${skill}"`;
-  return undefined;
 }
