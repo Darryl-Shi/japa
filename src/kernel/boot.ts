@@ -4,6 +4,7 @@ import {
   type Conversation,
   createRegistry,
   defineExtension,
+  type EntryId,
   type Extension,
   Harness,
   LiveDoc,
@@ -116,12 +117,14 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           },
           abort: () => root.abort(ctx),
           events: async (listener) => {
-            // A snapshot holds only the active context: prepend the stored history before it.
+            // A snapshot holds only the active context, whose range starts at its head marker's `head`:
+            // prepend the stored history before that range.
             const withHistory = async (e: AgentEvent): Promise<AgentEvent> => {
               const first = e.type === "snapshot" ? e.entries[0] : undefined;
               if (e.type !== "snapshot" || first === undefined) return e;
-              const page = await root.entries({ maxEntryId: first.id }, 201, undefined, ctx);
-              return { ...e, entries: [...page.items.slice(1).toReversed(), ...e.entries] };
+              const maxEntryId = ((first.head ?? first.id) - 1) as EntryId;
+              const page = await root.entries({ maxEntryId }, 200, undefined, ctx);
+              return { ...e, entries: [...page.items.toReversed(), ...e.entries] };
             };
             const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
             listener([await withHistory(stream.snapshot)]);
