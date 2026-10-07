@@ -6,21 +6,33 @@ import {
 } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import lockfile from "proper-lockfile";
+import type { Channel, Dispose } from "./core/contracts.ts";
 import { Host } from "./core/host.ts";
 import { defaultExtensions } from "./defaults.ts";
-import { configureModels } from "./extensions/setup.ts";
+import { configureModels, SetupCancelled } from "./extensions/setup.ts";
 import { AssistantState } from "./extensions/state.ts";
 import { terminalChannel } from "./extensions/terminal.ts";
+import { readTelegramConfig, telegramChannel } from "./extensions/telegram.ts";
+
+type ChannelSession = {
+  channel: Channel;
+  closed: Promise<"exit" | "eof" | "settings">;
+  close?: Dispose;
+};
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.includes("--help")) {
     console.log(
-      "Usage: japa [--safe] [--setup]\n\nFirst launch opens provider login/API-key setup in the interface.\n/settings reopens setup; /exit stops. Pending jobs and wakes resume next time.\n--setup opens settings before starting; --safe skips generated extensions.\nJAPA_HOME defaults to ./.japa when running from source.\nOPENAI_API_KEY / ANTHROPIC_API_KEY and JAPA_MODEL / JAPA_WORKER_MODEL remain supported.",
+      "Usage: japa [--telegram] [--safe] [--setup]\n\nFirst launch opens native provider setup in the selected interface.\n/settings reopens setup; /exit stops the terminal. Pending work resumes next time.\n--telegram uses a private owner chat configured in <JAPA_HOME>/telegram.json\n  ({token, chatId}) or TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID.\n--setup opens settings before starting; --safe skips generated extensions.\nJAPA_HOME defaults to ./.japa when running from source.\nNative provider credentials and JAPA_MODEL / JAPA_WORKER_MODEL remain supported.",
     );
     return;
   }
-  if (args.some((arg) => arg !== "--safe" && arg !== "--setup"))
+  if (
+    args.some(
+      (arg) => arg !== "--safe" && arg !== "--setup" && arg !== "--telegram",
+    )
+  )
     throw new Error("Unknown argument; use --help");
   const home = resolve(process.env.JAPA_HOME ?? ".japa");
   await mkdir(join(home, "workspace"), { recursive: true, mode: 0o700 });
@@ -30,6 +42,8 @@ async function main(): Promise<void> {
     retries: { retries: 6, minTimeout: 2_000, maxTimeout: 2_000 },
   });
   let host: Host | undefined;
+  let session: ChannelSession | undefined;
+  const useTelegram = args.includes("--telegram");
   const controller = new AbortController();
   let interrupt!: () => void;
   const interrupted = new Promise<"exit">((resolve) => {
@@ -43,29 +57,49 @@ async function main(): Promise<void> {
   try {
     let force = args.includes("--setup");
     while (!controller.signal.aborted) {
-      const terminal = terminalChannel();
+      session = useTelegram
+        ? telegramChannel({ home, ...(await readTelegramConfig(home)) })
+        : terminalChannel();
+      const current = session;
+      const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
       const models = await configureModels(
         home,
-        terminal.channel.settings,
-        withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+        current.channel.settings,
+        context,
         { force },
-      );
-      if (controller.signal.aborted || !models) break;
-      host = await Host.open({
-        storage: await openNodeSqliteStorage(join(home, "japa.sqlite")),
-        extensions: defaultExtensions({
-          home,
-          models,
-          channel: terminal.channel,
-          safe: args.includes("--safe"),
-        }),
+      ).catch((error: unknown) => {
+        if (useTelegram && error instanceof SetupCancelled) return undefined;
+        throw error;
       });
-      if (process.stdin.isTTY)
-        console.log(
-          "Japa is ready. /settings for setup; /exit to stop. Workers have full access to this environment.",
-        );
-      const reason = await Promise.race([terminal.closed, interrupted]);
-      if (reason === "eof") {
+      if (controller.signal.aborted) break;
+      if (!models) {
+        if (!useTelegram) break;
+        // Keep setup reachable after logout/cancellation without resuming any
+        // durable work or sending ordinary input to a model.
+        const disconnected = () =>
+          current.channel.settings.notify(
+            "No model is connected. Send /settings to configure a provider.",
+            context,
+          );
+        await disconnected();
+        await current.channel.start(disconnected);
+      } else {
+        host = await Host.open({
+          storage: await openNodeSqliteStorage(join(home, "japa.sqlite")),
+          extensions: defaultExtensions({
+            home,
+            models,
+            channel: current.channel,
+            safe: args.includes("--safe"),
+          }),
+        });
+        if (process.stdin.isTTY || useTelegram)
+          console.log(
+            `Japa is ready on ${useTelegram ? "Telegram" : "the terminal"}. /settings for setup. Workers have full access to this environment.`,
+          );
+      }
+      const reason = await Promise.race([current.closed, interrupted]);
+      if (reason === "eof" && host) {
         const state = await host.harness.snapshot(
           AssistantState,
           BACKGROUND_CONTEXT,
@@ -79,8 +113,10 @@ async function main(): Promise<void> {
           interrupted,
         ]);
       }
-      await host.close();
+      await host?.close();
       host = undefined;
+      await current.close?.();
+      session = undefined;
       if (reason !== "settings") break;
       // Stop ingress/work before prompting for credentials. Durable work resumes afterward.
       force = true;
@@ -93,7 +129,12 @@ async function main(): Promise<void> {
     try {
       await host?.close();
     } finally {
-      await unlock();
+      try {
+        // Settings may have started polling before a Host was ever opened.
+        await session?.close?.();
+      } finally {
+        await unlock();
+      }
     }
   }
 }

@@ -20,7 +20,7 @@ export function terminalSettings(input = stdin, output = stdout): SettingsUI {
       context.abortSignal?.throwIfAborted();
       if (!input.isTTY)
         throw new Error(
-          "Setup needs an interactive terminal. Run japa in a terminal or supply OPENAI_API_KEY / ANTHROPIC_API_KEY.",
+          "Setup needs an interactive terminal. Run japa in a terminal, use --telegram with a configured owner chat, or supply native provider credentials and JAPA_MODEL / JAPA_WORKER_MODEL.",
         );
       while (true) {
         // Enter raw mode before displaying a prompt: a fast paste must not reach

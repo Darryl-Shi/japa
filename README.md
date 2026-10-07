@@ -6,7 +6,7 @@ One root conversation understands the user, delegates work, tracks promises, and
 
 **One TypeScript package. One host process. One SQLite database. Eight replaceable adapters.** No second workflow engine, application web server, or message broker.
 
-This is a working backend foundation, not a finished Dots clone. The current interface is a terminal.
+This is a working backend foundation, not a finished Dots clone. Bundled channels are the terminal and a private, single-owner Telegram bot.
 
 ## Start
 
@@ -20,7 +20,7 @@ From this checkout:
 
 It installs a private app copy and a `japa` launcher, then opens setup when run interactively. Add `~/.local/bin` to your PATH if prompted. It requires no sudo and installs **no background service**.
 
-First-run setup asks for OpenAI or Anthropic login/API-key authentication inside the interface. It chooses model defaults automatically. Credentials are not sent through chat.
+First-run setup offers all native pi-ai providers and the authentication methods each supports. The same settings flow runs in either channel, outside the assistant conversation. Terminal secret input is hidden; Telegram settings replies are visible to Telegram and deleted best-effort, not genuinely hidden.
 
 For development, without installing a separate copy:
 
@@ -33,7 +33,7 @@ Environment credentials remain supported for unattended use:
 
 ```sh
 OPENAI_API_KEY=... npm start
-# Or supply ANTHROPIC_API_KEY.
+# Other native provider credentials work with their corresponding model refs.
 ```
 
 ### Commands
@@ -42,12 +42,19 @@ OPENAI_API_KEY=... npm start
 | ------------------------------ | ----------------------------------------------------------------- |
 | `/settings`                    | Pause the host, edit provider/model settings, then resume         |
 | `/approve <id>` / `/deny <id>` | Resolve a pending approval directly                               |
-| `/exit`                        | Stop cleanly; pending work resumes next launch                    |
+| `/exit`                        | Stop the terminal cleanly; pending work resumes next launch       |
 | `japa --setup`                 | Open settings before starting                                     |
+| `japa --telegram`              | Use the configured private Telegram channel                       |
 | `japa --safe`                  | Skip generated-extension restoration while retaining repair tools |
 | `japa --help`                  | Show startup options                                              |
 
-For source runs, use `npm start -- --setup` or `npm start -- --safe`.
+For source runs, pass flags after `npm start --`, for example `npm start -- --telegram`.
+
+### Telegram
+
+Create a private `<JAPA_HOME>/telegram.json` containing `{ "token": "<BotFather token>", "chatId": "<your positive private chat ID>" }`, with owner-only permissions, then run `japa --telegram`. Alternatively inject `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` privately. Send `/start` to your bot from that account first.
+
+Only the configured private owner can chat or use `/settings`. Setup replies bypass the assistant completely. `/cancel` cancels a settings prompt; `/default` accepts its default. Telegram remains available for setup even after disconnecting all model credentials. This channel supports text, replies, approvals, and shared provider setup—not groups, voice, or attachments. It uses outbound polling, so no public web server is needed. See [Telegram operations](docs/OPERATIONS.md#telegram).
 
 **Workers and generated extensions have the process's full privileges.** Run Japa in a dedicated account/container/VM and give it only credentials it should have. The workspace, tool policy, and extension probe are not sandboxes. Credentials are local plaintext with owner-only file permissions, not an OS keychain.
 
@@ -57,7 +64,7 @@ For source runs, use `npm start -- --setup` or `npm start -- --safe`.
 - **Remembers simply:** a compact, human-editable `MEMORY.md`, maintained through reflection and revision-checked rewrites. No vector store or separate extraction service.
 - **Retrieves past work:** searchable durable job history, without loading the whole history into every model request.
 - **Chooses its own wakes:** durable one-shot follow-ups and reflection, silent by default. Extensions can also wake the chief of staff through an event hook. No fixed heartbeat.
-- **Builds capabilities:** workers can write, check, and activate trusted TypeScript extensions. App integrations are intentionally not bundled; users ask the assistant to build what they need.
+- **Builds capabilities:** workers can write, check, and activate trusted TypeScript extensions. Beyond bundled communication channels and native model providers, app integrations are intentionally not bundled; users ask the assistant to build what they need.
 - **Recovers:** native Pi Durable tasks, conversations, documents, and checkpoints persist across process restart.
 
 ```text
@@ -90,11 +97,12 @@ Set `JAPA_HOME` to reuse the same state when switching launch methods. Do not ru
   MEMORY.md         Compact reflective personal memory
   settings.json     Provider/model selections and installation identity
   credentials.json  API keys or OAuth credentials
+  telegram.json     Optional bot token and private owner chat ID
   workspace/        Worker files and artifacts
   extensions/       Generated sources and executable bundles
 ```
 
-`JAPA_MODEL` and `JAPA_WORKER_MODEL` accept `provider/model` and override saved role selections for that run without replacing them. Defaults are OpenAI `gpt-5.4` / `gpt-5.4-mini`, or Anthropic `claude-sonnet-4-6` for both roles, subject to the native credential-filtered catalog.
+`JAPA_MODEL` and `JAPA_WORKER_MODEL` accept `provider/model` and override saved role selections for that run without replacing them. Defaults are OpenAI `gpt-5.4` / `gpt-5.4-mini`, or Anthropic `claude-sonnet-4-6` for both roles, subject to the native credential-filtered catalog. Other registered providers use an available chat model; choose suitable tool-capable models in `/settings`. Dynamic native catalogs are cached for reopening.
 
 See [operations](docs/OPERATIONS.md) for installation paths, authentication, backups, restoration, safe mode, and troubleshooting.
 
@@ -126,6 +134,6 @@ Tests use deterministic faux models and the real Pi Durable runtime, including S
 - External delivery is at-least-once unless the transport deduplicates. Arbitrary external actions are not made exactly-once by checkpointing.
 - Forgetting changes personalization, not every historical copy. Raw transcripts, job records, and backups remain; this is not secure erasure.
 - Generated code is trusted. Activation recovery cannot undo external actions or migrations, and ordinary runtime errors do not trigger automatic rollback.
-- No web/Telegram channel, user-account authentication layer, voice, attachments, production multi-user isolation, billing, or comprehensive cost/retention policy is included.
+- No web channel, general user-account authentication layer, voice, attachments, production multi-user isolation, billing, or comprehensive cost/retention policy is included. Telegram is restricted to one configured private owner.
 
 Pi Durable is experimental; its dependencies are pinned. Keep the core small and add behavior through extensions.

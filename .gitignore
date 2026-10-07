@@ -8,6 +8,8 @@ coverage/
 
 # Private runtime state, including homes outside the default .japa directory.
 credentials.json
+telegram.json
+telegram-offset-*.json
 MEMORY.md
 *.sqlite
 *.sqlite-*

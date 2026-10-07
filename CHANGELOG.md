@@ -14,7 +14,9 @@ This describes the current implementation on `v2`, not a published npm release o
 - Durable address-bound approvals and configurable allow/deny/ask tool policy.
 - Trusted capability installation: typecheck, bundle, child probe, immutable artifacts, activation recovery, and safe startup.
 - A local Bash installer, private app copy, terminal launcher, and first-run provider setup.
-- Channel-rendered settings with native OpenAI/Anthropic login, API-key entry, credential refresh, model choices, and local logout.
+- Channel-rendered settings with all native pi-ai providers, provider-specific login capabilities, credential refresh, cached dynamic catalogs, model choices, and local logout.
+- A bundled private-owner Telegram channel with long polling, durable event checkpoints, chunked replies, approvals, and the same shared provider setup as the terminal. Setup replies stay outside model history; sensitive-message deletion is best-effort.
+- A sample systemd unit for an operator-managed always-on Telegram deployment; the installer still does not create a service.
 - Searchable durable job history and one-shot wakes chosen by the chief of staff, including a public event hook and silent reflection.
 - A compact `MEMORY.md` maintained through reflection, with atomic revision-checked rewrites and one-time migration of earlier saved facts.
 - Deterministic runtime tests, SQLite reopen tests, actual `SIGKILL` recovery, and installation/authentication/terminal safeguards.
@@ -29,8 +31,8 @@ This describes the current implementation on `v2`, not a published npm release o
 
 ### Intentional boundaries
 
-- No packaged app integrations, embedding service, fixed heartbeat, or second workflow engine.
-- No background service, web/Telegram interface, voice, attachments, or production multi-user isolation.
+- No packaged app integrations beyond communication channels/model providers, embedding service, fixed heartbeat, or second workflow engine.
+- No automatically installed background service, web interface, voice, attachments, or production multi-user isolation.
 - Trusted code has full process privileges; policy and probes are not sandboxes.
 - External effects are not generally exactly-once, and activation recovery cannot undo external actions or state migrations.
 - Forgetting is not secure deletion of transcripts, job records, or backups.

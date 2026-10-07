@@ -42,8 +42,8 @@ Eight required adapter slots are defined in [`src/core/contracts.ts`](src/core/c
 
 | Slot          | Contract                                  | Packaged implementation      |
 | ------------- | ----------------------------------------- | ---------------------------- |
-| `channel`     | Ingress, delivery, settings UI            | Terminal                     |
-| `models`      | Native models plus root/worker selections | OpenAI and Anthropic         |
+| `channel`     | Ingress, delivery, settings UI            | Terminal or private Telegram |
+| `models`      | Native models plus root/worker selections | All native pi-ai providers   |
 | `environment` | Native Pi environment factory             | Local filesystem and shell   |
 | `context`     | Project the root's model input            | Bounded executive brief      |
 | `memory`      | Read/rewrite a reflective note            | `MEMORY.md`                  |
@@ -68,6 +68,10 @@ Startup is:
 5. Native pending work resumes. Shutdown closes resources and the harness, then releases the home lock.
 
 The library does not take the CLI's home lock for you.
+
+Provider setup is shared logic over core `SettingsUI`, not a separate provider implementation per channel. Terminal and Telegram both render its choices, text prompts, progress, and cancellation. Telegram lazily polls for setup before a Host exists; normal chat only reaches durable ingress once the Host is ready. `/settings` pauses the Host and reconstructs the channel for setup. With no configured model, Telegram keeps only its setup/control interface alive and does not resume durable work.
+
+The native registry includes static and dynamic providers. Japa uses provider auth metadata rather than assuming API-key and OAuth login are universally supported. Dynamic catalogs use Pi's `ModelsStore` interface; credential availability does not establish entitlement or tool-call support.
 
 ## Three different lifetimes
 
@@ -153,6 +157,8 @@ A commitment due date does not create a wake. No wakes execute while the host is
 | `workspace/`       | Worker files and artifacts                                                                                                                                           |
 | `extensions/`      | Immutable generated sources and executable bundles                                                                                                                   |
 
+Telegram additionally keeps private bot/owner configuration and a polling checkpoint, and model providers may cache native catalogs. Settings responses never enter conversation ingress. Telegram acknowledges incoming updates only after admission completes; stable event IDs deduplicate a repeated admission. Telegram outbound messages are still at-least-once, including split replies. Telegram messages are not secret input fields: settings deletion is best-effort, not secure erasure.
+
 Configuration and file memory are not transactional with SQLite. Settings and credentials are individually atomic files, not a two-file transaction. Credentials are local plaintext with owner-only file permissions, not an OS keychain.
 
 ## Self-extension and intentional scope
@@ -161,6 +167,6 @@ Installation is single-file TypeScript → typecheck → bundle → child probe/
 
 Generated extensions may add worker tools, sections, hooks, and wrappers. Adapter/lifecycle changes require restart and normal host composition. The generated-code path rejects custom durable task definitions. [Extension documentation](docs/EXTENSIONS.md) describes these boundaries and limits.
 
-App integrations are intentionally not bundled: the assistant builds what its user needs. Web channels, voice, attachments, managed hosting, cron/timezone recurrence, vector memory, production multi-user isolation, billing, and comprehensive cost/retention policies are not implemented.
+Apart from bundled channels and native model providers, app integrations are intentionally not bundled: the assistant builds what its user needs. Web channels, voice, attachments, managed hosting, cron/timezone recurrence, vector memory, production multi-user isolation, billing, and comprehensive cost/retention policies are not implemented.
 
 See [operations](docs/OPERATIONS.md) for recovery procedures and [contributing](CONTRIBUTING.md) for executable invariants and validation limits.

@@ -1,7 +1,7 @@
 # Operations
 
-Japa is a single-process terminal backend on Pi Durable 1.0.4, not a hosted
-service. Start with [README](../README.md); see [architecture](../ARCHITECTURE.md),
+Japa is a single-host-process assistant on Pi Durable 1.0.4, with terminal and
+private Telegram channels, not a managed hosting service. Start with [README](../README.md); see [architecture](../ARCHITECTURE.md),
 [contributing](../CONTRIBUTING.md), and [extensions](EXTENSIONS.md) for design,
 development, and extension authoring.
 
@@ -41,10 +41,14 @@ Do not run both against the same home concurrently. Use an absolute, nonempty
 
 ## Login and model settings
 
-With no usable configuration, startup opens terminal setup before the Host.
-Choose OpenAI or Anthropic and native OAuth login or hidden API-key entry.
-Usable saved/environment configuration can bypass prompts. Prompts need a TTY;
-OAuth may need a local browser callback or manual callback/code entry.
+With no usable configuration, startup opens setup in the selected channel before
+the Host. All native pi-ai providers are registered; login choices reflect each
+provider's actual OAuth, API-key, or ambient-credential capabilities. Usable
+saved/environment configuration can bypass prompts. Terminal prompts need a TTY;
+Telegram renders the same shared flow in its configured owner's private chat.
+OAuth may require a browser callback, device authorization, or manual callback/code
+entry. Native loopback-only flows on a remote host may need SSH port forwarding;
+registering every provider does not make every login method headless.
 
 - `/settings` closes the running Host, opens settings under the same home lock,
   then resumes durable work when a usable configuration is returned.
@@ -52,8 +56,9 @@ OAuth may need a local browser callback or manual callback/code entry.
 - First-run setup chooses defaults. Settings offers main/worker model selection,
   login, logout, Save, and Cancel. Cancel retains a usable previous configuration;
   it cannot start an unconfigured installation.
-- Saving logout when the selected roles no longer have usable credentials exits
-  disconnected. Restart to log in. Logout is local, not upstream revocation;
+- Saving logout when the selected roles no longer have usable credentials leaves
+  the assistant disconnected. The terminal exits; Telegram keeps `/settings`
+  reachable without opening the Host or resuming work. Logout is local, not upstream revocation;
   environment credentials still apply. Existing workers keep their chosen model,
   so removing its credentials can fail those jobs.
 
@@ -71,8 +76,11 @@ Model-selection precedence is independent of credential presence:
 
 The native providers use stored OAuth/API-key credentials ahead of ambient
 credentials; a failed stored OAuth refresh does not silently switch to an
-environment key. `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` support unattended use.
-Use private environment injection rather than pasting keys into shell history.
+environment key. Native provider environment credentials support unattended use;
+set valid `JAPA_MODEL` / `JAPA_WORKER_MODEL` refs when the desired provider is not
+the default. Use private environment injection rather than pasting keys into shell
+history. Dynamic provider catalogs are cached, and refresh targets selected
+providers rather than probing every provider indiscriminately.
 
 `settings.json` stores selections/installation identity; `credentials.json` stores
 credentials separately. Both are atomically replaced with mode `0600`, not as one
@@ -80,9 +88,73 @@ transaction. Credentials are **plaintext**, not encrypted or in a keychain. OAut
 refresh uses Pi's credential-store protocol. Local credential availability does not
 prove subscription entitlement, quota, network access, or a successful live request.
 
-**Never put secrets in chats, worker briefs, MEMORY.md, or support reports.**
-Setup input does not become a chat message; trusted workers can nevertheless read
-files and environment variables accessible to the process.
+**Never put secrets in ordinary assistant messages, worker briefs, MEMORY.md, or
+support reports.** Setup input is routed separately and never enters model history;
+trusted workers can nevertheless read files and environment variables accessible
+to the process. Telegram setup has the transport privacy limits below.
+
+## Telegram
+
+The bundled channel supports **one explicitly configured private owner**, text,
+replies, approvals, and the shared provider setup. It does not accept groups,
+unknown senders, voice, or attachments. There is no first-sender auto-pairing.
+
+1. Obtain a bot token from BotFather and send `/start` to that bot from the intended
+   owner's account. Know that account's positive numeric private chat ID.
+2. Privately create `<JAPA_HOME>/telegram.json` with mode `0600` inside an
+   owner-only home. Its contents are:
+
+   ```json
+   { "token": "<BotFather token>", "chatId": "<positive owner chat ID>" }
+   ```
+
+3. Run `japa --telegram`, or `npm start -- --telegram` from a source checkout.
+   `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` can override the file via private
+   environment injection. Do not embed real tokens in command lines or reports.
+
+`/settings` pauses the durable Host and opens the same provider/model setup as the
+terminal. Reply to the numbered prompts; `/default` selects the default and
+`/cancel` cancels. Settings answers and late replies to marked settings prompts
+never enter ordinary ingress. Sensitive replies are deleted best-effort, but
+**Telegram receives them and may retain copies**. This is not hidden terminal input
+or end-to-end encrypted secret chat. Use terminal setup instead if that transport
+risk is unacceptable. Native provider login prerequisites still apply.
+
+With no model connected, the bot stays available for `/settings`, but no durable
+assistant work resumes. `/start` and `/help` describe supported commands; `/approve`
+and `/deny` resolve address-bound approvals. Stop the process/service for shutdown;
+remote `/exit` is not a service-management command.
+
+Only one poller may use a bot token. Japa checks for an existing webhook and refuses
+to replace it silently; deliberately remove or migrate the old webhook before
+switching to polling. Keep the previous process stopped before starting a
+replacement. No inbound port or public web server is needed.
+
+Incoming Telegram offsets are saved after durable admission, and stable update IDs
+handle repeat admissions after a crash. Keep the polling checkpoint with the rest
+of the home. Outgoing delivery is **at-least-once**; long replies are split and can
+be partially repeated after a failure. Do not delete queued Telegram updates to
+make a migration appear clean. Telegram retains unconsumed updates for at most
+24 hours ([Bot API](https://core.telegram.org/bots/api#getupdates)).
+
+### Optional systemd supervision
+
+The installer still does not install a daemon. [The example unit](../examples/japa.service)
+shows an explicit operator-managed deployment under a dedicated `japa` account.
+Create that account, install as it, configure its private home, and adjust the
+absolute paths before installing the unit. Never run two copies of the bot.
+
+```sh
+sudo install -m 0644 examples/japa.service /etc/systemd/system/japa.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now japa.service
+sudo systemctl status japa.service
+```
+
+The example is not a sandbox or managed hosting product. It needs Node.js 24+ on
+its PATH and persistent writable state. Back up and stop the service before
+upgrades. A rotated bot token requires restarting the process to reload channel
+configuration; rotate tokens exposed in chat, logs, or command history.
 
 ## Lifecycle and scheduling
 
@@ -90,7 +162,7 @@ The CLI's single-home lock covers SQLite and credential refresh; only one proces
 may own the home. Library users must supply equivalent coordination. After a crash,
 let stale-lock recovery retry; do not delete a potentially live process's lock.
 
-Use `/exit`, Ctrl+C, or SIGTERM for orderly shutdown and wait for process exit
+Use terminal `/exit`, Ctrl+C, or SIGTERM for orderly shutdown and wait for process exit
 before maintenance. A crash/SIGKILL is not a clean backup boundary. EOF can wait
 for admitted work; use `/exit` rather than assuming closing input stops immediately.
 Pending native SQLite jobs and wakes resume on restart, not while stopped.
@@ -117,7 +189,8 @@ Back up the **whole home**, not only `japa.sqlite`:
 - `workspace/`, including artifacts and hidden files.
 - `extensions/` sources and bundles **together with** their manifest/replay
   receipts in the database (`japa.extensions`), not a separate manifest JSON.
-- `MEMORY.md`, `settings.json`, `credentials.json`, and any other home files.
+- `MEMORY.md`, `settings.json`, `credentials.json`, Telegram configuration/checkpoint,
+  native model catalog caches, and any other home files.
 
 Stop Japa, confirm no process or external writer uses the home, and keep it stopped.
 After a crash preserve untouched files first; do not selectively copy or manually
@@ -217,16 +290,17 @@ legacy records, and backups remain. There is no comprehensive deletion facility.
 
 ## Troubleshooting
 
-| Symptom                              | Check / next step                                                                                                                                            |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `japa` not found / wrong home        | Check launcher PATH and explicit `JAPA_HOME`; installed and source defaults differ.                                                                          |
-| Lock acquisition fails               | Confirm another process is not running; wait for stale-lock recovery after a crash. Never bypass a live owner.                                               |
-| Setup needs a terminal               | Run interactively, or supply usable provider credentials and valid role selections before unattended startup.                                                |
-| Auth/model request fails             | Check `/settings`, role environment overrides, provider entitlement/quota, and network access. A saved login is not a live validation.                       |
-| Invalid settings/credentials JSON    | Startup refuses to overwrite it. Preserve the files offline and repair privately or restore a coherent backup; never paste credential contents into reports. |
-| Wake did not notify / job expired    | Confirm host uptime, wake status/notification choice, and elapsed job deadline including downtime.                                                           |
-| Memory startup error                 | Compact an oversize note or follow the explicit legacy-import guidance above; retain originals.                                                              |
-| Extension missing or install blocked | Inspect catalog status/diagnostics in safe mode; pending recovery requires normal startup. Retain bundles and database receipts together.                    |
+| Symptom                                   | Check / next step                                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `japa` not found / wrong home             | Check launcher PATH and explicit `JAPA_HOME`; installed and source defaults differ.                                                                          |
+| Lock acquisition fails                    | Confirm another process is not running; wait for stale-lock recovery after a crash. Never bypass a live owner.                                               |
+| Setup needs a terminal                    | Run interactively, use a configured Telegram channel, or supply usable provider credentials and valid role selections.                                       |
+| Telegram rejects token / polling conflict | Validate the bot token privately; stop other pollers and check for an existing webhook. Never paste tokens into logs or support reports.                     |
+| Auth/model request fails                  | Check `/settings`, role environment overrides, provider entitlement/quota, and network access. A saved login is not a live validation.                       |
+| Invalid settings/credentials JSON         | Startup refuses to overwrite it. Preserve the files offline and repair privately or restore a coherent backup; never paste credential contents into reports. |
+| Wake did not notify / job expired         | Confirm host uptime, wake status/notification choice, and elapsed job deadline including downtime.                                                           |
+| Memory startup error                      | Compact an oversize note or follow the explicit legacy-import guidance above; retain originals.                                                              |
+| Extension missing or install blocked      | Inspect catalog status/diagnostics in safe mode; pending recovery requires normal startup. Retain bundles and database receipts together.                    |
 
 ## Trust boundary and unsupported production features
 

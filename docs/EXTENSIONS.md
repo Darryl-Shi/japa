@@ -126,14 +126,18 @@ Addresses are routing identifiers, **not a multi-user authorization system**. Th
 `SettingsUI` is defined in [`src/core/settings.ts`](../src/core/settings.ts):
 
 - Choice prompts have stable option values, labels, and an optional default.
-- Text prompts can request hidden secret input and an optional default.
+- Text prompts can mark sensitive input with `secret` and supply an optional default. Mask input where supported; disclose transport limitations rather than promising secrecy.
 - Return `undefined` to cancel; respect the context's abort signal.
 - `notify` displays login progress, links, and device-code instructions.
 - Setup responses must never be admitted as ordinary chat input or stored in transcripts.
 
-Call `configureModels(home, channel.settings, context)` before opening the host and while holding its home lock. It returns a `ModelProvider`, or `undefined` for an explicitly saved disconnected state. With no usable configuration, cancelled initial setup throws. With a usable prior configuration, cancelled edits preserve it.
+Call `configureModels(home, channel.settings, context)` before opening the host and while holding its home lock. It returns a `ModelProvider`, or `undefined` when explicitly disconnected. With a usable prior configuration, cancelled edits preserve it; otherwise cancellation throws `SetupCancelled`. The Telegram CLI handles that condition by keeping setup available without opening the Host. Authentication failures fail visibly rather than silently returning a disconnected result.
 
-The built-in flow supports native OpenAI/Anthropic OAuth and API-key entry, refresh persistence, model choices, and local logout. Its first run chooses role defaults; detailed model selection is available in forced settings. To reopen setup, stop the host first, call with `{ force: true }`, and reopen it if a provider is returned. Other channels render these same primitives as their own forms or prompts; terminal commands are not a required UI design.
+The built-in flow registers all native pi-ai providers, using each provider's actual authentication capabilities for login choices. It supports native credential refresh, model choices, catalog caching, and local logout. Native OAuth, API-key, and ambient-only prerequisites still vary by provider. To reopen setup, stop the host first, call with `{ force: true }`, and reopen it if a provider is returned. **Every channel renders these same shared primitives**; it must not reimplement provider login or pass settings answers through the model. Terminal commands are not a required UI design.
+
+Packaged factories `terminalChannel()` and `telegramChannel({ home, token, chatId })` expose a `channel`, an adapter `extension`, and a `closed` promise. `readTelegramConfig(home)` reads private bot configuration and environment overrides. The Telegram factory additionally exposes `close()` because setup can start polling before a Host exists; callers must clean it up even if configuration fails. The CLI handles this, and keeps Telegram setup reachable after disconnection without opening the durable Host.
+
+Telegram is deliberately single-owner/private-chat only. It marks settings prompts, routes their replies outside ingress, suppresses stale setup replies, and attempts to delete sensitive input. Those messages still pass through Telegram's servers; deletion is not a guarantee of privacy. See [Telegram operations](OPERATIONS.md#telegram).
 
 CLI command routing for `/approve <id>` and `/deny <id>` bypasses a model turn. A richer UI can use the approval adapter directly, preserving the originating address.
 

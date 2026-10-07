@@ -1,0 +1,26 @@
+# Optional operator-managed deployment. Create the account, install as it,
+# and configure its private home first. Adjust all paths for your installation.
+# No secrets belong in this unit: use the private runtime configuration files.
+[Unit]
+Description=Japa chief of staff (private Telegram channel)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=japa
+Group=japa
+WorkingDirectory=/home/japa/.local/share/japa
+Environment=HOME=/home/japa
+Environment=JAPA_HOME=/home/japa/.local/state/japa
+Environment=PATH=/home/japa/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/japa/.local/bin/japa --telegram
+UMask=0077
+NoNewPrivileges=yes
+KillMode=control-group
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

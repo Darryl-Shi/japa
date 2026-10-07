@@ -11,11 +11,12 @@ export type SettingsPrompt =
   | {
       kind: "text";
       title: string;
+      /** Sensitive input: keep out of conversation, mask/delete where possible. */
       secret?: boolean;
       defaultValue?: string;
     };
 
-/** Every channel supplies its own rendering, including secret input and cancellation. */
+/** Every channel renders this protocol; disclose transport privacy limits for secrets. */
 export interface SettingsUI {
   prompt(
     request: SettingsPrompt,
