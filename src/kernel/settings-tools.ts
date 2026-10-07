@@ -24,11 +24,11 @@ export function settingsTools(
   home: string,
   settings: Settings,
   models: Models,
-  extensions: JapaExtension[],
+  extensions: () => JapaExtension[],
   changed: () => void,
 ) {
-  const schemas = Object.fromEntries(extensions.flatMap((e) => (e.settings ? [[e.name, e.settings]] : [])));
   const validate = (user: JsonObject) => {
+    const schemas = Object.fromEntries(extensions().flatMap((e) => (e.settings ? [[e.name, e.settings]] : [])));
     const next = validateSettings(mergeSettings(user), schemas);
     for (const ref of Object.values(next.models)) if (ref !== undefined) checkModel(models, ref);
     return next;

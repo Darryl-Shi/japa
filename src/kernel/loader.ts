@@ -51,14 +51,13 @@ function check(e: JapaExtension, merged: ReadonlyMap<string, Contract>): string 
 export async function loadExtensions(
   found: FoundExtension[],
   contracts: ReadonlyMap<string, Contract>,
-  version?: string,
 ): Promise<{ extensions: JapaExtension[]; errors: LoadError[] }> {
   const imported: JapaExtension[] = [];
   const errors: LoadError[] = [];
 
   for (const { name, file } of found) {
     try {
-      const mod = await import(pathToFileURL(file).href + (version ? "?v=" + version : ""));
+      const mod = await import(pathToFileURL(file).href);
       const e = mod.default;
       if (e === undefined) throw new Error("missing default export");
       if (e?.name !== name) throw new Error("manifest name must match directory");

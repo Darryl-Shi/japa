@@ -83,7 +83,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
     const workspace = join(home, "extensions");
-    const found = discoverExtensions(options.extensionDirs ?? [join(packageRoot, "extensions"), workspace]);
+    const dirs = options.extensionDirs ?? [join(packageRoot, "extensions"), workspace];
+    const found = discoverExtensions(dirs);
     const loaded = await loadExtensions(found, contracts);
     const extensions = withOverrides(loaded.extensions, options.extensions ?? []);
     for (const c of extensions.flatMap((e) => e.contracts ?? [])) contracts.set(c.name, c);
@@ -189,11 +190,12 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
-    const tools = settingsTools(home, settings, models, extensions, () => rt.refreshCapabilities());
+    const tools = settingsTools(home, settings, models, () => rt.extensions, () => rt.refreshCapabilities());
     const cos = cosExtension(settings, [Consolidate], tools, () => rt.capabilities);
     const rt = createRuntime({
       home,
       packageRoot,
+      packaged: dirs.filter((d) => d !== workspace),
       settings,
       contracts,
       extensions,

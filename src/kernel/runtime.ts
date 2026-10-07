@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Models } from "@earendil-works/pi-ai";
+import { cpSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { capabilities } from "./capabilities.ts";
 import { ACTIVATION_ORDER, type Contract, type Dispose, type EnvironmentAdapter, type KernelContext } from "./contracts.ts";
@@ -29,6 +30,7 @@ export type Runtime = ReturnType<typeof createRuntime>;
 export function createRuntime(input: {
   home: string;
   packageRoot: string;
+  packaged: string[]; // the packaged extension dirs, whose extensions a workspace one can override
   settings: Settings;
   contracts: Map<string, Contract>;
   extensions: JapaExtension[];
@@ -42,7 +44,7 @@ export function createRuntime(input: {
   cos: Extension;
   kernel: (extension: string) => KernelContext;
 }) {
-  const { home, packageRoot, settings, contracts, sources, hashes, models, environments, registry, selection } = input;
+  const { home, packageRoot, packaged, settings, contracts, sources, hashes, models, environments, registry, selection } = input;
   const activations: { extension: string; contract: string; dispose: Dispose }[] = []; // in activation order
   const built = new Map<string, Extension>();
   let jobsOptions: JobsOptions | undefined;
@@ -72,10 +74,11 @@ export function createRuntime(input: {
 
   /**
    * Activates `extensions`' contributions to each of `names` in turn, reloading the content after tools; returns the
-   * activation errors, which are also recorded.
+   * activation errors, which are also recorded, and the content errors.
    */
   async function start(extensions: JapaExtension[], names: string[]): Promise<LoadError[]> {
     const errors: LoadError[] = [];
+    let content: LoadError[] = [];
     for (const name of names) {
       for (const e of extensions) {
         if (name === "tool") {
@@ -103,14 +106,17 @@ export function createRuntime(input: {
           }
         }
       }
-      if (name === "tool") reloadContent();
+      if (name === "tool") content = reloadContent();
     }
     runtime.errors.push(...errors);
-    return errors;
+    return [...errors, ...content];
   }
 
-  /** Reloads skills and worker profiles, installs `japa-skills` and `japa-jobs`, and resets the root selection. */
-  function reloadContent() {
+  /**
+   * Reloads skills and worker profiles, installs `japa-skills` and `japa-jobs`, and resets the root selection; returns
+   * the skill and worker errors.
+   */
+  function reloadContent(): LoadError[] {
     const skills = loadSkills([
       join(packageRoot, "skills"),
       ...[...sources.values()].map((dir) => join(dir, "skills")),
@@ -132,6 +138,7 @@ export function createRuntime(input: {
     registry.install(jobs);
     selection.splice(0, selection.length, input.cos, jobs, skillsExt, ...built.values());
     runtime.refreshCapabilities();
+    return errors;
   }
 
   async function dispose(which: (a: (typeof activations)[number]) => boolean) {
@@ -145,11 +152,20 @@ export function createRuntime(input: {
     runtime.errors.splice(0, runtime.errors.length, ...runtime.errors.filter((e) => !stale(e)), ...fresh);
   }
 
-  /** Reloads the workspace extensions that were added, changed or removed, then the content; packaged ones never. */
+  /**
+   * Reloads the workspace extensions that were added, changed or removed, then the content; packaged ones never, except
+   * that removing a workspace override loads the packaged extension again. A changed extension is imported from a copy
+   * at `<home>/.cache/extensions/<name>-<hash>`, so its own modules are imported afresh.
+   */
   async function reconcile(root: Conversation): Promise<{ errors: LoadError[]; notices: string[] }> {
-    const found = discoverExtensions([join(home, "extensions")]).map((f) => ({ ...f, hash: dirHash(dirname(f.file)) }));
+    const workspace = join(home, "extensions");
+    const all = discoverExtensions([...packaged, workspace]);
+    const found = all
+      .filter((f) => dirname(dirname(f.file)) === workspace)
+      .map((f) => ({ ...f, hash: dirHash(dirname(f.file)) }));
     const changed = found.filter((f) => hashes.get(f.name) !== f.hash);
     const removed = [...hashes.keys()].filter((name) => !found.some((f) => f.name === name));
+    const restored = all.filter((f) => removed.includes(f.name));
     const names = new Set([...changed.map((f) => f.name), ...removed]);
 
     for (const name of names) {
@@ -163,17 +179,16 @@ export function createRuntime(input: {
     }
     runtime.extensions = runtime.extensions.filter((e) => !names.has(e.name));
 
-    const loadErrors: LoadError[] = [];
-    const loaded: JapaExtension[] = [];
-    for (const f of changed) {
-      const result = await loadExtensions([f], contracts, f.hash);
+    const copies = changed.map((f) => {
+      const copy = join(home, ".cache", "extensions", `${f.name}-${f.hash}`);
+      if (!existsSync(copy)) cpSync(dirname(f.file), copy, { recursive: true });
       hashes.set(f.name, f.hash);
-      loadErrors.push(...result.errors);
-      for (const e of result.extensions) {
-        loaded.push(e);
-        sources.set(e.name, dirname(f.file));
-        for (const c of e.contracts ?? []) contracts.set(c.name, c);
-      }
+      return { name: f.name, file: join(copy, "index.ts") };
+    });
+    const { extensions: loaded, errors: loadErrors } = await loadExtensions([...copies, ...restored], contracts);
+    for (const e of loaded) {
+      sources.set(e.name, dirname([...changed, ...restored].find((f) => f.name === e.name)!.file));
+      for (const c of e.contracts ?? []) contracts.set(c.name, c);
     }
     runtime.extensions = [...runtime.extensions, ...loaded];
     const notices = loaded

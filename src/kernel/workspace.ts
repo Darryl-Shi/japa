@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", "boots.json"];
+const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json"];
 
 function git(home: string, ...args: string[]): string {
   return execFileSync("git", ["-C", home, "-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false", ...args], {
