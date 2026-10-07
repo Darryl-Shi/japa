@@ -9,6 +9,8 @@ export {
   section,
   wrapTool,
 } from "@earendil-works/pi-durable";
+// Not exported from pi-durable's entry point.
+export { truncateHead } from "../node_modules/@earendil-works/pi-durable/dist/truncate.js";
 export { StringEnum, Type } from "@earendil-works/pi-ai";
 export { logChange } from "./kernel/changes.ts";
 export { CORE_CONTRACTS } from "./kernel/contracts.ts";
