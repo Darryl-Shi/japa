@@ -5,6 +5,7 @@ export type Client = {
   send(m: ClientMessage): void;
   onMessage(cb: (m: ServerMessage) => void): void;
   close(): void;
+  onClose(cb: () => void): void;
 };
 
 /** Connects to the daemon running in `home`. */
@@ -20,6 +21,7 @@ export function connect(home: string): Promise<Client> {
         send: (m) => writeMessage(socket, m),
         onMessage: (cb) => readMessages(socket, (m) => cb(m as ServerMessage)),
         close: () => socket.end(),
+        onClose: (cb) => socket.on("close", cb),
       }),
     );
   });

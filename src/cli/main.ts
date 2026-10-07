@@ -1,0 +1,48 @@
+#!/usr/bin/env -S node --disable-warning=ExperimentalWarning
+import { runChat } from "../../extensions/gateway/chat.ts";
+import { connect } from "../../extensions/gateway/client.ts";
+import { socketPath } from "../../extensions/gateway/protocol.ts";
+import { boot } from "../kernel/boot.ts";
+import { japaHome } from "../kernel/settings.ts";
+import type { Status } from "../kernel/contracts.ts";
+
+const USAGE = `Usage: japa <command>
+
+Commands:
+  daemon   Run japa in the foreground
+  chat     Chat with japa
+  status   Show the model, extensions, and errors`;
+
+async function daemon(home: string): Promise<void> {
+  const d = await boot({ home });
+  console.log(`japa is running (${socketPath(home)})`);
+  const stop = () => void d.close();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+}
+
+async function status(home: string): Promise<void> {
+  const client = await connect(home);
+  const s = await new Promise<Status>((resolve) => {
+    client.onMessage((m) => m.type === "status" && resolve(m.status));
+    client.send({ type: "status" });
+  });
+  client.close();
+  console.log(`model: ${s.model ? `${s.model.provider}/${s.model.modelId}` : "none"}`);
+  console.log("extensions:");
+  for (const e of s.extensions) console.log(`  ${e.name} — ${e.summary}`);
+  if (s.errors.length > 0) console.log("errors:");
+  for (const e of s.errors) console.log(`  ${e.name}: ${e.error}`);
+}
+
+const commands: Record<string, (home: string) => Promise<void>> = { daemon, chat: runChat, status };
+const command = commands[process.argv[2]];
+if (command === undefined) {
+  console.error(USAGE);
+  process.exitCode = 1;
+} else {
+  command(japaHome()).catch((error: Error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}
