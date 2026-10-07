@@ -9,10 +9,12 @@ export function japaHome(): string {
 }
 
 export type Settings = {
-  models: { cos?: ModelRef; worker?: ModelRef };
+  models: { cos?: ModelRef; worker?: ModelRef; consolidation?: ModelRef };
   storage: { adapter: string } & JsonObject;
   secrets: { adapter: string } & JsonObject;
   jobs: { maxConcurrent: number };
+  context: { resetTokens: number; idleResetHours: number; toolResultTokens: number };
+  memory: { maxFacts: number; maxTokens: number };
   extensions: Record<string, JsonObject>;
 };
 
@@ -21,20 +23,20 @@ export const DEFAULT_SETTINGS: Settings = {
   storage: { adapter: "sqlite" },
   secrets: { adapter: "file" },
   jobs: { maxConcurrent: 4 },
+  context: { resetTokens: 20000, idleResetHours: 2, toolResultTokens: 2000 },
+  memory: { maxFacts: 30, maxTokens: 1500 },
   extensions: {},
 };
 
-/** Reads `<home>/settings.json` merged over the defaults per top-level key; `storage`, `secrets` and `jobs` one level deep. */
+/** Reads `<home>/settings.json` merged over the defaults per top-level key; object-valued keys one level deep. */
 export function loadSettings(home: string): Settings {
   const path = join(home, "settings.json");
-  const user = existsSync(path) ? parseJson(path) : {};
-  return {
-    ...DEFAULT_SETTINGS,
-    ...user,
-    storage: { ...DEFAULT_SETTINGS.storage, ...user.storage },
-    secrets: { ...DEFAULT_SETTINGS.secrets, ...user.secrets },
-    jobs: { ...DEFAULT_SETTINGS.jobs, ...user.jobs },
-  };
+  const user: Record<string, unknown> = existsSync(path) ? parseJson(path) : {};
+  const merged: Record<string, unknown> = { ...DEFAULT_SETTINGS, ...user };
+  for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+    merged[key] = { ...value, ...(user[key] as object) };
+  }
+  return merged as Settings;
 }
 
 function parseJson(path: string): Partial<Settings> {

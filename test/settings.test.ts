@@ -25,6 +25,14 @@ test("jobs merges over its default", () => {
   expect(loadSettings(tempHome({ jobs: {} })).jobs).toEqual({ maxConcurrent: 4 });
 });
 
+test("context and memory defaults; partial context merges over its default", () => {
+  expect(DEFAULT_SETTINGS.context).toEqual({ resetTokens: 20000, idleResetHours: 2, toolResultTokens: 2000 });
+  expect(DEFAULT_SETTINGS.memory).toEqual({ maxFacts: 30, maxTokens: 1500 });
+  const s = loadSettings(tempHome({ context: { resetTokens: 500 } }));
+  expect(s.context).toEqual({ resetTokens: 500, idleResetHours: 2, toolResultTokens: 2000 });
+  expect(s.memory).toEqual({ maxFacts: 30, maxTokens: 1500 });
+});
+
 test("invalid JSON names the file", () => {
   const home = tempHome();
   writeFileSync(join(home, "settings.json"), "{nope");
