@@ -36,6 +36,25 @@ test("malformed lines and abrupt disconnects do not affect other clients", async
   await daemon.close();
 });
 
+test("a submit without text is rejected and later submits still work", async () => {
+  const { daemon, faux, home } = await bootTest();
+  const raw = createConnection(socketPath(home));
+  let rawData = "";
+  raw.on("data", (d) => (rawData += d));
+  raw.write('{"type":"submit"}\n');
+  await vi.waitFor(() => expect(rawData).toContain('"type":"error"'));
+  raw.destroy();
+  faux.setResponses([fauxAssistantMessage([fauxText("Still fine")])]);
+  const client = await connect(home);
+  const seen: ServerMessage[] = [];
+  client.onMessage((m) => seen.push(m));
+  client.send({ type: "attach" });
+  client.send({ type: "submit", text: "hello" });
+  await vi.waitFor(() => expect(JSON.stringify(seen)).toContain("Still fine"));
+  client.close();
+  await daemon.close();
+});
+
 test("status lists extensions and errors", async () => {
   const { daemon, home } = await bootTest();
   const client = await connect(home);

@@ -18,7 +18,6 @@ async function start(ctx: SurfaceContext) {
   }
 
   const sockets = new Set<Socket>();
-  const closing: Promise<void>[] = [];
   const server = createServer((socket) => {
     sockets.add(socket);
     let stop: (() => Promise<void>) | undefined;
@@ -30,12 +29,13 @@ async function start(ctx: SurfaceContext) {
           writeMessage(socket, { type: "snapshot", snapshot: stream.snapshot });
           break;
         }
-        case "submit":
-          return ctx.root.submit(m.text, m.mode);
         case "abort":
           return ctx.root.abort();
         case "status":
           return writeMessage(socket, { type: "status", status: ctx.status() });
+        case "submit":
+          if (typeof m.text === "string") return ctx.root.submit(m.text, m.mode);
+        // falls through: a submit without text is invalid
         default:
           return writeMessage(socket, { type: "error", message: "Invalid message" });
       }
@@ -50,7 +50,7 @@ async function start(ctx: SurfaceContext) {
     socket.on("error", () => {});
     socket.on("close", () => {
       sockets.delete(socket);
-      closing.push(queue.then(() => stop?.()));
+      queue.then(() => stop?.()).catch(() => {});
     });
   });
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(path, resolve));
@@ -58,7 +58,6 @@ async function start(ctx: SurfaceContext) {
   return async () => {
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve)); // also unlinks the socket file
-    await Promise.all(closing);
   };
 }
 
