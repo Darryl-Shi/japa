@@ -46,6 +46,9 @@ test("a schedule due while the daemon was down fires once at boot", async () => 
 
 test("recurring schedules: validation, list, section and undo", async () => {
   const { daemon, faux } = await bootTest();
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new RegExp(`\\nNow: \\w+day, .+ \\d{1,2}:\\d{2}.* \\(${zone}\\)\\n`);
+  expect(await system(daemon, faux)).toMatch(now);
   expect(await system(daemon, faux)).not.toContain("Active schedules:");
   expect(await tool(daemon, faux, "schedule_add", { text: "x" })).toMatch(/^Not scheduled: /);
   expect(await tool(daemon, faux, "schedule_add", { text: "x", at: "2000-01-01T00:00:00Z" })).toMatch(
@@ -59,8 +62,9 @@ test("recurring schedules: validation, list, section and undo", async () => {
   );
   const line = /^1 {2}0 9 \* \* \* {2}next .+ {2}standup$/;
   expect(await tool(daemon, faux, "schedule_list")).toMatch(line);
-  const section = (await system(daemon, faux)).split("Active schedules:\n")[1]!.split("\n")[0];
-  expect(section).toMatch(line);
+  const section = (await system(daemon, faux)).split(now)[1]!.split("\n");
+  expect(section[0]).toBe("Active schedules:");
+  expect(section[1]).toMatch(line);
   expect(await tool(daemon, faux, "change_undo", { id: "1" })).toBe(
     'To undo this, call schedule_remove with {"id":"1"}.',
   );

@@ -25,7 +25,8 @@ Use the smallest mechanism that meets the need:
 | Need | Mechanism |
 |------|-----------|
 | A fact or preference about the user | memory |
-| Adjust something that already exists | settings (models, schedules, extension settings) |
+| Adjust something that already exists | settings (models, extension settings) |
+| Do something at a set time or on a recurring basis | a schedule (`schedule_add`) |
 | A procedure or know-how using existing tools | skill (content) |
 | A new kind of worker from existing tools, models and environments | worker profile (content) |
 | Connect to something new (a model provider, UI, event source, capability, execution environment, storage or credential store), or enforce a guarantee rather than give guidance | extension implementing a contract |

@@ -10,7 +10,7 @@ import {
 } from "../../src/sdk.ts";
 import { nextAfter } from "./cron.ts";
 
-type Schedule = { id: string; text: string; cron?: string; at?: number; next: number; taskId: number };
+type Schedule = { id: string; text: string; cron?: string; at?: number; next: number };
 
 // On the root conversation.
 const ScheduleDoc = defineDoc<{ nextId: number; schedules: Record<string, Schedule> }>({
@@ -83,7 +83,7 @@ const lines = (schedules: Record<string, Schedule>) =>
 const scheduleAdd = defineTool({
   name: "schedule_add",
   description:
-    "Schedule a message to yourself: give `cron` (5 fields, local time) to repeat, or `at` (ISO time) for once.",
+    "Schedule a message to yourself: give `cron` (5 fields, local time) to repeat, or `at` (ISO date-time; without an offset it is local time) for once.",
   parameters: Type.Object({
     text: Type.String(),
     cron: Type.Optional(Type.String()),
@@ -101,12 +101,12 @@ const scheduleAdd = defineTool({
     const answer = await api.commit(async (tx) => {
       const doc = await tx.doc(ScheduleDoc, ROOT_CONVERSATION_ID);
       const id = String(doc.nextId++);
-      const taskId = await tx.createTask(
+      await tx.createTask(
         ScheduleTask,
         { id },
         { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID, background: true },
       );
-      doc.schedules[id] = { id, text, ...(cron === undefined ? { at: next } : { cron }), next, taskId };
+      doc.schedules[id] = { id, text, ...(cron === undefined ? { at: next } : { cron }), next };
       const change = await logChange(tx, {
         title: `Scheduled "${text}" (${cron ?? local(next)})`,
         howToUse: "It will arrive as a message at that time.",
@@ -169,7 +169,9 @@ export default defineJapaExtension({
     sections: [
       section("schedules", async ({ read }, context) => {
         const text = lines((await read.snapshot(ScheduleDoc, ROOT_CONVERSATION_ID, context))?.schedules ?? {});
-        return text ? `Active schedules:\n${text}` : undefined;
+        const now = new Date().toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" });
+        const head = `Now: ${now} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+        return text ? `${head}\nActive schedules:\n${text}` : head;
       }),
     ],
   },

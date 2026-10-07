@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { htmlToText } from "../extensions/web/html.ts";
-import { bootTest } from "./helpers.ts";
+import { bootTest, stage } from "./helpers.ts";
 import { tool } from "./jobs-helpers.ts";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -55,6 +55,18 @@ test("web_search uses the engine chosen in settings", async () => {
   expect(await tool(daemon, faux, "web_search", { query: "cats", count: 2 })).toBe(
     "1. cats 1\nhttps://x/1\ns\n\n2. cats 2\nhttps://x/2\ns",
   );
+  await daemon.close();
+});
+
+test("web_search still uses the chosen engine after an extension install", { timeout: 60_000 }, async () => {
+  const { daemon, faux, home } = await bootTest({ extensions: { web: { engine: "fake" } } }, [fake]);
+  stage(
+    home,
+    "extensions/dice/index.ts",
+    `import { defineJapaExtension } from "japa/sdk";\nexport default defineJapaExtension({ name: "dice", summary: "Dice", examples: ["roll"], docs: "Dice." });\n`,
+  );
+  expect(await tool(daemon, faux, "install", { kind: "extension", name: "dice" })).toBe("Installed extension dice. (change 1)");
+  expect(await tool(daemon, faux, "web_search", { query: "cats", count: 1 })).toBe("1. cats 1\nhttps://x/1\ns");
   await daemon.close();
 });
 

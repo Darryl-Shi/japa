@@ -1,9 +1,12 @@
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-durable";
+import { execFile } from "node:child_process";
 import { cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { logChange } from "./changes.ts";
-import { CHECK_KINDS, check } from "./check.ts";
+import { CHECK_KINDS } from "./check.ts";
 import { KEBAB_CASE } from "./extension.ts";
 import type { LoadError } from "./loader.ts";
 import { commit, LKG, restorePath, revert } from "./workspace.ts";
@@ -11,7 +14,20 @@ import { commit, LKG, restorePath, revert } from "./workspace.ts";
 type Kind = (typeof CHECK_KINDS)[number];
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
+const main = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
 const pathOf = (kind: Kind, name: string) => (kind === "worker" ? `workers/${name}.md` : `${kind}s/${name}`);
+
+/** Runs `japa check` in a child process, so the check's throwaway daemon can't touch this one's module state; its problems. */
+async function check(kind: Kind, name: string, home: string): Promise<string[]> {
+  const options = { cwd: join(home, ".staging"), env: { ...process.env, JAPA_HOME: home } };
+  try {
+    await promisify(execFile)(process.execPath, [main, "check", kind, name], options);
+    return [];
+  } catch (error) {
+    const { stdout, stderr } = error as { stdout: string; stderr: string };
+    return [`${stdout}${stderr}`.trim()];
+  }
+}
 
 /** Restores a skill, worker profile or extension as it is at `to` and commits it; the sha, or undefined if unchanged. */
 export function rollBack(home: string, kind: Kind, name: string, to = LKG): string | undefined {
@@ -37,12 +53,11 @@ export function installTool(
       "Check and install the skill, worker profile or extension a builder job wrote to the staging workspace. Logged as a change you can undo.",
     parameters: Type.Object({ kind: StringEnum(CHECK_KINDS), name: Type.String({ pattern: KEBAB_CASE.source }) }),
     execute: async ({ kind, name }, api, context) => {
-      const staging = join(home, ".staging");
-      const problems = await check(kind, name, staging, home);
+      const problems = await check(kind, name, home);
       if (problems.length > 0) return reply(`Not installed: ${problems.join("\n")}`);
       const path = pathOf(kind, name);
       rmSync(join(home, path), { recursive: true, force: true });
-      cpSync(join(staging, path), join(home, path), { recursive: true });
+      cpSync(join(home, ".staging", path), join(home, path), { recursive: true });
       const sha = commit(home, [path], `Install ${kind} ${name}`);
       if (sha === undefined) return reply("Already installed.");
 
