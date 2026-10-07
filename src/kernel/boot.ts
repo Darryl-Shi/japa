@@ -44,6 +44,7 @@ import { estimateTokens, MemoryDoc } from "./memory/state.ts";
 import { shouldConsolidate } from "./memory/trigger.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { settingsTools } from "./settings-tools.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
@@ -171,6 +172,19 @@ export async function boot(options: BootOptions): Promise<Daemon> {
             },
           };
         },
+        secrets: {
+          pending: async (listener) => {
+            const watch = (await opened.watchDoc(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!;
+            listener(watch.value!.pending);
+            watch.start(async (doc) => listener(doc!.pending));
+            return {
+              stop: async () => {
+                await watch.stop();
+              },
+            };
+          },
+          fulfil: (requestId, value) => fulfilSecret(opened, root, secrets, requestId, value, ctx),
+        },
         status,
       },
       trigger: {
@@ -238,6 +252,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await tx.doc(JobsDoc, root.id);
       await tx.doc(MemoryDoc, root.id);
       await tx.doc(ChangesDoc, root.id);
+      await tx.doc(SecretRequestsDoc, root.id);
     }, ctx);
     // Profiles need the activated environments; pending job tasks resume once `japa-jobs` is installed.
     const installJobs = () => {

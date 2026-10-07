@@ -2,6 +2,7 @@ import type { AgentEvent, JsonObject, ModelRef, Storage } from "@earendil-works/
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Job } from "./jobs/state.ts";
+import type { SecretRequest } from "./secret-requests.ts";
 
 /** Releases what an `activate()` set up. */
 export type Dispose = () => void | Promise<void>;
@@ -42,6 +43,12 @@ export type SurfaceContext = {
   };
   /** Delivers the current jobs first, then every change, in id order. */
   jobs(listener: (jobs: Job[]) => void): Promise<{ stop(): Promise<void> }>;
+  secrets: {
+    /** Delivers the pending secret requests first, then every change. */
+    pending(listener: (pending: SecretRequest[]) => void): Promise<{ stop(): Promise<void> }>;
+    /** Stores `value` as the requested secret and tells the CoS; throws for an unknown request. */
+    fulfil(requestId: string, value: string): Promise<void>;
+  };
   status(): Status;
 };
 

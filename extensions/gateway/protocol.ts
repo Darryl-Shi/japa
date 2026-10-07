@@ -1,17 +1,19 @@
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import type { Job, Status } from "../../src/sdk.ts";
+import type { Job, SecretRequest, Status } from "../../src/sdk.ts";
 
 export type ClientMessage =
   | { type: "attach" }
   | { type: "submit"; text: string; mode?: "steer" | "followUp" }
   | { type: "abort" }
+  | { type: "secret"; requestId: string; value: string }
   | { type: "status" };
 
 export type ServerMessage =
   | { type: "events"; events: AgentEvent[] }
   | { type: "jobs"; jobs: Job[] }
+  | { type: "secrets"; pending: SecretRequest[] }
   | { type: "status"; status: Status }
   | { type: "error"; message: string };
 

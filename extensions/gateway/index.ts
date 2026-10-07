@@ -16,10 +16,14 @@ async function start(ctx: SurfaceContext) {
         case "attach": {
           streams.push(await ctx.root.events((events) => writeMessage(socket, { type: "events", events: [...events] })));
           streams.push(await ctx.jobs((jobs) => writeMessage(socket, { type: "jobs", jobs })));
+          streams.push(await ctx.secrets.pending((pending) => writeMessage(socket, { type: "secrets", pending })));
           break;
         }
         case "abort":
           return ctx.root.abort();
+        case "secret":
+          if (typeof m.value === "string") return ctx.secrets.fulfil(m.requestId, m.value);
+          return writeMessage(socket, { type: "error", message: "Invalid message" });
         case "status":
           return writeMessage(socket, { type: "status", status: ctx.status() });
         case "submit":

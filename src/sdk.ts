@@ -29,4 +29,5 @@ export type {
 export { defineJapaExtension } from "./kernel/extension.ts";
 export { board } from "./kernel/jobs/state.ts";
 export type { Job } from "./kernel/jobs/state.ts";
+export type { SecretRequest } from "./kernel/secret-requests.ts";
 export type { JapaExtension } from "./kernel/extension.ts";

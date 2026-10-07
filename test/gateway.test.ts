@@ -6,6 +6,7 @@ import { connect } from "../extensions/gateway/client.ts";
 import { type ServerMessage, socketPath } from "../extensions/gateway/protocol.ts";
 import { boot } from "../src/kernel/boot.ts";
 import type { Status } from "../src/kernel/contracts.ts";
+import type { SecretRequest } from "../src/kernel/secret-requests.ts";
 import { bootTest, tempHome, testKit } from "./helpers.ts";
 import { call, script } from "./jobs-helpers.ts";
 
@@ -33,6 +34,23 @@ test("attach streams the job board", async () => {
   await vi.waitFor(() => expect(boards[0]).toEqual([]));
   client.send({ type: "submit", text: "start sum" });
   await vi.waitFor(() => expect(boards.at(-1)).toMatchObject([{ id: "1", title: "Sum" }]));
+  client.close();
+  await daemon.close();
+});
+
+test("attach streams pending secret requests and a secret message fulfils one", async () => {
+  const { daemon, faux, home } = await bootTest();
+  script(faux, (role, text) =>
+    role === "user" && text === "go" ? call("secret_request", { name: "svc.token", why: "to sync" }) : undefined,
+  );
+  const client = await connect(home);
+  const lists: SecretRequest[][] = [];
+  client.onMessage((m) => m.type === "secrets" && lists.push(m.pending));
+  client.send({ type: "attach" });
+  client.send({ type: "submit", text: "go" });
+  await vi.waitFor(() => expect(lists.at(-1)).toMatchObject([{ name: "svc.token", why: "to sync" }]));
+  client.send({ type: "secret", requestId: lists.at(-1)![0]!.id, value: "s3cr3t" });
+  await vi.waitFor(() => expect(lists.at(-1)).toEqual([]));
   client.close();
   await daemon.close();
 });

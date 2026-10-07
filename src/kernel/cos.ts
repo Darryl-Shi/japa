@@ -16,6 +16,7 @@ import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { readFileSync } from "node:fs";
 import { MemoryDoc, renderFacts, renderLoops } from "./memory/state.ts";
 import { memoryTools } from "./memory/tools.ts";
+import { secretRequest } from "./secret-requests.ts";
 import type { Settings } from "./settings.ts";
 
 const identityText = readFileSync(new URL("./identity.md", import.meta.url), "utf8").trim();
@@ -28,8 +29,8 @@ function capped(text: string, max: number): string {
 
 /**
  * The CoS's own Pi Durable extension: its identity, its capabilities (the current text of `capabilities()`), its
- * memory sections and tools, the built-in `read` tool, the cap on tool results it sees, and the kernel's root tools
- * and tasks.
+ * memory sections and tools, the built-in `read` tool, `secret_request`, the cap on tool results it sees, and the
+ * kernel's root tools and tasks.
  */
 export function cosExtension(
   settings: Settings,
@@ -51,7 +52,7 @@ export function cosExtension(
         return memory && renderLoops(memory.loops);
       }),
     ],
-    tools: [createReadTool(), ...memoryTools, ...tools],
+    tools: [createReadTool(), ...memoryTools, secretRequest, ...tools],
     tasks,
     hooks: [
       hook(GenerationTask, {
