@@ -32,6 +32,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
+import { installTool } from "./install.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { consolidation } from "./memory/consolidate.ts";
@@ -195,7 +196,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
-    const tools = settingsTools(home, settings, models, () => rt.extensions, () => rt.refreshCapabilities());
+    const reconcile = () => rt.reconcile(root);
+    const tools = [
+      ...settingsTools(home, settings, models, () => rt.extensions, () => rt.refreshCapabilities(), reconcile),
+      installTool(home, reconcile, (kind, name) => (kind === "skill" ? rt.skills : rt.profiles).has(name)),
+    ];
     const cos = cosExtension(settings, [Consolidate], tools, () => rt.capabilities);
     const rt = createRuntime({
       home,
@@ -265,7 +270,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       capabilities: () => rt.capabilities,
       consolidate,
       checkConsolidation,
-      reconcile: () => rt.reconcile(root),
+      reconcile,
       close: async () => {
         clearInterval(timer);
         try {

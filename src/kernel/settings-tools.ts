@@ -3,6 +3,7 @@ import { configure, defineTool, type JsonObject, ROOT_CONVERSATION_ID } from "@e
 import { ChangesDoc, type ConfigOp, logChange } from "./changes.ts";
 import type { JapaExtension } from "./extension.ts";
 import { message } from "./loader.ts";
+import { revert } from "./workspace.ts";
 import {
   checkModel,
   getPath,
@@ -18,7 +19,7 @@ const reply = (text: string) => ({ content: [{ type: "text" as const, text }] })
 
 /**
  * The CoS's tools to read and change settings (live, in place) and to list and undo changes; `changed` runs after
- * each settings change.
+ * each settings change, `reconcile` after undoing commits.
  */
 export function settingsTools(
   home: string,
@@ -26,6 +27,7 @@ export function settingsTools(
   models: Models,
   extensions: () => JapaExtension[],
   changed: () => void,
+  reconcile: () => Promise<unknown>,
 ) {
   const validate = (user: JsonObject) => {
     const schemas = Object.fromEntries(extensions().flatMap((e) => (e.settings ? [[e.name, e.settings]] : [])));
@@ -97,20 +99,26 @@ export function settingsTools(
       const { changes } = (await api.snapshot(ChangesDoc, ROOT_CONVERSATION_ID, context))!;
       const change = changes.find((c) => c.id === id);
       if (change === undefined) return reply(`No change ${id}.`);
-      if (change.undo.commits.length > 0) return reply("Can't undo that yet.");
-      const user = readUserSettings(home);
-      for (const op of (change.undo.configOps ?? []).toReversed()) setPath(user, op.path, op.before);
-      let next: Settings;
-      try {
-        next = validate(user);
-      } catch (error) {
-        return reply(`Not undone: ${message(error)}`);
+      if (change.undo.commits.length > 0) {
+        revert(home, change.undo.commits);
+        await reconcile();
       }
-      saveSettings(home, user);
-      Object.assign(settings, next);
-      changed();
+      const { configOps } = change.undo;
+      let next: Settings | undefined;
+      if (configOps) {
+        const user = readUserSettings(home);
+        for (const op of configOps.toReversed()) setPath(user, op.path, op.before);
+        try {
+          next = validate(user);
+        } catch (error) {
+          return reply(`Not undone: ${message(error)}`);
+        }
+        saveSettings(home, user);
+        Object.assign(settings, next);
+        changed();
+      }
       await api.commit(async (tx) => {
-        await configure(tx, ROOT_CONVERSATION_ID, { model: next.models.cos! });
+        if (next) await configure(tx, ROOT_CONVERSATION_ID, { model: next.models.cos! });
         const doc = await tx.doc(ChangesDoc, ROOT_CONVERSATION_ID);
         doc.changes = doc.changes.filter((c) => c.id !== id);
       }, context);

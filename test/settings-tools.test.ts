@@ -1,11 +1,10 @@
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
-import { type Contract, defineJapaExtension, type KernelContext, logChange, Type } from "../src/sdk.ts";
+import { type Contract, defineJapaExtension, type KernelContext, Type } from "../src/sdk.ts";
 import { bootTest, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, jobs, say, script, texts } from "./jobs-helpers.ts";
 
@@ -59,15 +58,12 @@ test("undoing a set of an absent key removes it, and the default applies again",
   await daemon.close();
 });
 
-test("undoing a set of an existing key restores it; a change with commits can't be undone yet", async () => {
+test("undoing a set of an existing key restores it", async () => {
   const { daemon, faux, home } = await bootTest({ jobs: { maxConcurrent: 3 } });
   await tool(daemon, faux, "settings_set", { path: "jobs.maxConcurrent", value: 2, title: "Fewer jobs" });
   expect(await tool(daemon, faux, "change_undo", { id: "1" })).toBe("Undid: Fewer jobs");
   expect(userFile(home).jobs).toEqual({ maxConcurrent: 3 });
   expect(await tool(daemon, faux, "settings_get", { path: "jobs.maxConcurrent" })).toBe("3");
-
-  await daemon.harness.commit((tx) => logChange(tx, { title: "Code", howToUse: "", undo: { commits: ["abc"] } }), ctx);
-  expect(await tool(daemon, faux, "change_undo", { id: "2" })).toBe("Can't undo that yet.");
   await daemon.close();
 });
 

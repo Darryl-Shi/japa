@@ -32,6 +32,8 @@ Use the smallest mechanism that meets the need:
 
 The test: if existing tools plus written instructions can do it, it's content. Often it's both: an extension provides the tool and bundles a skill that teaches when and how to use it.
 
+**Building.** To build a skill, worker profile or extension, choose the mechanism with the ladder, then start one `builder` job at a time, with a brief that states the requirement and the chosen mechanism. When it completes, call `install({ kind, name })`, verify with a real dry run, then report. If the install fails, retry through the builder or tell the user plainly.
+
 ## UX rules
 
 1. Never make the user think about the backend. Don't mention skills, extensions, contracts, workers or jobs unless they ask.

@@ -14,8 +14,8 @@ import type { JapaExtension } from "./extension.ts";
 import { jobsExtension, type JobsOptions, reconfigureJobs } from "./jobs/cos.ts";
 import { discoverExtensions, type LoadError, loadExtensions, message } from "./loader.ts";
 import type { Settings } from "./settings.ts";
-import { loadSkills, skillsExtension } from "./skills.ts";
-import { loadWorkers, profileError } from "./workers.ts";
+import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
+import { loadWorkers, profileError, type WorkerProfile } from "./workers.ts";
 import { cachedCopy, dirHash } from "./workspace.ts";
 
 export type Runtime = ReturnType<typeof createRuntime>;
@@ -51,6 +51,9 @@ export function createRuntime(input: {
     extensions: input.extensions,
     errors: input.errors,
     capabilities: "",
+    /** The loaded skills and worker profiles, by name. */
+    skills: new Map<string, Skill>() as ReadonlyMap<string, Skill>,
+    profiles: new Map<string, WorkerProfile>() as ReadonlyMap<string, WorkerProfile>,
     /** The contract activation order, with the extension-defined contracts after tools. */
     order: () => {
       const defined = runtime.extensions.flatMap((e) => e.contracts ?? []).map((c) => c.name);
@@ -129,6 +132,8 @@ export function createRuntime(input: {
       workers.profiles.delete(profile.name);
     }
     replaceErrors((e) => /^(skill|worker):/.test(e.name), errors);
+    runtime.skills = skills.skills;
+    runtime.profiles = workers.profiles;
     const skillsExt = skillsExtension(skills.skills);
     jobsOptions = { profiles: workers.profiles, settings, extensions: built, skills: skillsExt };
     const jobs = jobsExtension(jobsOptions);
