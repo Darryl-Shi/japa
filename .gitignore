@@ -1,0 +1,13 @@
+node_modules/
+.japa/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+# Private runtime state, including homes outside the default .japa directory.
+credentials.json
+MEMORY.md
+*.sqlite
+*.sqlite-*
