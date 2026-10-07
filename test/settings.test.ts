@@ -21,6 +21,10 @@ test("storage and secrets merge over their defaults", () => {
   expect(s.secrets).toEqual({ adapter: "file", dir: "/s" });
 });
 
+test("jobs merges over its default", () => {
+  expect(loadSettings(tempHome({ jobs: {} })).jobs).toEqual({ maxConcurrent: 4 });
+});
+
 test("invalid JSON names the file", () => {
   const home = tempHome();
   writeFileSync(join(home, "settings.json"), "{nope");

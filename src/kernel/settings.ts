@@ -9,9 +9,10 @@ export function japaHome(): string {
 }
 
 export type Settings = {
-  models: { cos?: ModelRef };
+  models: { cos?: ModelRef; worker?: ModelRef };
   storage: { adapter: string } & JsonObject;
   secrets: { adapter: string } & JsonObject;
+  jobs: { maxConcurrent: number };
   extensions: Record<string, JsonObject>;
 };
 
@@ -19,10 +20,11 @@ export const DEFAULT_SETTINGS: Settings = {
   models: {},
   storage: { adapter: "sqlite" },
   secrets: { adapter: "file" },
+  jobs: { maxConcurrent: 4 },
   extensions: {},
 };
 
-/** Reads `<home>/settings.json` merged over the defaults per top-level key; `storage` and `secrets` one level deep. */
+/** Reads `<home>/settings.json` merged over the defaults per top-level key; `storage`, `secrets` and `jobs` one level deep. */
 export function loadSettings(home: string): Settings {
   const path = join(home, "settings.json");
   const user = existsSync(path) ? parseJson(path) : {};
@@ -31,6 +33,7 @@ export function loadSettings(home: string): Settings {
     ...user,
     storage: { ...DEFAULT_SETTINGS.storage, ...user.storage },
     secrets: { ...DEFAULT_SETTINGS.secrets, ...user.secrets },
+    jobs: { ...DEFAULT_SETTINGS.jobs, ...user.jobs },
   };
 }
 
