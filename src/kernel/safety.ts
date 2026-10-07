@@ -78,7 +78,10 @@ export function createSafety(input: {
 
   async function autoRollback(name: string, reason: string) {
     const sha = rollBack(home, "extension", name);
-    if (sha === undefined) return; // already the last known good version
+    if (sha === undefined) {
+      const content = `[japa] ${name} keeps failing and has no earlier working version: ${reason}`;
+      return input.root().submit({ type: "input", content, requestId: `rollback-none:${name}:${head(home)}` }, ctx);
+    }
     clearTimeout(timer);
     await input.reconcile();
     const root = input.root();

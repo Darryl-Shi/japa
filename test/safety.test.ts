@@ -58,6 +58,23 @@ test("an extension whose tool keeps failing is rolled back to its last known goo
   await daemon.close();
 });
 
+test("an extension that keeps failing with no earlier working version is reported once", { timeout: 60_000 }, async () => {
+  const { daemon, faux, home } = await bootTest();
+  stage(home, "extensions/flaky/index.ts", flaky(true));
+  await tool(daemon, faux, "install", { kind: "extension", name: "flaky" });
+  daemon.markGood();
+
+  script(faux, (role, text) => (role === "user" && text === "flaky" ? call("flaky", {}) : undefined));
+  const notices = async () => (await texts(daemon.root, "user")).filter((t) => t.startsWith("[japa] flaky keeps failing"));
+  for (let i = 0; i < 5; i++) await ask(daemon, "flaky");
+  await waitFor(async () => (await notices()).length > 0);
+  for (let i = 0; i < 5; i++) await ask(daemon, "flaky");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(await notices()).toEqual(["[japa] flaky keeps failing and has no earlier working version: its tool flaky failed 5 times in a row"]);
+  expect(existsSync(join(home, "extensions", "flaky"))).toBe(true);
+  await daemon.close();
+});
+
 test("rollback restores a skill's last known good version", async () => {
   const { daemon, faux, home } = await bootTest();
   stage(home, "skills/s/SKILL.md", skill("Does s"));

@@ -58,8 +58,23 @@ test("undoing an install that a later install changed is refused plainly", async
   await tool(daemon, faux, "install", { kind: "skill", name: "s" });
   stage(home, "skills/s/SKILL.md", "---\nname: s\ndescription: Does s better\n---\nDo s.");
   await tool(daemon, faux, "install", { kind: "skill", name: "s" });
-  expect(await tool(daemon, faux, "change_undo", { id: "1" })).toMatch(/^Not undone: /);
+  const undo = await tool(daemon, faux, "change_undo", { id: "1" });
+  expect(undo).toMatch(/^Not undone: [^]*could not revert/);
+  expect(undo).not.toContain("--abort");
   expect(readFileSync(join(home, "skills", "s", "SKILL.md"), "utf8")).toContain("Does s better");
+  await daemon.close();
+});
+
+test("undoing an install that was already rolled back succeeds and removes its entry", async () => {
+  const { daemon, faux, home } = await bootTest();
+  stage(home, "skills/s/SKILL.md", "---\nname: s\ndescription: Does s\n---\nDo s.");
+  await tool(daemon, faux, "install", { kind: "skill", name: "s" });
+  stage(home, "skills/s/SKILL.md", "---\nname: s\ndescription: Does s better\n---\nDo s.");
+  await tool(daemon, faux, "install", { kind: "skill", name: "s" });
+  await tool(daemon, faux, "rollback", { kind: "skill", name: "s", to: "HEAD~1" });
+  expect(await tool(daemon, faux, "change_undo", { id: "2" })).toBe("Undid: Installed skill s");
+  expect(await tool(daemon, faux, "changes_list")).not.toMatch(/2 .*Installed skill s/);
+  expect(readFileSync(join(home, "skills", "s", "SKILL.md"), "utf8")).not.toContain("better");
   await daemon.close();
 });
 

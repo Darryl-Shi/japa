@@ -17,8 +17,8 @@ Put each piece where japa expects it:
 Before you start, read the authoring skills with `skill_read` when they exist, and follow them.
 Keep the change small and focused on the brief.
 
-When you are done, run `japa check <kind> <name>` (kind is `skill`, `worker` or `extension`), fix
-every problem it reports and run it again until it passes.
+When you are done, run `../node_modules/japa/src/cli/main.ts check <kind> <name>` (kind is `skill`,
+`worker` or `extension`), fix every problem it reports and run it again until it passes.
 
-Finish with `job_complete`, giving the `kind` and `name` of what you built and saying how to use
-the result.
+Finish with `job_complete`; put the `kind` and `name` of what you built in your summary, and say how
+to use the result.

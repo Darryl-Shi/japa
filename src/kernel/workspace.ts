@@ -49,16 +49,20 @@ export function commit(home: string, paths: string[], message: string): string |
 
 export const head = (home: string) => git(home, "rev-parse", "HEAD");
 
-/** Reverts `shas` (given oldest first) newest first; returns the new HEAD. On a conflict, aborts and throws. */
+/**
+ * Reverts `shas` (given oldest first) newest first in one commit, or none when they are already undone; returns the
+ * new HEAD. On a failure, aborts any revert in progress and throws git's error.
+ */
 export function revert(home: string, shas: string[]): string {
-  for (const sha of shas.toReversed()) {
-    try {
-      git(home, "revert", "--no-edit", sha);
-    } catch (err) {
-      git(home, "revert", "--abort");
-      throw err;
-    }
+  try {
+    for (const sha of shas.toReversed()) git(home, "revert", "--no-commit", sha);
+  } catch (err) {
+    if (existsSync(join(home, ".git", "REVERT_HEAD"))) git(home, "revert", "--abort");
+    throw err;
   }
+  git(home, "revert", "--quit");
+  const subjects = git(home, "log", "--no-walk=unsorted", "--format=Revert \"%s\"", ...shas.toReversed());
+  if (git(home, "diff", "--cached", "--name-only")) git(home, "commit", "-q", "-m", subjects);
   return head(home);
 }
 
