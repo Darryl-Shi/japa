@@ -138,3 +138,38 @@ test("a storage change takes effect after a restart", async () => {
   );
   await daemon.close();
 });
+
+test("setting models without cos is refused, and nothing changes", async () => {
+  const { daemon, faux, home } = await bootTest();
+  const before = userFile(home);
+  const value = { worker: { provider: "faux", modelId: "faux-1" } };
+  expect(await tool(daemon, faux, "settings_set", { path: "models", value })).toMatch(/^Not changed: /);
+  expect(userFile(home)).toEqual(before);
+  expect(await tool(daemon, faux, "changes_list")).toBe("No changes yet.");
+  await daemon.close();
+});
+
+test("a path through __proto__ is refused", async () => {
+  const { daemon, faux } = await bootTest();
+  expect(await tool(daemon, faux, "settings_set", { path: "__proto__.polluted", value: 1 })).toBe(
+    "Not changed: invalid path",
+  );
+  expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  await daemon.close();
+});
+
+test("setting an object writes only the given keys to the user file", async () => {
+  const { daemon, faux, home } = await bootTest();
+  await tool(daemon, faux, "settings_set", { path: "context", value: { resetTokens: 100 } });
+  expect(userFile(home).context).toEqual({ resetTokens: 100 });
+  await daemon.close();
+});
+
+test("status reports the live CoS model", async () => {
+  const kit = testKit({ models: [{ id: "one" }, { id: "two" }] });
+  const { daemon, faux } = await bootTest({}, [], kit);
+  const two = { ...kit.model, modelId: "two" };
+  await tool(daemon, faux, "settings_set", { path: "models.cos", value: two });
+  expect(daemon.status().model).toEqual(two);
+  await daemon.close();
+});

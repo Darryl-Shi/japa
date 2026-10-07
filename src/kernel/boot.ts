@@ -114,7 +114,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const environments = new Map<string, EnvironmentAdapter>();
     const errors = [...loaded.errors, ...skills.errors];
     const status = (): Status => ({
-      model,
+      model: settings.models.cos!,
       extensions: extensions.map((e) => ({
         name: e.name,
         summary: e.summary,

@@ -23,6 +23,7 @@ export const secretRequest = defineTool({
   name: "secret_request",
   description:
     "Ask the user for a secret, such as an API key, by name (e.g. svc.token) and why it's needed. " +
+    "A model provider's API key is `<provider>.apiKey`, e.g. `openai.apiKey`. " +
     "Returns at once; you'll be told when it's provided. You never see the value.",
   parameters: Type.Object({ name: Type.String(), why: Type.String() }),
   execute: async ({ name, why }, api, context) => {

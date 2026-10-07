@@ -31,8 +31,9 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 /** The kernel keys' schema; `extensions.<name>` is checked against that extension's own schema. */
+const Ref = Type.Object({ provider: Type.String(), modelId: Type.String() });
 export const settingsSchema = Type.Object({
-  models: Type.Record(Type.String(), Type.Object({ provider: Type.String(), modelId: Type.String() })),
+  models: Type.Object({ cos: Ref, worker: Type.Optional(Ref), consolidation: Type.Optional(Ref) }),
   storage: Type.Object({ adapter: Type.String() }),
   secrets: Type.Object({ adapter: Type.String() }),
   jobs: Type.Object({ maxConcurrent: Type.Integer({ minimum: 1 }) }),
@@ -103,6 +104,7 @@ export function getPath(obj: object, path: string): unknown {
 /** Sets the value at dotted `path`, creating objects on the way; `undefined` deletes the key. */
 export function setPath(obj: object, path: string, value: unknown): void {
   const keys = path.split(".");
+  if (keys.some((k) => ["__proto__", "constructor", "prototype"].includes(k))) throw new Error("invalid path");
   const last = keys.pop()!;
   const parent = keys.reduce<any>((o, key) => (o[key] ??= {}), obj);
   if (value === undefined) delete parent[last];

@@ -55,14 +55,15 @@ export function settingsTools(
     execute: async ({ path, value, title, howToUse }, api, context) => {
       const user = readUserSettings(home);
       const before = getPath(user, path) as ConfigOp["before"];
-      setPath(user, path, value);
       let next: Settings;
       try {
+        setPath(user, path, value);
         next = validate(user);
       } catch (error) {
         return reply(`Not changed: ${message(error)}`);
       }
-      setPath(user, path, getPath(next, path)); // as validated, e.g. "2" converted to 2
+      const valid = getPath(next, path);
+      if (typeof valid !== "object") setPath(user, path, valid); // as validated, e.g. "2" converted to 2
       saveSettings(home, user);
       Object.assign(settings, next);
       changed();
