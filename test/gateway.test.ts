@@ -45,12 +45,17 @@ test("attach streams pending secret requests and a secret message fulfils one", 
   );
   const client = await connect(home);
   const lists: SecretRequest[][] = [];
-  client.onMessage((m) => m.type === "secrets" && lists.push(m.pending));
+  const seen: ServerMessage[] = [];
+  client.onMessage((m) => {
+    seen.push(m);
+    if (m.type === "secrets") lists.push(m.pending);
+  });
   client.send({ type: "attach" });
   client.send({ type: "submit", text: "go" });
   await vi.waitFor(() => expect(lists.at(-1)).toMatchObject([{ name: "svc.token", why: "to sync" }]));
   client.send({ type: "secret", requestId: lists.at(-1)![0]!.id, value: "s3cr3t" });
   await vi.waitFor(() => expect(lists.at(-1)).toEqual([]));
+  expect(JSON.stringify(seen)).not.toContain("s3cr3t");
   client.close();
   await daemon.close();
 });

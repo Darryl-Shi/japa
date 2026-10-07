@@ -52,7 +52,9 @@ export async function runChat(home: string): Promise<void> {
       return;
     }
     const input = new MaskedInput({ prompt: `${request.why} — enter ${request.name} (hidden): ` });
-    input.onSubmit = (value) => client.send({ type: "secret", requestId: request.id, value });
+    input.onSubmit = (value) => {
+      if (value !== "") client.send({ type: "secret", requestId: request.id, value });
+    };
     input.onEscape = () => {
       dismissed = true;
       showPrompt();

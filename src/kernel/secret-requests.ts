@@ -15,7 +15,7 @@ export const SecretRequestsDoc = defineDoc<{ nextId: number; pending: SecretRequ
   initial: () => ({ nextId: 1, pending: [] }),
 });
 
-const SECRET_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+const SECRET_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
 /** The CoS's tool to ask the user for a secret; the value goes straight to the secrets store. */

@@ -41,7 +41,9 @@ test("a secret request is listed, fulfilled into the store, and announced once w
       ? call("secret_request", { name: "svc.token", why: "to read your calendar" })
       : role === "user" && text === "bad"
         ? call("secret_request", { name: "Bad/name", why: "x" })
-        : undefined,
+        : role === "user" && text === "provider"
+          ? call("secret_request", { name: "anthropic.apiKey", why: "to think" })
+          : undefined,
   );
   const events: AgentEvent[] = [];
   await surface().root.events((e) => events.push(...e));
@@ -68,6 +70,8 @@ test("a secret request is listed, fulfilled into the store, and announced once w
     expect((await texts(daemon.root, "user")).filter((t) => t === "[secret svc.token provided]")).toHaveLength(1),
   );
   await vi.waitFor(async () => expect(await idle(daemon)).toBe(true));
+  await ask(daemon, "provider"); // provider key names are requestable
+  await vi.waitFor(() => expect(lists.at(-1)).toMatchObject([{ name: "anthropic.apiKey" }]));
 
   const page = await daemon.root.entries({}, 500, undefined, ctx);
   const docs = [
