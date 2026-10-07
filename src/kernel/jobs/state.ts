@@ -1,0 +1,66 @@
+import { defineDoc, type ConversationId, type EntryId } from "@earendil-works/pi-durable";
+
+export type JobStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "cancelled";
+
+export type Job = {
+  id: string;
+  title: string;
+  brief: string;
+  worker: string;
+  status: JobStatus;
+  conversationId: ConversationId;
+  progress?: string;
+  result?: string; // done: summary, needs_input: question, failed: reason
+  createdAt: number;
+  updatedAt: number;
+  seq: number; // reports posted
+  reported: EntryId[]; // answer entries already reported
+};
+
+// On the root conversation.
+export const JobsDoc = defineDoc<{ nextId: number; jobs: Record<string, Job> }>({
+  kind: "japa.jobs",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ nextId: 1, jobs: {} }),
+});
+
+// On each job's conversation.
+export const JobDoc = defineDoc<{ jobId: string; environment: string }>({
+  kind: "japa.job",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ jobId: "", environment: "" }),
+});
+
+function byId(jobs: Record<string, Job>): Job[] {
+  return Object.values(jobs).sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+export function promote(jobs: Record<string, Job>, max: number): Job[] {
+  const all = byId(jobs);
+  const running = all.filter((j) => j.status === "running").length;
+  return all.filter((j) => j.status === "queued").slice(0, Math.max(0, max - running));
+}
+
+export function reportText(job: Job, text: string): string {
+  return `[job ${job.id} "${job.title}" ${job.status}] ${text}`;
+}
+
+function cut(text: string): string {
+  return text.length > 120 ? `${text.slice(0, 119)}…` : text;
+}
+
+export function board(jobs: Record<string, Job>): string | undefined {
+  const lines = byId(jobs)
+    .filter((j) => j.status === "queued" || j.status === "running" || j.status === "needs_input")
+    .map((j) => {
+      const detail = j.status === "running" ? j.progress : j.status === "needs_input" ? j.result : undefined;
+      return `- ${j.id} "${j.title}" ${j.status}${detail ? `: ${cut(detail)}` : ""}`;
+    });
+  return lines.length ? lines.join("\n") : undefined;
+}
