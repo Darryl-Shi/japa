@@ -29,7 +29,7 @@ export const JobsDoc = defineDoc<{ nextId: number; jobs: Record<string, Job> }>(
 });
 
 // On each job's conversation.
-export const JobDoc = defineDoc<{ jobId: string; environment: string }>({
+export const JobDoc = defineDoc<{ jobId: string; environment: string; skills?: string[] }>({
   kind: "japa.job",
   version: 1,
   scope: "conversation",

@@ -17,7 +17,7 @@ import {
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, type Models } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ChangesDoc } from "./changes.ts";
 import {
@@ -43,6 +43,7 @@ import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.t
 import { acquireLock } from "./lock.ts";
 import { settingsTools } from "./settings-tools.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
+import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
 import { loadWorkers, type WorkerProfile } from "./workers.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -82,8 +83,17 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
     const dirs = options.extensionDirs ?? [join(packageRoot, "extensions"), join(home, "extensions")];
-    const loaded = await loadExtensions(discoverExtensions(dirs), contracts);
+    const found = discoverExtensions(dirs);
+    const loaded = await loadExtensions(found, contracts);
     const extensions = withOverrides(loaded.extensions, options.extensions ?? []);
+    // Skill dirs: packaged, then each loaded extension's own (when loaded from disk), then home.
+    const skills = loadSkills([
+      join(packageRoot, "skills"),
+      ...found
+        .filter((f) => extensions.some((e) => e.name === f.name && loaded.extensions.includes(e)))
+        .map((f) => join(dirname(f.file), "skills")),
+      join(home, "skills"),
+    ]);
     const defined = extensions.flatMap((e) => e.contracts ?? []);
     for (const c of defined) contracts.set(c.name, c);
     const order = ACTIVATION_ORDER.flatMap((name) => (name === "tool" ? [name, ...defined.map((c) => c.name)] : name));
@@ -95,7 +105,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     const models = createModels();
     const environments = new Map<string, EnvironmentAdapter>();
-    const errors = [...loaded.errors];
+    const errors = [...loaded.errors, ...skills.errors];
     const status = (): Status => ({
       model,
       extensions: extensions.map((e) => ({
@@ -212,16 +222,18 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")]);
       errors.push(...workers.errors);
       for (const profile of workers.profiles.values()) {
-        const error = profileError(profile, models, environments, built);
+        const error = profileError(profile, models, environments, built, skills.skills);
         if (error === undefined) continue;
         errors.push({ name: `worker:${profile.name}`, error });
         workers.profiles.delete(profile.name);
       }
-      const jobs = jobsExtension({ profiles: workers.profiles, settings, extensions: built });
+      const skillsExt = skillsExtension(skills.skills);
+      const jobs = jobsExtension({ profiles: workers.profiles, settings, extensions: built, skills: skillsExt });
       registry.install(WorkerExtension);
       registry.install(CodingTools);
+      registry.install(skillsExt);
       registry.install(jobs);
-      selection.push(cos, jobs, ...built.values());
+      selection.push(cos, jobs, skillsExt, ...built.values());
     };
     for (const name of order) {
       if (name !== "provider") await activate(name);
@@ -294,12 +306,13 @@ function resolveCosModel(settings: Settings, models: Models, home: string): Mode
   return ref;
 }
 
-/** Why `profile` cannot run here: an unknown model, environment, built-in tool or extension. */
+/** Why `profile` cannot run here: an unknown model, environment, built-in tool, extension or skill. */
 function profileError(
   profile: WorkerProfile,
   models: Models,
   environments: ReadonlyMap<string, EnvironmentAdapter>,
   extensions: ReadonlyMap<string, Extension>,
+  skills: ReadonlyMap<string, Skill>,
 ): string | undefined {
   if (profile.model && models.getModel(profile.model.provider, profile.model.modelId) === undefined) {
     return `unknown model "${profile.model.provider}/${profile.model.modelId}"`;
@@ -309,6 +322,8 @@ function profileError(
   if (tool !== undefined) return `unknown tool "${tool}"`;
   const extension = profile.extensions?.find((e) => !extensions.has(e));
   if (extension !== undefined) return `unknown extension "${extension}"`;
+  const skill = profile.skills?.find((s) => !skills.has(s));
+  if (skill !== undefined) return `unknown skill "${skill}"`;
   return undefined;
 }
 

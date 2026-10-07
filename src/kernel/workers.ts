@@ -13,6 +13,7 @@ export type WorkerProfile = {
   environment: string;
   tools: string[];
   extensions?: string[]; // undefined = all
+  skills?: string[]; // undefined = all
   cwd?: string;
   instructions: string;
 };
@@ -56,6 +57,7 @@ function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; bod
     environment: (environment as string | undefined) ?? "local",
     tools: (tools as string[] | undefined) ?? [],
     ...(extensions && { extensions: extensions as string[] }),
+    ...(skills && { skills: skills as string[] }),
     ...(cwd !== undefined && { cwd: (cwd as string).replace(/^~/, homedir()) }),
     instructions: body,
   };

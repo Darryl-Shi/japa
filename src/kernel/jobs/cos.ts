@@ -28,8 +28,9 @@ export function jobsExtension(options: {
   profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
   extensions: ReadonlyMap<string, Extension>; // extension-built Pi Durable extensions, by japa extension name
+  skills: Extension;
 }): Extension {
-  const { profiles, settings, extensions } = options;
+  const { profiles, settings, extensions, skills } = options;
   const { JobRun, start } = jobRun(settings);
 
   const agentOf = (profile: WorkerProfile) => ({
@@ -40,6 +41,7 @@ export function jobsExtension(options: {
     extensions: [
       WorkerExtension,
       CodingTools,
+      skills,
       ...(profile.extensions?.map((name) => extensions.get(name)!) ?? extensions.values()),
     ],
     tools: { remove: CodingTools.tools!.filter((t) => !profile.tools.includes(t.name)) },
@@ -60,7 +62,11 @@ export function jobsExtension(options: {
         const anchor = await tx.createTask(Anchor, null, BACKGROUND);
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
         await configure(tx, child.id, agentOf(profile));
-        Object.assign(await tx.doc(JobDoc, child.id), { jobId: id, environment: profile.environment });
+        Object.assign(await tx.doc(JobDoc, child.id), {
+          jobId: id,
+          environment: profile.environment,
+          ...(profile.skills && { skills: profile.skills }),
+        });
         const now = Date.now();
         doc.jobs[id] = {
           id,
