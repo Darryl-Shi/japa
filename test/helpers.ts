@@ -33,6 +33,15 @@ export function testKit(): { faux: FauxProviderHandle; extension: JapaExtension;
   return { faux, extension, model: { provider, modelId: id } };
 }
 
+/** Polls `fn` every 20 ms until it returns true; throws `waitFor timed out` after `timeoutMs`. */
+export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await fn())) {
+    if (Date.now() > deadline) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 /** Boots a daemon in a temp home on in-memory storage, with the faux model as `models.cos`. */
 export async function bootTest(
   settings: object = {},

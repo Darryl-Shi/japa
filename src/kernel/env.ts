@@ -1,6 +1,7 @@
-import { type HarnessOptions, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { type EnvTarget, type HarnessOptions, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { err, type ExecutionEnv, ExecutionError, FileError } from "@earendil-works/pi-durable/env";
 import type { EnvironmentAdapter } from "./contracts.ts";
+import { JobDoc } from "./jobs/state.ts";
 
 export const READ_ONLY_MESSAGE = "Read-only here: delegate changes and commands to a job.";
 
@@ -30,15 +31,19 @@ export function readOnly(env: ExecutionEnv): ExecutionEnv {
   });
 }
 
-/** The Harness `env` option: the default environment, read-only for the CoS (root) conversation. */
+/** The Harness `env` option: the default environment, read-only for the CoS (root); a job's own environment. */
 export function createEnvDispatcher(
   environments: ReadonlyMap<string, EnvironmentAdapter>,
   defaultName = "local",
 ): NonNullable<HarnessOptions["env"]> {
-  return (target) => {
-    const adapter = environments.get(defaultName);
-    if (adapter === undefined) throw new Error(`No environment "${defaultName}" is installed`);
-    const env = adapter.create({ conversationId: String(target.conversationId), cwd: target.cwd });
-    return target.conversationId === ROOT_CONVERSATION_ID ? readOnly(env) : env;
+  const create = (name: string, target: EnvTarget) => {
+    const adapter = environments.get(name);
+    if (adapter === undefined) throw new Error(`No environment "${name}" is installed`);
+    return adapter.create({ conversationId: String(target.conversationId), cwd: target.cwd });
+  };
+  return async (target, context) => {
+    if (target.conversationId === ROOT_CONVERSATION_ID) return readOnly(create(defaultName, target));
+    const job = await target.read.snapshot(JobDoc, target.conversationId, context);
+    return create(job?.environment || defaultName, target);
   };
 }

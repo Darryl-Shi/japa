@@ -12,7 +12,10 @@ import { validateExtension } from "../src/kernel/extension.ts";
 import { createEnvDispatcher, READ_ONLY_MESSAGE, readOnly } from "../src/kernel/env.ts";
 
 const localAdapter = localEnv.provides!.environment![0] as EnvironmentAdapter;
-const read = undefined as unknown as EnvTarget["read"];
+/** A reader whose job conversations have `JobDoc` `doc`. */
+const reading = (doc?: { jobId: string; environment: string }) =>
+  ({ snapshot: async () => doc }) as unknown as EnvTarget["read"];
+const read = reading();
 
 let dir: string;
 beforeEach(() => {
@@ -48,6 +51,29 @@ test("dispatcher wraps the root conversation only", async () => {
   const otherEnv = await dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx);
   expect((await rootEnv!.writeFile(join(dir, "c.txt"), "x", ctx)).ok).toBe(false);
   expect((await otherEnv!.writeFile(join(dir, "c.txt"), "x", ctx)).ok).toBe(true);
+});
+
+test("dispatcher gives a job its own environment, unwrapped", async () => {
+  const created: string[] = [];
+  const probe: EnvironmentAdapter = {
+    name: "probe",
+    create: (input) => {
+      created.push(input.conversationId);
+      return localAdapter.create(input);
+    },
+  };
+  const dispatch = createEnvDispatcher(
+    new Map([
+      ["local", localAdapter],
+      ["probe", probe],
+    ]),
+  );
+  const job = { conversationId: 2 as ConversationId, cwd: dir, read: reading({ jobId: "1", environment: "probe" }) };
+  const env = await dispatch(job as EnvTarget, ctx);
+  expect(created).toEqual(["2"]);
+  expect((await env!.writeFile(join(dir, "d.txt"), "x", ctx)).ok).toBe(true);
+  const unknown = { ...job, read: reading({ jobId: "1", environment: "nope" }) };
+  await expect(async () => dispatch(unknown as EnvTarget, ctx)).rejects.toThrow('No environment "nope" is installed');
 });
 
 test("dispatcher throws when the default environment is missing", async () => {
