@@ -101,7 +101,8 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord): Promi
   job.reported.push(settled.answer);
   const answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage;
   // Only the run that called job_complete reports the job done; a later run's answer is its own.
-  if (answer.content.some((c) => c.type === "toolCall" && c.name === "job_complete")) {
+  if (job.completed) {
+    job.completed = false;
     return reportText(job, job.result!);
   }
   job.status = "needs_input";

@@ -15,6 +15,7 @@ export type Job = {
   updatedAt: number;
   seq: number; // reports posted
   reported: EntryId[]; // answer entries already reported
+  completed?: boolean; // job_complete called in the run not yet reported
 };
 
 // On the root conversation.

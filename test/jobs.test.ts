@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type FauxProviderHandle, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -83,6 +83,23 @@ test("a job asks a question and resumes on a follow-up", async () => {
   await waitFor(async () => (await reported(daemon)).length === 2);
   expect((await reported(daemon))[1]).toEqual('[job 1 "Clone" done] cloned');
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", seq: 2 });
+  await daemon.close();
+});
+
+test("job_progress and job_complete in one message report done once", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (role, text) => {
+    if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
+    if (text === "Do both") {
+      const calls = [fauxToolCall("job_progress", { note: "half" }), fauxToolCall("job_complete", { summary: "2" })];
+      return fauxAssistantMessage(calls, { stopReason: "toolUse" });
+    }
+    if (role === "toolResult" && text === "Done.") return say("All done.");
+  });
+  await ask(daemon, "start both");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Both" done] 2']);
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "2" });
   await daemon.close();
 });
 

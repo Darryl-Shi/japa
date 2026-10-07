@@ -44,6 +44,7 @@ const jobComplete = defineTool({
       if (job.status === "cancelled") return;
       job.status = "done";
       job.result = summary;
+      job.completed = true;
     });
     return { content: [{ type: "text", text: "Done." }], control: { terminate: true } };
   },
