@@ -86,11 +86,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   let harness: Harness | undefined;
 
   try {
+    linkSdk(home, packageRoot);
     ensureWorkspace(home);
     const safeMode = crashLooping(home) ? enterSafeMode(home, { defaultAdapters: false }) : undefined;
     recordBoot(home);
     const settings = loadSettings(home);
-    linkSdk(home, packageRoot);
 
     const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
     const workspace = join(home, "extensions");
@@ -340,7 +340,7 @@ async function withSafeModeHint<T>(open: () => Promise<T>): Promise<T> {
   try {
     return await open();
   } catch (error) {
-    throw new Error(`${message(error)} — run "japa safe-mode --default-adapters" to restore the defaults.`);
+    throw new Error(`${message(error)} — run "japa safe-mode --default-adapters" to restore the defaults.`, { cause: error });
   }
 }
 
