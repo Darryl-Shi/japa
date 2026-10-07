@@ -3,7 +3,6 @@ import {
   type AgentEvent,
   type Conversation,
   createRegistry,
-  defineExtension,
   type EntryId,
   type Extension,
   Harness,
@@ -11,7 +10,6 @@ import {
   type ModelRef,
   ROOT_CONVERSATION_ID,
   type Storage,
-  type ToolRegistration,
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -20,12 +18,9 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capabilities } from "./capabilities.ts";
 import { ChangesDoc } from "./changes.ts";
 import {
-  ACTIVATION_ORDER,
   CORE_CONTRACTS,
-  type Dispose,
   type EnvironmentAdapter,
   type KernelContext,
   type SecretsAdapter,
@@ -36,20 +31,18 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
-import { jobsExtension } from "./jobs/cos.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { consolidation } from "./memory/consolidate.ts";
 import { estimateTokens, MemoryDoc } from "./memory/state.ts";
 import { shouldConsolidate } from "./memory/trigger.ts";
-import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
+import { discoverExtensions, type LoadError, linkSdk, loadExtensions } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { settingsTools } from "./settings-tools.ts";
+import { createRuntime, type Runtime } from "./runtime.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
-import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
-import { loadWorkers, type WorkerProfile } from "./workers.ts";
-import { ensureWorkspace } from "./workspace.ts";
+import { dirHash, ensureWorkspace } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -69,6 +62,8 @@ export type Daemon = {
   consolidate(): Promise<void>;
   /** Consolidates when the CoS is idle and its live window is full or stale. */
   checkConsolidation(now?: number): Promise<void>;
+  /** Reloads the changed workspace extensions, skills and worker profiles; its errors also go to `status()`. */
+  reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
   close(): Promise<void>;
 };
 
@@ -77,8 +72,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   const { home } = options;
   mkdirSync(home, { recursive: true });
   const release = acquireLock(home);
-  const activations: Dispose[] = []; // provider and environment: disposed after the harness closes
-  const runtime: Dispose[] = []; // the other contracts: disposed before it closes
+  let runtime: Runtime | undefined;
   let storage: Storage | undefined;
   let harness: Harness | undefined;
 
@@ -88,21 +82,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     ensureWorkspace(home);
 
     const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
-    const dirs = options.extensionDirs ?? [join(packageRoot, "extensions"), join(home, "extensions")];
-    const found = discoverExtensions(dirs);
+    const workspace = join(home, "extensions");
+    const found = discoverExtensions(options.extensionDirs ?? [join(packageRoot, "extensions"), workspace]);
     const loaded = await loadExtensions(found, contracts);
     const extensions = withOverrides(loaded.extensions, options.extensions ?? []);
-    // Skill dirs: packaged, then each loaded extension's own (when loaded from disk), then home.
-    const skills = loadSkills([
-      join(packageRoot, "skills"),
-      ...found
-        .filter((f) => extensions.some((e) => e.name === f.name && loaded.extensions.includes(e)))
-        .map((f) => join(dirname(f.file), "skills")),
-      join(home, "skills"),
-    ]);
-    const defined = extensions.flatMap((e) => e.contracts ?? []);
-    for (const c of defined) contracts.set(c.name, c);
-    const order = ACTIVATION_ORDER.flatMap((name) => (name === "tool" ? [name, ...defined.map((c) => c.name)] : name));
+    for (const c of extensions.flatMap((e) => e.contracts ?? [])) contracts.set(c.name, c);
+    const fromDisk = found.filter((f) => extensions.some((e) => e.name === f.name && loaded.extensions.includes(e)));
+    const sources = new Map(fromDisk.map((f) => [f.name, dirname(f.file)]));
+    const hashes = new Map(
+      found.filter((f) => dirname(dirname(f.file)) === workspace).map((f) => [f.name, dirHash(dirname(f.file))]),
+    );
 
     const secrets = await adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(
       settings.secrets,
@@ -114,15 +103,14 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     const models = createModels({ credentials: secretsCredentialStore(secrets) });
     const environments = new Map<string, EnvironmentAdapter>();
-    const errors = [...loaded.errors, ...skills.errors];
     const status = (): Status => ({
       model: settings.models.cos!,
-      extensions: extensions.map((e) => ({
+      extensions: rt.extensions.map((e) => ({
         name: e.name,
         summary: e.summary,
         provides: Object.keys(e.provides ?? {}),
       })),
-      errors,
+      errors: rt.errors,
     });
     // `root` and `opened` are set before any surface or trigger starts.
     const kernel = (extension: string): KernelContext => ({
@@ -130,7 +118,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       extension,
       settings: () => settings.extensions[extension] ?? {},
       secret: async (name) => {
-        if (!extensions.find((e) => e.name === extension)?.secrets?.includes(name)) {
+        if (!rt.extensions.find((e) => e.name === extension)?.secrets?.includes(name)) {
           throw new Error(`Extension ${extension} did not declare secret "${name}"`);
         }
         return secrets.get(name);
@@ -197,29 +185,35 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         },
       },
     });
-    const activate = async (name: string) => {
-      const contract = contracts.get(name)!;
-      const disposers = name === "provider" || name === "environment" ? activations : runtime;
-      for (const e of extensions) {
-        for (const c of e.provides?.[name] ?? []) {
-          try {
-            const dispose = await contract.activate?.(c, kernel(e.name));
-            if (dispose) disposers.push(dispose);
-          } catch (err) {
-            errors.push({ name: e.name, error: `${name}: ${message(err)}` });
-          }
-        }
-      }
-    };
+    const registry = createRegistry();
+    // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
+    const selection: Extension[] = [];
+    const { Consolidate, startConsolidation } = consolidation({ models, settings });
+    const tools = settingsTools(home, settings, models, extensions, () => rt.refreshCapabilities());
+    const cos = cosExtension(settings, [Consolidate], tools, () => rt.capabilities);
+    const rt = createRuntime({
+      home,
+      packageRoot,
+      settings,
+      contracts,
+      extensions,
+      errors: [...loaded.errors],
+      sources,
+      hashes,
+      models,
+      environments,
+      registry,
+      selection,
+      cos,
+      kernel,
+    });
+    runtime = rt;
 
-    await activate("provider");
+    await rt.start(extensions, ["provider"]);
     const model = resolveCosModel(settings, models, home);
     if (settings.models.worker !== undefined) checkModel(models, settings.models.worker);
     if (settings.models.consolidation !== undefined) checkModel(models, settings.models.consolidation);
 
-    const registry = createRegistry();
-    // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
-    const selection: Extension[] = [];
     const { dir } = settings.secrets;
     const env = createEnvDispatcher(environments, [
       join(home, "secrets"),
@@ -227,28 +221,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     ]);
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
-    const { Consolidate, startConsolidation } = consolidation({ models, settings });
-    let profiles = new Map<string, WorkerProfile>(); // the usable worker profiles, set once environments are active
-    let capabilitiesText = "";
-    const refreshCapabilities = () => {
-      capabilitiesText = capabilities({ extensions, contracts: contracts.values(), profiles, models: settings.models });
-    };
-    const tools = settingsTools(home, settings, models, extensions, refreshCapabilities);
-    const cos = cosExtension(settings, [Consolidate], tools, () => capabilitiesText);
     registry.install(cos);
-    const built = new Map<string, Extension>();
-    for (const e of extensions) {
-      if (e.provides?.tool || e.durable) {
-        const tools = e.provides?.tool as ToolRegistration[] | undefined;
-        try {
-          const extension = defineExtension({ name: e.name, tools, ...e.durable });
-          registry.install(extension);
-          built.set(e.name, extension);
-        } catch (err) {
-          errors.push({ name: e.name, error: `tool: ${message(err)}` });
-        }
-      }
-    }
+    registry.install(WorkerExtension);
+    registry.install(CodingTools);
     const root = await ensureRoot(harness, model, ctx);
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
@@ -256,30 +231,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await tx.doc(ChangesDoc, root.id);
       await tx.doc(SecretRequestsDoc, root.id);
     }, ctx);
-    // Profiles need the activated environments; pending job tasks resume once `japa-jobs` is installed.
-    const installJobs = () => {
-      const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")], home);
-      errors.push(...workers.errors);
-      for (const profile of workers.profiles.values()) {
-        const error = profileError(profile, models, environments, built, skills.skills);
-        if (error === undefined) continue;
-        errors.push({ name: `worker:${profile.name}`, error });
-        workers.profiles.delete(profile.name);
-      }
-      const skillsExt = skillsExtension(skills.skills);
-      profiles = workers.profiles;
-      refreshCapabilities();
-      const jobs = jobsExtension({ profiles, settings, extensions: built, skills: skillsExt });
-      registry.install(WorkerExtension);
-      registry.install(CodingTools);
-      registry.install(skillsExt);
-      registry.install(jobs);
-      selection.push(cos, jobs, skillsExt, ...built.values());
-    };
-    for (const name of order) {
-      if (name !== "provider") await activate(name);
-      if (name === "environment") installJobs();
-    }
+    // The rest of the contracts; `japa-jobs` is installed after tools, so pending job tasks resume with it.
+    await rt.start(extensions, rt.order().slice(1));
     harness.resume();
 
     const consolidate = async () => {
@@ -303,24 +256,28 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       status,
       consolidate,
       checkConsolidation,
+      reconcile: () => rt.reconcile(root),
       close: async () => {
         clearInterval(timer);
         try {
-          await disposeAll(runtime);
+          await rt.dispose((c) => !isAdapter(c));
           await opened.close(ctx);
-          await disposeAll(activations);
+          await rt.dispose(isAdapter);
         } finally {
           release();
         }
       },
     };
   } catch (error) {
-    await disposeAll(activations).catch(() => {});
+    await runtime?.dispose(isAdapter).catch(() => {});
     await (harness ?? storage)?.close(ctx).catch(() => {});
     release();
     throw error;
   }
 }
+
+/** Provider and environment activations are disposed after the harness closes, the others before. */
+const isAdapter = (contract: string) => contract === "provider" || contract === "environment";
 
 /** `discovered` with each of `added` appended, replacing a discovered extension of the same name. */
 function withOverrides(discovered: JapaExtension[], added: JapaExtension[]): JapaExtension[] {
@@ -345,30 +302,4 @@ function resolveCosModel(settings: Settings, models: Models, home: string): Mode
   }
   checkModel(models, ref);
   return ref;
-}
-
-/** Why `profile` cannot run here: an unknown model, environment, built-in tool, extension or skill. */
-function profileError(
-  profile: WorkerProfile,
-  models: Models,
-  environments: ReadonlyMap<string, EnvironmentAdapter>,
-  extensions: ReadonlyMap<string, Extension>,
-  skills: ReadonlyMap<string, Skill>,
-): string | undefined {
-  if (profile.model && models.getModel(profile.model.provider, profile.model.modelId) === undefined) {
-    return `unknown model "${profile.model.provider}/${profile.model.modelId}"`;
-  }
-  if (!environments.has(profile.environment)) return `unknown environment "${profile.environment}"`;
-  const tool = profile.tools.find((t) => !CodingTools.tools!.some((builtin) => builtin.name === t));
-  if (tool !== undefined) return `unknown tool "${tool}"`;
-  const extension = profile.extensions?.find((e) => !extensions.has(e));
-  if (extension !== undefined) return `unknown extension "${extension}"`;
-  const skill = profile.skills?.find((s) => !skills.has(s));
-  if (skill !== undefined) return `unknown skill "${skill}"`;
-  return undefined;
-}
-
-/** Runs the disposers in reverse activation order and empties the list. */
-async function disposeAll(activations: Dispose[]): Promise<void> {
-  for (const dispose of activations.splice(0).reverse()) await dispose();
 }

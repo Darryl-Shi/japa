@@ -6,6 +6,7 @@ import {
   type Extension,
   ROOT_CONVERSATION_ID,
   section,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { MemoryDoc } from "../memory/state.ts";
@@ -23,17 +24,16 @@ export function line(m: Message): string {
   return m.role === "toolResult" ? `tool ${m.toolName}: ${text.slice(0, 200)}` : `${m.role}: ${text}`;
 }
 
-/** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
-export function jobsExtension(options: {
+export type JobsOptions = {
   profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
   extensions: ReadonlyMap<string, Extension>; // extension-built Pi Durable extensions, by japa extension name
   skills: Extension;
-}): Extension {
-  const { profiles, settings, extensions, skills } = options;
-  const { JobRun, start } = jobRun(settings);
+};
 
-  const agentOf = (profile: WorkerProfile) => ({
+/** The agent of a job run by `profile`. */
+function agentOf({ settings, extensions, skills }: JobsOptions, profile: WorkerProfile) {
+  return {
     model: profile.model ?? settings.models.worker ?? settings.models.cos,
     thinkingLevel: profile.thinking as ModelThinkingLevel | undefined,
     cwd: profile.cwd,
@@ -45,7 +45,24 @@ export function jobsExtension(options: {
       ...(profile.extensions?.map((name) => extensions.get(name)!) ?? extensions.values()),
     ],
     tools: { remove: CodingTools.tools!.filter((t) => !profile.tools.includes(t.name)) },
-  });
+  };
+}
+
+/** Re-applies each unfinished job's profile, so it picks up reloaded extensions and skills. */
+export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<void> {
+  const { jobs } = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
+  for (const job of Object.values(jobs)) {
+    const profile = options.profiles.get(job.worker);
+    if (profile && ["queued", "running", "needs_input"].includes(job.status)) {
+      await configure(tx, job.conversationId, agentOf(options, profile));
+    }
+  }
+}
+
+/** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
+export function jobsExtension(options: JobsOptions): Extension {
+  const { profiles, settings } = options;
+  const { JobRun, start } = jobRun(settings);
 
   const jobStart = defineTool({
     name: "job_start",
@@ -61,7 +78,7 @@ export function jobsExtension(options: {
         const id = String(doc.nextId++);
         const anchor = await tx.createTask(Anchor, null, BACKGROUND);
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        await configure(tx, child.id, agentOf(profile));
+        await configure(tx, child.id, agentOf(options, profile));
         Object.assign(await tx.doc(JobDoc, child.id), {
           jobId: id,
           environment: profile.environment,
