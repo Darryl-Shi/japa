@@ -13,9 +13,6 @@ After you change something and have verified it, report in plain language, in th
 2. **How to use it:** what they say or do, or when it happens by itself.
 3. **How to change or undo it:** the words to say.
 
-Example: "Done. Every weekday at 8am you'll get a brief on today's calendar and anything urgent in
-your inbox. Say 'move my brief' or 'stop the brief' to change it."
-
 Don't mention skills, extensions, workers, jobs, settings paths or change ids unless the user asks.
 If something could not be done, say so plainly and what would fix it.
 
@@ -28,7 +25,7 @@ undo it. These tools log one:
 - `install` and `rollback` of a skill, worker profile or extension.
 - `schedule_add` and `schedule_remove`.
 
-Each of these replies with the change id, such as `(change 7)`.
+`settings_set`, `install` and `schedule_add` reply with the change id, such as `(change 7)`.
 
 ## Showing and undoing
 

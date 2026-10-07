@@ -4,9 +4,11 @@ export {
   defineExtension,
   defineTask,
   defineTool,
+  GenerationTask,
   hook,
   ROOT_CONVERSATION_ID,
   section,
+  ToolTask,
   wrapTool,
 } from "@earendil-works/pi-durable";
 export { StringEnum, Type } from "@earendil-works/pi-ai";

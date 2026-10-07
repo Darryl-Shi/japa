@@ -36,7 +36,7 @@ The header is one `key: value` line per field; lists are `[a, b]`, maps `{ provi
 | `tools` | built-in tools: `read`, `write`, `edit`, `bash` | none |
 | `extensions` | extensions whose tools and sections it gets; `[]` for none | all |
 | `skills` | skills listed for it; `[]` for none | all |
-| `cwd` | working directory; a leading `~` or `$JAPA_HOME` is expanded | the environment's (home, for `local`) |
+| `cwd` | working directory; a leading `~` or `$JAPA_HOME` is expanded | the environment's (`local`: the user's home directory) |
 
 The body is the worker's instructions. Every worker also gets `job_progress`, `job_complete` and
 `skill_read`. To ask something, a worker ends its turn with one clear question; the chief of staff
@@ -49,8 +49,7 @@ Give the fewest tools the role needs:
 - Changes files: `[read, write, edit]`; add `bash` only to run commands (tests, builds, scripts).
 - List only the extensions it needs, and the skills it uses.
 
-The body says where to work, how to verify, what not to touch, and what the `job_complete` summary
-must contain.
+The body says where to work, how to verify, what not to touch, and what `job_complete` must contain.
 
 ## Check
 
@@ -61,5 +60,5 @@ From the staging directory, run
 ```
 
 (the same as `japa check worker <name>` run there). It checks the fields, that `name` matches the
-file name, and that the model, environment, tools, extensions and skills exist. It prints `ok` when
-it passes.
+file name and that the model, environment, tools, extensions and skills exist. It prints `ok` on
+success.

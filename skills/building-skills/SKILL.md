@@ -43,7 +43,9 @@ Only files inside the skill's directory can be read this way.
 
 A skill may ship scripts, such as `skills/<name>/scripts/report.sh`, for steps that are better done
 by code. Only agents with `bash` (workers such as `coder`) can run them; the chief of staff cannot run
-commands. Refer to an installed script by its path, `~/.japa/skills/<name>/scripts/<file>`. Keep
+commands. Refer to a script by its path relative to the skill's directory, `scripts/<file>`, the
+same path `skill_read` takes; that directory is `skills/<name>/` in japa's home or in the bundling
+extension. Keep
 scripts small, with no dependencies beyond the system.
 
 ## Skills in an extension

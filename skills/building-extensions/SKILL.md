@@ -7,7 +7,8 @@ description: Use when writing or changing a japa extension (code in extensions/<
 
 Write `extensions/<name>/index.ts` in the current directory (the staging copy of `~/.japa`). Import
 only from `"japa/sdk"` and Node built-ins (`node:fs`, ...). Its default export is the manifest. The
-packaged extensions, good examples, are in `../node_modules/japa/extensions/`.
+packaged extensions, good examples, are in `../node_modules/japa/extensions/`; they import
+`../../src/sdk.ts` where yours imports `japa/sdk`.
 
 ## Minimal example
 
@@ -94,10 +95,10 @@ triggers and surfaces. `web/index.ts` defines `search-engine` this way.
 ## The escape hatch: `durable`
 
 When contracts aren't enough, use Pi Durable through `japa/sdk`'s `defineDoc`, `defineTask`,
-`section`, `hook` and `wrapTool`:
+`section`, `hook` (with `ToolTask` or `GenerationTask`) and `wrapTool`:
 - `sections`: text added to the system prompt (`section("name", async ({ read }, context) => ...)`).
 - `hooks`: run code around tool calls and generations.
-- `wraps`: decorate a tool or section by name.
+- `wraps`: decorate a tool by name.
 - `tasks`: durable background work that survives restarts.
 
 `schedule/index.ts` is the example: a `ScheduleDoc` on the root conversation holds the schedules;
