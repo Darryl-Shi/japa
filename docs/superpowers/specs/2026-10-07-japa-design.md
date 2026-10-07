@@ -7,19 +7,21 @@ Status: Draft for review
 
 japa is a personal, always-on agent in the spirit of OpenAI dots. The user talks
 to exactly one agent — the **chief of staff (CoS)** — in **one continuous
-thread**. The CoS delegates real work to background **jobs**, remembers the
-user, reacts to triggers, and **extends itself** (new skills and extensions)
-when asked to do something it can't yet do.
+thread**. The CoS does quick things itself, delegates real work to background
+**jobs**, remembers the user, reacts to triggers, and **extends itself** (new
+skills, worker profiles, and extensions) when asked to do something it can't
+yet do.
 
 ### Goals
 
 - **One thread, one counterpart.** The user never manages threads, agents, or
   workers. They talk to the CoS; the CoS reports back.
-- **Minimal core, contracts for everything else.** The kernel is small and
-  advertises contracts; UIs, triggers, workers, tools, and memory strategy are
-  contributions that can be replaced.
-- **Self-extension.** The CoS builds skills and extensions itself, picks the
-  right mechanism for the requirement, installs automatically, and rolls back
+- **Minimal core, contracts at the seams.** The kernel is small. Everything
+  where japa meets the outside world — models, UIs, events, capabilities,
+  execution, storage, credentials — is a contract with replaceable
+  implementations.
+- **Self-extension.** The CoS builds what it needs, picks the smallest
+  mechanism that meets the requirement, installs automatically, and rolls back
   on failure.
 - **Seamless.** The user never needs to know how the backend works. A request
   like "brief me every morning" ends with "Done — here's how it works", not
@@ -27,26 +29,28 @@ when asked to do something it can't yet do.
 - **Lean, cheap context.** The CoS's model context is short and reset often,
   while memory persists.
 - **General purpose.** Coding and knowledge/personal work are both just
-  extensions; the core is domain-agnostic.
+  extensions and content; the core is domain-agnostic.
 
 ### Non-goals (v1)
 
 Messaging surfaces (Slack/Telegram/iMessage), multiple users, out-of-process
 extensions, embedding search, approval gates for side-effecting actions,
-nested jobs, OAuth flows, a hosted/cloud deployment.
+nested jobs, built-in OAuth flows (possible later through the `provider` and
+`tool` contracts), storage migration between backends, a hosted deployment.
 
 ## 2. Foundation: Pi Durable
 
 japa is built on `@earendil-works/pi-durable` (1.0.x, Node ≥ 22.19; we target
-Node 24). Concepts we rely on:
+Node 24) and `@earendil-works/pi-ai`. Concepts we rely on:
 
-- **Harness** over **SQLite storage** (`openNodeSqliteStorage`). Every
-  transcript entry, task step, and document change is an atomic commit;
-  crashes resume from the last checkpoint.
+- **Harness** over a **Storage** backend. Every transcript entry, task step,
+  and document change is an atomic commit; crashes resume from the last
+  checkpoint.
 - **Conversations** (transcripts), **documents** (typed JSON committed with
   entries), **tasks** (durable state machines with timers and child tasks).
 - **Extensions** (tools, sections, hooks, wraps, tasks) in a **registry** that
   can be hot-replaced; conversations store extension/tool names, not code.
+- **`ExecutionEnv`**, built per tool call by the harness's `env` function.
 - **`reset(note)`** starts a fresh model context while keeping all entries in
   storage.
 - **Background tasks** own child conversations that survive aborts and do not
@@ -57,55 +61,194 @@ Node 24). Concepts we rely on:
 
 One process owns the storage. japa therefore runs as one daemon.
 
-## 3. Architecture overview
+## 3. Architecture and layers
 
 ```
-           ┌──────────────── japad (one Node process) ────────────────┐
- surfaces  │  Kernel                                                  │
- (gateway ─┼─▶ contract registry · loader · safety net                │
-  + TUI)   │   jobs · context lifecycle · memory · skills · secrets   │
-           │   changes log · self-extension                           │
- triggers ─┼─▶ Pi Durable Harness (SQLite: ~/.japa/state.db)          │
-           │     root conversation = CoS thread                       │
-           │     job conversations (background, owned by anchors)     │
-           └──────────────────────────────────────────────────────────┘
- ~/.japa/ (git): extensions/ skills/ memory/ settings.json   secrets/ (not in git)
+                ┌──────────────── japad (one Node process) ────────────────┐
+  surface ──────┼─▶ Kernel: CoS · jobs · context & memory · skills ·       │
+  trigger ──────┼─▶   self-extension · safety · changes · settings         │
+                │                                                          │
+  provider ─────┼─▶ models          Pi Durable Harness                     │
+  tool ─────────┼─▶ capabilities      root conversation = CoS thread       │
+  environment ──┼─▶ where work runs   job conversations (background)       │
+  storage ──────┼─▶ state (boot)                                           │
+  secrets ──────┼─▶ credentials (boot)                                     │
+                └──────────────────────────────────────────────────────────┘
+  ~/.japa/ (git): extensions/ skills/ workers/ memory/ settings.json
 ```
 
-- **Kernel** (`packages/kernel`): the only code the CoS cannot modify.
-- **Default extensions** (`extensions/*` in this repo): replaceable.
-- **Workspace** (`~/.japa/`): user- and CoS-authored extensions, skills,
-  memory, settings. A git repo; every change is a commit.
+Four layers:
 
-## 4. Kernel and contracts
+1. **Kernel** (`packages/kernel`) — the CoS, jobs, context and memory, skills
+   and worker-profile loading, self-extension, safety, changes log, settings.
+   The only code the CoS cannot modify.
+2. **Contracts** — the seven seams in §4.
+3. **Extensions** — TypeScript modules that implement contracts (§5).
+4. **Content** — data, no code: skills, worker profiles, memory, settings,
+   schedules.
 
-### 4.1 Contracts
+Defaults for every layer ship in this repo; the workspace `~/.japa/` (a git
+repo) holds user- and CoS-authored extensions and content, overriding
+defaults by name.
 
-A **contract** is a named extension point:
+## 4. Contracts
+
+### 4.1 What a contract is
+
+A contract is a named seam with a TypeScript contribution type, agent-facing
+docs (advertised through skills, §9.2), a validator used by `japa check`, and
+an activation lifecycle:
 
 ```ts
 interface Contract<C> {
-  name: string;                 // e.g. "surface"
-  docs: string;                 // agent-facing guide (advertised, see §8)
-  validate(c: unknown): C;      // shape check, used by `japa check`
+  name: string;
+  docs: string;
+  phase: "boot" | "runtime";      // boot: chosen before the harness opens
+  cardinality: "one" | "many";
+  validate(c: unknown): C;
   activate(c: C, ctx: KernelContext): Promise<Dispose>;
 }
 ```
 
-Built-in contracts:
+### 4.2 The seven core contracts
 
-| Contract  | Contribution                                    | Purpose |
-|-----------|-------------------------------------------------|---------|
-| `durable` | Pi Durable sections, hooks, wraps, tasks        | Raw harness capabilities |
-| `surface` | `start(SurfaceContext) => stop`                 | UIs / clients |
-| `trigger` | `start(TriggerContext) => stop`                 | Events that wake the CoS |
-| `worker`  | `WorkerProfile`                                 | Job profiles |
-| `memory`  | `MemoryStrategy`                                | Replaces the default memory (§6) |
+| Contract | Phase | Cardinality | Swaps | Default |
+|---|---|---|---|---|
+| `provider` | runtime | many | model access | pi-ai built-ins |
+| `surface` | runtime | many | where the user talks | `gateway` + TUI |
+| `trigger` | runtime | many | what wakes the CoS | `schedule` |
+| `tool` | runtime | many | what agents can do | `web` |
+| `environment` | runtime | many | where work runs | `local` |
+| `storage` | boot | one | where state lives | SQLite |
+| `secrets` | boot | one | where credentials live | file store |
 
-Extensions may **define new contracts**; later extensions contribute to them.
-The kernel treats them identically to built-ins.
+#### `provider`
 
-### 4.2 Extension manifest
+```ts
+interface Provider {
+  name: string;                         // e.g. "openai", "ollama-local"
+  register(models: ModelRegistry, ctx: ProviderContext): Promise<Dispose>;
+  secrets?: string[];                   // e.g. ["openai.apiKey"]
+}
+```
+
+Registers models (and, for non-standard APIs, a pi-ai API implementation)
+into the harness's model registry. `ProviderContext` gives `secret(name)`
+and the provider's settings. Model choices in settings
+(`models.cos`, `models.consolidation`, `models.worker`, worker profiles) name
+`{ provider, modelId }`. The default provider extension exposes pi-ai's
+built-in providers, reading API keys from the secrets store.
+
+#### `surface`
+
+```ts
+interface Surface {
+  name: string;
+  start(ctx: SurfaceContext): Promise<Dispose>;
+}
+interface SurfaceContext {
+  root: { submit(input, mode), abort(), watch(), viewState() };
+  job(id: string): { watch(), viewState() };    // read-only job view
+  taskGraph(): ChordState;
+  secrets: { pending(), fulfil(requestId, value) };
+}
+```
+
+A surface may be interactive (chat) or outbound-only (notifications). Every
+interactive surface must render pending secret requests as masked prompts.
+
+#### `trigger`
+
+```ts
+interface Trigger {
+  name: string;
+  start(ctx: TriggerContext): Promise<Dispose>;
+}
+interface TriggerContext {
+  emit(event: { key: string; text: string }): Promise<void>;
+  docs: DocAccess; settings: unknown; secret(name: string): Promise<string>;
+}
+```
+
+`emit` submits a short input to the root conversation with
+`requestId = trigger:<extension>:<key>`, so each event is delivered exactly
+once. Triggers needing durable timers use the escape hatch (§4.4).
+
+#### `tool`
+
+Plain Pi Durable tools (`defineTool`, TypeBox parameters, `replay`
+semantics). The extension's `summary`, `examples`, and `docs` (§5.1) describe
+them for routing. Tools never declare who may use them or how risky they
+are; the kernel decides (§5.3).
+
+The kernel also owns four built-in tools from Pi Durable — `read`, `write`,
+`edit`, `bash` — which worker profiles select by name and which the CoS gets
+only `read` of.
+
+#### `environment`
+
+```ts
+interface Environment {
+  name: string;                         // e.g. "local", "docker", "ssh:devbox"
+  create(input: { conversationId: string; cwd?: string }): ExecutionEnv;
+}
+```
+
+The kernel's harness `env` function dispatches each call: the root
+conversation gets a **read-only wrapper** of the default environment; a job
+gets the environment its worker profile names (default `local`,
+`NodeExecutionEnv`). Implementations can be checked with Pi Durable's
+`registerEnvConformance()`.
+
+#### `storage` (boot)
+
+```ts
+interface StorageAdapter {
+  name: string;
+  open(config: unknown, ctx: BootContext): Promise<Storage>;
+}
+```
+
+Selected by `settings.storage` (default `{ adapter: "sqlite", file:
+"~/.japa/state.db" }`). A change takes effect on restart; there is no
+migration in v1, so switching adapters starts empty unless the user moves the
+data. Implementations can be checked with `registerStorageConformance()`.
+
+#### `secrets` (boot)
+
+```ts
+interface SecretsAdapter {
+  name: string;
+  open(config: unknown, ctx: BootContext): Promise<{
+    get(name: string): Promise<string | undefined>;
+    set(name: string, value: string): Promise<void>;
+    delete(name: string): Promise<void>;
+    list(): Promise<string[]>;
+  }>;
+}
+```
+
+Selected by `settings.secrets` (default: files in `~/.japa/secrets/`, mode
+600, outside git). Extensions read only the secret names their manifest
+lists.
+
+### 4.3 Extension-defined contracts
+
+An extension may define new contracts (with the same `Contract` shape, phase
+`runtime`); later extensions contribute to them. Example: `web` defines a
+`search-engine` contract so search backends are swappable. The kernel treats
+these exactly like the core seven.
+
+### 4.4 Escape hatch: raw Pi Durable
+
+An extension may also include raw Pi Durable `sections`, `hooks`, `wraps`, and
+`tasks` (`durable` field, §5.1) — for guards, prompt additions, or durable
+tasks such as timers. This is not a contract and is not advertised in the
+capabilities section; it is documented in the `building-extensions` skill.
+
+## 5. Extensions
+
+### 5.1 Manifest
 
 An extension is one TypeScript module whose default export is:
 
@@ -113,83 +256,90 @@ An extension is one TypeScript module whose default export is:
 defineJapaExtension({
   name: "gcal",
   summary: "Lets me read and manage your Google Calendar",   // user-facing
-  docs: "./skills/using-gcal/SKILL.md",                       // agent-facing, on demand
   examples: ["what's on my calendar tomorrow?", "move my 3pm to 4"],
-  tools: [gcalList, gcalUpdate],                 // plain Pi Durable tools
-  durable: { sections, hooks, wraps, tasks },   // optional
-  surfaces, triggers, workers, memory,           // optional contract contributions
-  contracts: [MyContract], contribute: { "my-contract": [...] },
-  secrets: ["gcal.token"],                       // names it may read
-  settings: Type.Object({ ... }),                // TypeBox schema for its settings
+  docs: "./skills/using-gcal/SKILL.md",                       // agent-facing
+  provides: {                         // keyed by contract name
+    tool: [gcalList, gcalUpdate],
+    // surface: [...], trigger: [...], provider: [...], environment: [...],
+    // storage: adapter, secrets: adapter, "search-engine": [...]
+  },
+  contracts: [],                      // contracts this extension defines
+  durable: { sections, hooks, wraps, tasks },   // escape hatch, optional
+  secrets: ["gcal.token"],            // secret names it may read
+  settings: Type.Object({ ... }),     // TypeBox schema for its settings
   // skills/ next to index.ts are bundled automatically
 });
 ```
 
 Rules:
 
-- `summary` and `examples` are required. `docs` is required when the extension
-  has tools.
-- Extensions do **not** declare who may use their tools or how risky they
-  are. The manifest's descriptive fields (`summary`, `examples`, `docs`) only
-  affect routing; a poor description causes poor routing, which
-  `japa check` catches (§10.3), never a safety or role violation.
-- Tools listed in a worker profile (§5.2) belong to that profile only; tools
-  in the manifest's `tools` are shared capabilities.
-- The kernel converts `tools` + `durable` into one Pi Durable `Extension` named
-  after the japa extension and installs it in the registry.
+- `summary` is required. `examples` and `docs` are required when the
+  extension provides tools.
+- Descriptive fields only affect routing. A poor description causes poor
+  routing, which `japa check` catches (§10.3) — never a safety or role
+  violation.
+- The kernel converts `provides.tool` plus `durable` into one Pi Durable
+  `Extension` named after the japa extension.
 
-### 4.3 Tool selection and the CoS's limits
+### 5.2 Loader and boot sequence
 
-The kernel computes each conversation's tool list; extensions never classify
-themselves.
+Sources, later overriding earlier by name: packaged `extensions/*`, then
+`~/.japa/extensions/*`. TypeScript loads with Node 24 native type stripping.
 
-- **Root (CoS):** all core CoS tools (§5.3, §6.5, §7, §8.3–§8.5, §10), the
-  core `read` tool, plus
-  **every shared extension tool**. The CoS does quick things itself.
-- **Jobs:** core worker tools (§5.4) plus the shared tools of the extensions
-  the worker profile selects (`general`: all), plus the profile's own tools.
+Boot:
+
+1. Read `settings.json`.
+2. Import all extension modules (no activation yet).
+3. Open the selected `secrets` adapter, then the selected `storage` adapter.
+4. Open the harness with the storage, model registry, settings getters, and
+   the kernel's `env` dispatcher.
+5. Activate `provider`, then `environment`, then `tool` (registry install),
+   then extension-defined contracts, then `trigger` and `surface`.
+6. Ensure the root conversation (§5.4) and call `harness.resume()`, so pending
+   tasks continue.
+
+Reload of a runtime extension: `import(file?v=<commit>)`, dispose its old
+contributions, activate the new ones, `registry.install()` (same-name
+replace), recompute tool lists (§5.3). Old module copies stay in memory until
+restart. Boot-phase adapters reload only on restart.
+
+### 5.3 Tool selection and the CoS's limits
+
+The kernel computes each conversation's tool list:
+
+- **Root (CoS):** core CoS tools (§6.3, §7.5, §8, §9.3–§9.5, §10), built-in
+  `read`, and **every extension tool**. The CoS does quick things itself.
+- **Jobs:** core worker tools (§6.4) plus what the worker profile selects:
+  built-in tools by name, extension tools by extension name (default: all
+  extensions).
 
 On every install, reload, or rollback the kernel recomputes these lists and
 applies them with `configure({ tools })` to the root and every active job
 conversation, in one commit.
 
-Limits on the CoS are enforced structurally, not by declarations:
+Limits on the CoS are structural:
 
-- **Read-only environment.** The CoS's execution environment is a read-only
-  wrapper around `NodeExecutionEnv`: file writes and `exec` are rejected. Any
-  tool that changes files or runs processes through the environment fails in
-  the CoS, so that work happens in jobs.
+- **Read-only environment.** File writes and `exec` are rejected, so any tool
+  that changes files or runs processes fails in the CoS; that work happens in
+  jobs.
 - **Result cap.** A tool result entering the CoS context is capped at
   `settings.context.toolResultTokens` (default 2k). The full output stays in
-  storage; the CoS sees a truncation note suggesting a job if it needs all of
-  it.
-- **Delegation guidance** (identity, §8.1): one or two calls → do it
-  yourself; multi-step, long-running, or heavy work → start a job.
+  storage; the CoS sees a truncation note suggesting a job if it needs it all.
+- **Delegation guidance** (§9.1): one or two calls → do it yourself;
+  multi-step, long-running, or heavy work → start a job.
 
-Safety is the same for the CoS and workers. v1 has no approval gates; in-process
-extension failures are handled by §10.4. A future guard for destructive
-actions would be a kernel-owned policy applied to the CoS and workers alike.
+Safety is the same for the CoS and workers. v1 has no approval gates;
+in-process extension failures are handled by §10.4. A future guard for
+destructive actions would be a kernel-owned policy applied to both.
 
-### 4.4 Loader
+### 5.4 Root conversation
 
-- Sources, in order: packaged defaults (`extensions/*`), then
-  `~/.japa/extensions/*`. A workspace extension with the same name replaces the
-  default.
-- TypeScript is loaded with Node 24 native type stripping. Reload is
-  `import(file?v=<commit>)` followed by `registry.install()` and contract
-  re-activation (dispose old, activate new). Old module copies stay in memory
-  until restart.
-- After a restart the loader reinstalls all extensions before
-  `harness.resume()`, so pending extension tasks continue.
+Created on first boot (`harness.root()`) and configured as the CoS: CoS
+model, core sections (§7.2), tool list (§5.3).
 
-### 4.5 Root conversation
+## 6. Jobs and worker profiles (core)
 
-The kernel creates the root conversation on first boot (`harness.root()`) and
-configures it as the CoS: CoS model, core sections (§8), tool list (§4.3).
-
-## 5. Jobs (core)
-
-### 5.1 Model
+### 6.1 Jobs
 
 A job is a **background child conversation**, owned by a background anchor
 task so it survives the CoS's aborts and restarts and never keeps the CoS
@@ -204,28 +354,32 @@ status: "queued" | "running" | "needs_input" | "done" | "failed" | "cancelled"
 Concurrency is capped by `settings.jobs.maxConcurrent` (default 4); extra jobs
 are `queued` and start in creation order.
 
-### 5.2 Worker profiles (`worker` contract)
+### 6.2 Worker profiles (content)
 
-```ts
-interface WorkerProfile {
-  name: string; description: string;
-  model?: ModelRef; thinkingLevel?: ThinkingLevel;
-  extensions?: string[];   // extensions whose shared tools it gets; default: all
-  tools?: Tool[];          // profile-owned tools, available only to this profile
-  skills?: string[];       // narrows visible skills; default: all
-  instructions: string; cwd?: string;
-}
+A worker profile is a Markdown file with frontmatter; the body is the
+worker's instructions:
+
+```markdown
+---
+name: coder
+description: Writes and changes code in a repository, runs tests.
+model: { provider: openai, modelId: gpt-6-sol }   # optional; default models.worker
+thinking: high                                    # optional
+environment: local                                # optional; default local
+tools: [read, write, edit, bash]                  # built-in tools by name
+extensions: []                                    # extension tools by extension name; omitted = all
+skills: []                                        # omitted = all
+cwd: ~/projects                                   # optional
+---
+You are a careful software engineer. ...
 ```
 
-Core ships two profiles:
+Locations, later overriding earlier by name: packaged `workers/`, then
+`~/.japa/workers/`. Kernel-packaged profiles: `general` (all extension tools,
+built-in `read`) and `builder` (§10.2). Names and descriptions are advertised
+to the CoS (§9.2).
 
-- `general` — default model, all extensions' shared tools, generic instructions.
-- `builder` — builds skills and extensions (§10); coding tools, cwd is a
-  staging git worktree of `~/.japa`, authoring skills preloaded in its list.
-
-Profile names and descriptions are advertised to the CoS (§8).
-
-### 5.3 CoS job tools
+### 6.3 CoS job tools
 
 - `job_start({ title, brief, worker? })` → returns the job id immediately.
 - `job_message({ id, text, mode: "steer" | "followup" })`
@@ -233,7 +387,7 @@ Profile names and descriptions are advertised to the CoS (§8).
 - `job_list()`
 - `job_transcript({ id, tail? })` — inspect a job only when needed.
 
-### 5.4 Worker job tools
+### 6.4 Worker job tools
 
 - `job_progress({ note })` — updates `progress` for live status.
 - `job_complete({ summary })` — sets `done`, stores `result`, ends the run.
@@ -243,7 +397,7 @@ Profile names and descriptions are advertised to the CoS (§8).
 
 Workers cannot start jobs in v1.
 
-### 5.5 Reporting
+### 6.5 Reporting
 
 A background reporter task posts each state change that needs CoS attention
 (`done`, `needs_input`, `failed`) into the root conversation as a short input,
@@ -251,35 +405,35 @@ e.g. `[job 7 "Fix CI" done] <summary>`, with
 `requestId = report:<jobId>:<seq>`, so a restart never double-posts. The CoS
 decides what to tell the user, what to answer itself, and what to start next.
 
-## 6. CoS context and memory (core)
+## 7. CoS context and memory (core)
 
-### 6.1 Two views of one thread
+### 7.1 Two views of one thread
 
 Storage keeps every entry and surfaces render the full history, so the user
 sees one continuous chat. The model sees only the **current context** since
 the last `reset()`.
 
-### 6.2 What the CoS sees on each request
+### 7.2 What the CoS sees on each request
 
 Rendered as sections, in this order (static first, for prompt caching):
 
-1. **Identity** — role, how japa works, mechanism ladder, UX rules (§8).
-2. **Contracts and capabilities** — generated from manifests (§8).
-3. **About you** — the user fact list (§6.4).
+1. **Identity** — role, how japa works, mechanism ladder, UX rules (§9.1).
+2. **Capabilities** — generated from manifests and content (§9.2).
+3. **About you** — the user fact list (§7.4).
 4. **Open loops** — commitments and things being waited on.
 5. **Job board** — one line per non-terminal job, plus jobs finished since
    the last reset.
 6. **Handoff note** — written at the last reset.
 7. **Live window** — messages since the last reset.
 
-### 6.3 Context lifecycle
+### 7.3 Context lifecycle
 
 - **Trigger:** the CoS is idle **and** either the live window exceeds
   `settings.context.resetTokens` (default 20k) or the time since the last user
   message exceeds `settings.context.idleResetHours` (default 2).
 - **Consolidate:** a background durable task on the consolidation model reads
   the live window and, in one commit to memory files and documents:
-  1. runs **reflection** (§6.4) on the user facts,
+  1. runs **reflection** (§7.4) on the user facts,
   2. updates **open loops** (add new commitments, close finished ones),
   3. writes an **episode summary** to `memory/episodes/`,
   4. writes the **handoff note**.
@@ -288,7 +442,7 @@ Rendered as sections, in this order (static first, for prompt caching):
   discarded and consolidation retries at the next trigger.
 - Pi Durable's automatic compaction stays enabled only as a fallback.
 
-### 6.4 User facts ("About you") — reflection
+### 7.4 User facts ("About you") — reflection
 
 Like ChatGPT's saved memories: a high-level picture of the user, not a log or
 an exhaustive overview.
@@ -310,7 +464,7 @@ an exhaustive overview.
   **merge pass** that combines related entries and drops the least useful
   until it fits; near-duplicates (normalized text similarity) are rejected.
 
-### 6.5 User control and recall
+### 7.5 User control and recall
 
 CoS tools:
 
@@ -324,56 +478,55 @@ CoS tools:
 When the CoS saves something during a conversation it may add a brief
 "(noted: …)" to its reply.
 
-### 6.6 Storage and replacement
+### 7.6 Storage
 
 `~/.japa/memory/facts.json`, `loops.json`, `episodes/*.md`, committed to the
-workspace git repo after each consolidation. The `memory` contract
-(`MemoryStrategy`: `sections()`, `consolidate(window)`, `search(query)`) lets
-an extension replace the whole strategy; the kernel's implementation is the
-default contribution.
+workspace git repo after each consolidation. Memory is fixed kernel logic,
+not a contract. Semantic search, if added later, would be a `search`
+contract that `memory_search` consults.
 
-## 7. Skills (core loader)
+## 8. Skills (core loader, content)
 
 Pi Durable has no skills; japa adds them.
 
 - **Format:** Agent Skills `SKILL.md` with `name` and `description`
-  frontmatter, optional `scripts/` and reference files. Skills do not
-  declare an audience.
+  frontmatter, optional `scripts/` and reference files.
 - **Locations, later overrides earlier by name:** packaged `skills/`,
   `extensions/<x>/skills/`, `~/.japa/skills/`.
 - **Progressive disclosure:** each conversation gets a section listing name +
   description of all skills (for jobs, narrowed by the worker profile's
-  `skills` if set). `skill_read({ name, file? })` loads the body
-  or a referenced file.
+  `skills` if set). `skill_read({ name, file? })` loads the body or a
+  referenced file.
 - Skills contain no code that the daemon runs; scripts inside a skill are run
   by workers through their own tools.
 
-## 8. Self-model and seamless UX
+## 9. Self-model and seamless UX
 
-### 8.1 Identity section (static)
+### 9.1 Identity section (static)
 
-- **Role:** the user's only point of contact. Keep your own context lean;
-  do quick things yourself (one or two tool calls); delegate multi-step,
+- **Role:** the user's only point of contact. Keep your own context lean; do
+  quick things yourself (one or two tool calls); delegate multi-step,
   long-running, or heavy work — and anything that writes files or runs
   commands — to a job.
-- **How japa works:** one paragraph each on the thread, jobs, memory, skills,
-  extensions, triggers, surfaces.
+- **How japa works:** one paragraph each on the thread, jobs and workers,
+  memory, skills, extensions and contracts, triggers, surfaces.
 - **Mechanism ladder** — use the smallest mechanism that meets the need:
 
   | Need | Mechanism |
   |------|-----------|
   | A fact or preference about the user | memory |
-  | Adjust something that already exists | settings / config (schedules, worker defaults, extension settings) |
-  | A procedure or know-how using existing tools | **skill** |
-  | New capability: a new API/service, new state, events, a UI, or enforcement (guarantee, not guidance) | **extension** |
+  | Adjust something that already exists | settings / config (schedules, models, extension settings) |
+  | A procedure or know-how using existing tools | **skill** (content) |
+  | A new kind of worker from existing tools, models, environments | **worker profile** (content) |
+  | Connect to something new: a model provider, UI, event source, capability, execution environment, storage, or credential store; or enforce something (guarantee, not guidance) | **extension** implementing a contract |
 
-  Test: if existing tools plus written instructions can do it, it's a skill.
+  Test: if existing tools plus written instructions can do it, it's content.
   Often both: an extension provides the tool and bundles a skill that teaches
   when and how to use it.
 
 - **UX rules:**
   1. Never make the user think about the backend; don't mention skills,
-     extensions, contracts, or jobs unless asked.
+     extensions, contracts, workers, or jobs unless asked.
   2. Ask only what only the user can answer: credentials, preferences that
      matter, consent for irreversible external actions. Never ask about
      implementation.
@@ -384,14 +537,15 @@ Pi Durable has no skills; japa adds them.
      a brief on today's calendar and anything urgent in your inbox. Say 'move
      my brief' or 'stop the brief' to change it."
 
-### 8.2 Capabilities section (generated)
+### 9.2 Capabilities section (generated)
 
-Rebuilt from manifests on every registry change: one line per extension
-`summary`, worker profiles with descriptions, active triggers and schedules,
-and the list of contracts with one-line descriptions. Detailed contract docs
-and authoring guides are skills (§11.2), not always-loaded context.
+Rebuilt on every install, reload, rollback, or content change: one line per
+extension `summary`, worker profiles with descriptions, active schedules,
+connected surfaces, available models, and the contracts (core and
+extension-defined) with one-line descriptions. Contract docs and authoring
+guides are skills (§11.2), not always-loaded context.
 
-### 8.3 Changes log
+### 9.3 Changes log
 
 Root document `japa.changes`: a user-level changelog.
 
@@ -399,105 +553,86 @@ Root document `japa.changes`: a user-level changelog.
 { id, at, title, howToUse, undo: { commits: string[], configOps?: ConfigOp[] } }
 ```
 
-Every install, skill change, settings change, or schedule the CoS makes on the
-user's behalf adds an entry. CoS tools: `changes_list()`,
+Every install, content change, settings change, or schedule the CoS makes on
+the user's behalf adds an entry. CoS tools: `changes_list()`,
 `change_undo({ id })` (reverts the commits and inverts config ops, then
 reloads). This makes "undo that" and "what did you set up last week?" work.
 
-### 8.4 Settings
+### 9.4 Settings
 
-`~/.japa/settings.json`, read live through Pi Durable settings getters. Holds
-the models (CoS, consolidation, default worker), job concurrency, context
-thresholds, memory caps, and per-extension settings validated against each
-extension's schema. CoS tools: `settings_get({ path? })`,
-`settings_set({ path, value })` (validated; logged in `japa.changes`).
+`~/.japa/settings.json`, read live through Pi Durable settings getters
+(boot-phase keys `storage` and `secrets` apply on restart). Holds the models
+(CoS, consolidation, default worker), job concurrency, context thresholds,
+memory caps, and per-extension settings validated against each extension's
+schema. CoS tools: `settings_get({ path? })`, `settings_set({ path, value })`
+(validated; logged in `japa.changes`).
 
-### 8.5 Secrets
+### 9.5 Secret requests
 
 - `secret_request({ name, why })` (CoS tool) records a pending request in the
   root document `japa.secretRequests` and returns immediately.
-- Surfaces show pending requests as masked prompts (part of the `surface`
-  contract). The value is written to `~/.japa/secrets/<name>` (mode 600,
-  outside git) and never enters the transcript.
+- Interactive surfaces show pending requests as masked prompts. The value goes
+  straight to the `secrets` adapter and never enters the transcript.
 - On fulfilment the kernel posts `[secret <name> provided]` into the CoS
-  thread (`requestId = secret:<name>:<requestId>`).
-- Extensions read only the secrets their manifest lists, via
-  `ctx.secret(name)`.
-
-## 9. Triggers and surfaces (contracts)
-
-### 9.1 `trigger`
-
-```ts
-interface TriggerContext {
-  emit(event: { key: string; text: string }): Promise<void>; // into the CoS thread
-  docs: DocAccess; settings: unknown; secret(name: string): Promise<string>;
-}
-```
-
-`emit` submits a short input to the root conversation with
-`requestId = trigger:<extension>:<key>`, so each event is delivered exactly
-once. Triggers needing durable timers use Pi Durable tasks via the `durable`
-contract.
-
-### 9.2 `surface`
-
-```ts
-interface SurfaceContext {
-  root: { submit(input, mode), abort(), watch(), viewState() };
-  job(id): { watch(), viewState() };        // read-only job view
-  taskGraph(): ChordState;
-  secrets: { pending(), fulfil(name, value) };
-}
-```
+  thread (`requestId = secret:<requestId>`).
 
 ## 10. Self-extension and safety net (core)
 
 ### 10.1 Workspace and boundary
 
-`~/.japa/` is a git repo: `extensions/`, `skills/`, `memory/`,
+`~/.japa/` is a git repo: `extensions/`, `skills/`, `workers/`, `memory/`,
 `settings.json`. The CoS and its jobs may change these. They can **never**
 change the kernel package, so the kernel can always repair everything else.
 
 ### 10.2 Building
 
-1. The CoS chooses the mechanism (ladder, §8.1) and starts a `builder` job
+1. The CoS chooses the mechanism (ladder, §9.1) and starts a `builder` job
    with a brief stating the requirement and the chosen mechanism. The builder
-   may escalate from skill to extension if a skill can't meet the
-   requirement, and says so in its summary.
-2. The builder works in a staging worktree and runs
-   `japa check <name>` (§10.3).
-3. On `job_complete`, the CoS calls `skill_install({ name })` or
-   `extension_install({ name })`.
-4. **Skill install:** lint frontmatter, merge, commit, refresh skill sections.
-5. **Extension install:** merge and commit, import, activate, recompute tool
-   lists, health-check (§10.4), record in `japa.changes`.
-6. On failure: revert the commit, re-activate the previous version, report the
+   may escalate (content → extension) if needed and says so in its summary.
+   The `builder` profile has built-in coding tools, the `local` environment
+   with cwd set to a staging git worktree of `~/.japa`, and the authoring
+   skills.
+2. The builder runs `japa check <kind> <name>` (§10.3) in the worktree.
+3. On `job_complete`, the CoS calls `install({ kind, name })` with
+   `kind: "skill" | "worker" | "extension"`.
+4. **Content install** (skill, worker): lint, merge, commit, refresh sections
+   and tool lists.
+5. **Extension install:** merge and commit, import, activate (runtime
+   contracts immediately; boot-phase adapters on the next restart, which the
+   CoS tells the user about), recompute tool lists, health-check (§10.4).
+6. Every install records an entry in `japa.changes`.
+7. On failure: revert the commit, re-activate the previous version, report the
    error into the CoS thread. The CoS retries via the builder or tells the
    user plainly.
-7. The CoS verifies with a real dry run where possible, then reports (§8.1).
+8. The CoS verifies with a real dry run where possible, then reports (§9.1).
 
 ### 10.3 `japa check`
 
+Extensions:
+
 - **Typecheck** (`tsc --noEmit`) and the extension's own tests (vitest).
-- **Static manifest checks:** `summary`, `examples`, and (if it has
-  tools) `docs` present; tool description length limits; no unexpected tool-name
-  collisions.
-- **Smoke load** in a throwaway harness on `MemoryStorage`: contract shapes
-  valid, `activate`/`dispose` clean, the extension appears in the rendered
-  capabilities section, and the computed root/job tool lists include its tools as §4.3 specifies.
-- **Routing eval:** the consolidation model sees the full capabilities
-  section and each `example`; it must route to this extension (directly or
-  via a suitable worker), without taking over other extensions' examples.
+- **Manifest checks:** `summary` present; `examples` and `docs` present if it
+  provides tools; tool description length limits; no unexpected tool-name
+  collisions; every `provides` key names a known contract and each
+  contribution passes that contract's `validate`.
+- **Conformance:** `storage` and `environment` contributions run Pi Durable's
+  conformance suites.
+- **Smoke load** in a throwaway harness on `MemoryStorage`: `activate` /
+  `dispose` clean, the extension appears in the capabilities section, and the
+  computed tool lists include its tools as §5.3 specifies.
+- **Routing eval** (extensions with tools): the consolidation model sees the
+  full capabilities section and each `example`; it must route to this
+  extension (directly or via a suitable worker) without taking over other
+  extensions' examples.
 - **Regression:** re-run every installed extension's routing examples.
 
-Skills get a lighter check: frontmatter lint and, if they declare
-`examples`, the routing eval.
+Content: frontmatter lint (skills, workers); a worker profile's model,
+environment, tools, extensions, and skills must all resolve.
 
 ### 10.4 Runtime protection
 
-- **Health check after install:** contributions activate, surfaces start, and
-  triggers start within a timeout.
+- **Health check after install:** contributions activate, surfaces and
+  triggers start, providers register within a timeout.
 - **Auto-rollback:** an extension whose contributions throw repeatedly
   (surface fails to start, trigger crashes, tool error rate above
   `settings.safety.toolErrorThreshold`) is rolled back to its last-known-good
@@ -505,63 +640,74 @@ Skills get a lighter check: frontmatter lint and, if they declare
 - **Last-known-good tag:** updated after an extension has run healthily for
   `settings.safety.goodAfterMinutes` (default 10).
 - **Boot safe mode:** three crashes within five minutes of boot → start with
-  kernel + defaults at last-known-good; the CoS is told on next contact.
-- Manual: CoS tool `extension_rollback({ name, to? })`; CLI `japa rollback`
-  and `japa safe-mode`.
+  kernel + packaged defaults + workspace content at last-known-good; the
+  selected `storage` and `secrets` adapters stay selected (at last-known-good
+  version) because the data lives there. If a boot adapter still fails, the
+  daemon exits with a clear error and `japa safe-mode --default-adapters`
+  restores the packaged ones. The CoS tells the user on next contact.
+- Manual: CoS tool `rollback({ kind, name, to? })`; CLI `japa rollback` and
+  `japa safe-mode`.
 
 ## 11. Packaged defaults
 
 ### 11.1 Default extensions
 
-| Extension | Contracts | What it does |
-|-----------|-----------|--------------|
+| Extension | Provides | What it does |
+|-----------|----------|--------------|
+| `providers` | provider | pi-ai built-in providers, keys from the secrets store. |
+| `local-env` | environment | `local`: `NodeExecutionEnv` with the profile's cwd. |
+| `sqlite` | storage | `openNodeSqliteStorage`, default `~/.japa/state.db`. |
+| `file-secrets` | secrets | One file per secret in `~/.japa/secrets/`, mode 600. |
 | `gateway` | surface | WebSocket server on `~/.japa/japa.sock`; streams root `watch()` frames, `japa.jobs`, pending secret requests; accepts submit (input/steer/follow-up), abort, secret responses, job view attach. Includes the `japa chat` TUI client (pi-tui): thread on the left, live job board on the right, masked secret prompts. Closing the TUI does not stop the daemon. |
-| `schedule` | trigger, durable | Durable cron and one-shot timers in `japa.schedules`; CoS tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
-| `web` | tools | `web_fetch` (no key) and `web_search` (pluggable provider; asks for its key with `secret_request` on first use). |
-| `coder` | worker | Profile owning the coding tools (`read`, `write`, `edit`, `bash`) with a configurable cwd. |
-| `researcher` | worker | `web` tools plus a profile-owned `write` for report files; uses the `research` skill. |
+| `schedule` | trigger, tool, durable | Durable cron and one-shot timers in `japa.schedules`; tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
+| `web` | tool; defines `search-engine` | `web_fetch` (no key) and `web_search` via the `search-engine` contract; the default engine asks for its key with `secret_request` on first use. |
 
-With these defaults the CoS directly has `web_fetch`, `web_search`, and the
-`schedule_*` tools, plus the kernel's core `read` tool (in its read-only
-environment). Coding tools stay with the `coder` profile.
+With these defaults the CoS directly has `web_fetch`, `web_search`, the
+`schedule_*` tools, and built-in `read` (in its read-only environment).
 
-### 11.2 Default skills
+### 11.2 Default content
 
-Agent-facing (the self-model, loaded on demand):
+Worker profiles: `general` and `builder` (kernel), `coder` (built-in coding
+tools, `local`), `researcher` (`web` tools plus built-in `write` for report
+files; uses the `research` skill).
+
+Agent-facing skills (the self-model, loaded on demand):
 
 - `choosing-a-mechanism` — the ladder with worked examples.
 - `building-skills` — SKILL.md format, progressive disclosure, scripts.
-- `building-extensions` — manifest, contracts API, fake-model testing,
-  `japa check`, shared vs profile-owned tools.
+- `building-workers` — worker profile format and choices.
+- `building-extensions` — manifest, each core contract's API, defining new
+  contracts, the escape hatch, fake-model testing, `japa check`.
 - `writing-job-briefs` — good briefs, choosing a worker, parallel jobs,
   follow-ups.
 - `reporting-changes` — the done / how-to-use / how-to-undo format.
 
-Task:
-
-- `research` — a sourced, structured research report.
-
-Further task skills are created from real requests.
+Task skill: `research` — a sourced, structured research report. Further task
+skills are created from real requests.
 
 ## 12. CLI
 
-`japa daemon` · `japa chat` · `japa status` · `japa check <name>` ·
-`japa rollback <name> [to]` · `japa safe-mode`
+`japa daemon` · `japa chat` · `japa status` · `japa check <kind> <name>` ·
+`japa rollback <kind> <name> [to]` · `japa safe-mode [--default-adapters]`
 
 ## 13. Repository layout
 
 pnpm workspace in `/home/dshi/projects/japa`:
 
 ```
-packages/kernel/       contracts, loader, jobs, context lifecycle, memory,
-                       skills, secrets, changes, self-extension, safety
-packages/cli/          japa daemon and subcommands
-extensions/gateway/    surface + TUI client
-extensions/schedule/   trigger
-extensions/web/        tools
-extensions/coder/      worker
-extensions/researcher/ worker
-skills/                default skills
+packages/kernel/          contracts, loader, boot, jobs, context & memory,
+                          skills & workers loading, changes, settings,
+                          self-extension, safety
+packages/cli/             japa daemon and subcommands
+extensions/providers/     provider
+extensions/local-env/     environment
+extensions/sqlite/        storage
+extensions/file-secrets/  secrets
+extensions/gateway/       surface + TUI client
+extensions/schedule/      trigger + tools
+extensions/web/           tools + search-engine contract
+workers/                  default worker profiles
+skills/                   default skills
 docs/superpowers/specs/
 ```
 
@@ -572,30 +718,33 @@ docs/superpowers/specs/
   state, not an error.
 - Triggers, job reports, secret notices: idempotent via `requestId`.
 - Consolidation: a durable task; a crash resumes it; a stale result is
-  discarded (§6.3).
-- Extensions: §10.4.
+  discarded (§7.3).
+- Extensions and boot adapters: §10.4.
 
 ## 15. Testing
 
-vitest with Pi AI's faux provider (scripted model responses; no network):
+vitest with pi-ai's faux provider (scripted model responses; no network):
 
-- Contract registry and loader: define/contribute, hot reload, same-name
-  replace, rollback.
-- Tool selection: root gets all shared tools, profile-owned tools stay in
-  their profile; result cap; read-only
-  CoS environment.
+- Contracts: validation, activation order, cardinality (one boot adapter),
+  extension-defined contracts.
+- Loader and boot: override order, hot reload, same-name replace, boot-phase
+  changes apply only on restart.
+- Tool selection: root gets all extension tools and built-in `read`; worker
+  profiles select built-ins and extensions; result cap; read-only CoS
+  environment; profile environment dispatch.
 - Jobs: lifecycle, concurrency queue, `needs_input`, restart mid-job with no
   double reports.
 - Context: consolidate → reset; open loops and facts survive; stale
   consolidation is discarded.
 - Reflection limits: long entries rejected/shortened, cap triggers merge,
   duplicates rejected.
-- Skills: discovery, override order, worker-profile narrowing, `skill_read`.
+- Skills and workers: discovery, override order, profile resolution,
+  `skill_read`.
 - Secrets: request → fulfil → notice; value absent from storage entries.
-- Changes log: undo of an install and of a settings change.
+- Changes log: undo of an install, a content change, and a settings change.
 - Safety: failed install rolls back; repeated runtime failures roll back;
-  boot safe mode.
-- `japa check`: manifest validation and the routing eval (with a scripted
+  boot safe mode, including a failing boot adapter.
+- `japa check`: manifest validation, conformance, routing eval (scripted
   model).
 - End-to-end: boot daemon, attach gateway client, submit, start a job, see the
   report and the job board update.
