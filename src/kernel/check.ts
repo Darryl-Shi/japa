@@ -8,11 +8,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boot } from "./boot.ts";
 import { CORE_CONTRACTS, type EnvironmentAdapter } from "./contracts.ts";
+import type { JapaExtension } from "./extension.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { fauxKit } from "./kit.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { loadSkills } from "./skills.ts";
 import { profileError, readProfile } from "./workers.ts";
+import { cachedCopy } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const packaged = join(packageRoot, "extensions");
@@ -55,14 +57,15 @@ async function checkWorker(name: string, dir: string, home: string): Promise<str
   } catch (error) {
     return [message(error)];
   }
-  const { extensions } = await loadExtensions(discoverExtensions([packaged, join(dir, "extensions")]), contracts);
+  const found = discoverExtensions([packaged, join(dir, "extensions")]);
+  const { extensions } = await loadExtensions(found, contracts);
   const environments = extensions.flatMap((e) => (e.provides?.environment ?? []) as EnvironmentAdapter[]);
   const error = profileError(
     profile,
     createModels(),
     new Map(environments.map((a) => [a.name, a])),
     new Map(extensions.filter((e) => e.provides?.tool || e.durable).map((e) => [e.name, e])),
-    loadSkills([join(packageRoot, "skills"), join(dir, "skills")]).skills,
+    loadSkills([join(packageRoot, "skills"), ...found.map((f) => join(f.file, "..", "skills")), join(dir, "skills")]).skills,
   );
   return error === undefined ? [] : [error];
 }
@@ -70,7 +73,9 @@ async function checkWorker(name: string, dir: string, home: string): Promise<str
 /** Manifest, typecheck, the extension's own tests and a smoke load, stopping at the first that fails. */
 async function checkExtension(name: string, dir: string, home: string): Promise<string[]> {
   const source = join(dir, "extensions", name);
-  const { extensions, errors } = await loadExtensions(discoverExtensions([packaged, join(dir, "extensions")]), contracts);
+  const fresh = existsSync(source) ? [{ name, file: join(cachedCopy(home, source), "index.ts") }] : [];
+  const found = discoverExtensions([packaged, join(dir, "extensions")]).filter((f) => f.name !== name);
+  const { extensions, errors } = await loadExtensions([...found, ...fresh], contracts);
   const failed = errors.filter((e) => e.name === name).map((e) => e.error);
   if (failed.length > 0) return failed;
   const extension = extensions.find((e) => e.name === name);
@@ -89,20 +94,20 @@ async function checkExtension(name: string, dir: string, home: string): Promise<
       exclude: [join(source, "**/*.test.ts")], // `vitest` resolves only when they run, below
     }),
   );
-  const compiled = await run("tsc", ["-p", config]);
+  const compiled = await run("tsc", ["-p", config], source);
   rmSync(tmp, { recursive: true, force: true });
   if (compiled !== undefined) return [compiled];
   if (globSync("**/*.test.ts", { cwd: source }).length > 0) {
-    const tested = await run("vitest", ["run", "--root", source]);
+    const tested = await run("vitest", ["run", "--root", source, "--no-cache"], source);
     if (tested !== undefined) return [tested];
   }
-  return smokeLoad(name, dir);
+  return smokeLoad(name, dir, extension);
 }
 
 /** Runs japa's own `bin` with `args`; its output when it fails. */
-async function run(bin: string, args: string[]): Promise<string | undefined> {
+async function run(bin: string, args: string[], cwd: string): Promise<string | undefined> {
   try {
-    await promisify(execFile)(join(packageRoot, "node_modules", ".bin", bin), args);
+    await promisify(execFile)(join(packageRoot, "node_modules", ".bin", bin), args, { cwd });
     return undefined;
   } catch (error) {
     const { stdout, stderr } = error as { stdout: string; stderr: string };
@@ -110,14 +115,14 @@ async function run(bin: string, args: string[]): Promise<string | undefined> {
   }
 }
 
-/** Boots a throwaway daemon with `dir`'s extensions, checks that `name` loads, is described and has unique tool names. */
-async function smokeLoad(name: string, dir: string): Promise<string[]> {
+/** Boots a throwaway daemon with `dir`'s extensions and the freshly loaded `extension`, checks that it loads, is described and has unique tool names. */
+async function smokeLoad(name: string, dir: string, extension: JapaExtension): Promise<string[]> {
   const kit = fauxKit();
   const home = mkdtempSync(join(tmpdir(), "japa-check-"));
   writeFileSync(join(home, "settings.json"), JSON.stringify({ storage: { adapter: "memory" }, models: { cos: kit.model } }));
   const problems: string[] = [];
   try {
-    const daemon = await boot({ home, extensionDirs: [packaged, join(dir, "extensions")], extensions: [kit.extension] });
+    const daemon = await boot({ home, extensionDirs: [packaged, join(dir, "extensions")], extensions: [kit.extension, extension] });
     const status = daemon.status();
     if (!status.extensions.some((e) => e.name === name)) problems.push("did not load");
     problems.push(...status.errors.filter((e) => e.name === name).map((e) => e.error));

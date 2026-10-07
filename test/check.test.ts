@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -58,6 +58,15 @@ test("a good worker passes", async () => {
   expect(await check("worker", "scout", home, home)).toEqual([]);
 });
 
+test("a worker may use a skill shipped by an extension", async () => {
+  const home = staged({
+    "extensions/hello/index.ts": extension("hello", "hello"),
+    "extensions/hello/skills/greeting/SKILL.md": "---\nname: greeting\ndescription: Greets\n---\nBody",
+    "workers/scout.md": "---\nname: scout\ndescription: Looks around\ntools: [read]\nskills: [greeting]\n---\nLook.",
+  });
+  expect(await check("worker", "scout", home, home)).toEqual([]);
+});
+
 describe("extensions", { timeout: 60_000 }, () => {
   test("an extension with a type error fails with the compiler output", async () => {
     const home = staged({ "extensions/hello/index.ts": extension("hello", "hello").replace(`"hello " + who`, "who * 2") });
@@ -84,6 +93,18 @@ describe("extensions", { timeout: 60_000 }, () => {
     const provides = `tool: [tool], trigger: [{ name: "tick", start: () => { throw new Error("boom"); } }]`;
     const home = staged({ "extensions/hello/index.ts": extension("hello", "hello", provides) });
     expect(await check("extension", "hello", home, home)).toEqual(["trigger: boom"]);
+  });
+
+  test("checking again after an edit runs the edited module", async () => {
+    const home = staged({
+      "extensions/hello/index.ts": extension("hello", "hello"),
+      "extensions/hello/index.test.ts": `import { expect, test } from "vitest";\ntest("ok", () => expect(1).toBe(1));\n`,
+    });
+    expect(await check("extension", "hello", home, home)).toEqual([]);
+    const provides = `tool: [tool], trigger: [{ name: "tick", start: () => { throw new Error("boom"); } }]`;
+    writeFileSync(join(home, "extensions/hello/index.ts"), extension("hello", "hello", provides));
+    expect(await check("extension", "hello", home, home)).toEqual(["trigger: boom"]);
+    expect(existsSync(join(home, "extensions/hello/node_modules"))).toBe(false);
   });
 
   test("a good extension with one tool, importing japa/sdk, passes", async () => {

@@ -7,7 +7,6 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
-import { cpSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { capabilities } from "./capabilities.ts";
 import { ACTIVATION_ORDER, type Contract, type Dispose, type EnvironmentAdapter, type KernelContext } from "./contracts.ts";
@@ -17,7 +16,7 @@ import { discoverExtensions, type LoadError, loadExtensions, message } from "./l
 import type { Settings } from "./settings.ts";
 import { loadSkills, skillsExtension } from "./skills.ts";
 import { loadWorkers, profileError } from "./workers.ts";
-import { dirHash } from "./workspace.ts";
+import { cachedCopy, dirHash } from "./workspace.ts";
 
 export type Runtime = ReturnType<typeof createRuntime>;
 
@@ -179,8 +178,7 @@ export function createRuntime(input: {
     runtime.extensions = runtime.extensions.filter((e) => !names.has(e.name));
 
     const copies = changed.map((f) => {
-      const copy = join(home, ".cache", "extensions", `${f.name}-${f.hash}`);
-      if (!existsSync(copy)) cpSync(dirname(f.file), copy, { recursive: true });
+      const copy = cachedCopy(home, dirname(f.file));
       hashes.set(f.name, f.hash);
       return { name: f.name, file: join(copy, "index.ts") };
     });

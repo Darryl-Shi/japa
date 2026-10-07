@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json"];
 
@@ -78,4 +78,11 @@ export function dirHash(dir: string): string {
   const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => statSync(join(dir, f)).isFile());
   for (const file of files.sort()) hash.update(`${file}\0`).update(readFileSync(join(dir, file)));
   return hash.digest("hex");
+}
+
+/** `<home>/.cache/extensions/<basename>-<dirHash(dir)>`, copied from `dir` if missing, so its modules import afresh. */
+export function cachedCopy(home: string, dir: string): string {
+  const copy = join(home, ".cache", "extensions", `${basename(dir)}-${dirHash(dir)}`);
+  if (!existsSync(copy)) cpSync(dir, copy, { recursive: true });
+  return copy;
 }
