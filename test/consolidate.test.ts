@@ -12,6 +12,7 @@ import { type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durabl
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
+import { defineJapaExtension, defineTool, Type } from "../src/sdk.ts";
 import { shouldConsolidate } from "../src/kernel/memory/trigger.ts";
 import { bootTest, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, reported, say, textOf, texts } from "./jobs-helpers.ts";
@@ -213,5 +214,44 @@ test("checkConsolidation leaves a fresh exchange alone", async () => {
   await ask(daemon, "hello");
   await daemon.checkConsolidation();
   expect((await memory(daemon)).episodes).toHaveLength(0);
+  await daemon.close();
+});
+
+test("checkConsolidation ignores the handoff when judging idleness", async () => {
+  const { daemon, faux } = await bootTest();
+  route(faux, (system) => (system.startsWith("You consolidate") ? save(facts()) : undefined));
+  await ask(daemon, "hello");
+  await daemon.consolidate();
+  await daemon.checkConsolidation(Date.now() + 3 * HOUR);
+  expect((await memory(daemon)).episodes).toHaveLength(1);
+  await daemon.close();
+});
+
+const bigResult = defineJapaExtension({
+  name: "big",
+  summary: "A tool with a large result",
+  examples: ["big"],
+  docs: "Big.",
+  provides: {
+    tool: [
+      defineTool({
+        name: "big_output",
+        description: "Returns 2 000 characters",
+        parameters: Type.Object({}),
+        execute: async () => ({ content: [{ type: "text", text: "x".repeat(2000) }] }),
+      }),
+    ],
+  },
+});
+
+test("checkConsolidation counts tool results in full", async () => {
+  const { daemon, faux } = await bootTest({ context: { resetTokens: 300 } }, [bigResult]);
+  route(faux, (system, text) => {
+    if (system.startsWith("You consolidate")) return save(facts());
+    if (text === "big") return call("big_output", {});
+  });
+  await ask(daemon, "big");
+  await daemon.checkConsolidation();
+  expect((await memory(daemon)).episodes).toHaveLength(1);
   await daemon.close();
 });

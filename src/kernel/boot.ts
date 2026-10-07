@@ -33,7 +33,7 @@ import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
-import { consolidation, windowText } from "./memory/consolidate.ts";
+import { consolidation } from "./memory/consolidate.ts";
 import { estimateTokens, MemoryDoc } from "./memory/state.ts";
 import { shouldConsolidate } from "./memory/trigger.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
@@ -220,8 +220,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const checkConsolidation = async (now = Date.now()) => {
       const busy = (await opened.snapshot(LiveDoc, root.id, ctx))?.run !== undefined;
       const { messages } = await root.context(ctx);
-      const windowTokens = estimateTokens(windowText(messages));
-      const lastUserAt = messages.findLast((m) => m.role === "user")?.timestamp;
+      const window = messages.filter((m) => m.role !== "system");
+      const windowTokens = estimateTokens(window.map((m) => JSON.stringify(m.content)).join("\n"));
+      // The reset's handoff is not the user speaking.
+      const resetAt = (await opened.snapshot(MemoryDoc, root.id, ctx))?.lastResetAt ?? -1;
+      const lastUserAt = window.findLast((m) => m.role === "user" && m.timestamp > resetAt)?.timestamp;
       if (shouldConsolidate({ busy, windowTokens, lastUserAt, now }, settings.context)) await consolidate();
     };
     const timer = setInterval(() => checkConsolidation().catch(() => {}), 60_000).unref();
