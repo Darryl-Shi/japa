@@ -12,12 +12,18 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import type { OAuthCredential } from "@earendil-works/pi-ai";
+import {
+  createProvider,
+  type OAuthCredential,
+  type Provider,
+} from "@earendil-works/pi-ai";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { SettingsPrompt, SettingsUI } from "../src/core/settings.ts";
 import {
   createNativeModels,
   modelsFromEnvironment,
 } from "../src/extensions/models.ts";
+import { createModelsStore } from "../src/extensions/catalog.ts";
 import {
   configureModels,
   chooseModels,
@@ -949,6 +955,505 @@ test("whole-flow cancellation reaches native login and returns previous valid co
   assert(previous);
   assert.equal(previous.root.provider, "openai");
   assert.deepEqual(await files(directory), before);
+});
+
+// Replace individual native implementations without adding a second provider registry.
+function replacing(
+  id: string,
+  replace: (provider: Provider) => Provider,
+): typeof createNativeModels {
+  return (env, credentials, cache) => {
+    const models = createNativeModels(env, credentials, cache);
+    const native = models.getProvider(id);
+    assert(native);
+    models.setProvider(replace(native));
+    return models;
+  };
+}
+
+function choiceValues(request: SettingsPrompt | undefined) {
+  assert(request?.kind === "choice");
+  return request.choices.map((choice) => choice.value);
+}
+
+test("provider selection uses every registered native provider/name; ZAI offers API-key login only", async (t) => {
+  const directory = await home(t);
+  const result = await setup(directory, "zai");
+  assert.deepEqual(
+    choiceValues(result.prompts[0]),
+    builtinProviders().map((provider) => provider.id),
+  );
+  assert(result.prompts[0]?.kind === "choice");
+  assert.deepEqual(
+    result.prompts[0].choices,
+    builtinProviders().map((provider) => ({
+      value: provider.id,
+      label: provider.name,
+    })),
+  );
+  assert.deepEqual(choiceValues(result.prompts[1]), ["api_key"]);
+  assert.equal(result.result.root.provider, "zai");
+  assert(result.result.models.getModel("zai", result.result.root.modelId));
+  assert.equal(result.result.worker.provider, "zai");
+
+  const changed = scripted([
+    "models",
+    "zai",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "save",
+  ]);
+  const selected = await configureModels(directory, changed.ui, context, {
+    force: true,
+    env: {},
+  });
+  changed.done();
+  assert(selected);
+  assert.deepEqual(selected.root, { provider: "zai", modelId: "glm-5.3" });
+  assert.deepEqual(selected.worker, {
+    provider: "zai",
+    modelId: "glm-5.3-flash",
+  });
+  const before = await files(directory);
+  const reopened = await configureModels(directory, silent, context, {
+    env: {},
+  });
+  assert.deepEqual(reopened?.root, selected.root);
+  assert.deepEqual(reopened?.worker, selected.worker);
+  assert.deepEqual(await files(directory), before);
+
+  const logout = scripted(["logout", "zai", "save"]);
+  assert.equal(
+    await configureModels(directory, logout.ui, context, {
+      force: true,
+      env: {},
+    }),
+    undefined,
+  );
+  logout.done();
+  assert.equal(await createCredentialStore(directory).read("zai"), undefined);
+});
+
+test("ambient ZAI defaults are credential-available; explicit roles remain independent and transient", async (t) => {
+  const directory = await home(t);
+  const env = { ZAI_API_KEY: key };
+  const initial = await configureModels(directory, silent, context, { env });
+  assert(initial);
+  assert.equal(initial.root.provider, "zai");
+  const before = await readFile(join(directory, "settings.json"), "utf8");
+  for (const override of [
+    { JAPA_MODEL: "zai/glm-5.3" },
+    { JAPA_WORKER_MODEL: "zai/glm-5.3-flash" },
+    { JAPA_MODEL: "zai/glm-5.3", JAPA_WORKER_MODEL: "zai/glm-5.3-flash" },
+  ]) {
+    const result = await configureModels(directory, silent, context, {
+      env: { ...env, ...override },
+    });
+    assert(result);
+    assert.deepEqual(
+      result.root,
+      override.JAPA_MODEL
+        ? { provider: "zai", modelId: "glm-5.3" }
+        : initial.root,
+    );
+    assert.deepEqual(
+      result.worker,
+      override.JAPA_WORKER_MODEL
+        ? { provider: "zai", modelId: "glm-5.3-flash" }
+        : initial.worker,
+    );
+    assert.equal(
+      await readFile(join(directory, "settings.json"), "utf8"),
+      before,
+    );
+  }
+  const keep = scripted(["login", "zai", "existing", DEFAULT, DEFAULT, "save"]);
+  await configureModels(directory, keep.ui, context, { env, force: true });
+  keep.done();
+  assert.deepEqual(choiceValues(keep.prompts[2]), ["existing", "api_key"]);
+  await assert.rejects(readFile(join(directory, "credentials.json")), {
+    code: "ENOENT",
+  });
+});
+
+test("first login chooses credential-filtered native defaults and returned native logout remains persistent", async (t) => {
+  const directory = await home(t);
+  const createModels = replacing("openai", (native) => ({
+    ...native,
+    filterModels(catalog) {
+      return catalog.filter((model) => model.id === "gpt-5.4-mini");
+    },
+  }));
+  const script = scripted(["openai", "api_key", key]);
+  const result = await configureModels(directory, script.ui, context, {
+    env: {},
+    createModels,
+  });
+  script.done();
+  assert(result);
+  assert.equal(result.root.modelId, "gpt-5.4-mini");
+  await result.models.logout("openai");
+  assert.equal(
+    await createCredentialStore(directory).read("openai"),
+    undefined,
+  );
+});
+
+test("provider login errors are scrubbed and non-chat providers cannot invent chat aliases", async (t) => {
+  const directory = await home(t);
+  const createModels = replacing("zai", (native) => {
+    const apiKey = native.auth.apiKey;
+    assert(apiKey);
+    return {
+      ...native,
+      auth: {
+        apiKey: {
+          ...apiKey,
+          async login() {
+            throw new Error(`upstream echoed ${key}`);
+          },
+        },
+      },
+    };
+  });
+  const script = scripted(["zai", "api_key"]);
+  await assert.rejects(
+    configureModels(directory, script.ui, context, { env: {}, createModels }),
+    (error: Error) => {
+      assert(!error.message.includes(key));
+      assert.equal(error.cause, undefined);
+      return /Login failed.*credentials and network/.test(error.message);
+    },
+  );
+  script.done();
+  assert.deepEqual(await readdir(directory), []);
+  const classifier = scripted(["typesafe", "api_key", key]);
+  await assert.rejects(
+    configureModels(directory, classifier.ui, context, { env: {} }),
+    /No configured chat models.*choose another provider/,
+  );
+  classifier.done();
+  assert.deepEqual(await readdir(directory), []);
+});
+
+test("OAuth-only native metadata never offers API-key login; native login is faked offline", async (t) => {
+  const directory = await home(t);
+  const token: OAuthCredential = {
+    type: "oauth",
+    access: "test-access",
+    refresh: "test-refresh",
+    expires: Date.now() + 3_600_000,
+  };
+  let installation: string | undefined;
+  const createModels = replacing("openai-codex", (native) => {
+    const oauth = native.auth.oauth;
+    assert(oauth);
+    assert.equal(native.auth.apiKey, undefined);
+    return {
+      ...native,
+      auth: {
+        oauth: {
+          ...oauth,
+          async login(_interaction, options) {
+            installation = options?.getDeviceId?.();
+            return token;
+          },
+        },
+      },
+    };
+  });
+  const script = scripted(["openai-codex", "oauth"]);
+  const configured = await configureModels(directory, script.ui, context, {
+    env: {},
+    createModels,
+  });
+  script.done();
+  assert(configured);
+  assert.deepEqual(choiceValues(script.prompts[1]), ["oauth"]);
+  assert.equal(configured.root.provider, "openai-codex");
+  assert.equal(
+    JSON.parse((await files(directory)).settings).deviceId,
+    installation,
+  );
+  assert.deepEqual(
+    await createCredentialStore(directory).read("openai-codex"),
+    token,
+  );
+});
+
+test("ambient-only metadata gives setup instructions when absent and keep-configured when present", async (t) => {
+  const directory = await home(t);
+  let ready = false;
+  const createModels = replacing("zai", (native) => ({
+    ...native,
+    auth: {
+      apiKey: {
+        name: "TEST_CLOUD_PROFILE / credential file",
+        async resolve() {
+          return ready ? { auth: {} } : undefined;
+        },
+      },
+    },
+  }));
+  const missing = scripted(["zai"]);
+  await assert.rejects(
+    configureModels(directory, missing.ui, context, { env: {}, createModels }),
+    /ambient configuration.*TEST_CLOUD_PROFILE/,
+  );
+  missing.done();
+  assert.match(
+    missing.notices.join(),
+    /environment variables or credential files.*restarting Japa/,
+  );
+  assert.deepEqual(await readdir(directory), []);
+  ready = true;
+  const keep = scripted(["login", "zai", "existing", DEFAULT, DEFAULT, "save"]);
+  const result = await configureModels(directory, keep.ui, context, {
+    force: true,
+    env: {},
+    createModels,
+  });
+  keep.done();
+  assert(result);
+  assert.deepEqual(choiceValues(keep.prompts[2]), ["existing"]);
+  await assert.rejects(readFile(join(directory, "credentials.json")), {
+    code: "ENOENT",
+  });
+});
+
+test("unknown registered IDs/model IDs fail closed even when environment overrides hide saved refs", async (t) => {
+  const directory = await home(t);
+  await setup(directory, "zai");
+  const before = await files(directory);
+  for (const worker of [
+    { provider: "unknown-native-provider", modelId: "glm-5.3" },
+    { provider: "zai", modelId: "not-a-native-model" },
+  ]) {
+    const text = JSON.stringify({ ...JSON.parse(before.settings), worker });
+    await writeFile(join(directory, "settings.json"), text);
+    await assert.rejects(
+      configureModels(directory, silent, context, {
+        env: { JAPA_WORKER_MODEL: "zai/glm-5.3-flash" },
+      }),
+      /Invalid|Unknown/,
+    );
+    assert.equal(
+      await readFile(join(directory, "settings.json"), "utf8"),
+      text,
+    );
+  }
+  await writeFile(join(directory, "settings.json"), before.settings);
+  await assert.rejects(
+    configureModels(directory, silent, context, {
+      env: { JAPA_MODEL: "unknown-native-provider/foo" },
+    }),
+    /Unknown model provider/,
+  );
+  assert.deepEqual(await files(directory), before);
+});
+
+test("dynamic-only selected provider publishes a persistent native cache, reopens offline, and retains requested refs on failed refresh", async (t) => {
+  const directory = await home(t);
+  let requests = 0;
+  let fail = false;
+  const createModels = replacing("radius", (native) => {
+    const template = native.getModels()[0];
+    assert(template);
+    return createProvider({
+      id: native.id,
+      name: native.name,
+      auth: native.auth,
+      models: [],
+      api: native,
+      async fetchModels() {
+        requests++;
+        if (fail) throw new Error(`upstream echoed secret: ${key}`);
+        return [
+          { ...template, id: "private/main" },
+          { ...template, id: "private/worker" },
+        ];
+      },
+    });
+  });
+  const first = scripted(["radius", "api_key", key]);
+  const initial = await configureModels(directory, first.ui, context, {
+    env: {},
+    createModels,
+  });
+  first.done();
+  assert(initial);
+  assert.equal(requests, 1);
+  assert.equal(
+    initial.models.getModel("radius", "private/main")?.id,
+    "private/main",
+  );
+  assert.equal(
+    (await stat(join(directory, "models", "radius.json"))).mode & 0o777,
+    0o600,
+  );
+  assert.equal((await stat(join(directory, "models"))).mode & 0o777, 0o700);
+  assert(
+    !(
+      await readFile(join(directory, "models", "radius.json"), "utf8")
+    ).includes(key),
+  );
+
+  const changes = scripted([
+    "models",
+    "radius",
+    "private/main",
+    "private/worker",
+    "save",
+  ]);
+  const selected = await configureModels(directory, changes.ui, context, {
+    env: {},
+    force: true,
+    createModels,
+  });
+  changes.done();
+  assert(selected);
+  assert.equal(requests, 2);
+  const cached = await createModelsStore(directory).read("radius");
+  const before = await files(directory);
+  fail = true;
+  const reopened = await configureModels(directory, silent, context, {
+    env: {},
+    createModels,
+  });
+  assert.deepEqual(reopened?.root, selected.root);
+  assert.deepEqual(reopened?.worker, selected.worker);
+  assert.equal(
+    requests,
+    2,
+    "reopen must initialize cache without a network refresh",
+  );
+  const offline = scripted(["models", "radius", DEFAULT, DEFAULT, "save"]);
+  const retained = await configureModels(directory, offline.ui, context, {
+    force: true,
+    env: {},
+    createModels,
+  });
+  offline.done();
+  assert.deepEqual(retained?.worker, selected.worker);
+  assert.deepEqual(await createModelsStore(directory).read("radius"), cached);
+  assert.deepEqual(await files(directory), before);
+  await assert.rejects(
+    configureModels(directory, silent, context, {
+      env: { JAPA_WORKER_MODEL: "radius/private/missing" },
+      createModels,
+    }),
+    (error: Error) => {
+      assert(!error.message.includes(key));
+      return /catalog.*credentials and network/.test(error.message);
+    },
+  );
+  assert.deepEqual(await files(directory), before);
+});
+
+test("cancelling cache initialization restores saved dynamic refs offline without refreshing unrelated providers", async (t) => {
+  const directory = await home(t);
+  const createModels = replacing("radius", (native) => {
+    const template = native.getModels()[0];
+    assert(template);
+    return createProvider({
+      id: native.id,
+      name: native.name,
+      auth: native.auth,
+      models: [],
+      api: native,
+      async fetchModels() {
+        assert.fail("Restart/cancellation must not make a network request");
+      },
+    });
+  });
+  const template = createNativeModels({}).getModels("radius")[0];
+  assert(template);
+  await createModelsStore(directory).write("radius", {
+    models: [{ ...template, id: "offline" }],
+  });
+  await createCredentialStore(directory).modify("radius", async () => ({
+    type: "api_key",
+    key,
+  }));
+  const initial = await configureModels(directory, silent, context, {
+    env: {},
+    createModels,
+  });
+  assert(initial);
+  const before = await files(directory);
+  const cancelled = withCancel(context);
+  cancelled.cancel();
+  const restored = await configureModels(directory, silent, cancelled.context, {
+    force: true,
+    env: {},
+    createModels,
+  });
+  assert.deepEqual(restored?.root, initial.root);
+  assert(restored?.models.getModel("radius", "offline"));
+  assert.deepEqual(await files(directory), before);
+});
+
+test("settings cancellation preserves native OAuth rotation for an untouched dynamic provider", async (t) => {
+  const directory = await home(t);
+  let refreshes = 0;
+  const expired: OAuthCredential = {
+    type: "oauth",
+    access: "old",
+    refresh: "rotate-once",
+    expires: 1,
+  };
+  const createModels = replacing("radius", (native) => {
+    const oauth = native.auth.oauth;
+    assert(oauth);
+    return createProvider({
+      id: native.id,
+      name: native.name,
+      models: native.getModels(),
+      api: native,
+      auth: {
+        oauth: {
+          ...oauth,
+          async refresh(current) {
+            refreshes++;
+            return {
+              ...current,
+              access: "fresh",
+              refresh: "rotated",
+              expires: Date.now() + 3_600_000,
+            };
+          },
+        },
+      },
+      async fetchModels() {
+        return native.getModels();
+      },
+    });
+  });
+  await createCredentialStore(directory).modify("radius", async () => expired);
+  const initial = await configureModels(directory, silent, context, {
+    env: {},
+    createModels,
+  });
+  assert(initial);
+  const before = await readFile(join(directory, "settings.json"), "utf8");
+  assert.equal(refreshes, 0, "local availability must not refresh OAuth");
+  const cancel = scripted(["models", "radius", DEFAULT, DEFAULT, "cancel"]);
+  await configureModels(directory, cancel.ui, context, {
+    force: true,
+    env: {},
+    createModels,
+  });
+  cancel.done();
+  assert.equal(refreshes, 1);
+  assert.equal(
+    ((await createCredentialStore(directory).read("radius")) as OAuthCredential)
+      .refresh,
+    "rotated",
+  );
+  assert.equal(
+    await readFile(join(directory, "settings.json"), "utf8"),
+    before,
+  );
 });
 
 test("synchronous native notifications observe asynchronous UI failures, even without a prompt", async () => {

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import {
   awaitWithContext,
@@ -18,12 +17,15 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ModelProvider } from "../core/contracts.ts";
 import type { SettingsPrompt, SettingsUI } from "../core/settings.ts";
-import { createNativeModels, modelRolesFromEnvironment } from "./models.ts";
+import { createModelsStore, readJson, writeJson } from "./catalog.ts";
+import {
+  createNativeModels,
+  modelRolesFromEnvironment,
+  prepareProviderModels,
+} from "./models.ts";
 
-const providers = ["openai", "anthropic"] as const;
-type ProviderId = (typeof providers)[number];
 type Selection = Pick<ModelProvider, "root" | "worker"> & {
-  provider: ProviderId;
+  provider: string;
 };
 type Settings = {
   version: 1;
@@ -31,7 +33,7 @@ type Settings = {
   disconnected?: true;
 } & Partial<Selection>;
 
-class SetupCancelled extends Error {
+export class SetupCancelled extends Error {
   constructor() {
     super(
       "Model setup cancelled; no usable previous configuration is available.",
@@ -41,40 +43,6 @@ class SetupCancelled extends Error {
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-async function readJson(filename: string): Promise<unknown> {
-  let text: string;
-  try {
-    text = await readFile(filename, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    // Never include a JSON parser's snippet: the file may contain credentials.
-    throw new Error(`Invalid JSON in ${filename}; refusing to overwrite it.`);
-  }
-}
-
-async function writeJson(filename: string, value: unknown): Promise<void> {
-  await mkdir(dirname(filename), { recursive: true, mode: 0o700 });
-  const temporary = `${filename}.${randomUUID()}.tmp`;
-  try {
-    const file = await open(temporary, "wx", 0o600);
-    try {
-      await file.chmod(0o600);
-      await file.writeFile(JSON.stringify(value, null, 2) + "\n", "utf8");
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    await rename(temporary, filename);
-  } finally {
-    await rm(temporary, { force: true });
-  }
 }
 
 function credential(value: unknown): value is Credential {
@@ -187,23 +155,29 @@ export function createCredentialStore(home: string): CredentialStore {
   };
 }
 
-function providerId(value: unknown): value is ProviderId {
-  return value === "openai" || value === "anthropic";
+function providerId(models: Models, value: unknown): value is string {
+  return typeof value === "string" && models.getProvider(value) !== undefined;
 }
 
-function modelRef(value: unknown): value is ModelProvider["root"] {
+function modelRef(
+  models: Models,
+  value: unknown,
+): value is ModelProvider["root"] {
   return (
     record(value) &&
     Object.keys(value).every(
       (key) => key === "provider" || key === "modelId",
     ) &&
-    providerId(value.provider) &&
+    providerId(models, value.provider) &&
     typeof value.modelId === "string" &&
     !!value.modelId.trim()
   );
 }
 
-async function readSettings(filename: string): Promise<Settings | undefined> {
+async function readSettings(
+  filename: string,
+  models: Models,
+): Promise<Settings | undefined> {
   const value = await readJson(filename);
   if (value === undefined) return undefined;
   const valid =
@@ -222,13 +196,13 @@ async function readSettings(filename: string): Promise<Settings | undefined> {
       ].includes(key),
     ) &&
     (value.disconnected === undefined ||
-      (value.disconnected === true && providerId(value.provider))) &&
+      (value.disconnected === true && providerId(models, value.provider))) &&
     ((value.provider === undefined &&
       value.root === undefined &&
       value.worker === undefined) ||
-      (providerId(value.provider) &&
-        modelRef(value.root) &&
-        modelRef(value.worker) &&
+      (providerId(models, value.provider) &&
+        modelRef(models, value.root) &&
+        modelRef(models, value.worker) &&
         value.provider === value.root.provider));
   if (!valid)
     throw new Error(
@@ -247,11 +221,16 @@ function selectionOf(settings: Settings | undefined): Selection | undefined {
   };
 }
 
-function verifyModels(models: Models, selection: Selection): void {
+function verifyModels(
+  models: Models,
+  selection: Selection,
+  staticOnly = false,
+): void {
   for (const role of ["root", "worker"] as const) {
     const ref = selection[role];
+    if (staticOnly && models.getProvider(ref.provider)?.refreshModels) continue;
     if (
-      !providerId(ref.provider) ||
+      !providerId(models, ref.provider) ||
       !models.getModel(ref.provider, ref.modelId)
     ) {
       throw new Error(
@@ -261,12 +240,34 @@ function verifyModels(models: Models, selection: Selection): void {
   }
 }
 
+async function prepareSelection(
+  models: Models,
+  selection: Selection,
+  context: Context,
+  allowNetwork = true,
+): Promise<void> {
+  for (const id of new Set([
+    selection.root.provider,
+    selection.worker.provider,
+  ])) {
+    await prepareProviderModels(models, id, {
+      signal: context.abortSignal,
+      modelIds: [selection.root, selection.worker]
+        .filter((ref) => ref.provider === id)
+        .map((ref) => ref.modelId),
+      allowNetwork,
+    });
+  }
+  verifyModels(models, selection);
+}
+
 async function configured(
   models: Models,
   selection: Selection,
   context: Context,
+  allowNetwork = true,
 ): Promise<boolean> {
-  verifyModels(models, selection);
+  await prepareSelection(models, selection, context, allowNetwork);
   for (const id of new Set([
     selection.root.provider,
     selection.worker.provider,
@@ -424,54 +425,77 @@ export async function runAuthInteraction<T>(
 }
 
 async function chooseProvider(
+  models: Models,
   ui: SettingsUI,
   context: Context,
   current = "openai",
-): Promise<ProviderId> {
-  return (await prompt(
+): Promise<string> {
+  return prompt(
     ui,
     {
       kind: "choice",
       title: "Model provider",
       defaultValue: current,
-      choices: [
-        { value: "openai", label: "OpenAI" },
-        { value: "anthropic", label: "Anthropic" },
-      ],
+      choices: models.getProviders().map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+      })),
     },
     context,
-  )) as ProviderId;
+  );
 }
 
 /** Native credential-filtered defaults; only /settings supplies UI to show model pickers. */
 export async function chooseModels(
   models: Models,
-  id: ProviderId,
+  id: string,
   ui: SettingsUI | undefined,
   context: Context,
   previous?: Selection,
 ): Promise<Selection> {
+  await prepareProviderModels(models, id, {
+    signal: context.abortSignal,
+    modelIds: previous
+      ? [previous.root, previous.worker]
+          .filter((ref) => ref.provider === id)
+          .map((ref) => ref.modelId)
+      : undefined,
+    refresh: Boolean(ui),
+  });
   const defaults =
     id === "anthropic"
       ? { root: "claude-sonnet-4-6", worker: "claude-sonnet-4-6" }
-      : { root: "gpt-5.4", worker: "gpt-5.4-mini" };
+      : id === "openai"
+        ? { root: "gpt-5.4", worker: "gpt-5.4-mini" }
+        : undefined;
   const choices = (
     await models.getAvailable(id, { signal: context.abortSignal })
   ).map((model) => ({
     value: model.id,
     label: `${model.name} (${model.id})`,
   }));
-  if (!choices.length)
-    throw new Error(`No configured models are available for ${id}.`);
+  const first = choices[0];
+  if (!first)
+    throw new Error(
+      `No configured chat models are available for ${id}. Configure provider credentials and retry, or choose another provider.`,
+    );
   const choose = async (role: "root" | "worker") => {
     const preferred =
       previous?.[role].provider === id
         ? previous[role].modelId
-        : defaults[role];
+        : defaults?.[role];
+    if (
+      !ui &&
+      previous?.[role].provider === id &&
+      !choices.some((choice) => choice.value === preferred)
+    )
+      throw new Error(
+        `The selected ${role} model for ${id} is unavailable. Change it in model settings.`,
+      );
     const defaultValue =
       choices.find((choice) => choice.value === preferred)?.value ??
-      choices.find((choice) => choice.value === defaults[role])?.value ??
-      choices[0]!.value;
+      choices.find((choice) => choice.value === defaults?.[role])?.value ??
+      first.value;
     return ui
       ? prompt(
           ui,
@@ -500,38 +524,70 @@ export async function configureModels(
   home: string,
   ui: SettingsUI,
   context: Context,
-  options: { force?: boolean; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    force?: boolean;
+    env?: NodeJS.ProcessEnv;
+    /** Fresh native collections; injectable for offline provider tests/embedding. */
+    createModels?: typeof createNativeModels;
+  } = {},
 ): Promise<ModelProvider | undefined> {
   const env = options.env ?? process.env;
   const filename = join(home, "settings.json");
-  let settings = await readSettings(filename);
   const credentials = createCredentialStore(home);
-  const original = new Map<string, Credential>();
-  for (const { providerId: id } of await credentials.list()) {
-    original.set(id, (await credentials.read(id))!);
-  }
-  const models = createNativeModels(env, credentials);
+  await credentials.list(); // Validate the whole credential file before any mutations.
+  const create = options.createModels ?? createNativeModels;
+  const cache = createModelsStore(home);
+  const models = create(env, credentials, cache);
+  let settings = await readSettings(filename, models);
   const saved = selectionOf(settings);
-  if (saved) verifyModels(models, saved);
-  const defaults = modelRolesFromEnvironment({
-    ...env,
-    JAPA_MODEL: undefined,
-    JAPA_WORKER_MODEL: undefined,
-  });
-  const base: Selection = saved ?? {
-    provider: defaults.root.provider as ProviderId,
+  const defaults = modelRolesFromEnvironment(
+    {
+      ...env,
+      JAPA_MODEL: undefined,
+      JAPA_WORKER_MODEL: undefined,
+    },
+    undefined,
+    models,
+  );
+  let base: Selection = saved ?? {
+    provider: defaults.root.provider,
     ...defaults,
   };
   const effective = (selection: Selection): Selection => {
-    const roles = modelRolesFromEnvironment(env, selection);
-    return { provider: roles.root.provider as ProviderId, ...roles };
+    const roles = modelRolesFromEnvironment(env, selection, models);
+    return { provider: roles.root.provider, ...roles };
   };
-  const environment = effective(base);
-  // Explicit role overrides win independently; API-key presence never replaces saved roles.
-  verifyModels(models, environment);
+  let environment = effective(base);
+  if (saved) verifyModels(models, saved, true);
+  verifyModels(models, environment, true);
   const deviceId = settings?.deviceId ?? randomUUID();
   let previous: Selection | undefined;
   try {
+    if (saved) {
+      // Validate persisted refs even when a transient environment override hides them.
+      await prepareSelection(models, saved, context);
+    } else {
+      // Check local auth only while discovering a default. Refresh at most the selected
+      // candidate, never every ambient provider just because it is registered.
+      for (const id of new Set([
+        base.provider,
+        "openai",
+        "anthropic",
+        ...models.getProviders().map((provider) => provider.id),
+      ])) {
+        if (
+          !models.getModels(id).length &&
+          !models.getProvider(id)?.refreshModels
+        )
+          continue;
+        if (!(await models.checkAuth(id, { signal: context.abortSignal })))
+          continue;
+        base = await chooseModels(models, id, undefined, context);
+        break;
+      }
+      environment = effective(base);
+    }
+    // Explicit role overrides win independently; API-key presence never replaces saved roles.
     if (await configured(models, environment, context)) previous = environment;
     if (previous && !options.force) {
       // Environment role overrides are transient, including on the first ambient-key startup.
@@ -539,24 +595,57 @@ export async function configureModels(
       return { models, root: previous.root, worker: previous.worker };
     }
 
-    // Native Models.login writes here until Save. Cancelling cannot replace an old credential.
+    // Only explicit login/logout edits are staged. Native refresh of an untouched OAuth
+    // credential must persist immediately, even if settings is cancelled after token rotation.
     const staged = new InMemoryCredentialStore();
-    for (const [id, value] of original)
-      await staged.modify(id, async () => structuredClone(value));
-    const editing = createNativeModels(env, staged);
+    const pending = new Set<string>();
+    const editing = create(
+      env,
+      {
+        read: (id, opts) =>
+          (pending.has(id) ? staged : credentials).read(id, opts),
+        async list(opts) {
+          return [
+            ...(await credentials.list(opts)).filter(
+              ({ providerId }) => !pending.has(providerId),
+            ),
+            ...(await staged.list(opts)).filter(({ providerId }) =>
+              pending.has(providerId),
+            ),
+          ];
+        },
+        modify: (id, fn, opts) =>
+          (pending.has(id) ? staged : credentials).modify(id, fn, opts),
+        delete: (id, opts) =>
+          (pending.has(id) ? staged : credentials).delete(id, opts),
+      },
+      cache,
+    );
     let selection = base;
     let loggedOut = false;
-    const login = async (id: ProviderId) => {
-      const auth = editing.getProvider(id)!.auth;
-      const choices = [
-        { value: "oauth", label: auth.oauth!.loginLabel ?? auth.oauth!.name },
-        { value: "api_key", label: "Enter API key" },
-      ];
+    const login = async (id: string) => {
+      const provider = editing.getProvider(id);
+      if (!provider) throw new Error("Unknown model provider.");
+      const { auth } = provider;
+      const choices: { value: string; label: string }[] = [];
+      if (auth.oauth)
+        choices.push({
+          value: "oauth",
+          label: auth.oauth.loginLabel ?? auth.oauth.name,
+        });
+      if (auth.apiKey?.login)
+        choices.push({ value: "api_key", label: auth.apiKey.name });
       if (await editing.checkAuth(id, { signal: context.abortSignal })) {
         choices.unshift({
           value: "existing",
           label: "Keep configured credentials (stored or environment)",
         });
+      }
+      const first = choices[0];
+      if (!first) {
+        const instructions = `${provider.name} requires ambient configuration (${auth.apiKey?.name ?? "provider credentials"}). Configure its environment variables or credential files before restarting Japa, then select this provider again. See @earendil-works/pi-ai/README.md, Environment Variables, for the required settings.`;
+        await notify(ui, instructions, context);
+        throw new Error(instructions);
       }
       const type = await prompt(
         ui,
@@ -564,7 +653,7 @@ export async function configureModels(
           kind: "choice",
           title: "Authentication",
           choices,
-          defaultValue: choices[0]!.value,
+          defaultValue: first.value,
         },
         context,
       );
@@ -574,11 +663,25 @@ export async function configureModels(
         settings = { version: 1, deviceId };
         await writeJson(filename, settings);
       }
-      await runAuthInteraction(ui, context, (interaction) =>
-        editing.login(id, type as "oauth" | "api_key", interaction, {
-          getDeviceId: () => deviceId,
-        }),
-      );
+      pending.add(id);
+      await runAuthInteraction(ui, context, async (interaction) => {
+        try {
+          return await editing.login(
+            id,
+            type as "oauth" | "api_key",
+            interaction,
+            {
+              getDeviceId: () => deviceId,
+            },
+          );
+        } catch (error) {
+          if (error instanceof SetupCancelled || interaction.signal?.aborted)
+            throw error;
+          throw new Error(
+            `Login failed for ${provider.name}. Check the provider credentials and network access, then retry.`,
+          );
+        }
+      });
       if (!credential(await staged.read(id)))
         throw new Error("The provider returned an invalid credential");
     };
@@ -593,15 +696,14 @@ export async function configureModels(
       if (!ready) {
         await notify(
           ui,
-          "Saving disconnected settings and exiting without starting a conversation. Start Japa again to log in; your model selections are retained.",
+          "Saving disconnected settings without starting a conversation. Your model selections are retained; reopen settings to log in.",
           context,
         );
       }
       context.abortSignal?.throwIfAborted();
       // From here, complete the commit even if cancelled. Each file is atomic, not a two-file transaction.
-      for (const id of providers) {
+      for (const id of pending) {
         const next = await staged.read(id);
-        if (JSON.stringify(next) === JSON.stringify(original.get(id))) continue;
         if (next) await credentials.modify(id, async () => next);
         else await credentials.delete(id);
       }
@@ -611,25 +713,16 @@ export async function configureModels(
         ...selection,
         ...(!ready ? { disconnected: true } : {}),
       });
+      pending.clear(); // The returned native collection now reads/writes persistent credentials.
       return ready
-        ? { models, root: active.root, worker: active.worker }
+        ? { models: editing, root: active.root, worker: active.worker }
         : undefined;
     };
 
     if (!options.force) {
-      const id = await chooseProvider(
-        ui,
-        context,
-        selection?.provider ?? environment.provider,
-      );
+      const id = await chooseProvider(editing, ui, context, selection.provider);
       await login(id);
-      selection = await chooseModels(
-        editing,
-        id,
-        undefined,
-        context,
-        selection,
-      );
+      selection = await chooseModels(editing, id, undefined, context, saved);
       return await save();
     }
     while (true) {
@@ -663,12 +756,9 @@ export async function configureModels(
         );
         continue;
       }
-      const id = await chooseProvider(
-        ui,
-        context,
-        selection?.provider ?? environment.provider,
-      );
+      const id = await chooseProvider(editing, ui, context, selection.provider);
       if (action === "logout") {
+        pending.add(id);
         await editing.logout(id, { signal: context.abortSignal });
         loggedOut = true;
         await notify(
@@ -688,8 +778,27 @@ export async function configureModels(
       return { models, root: previous.root, worker: previous.worker };
     // Cancellation may have arrived during the initial auth checks. Restoring the
     // old configuration is cleanup, and must not use the already-aborted signal.
-    if (await configured(models, environment, withoutAbortSignal(context))) {
-      return { models, root: environment.root, worker: environment.worker };
+    try {
+      if (saved)
+        await prepareSelection(
+          models,
+          saved,
+          withoutAbortSignal(context),
+          false,
+        );
+      if (
+        await configured(
+          models,
+          environment,
+          withoutAbortSignal(context),
+          false,
+        )
+      ) {
+        return { models, root: environment.root, worker: environment.worker };
+      }
+    } catch {
+      // An absent/broken offline cache is not a usable previous configuration.
+      // Never start a new network request as part of cancellation cleanup.
     }
     if (settings?.disconnected) return undefined;
     throw new SetupCancelled();
