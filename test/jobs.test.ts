@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import {
   type AssistantMessage,
   type FauxProviderHandle,
+  type FauxResponseFactory,
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
@@ -66,19 +67,25 @@ function textOf(m: Message): string {
   return typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
 }
 
-/** Answers every request with `respond(role, text)` of its last non-system message, or "ok". */
-function script(faux: FauxProviderHandle, respond: (role: string, text: string) => AssistantMessage | undefined) {
-  const step = ({ messages }: { messages: Message[] }) => {
+type Respond = (
+  role: string,
+  text: string,
+  signal?: AbortSignal,
+) => AssistantMessage | Promise<AssistantMessage> | undefined;
+
+/** Answers every request with `respond(role, text, signal)` of its last non-system message, or "ok". */
+function script(faux: FauxProviderHandle, respond: Respond) {
+  const step: FauxResponseFactory = ({ messages }, options) => {
     const last = messages.findLast((m) => m.role !== "system")!;
-    return respond(last.role, textOf(last)) ?? say("ok");
+    return respond(last.role, textOf(last), options?.signal) ?? say("ok");
   };
   faux.setResponses(Array.from({ length: 50 }, () => step));
 }
 
-/** The texts of `conversation`'s messages with `role`. */
+/** The texts of `conversation`'s messages with `role`, oldest first. */
 async function texts(conversation: Conversation, role: string): Promise<string[]> {
   const page = await conversation.entries({}, 200, undefined, ctx);
-  return page.items.flatMap((e) => (e.model ?? []).filter((m) => m.role === role).map(textOf));
+  return page.items.toReversed().flatMap((e) => (e.model ?? []).filter((m) => m.role === role).map(textOf));
 }
 
 async function jobs(daemon: Daemon) {
@@ -88,6 +95,9 @@ async function jobs(daemon: Daemon) {
 async function ask(daemon: Daemon, text: string) {
   await (await daemon.root.submit({ type: "input", content: text }, ctx)).wait(ctx);
 }
+
+/** No live tasks, background ones included: every job has settled and reported. */
+const idle = async (daemon: Daemon) => (await daemon.harness.inspect(ctx)).tasks.length === 0;
 
 const reported = async (daemon: Daemon) => (await texts(daemon.root, "user")).filter((t) => t.startsWith("[job"));
 
@@ -102,6 +112,109 @@ test("a job runs and reports once", async () => {
   await waitFor(async () => (await reported(daemon)).length > 0);
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "4", progress: "adding" });
   expect(await reported(daemon)).toEqual(['[job 1 "Sum" done] 4']);
+  await daemon.close();
+});
+
+test("a job asks a question and resumes on a follow-up", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (role, text) => {
+    if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
+    if (text === "Clone it") return say("Which repo?");
+    if (text === "answer") return call("job_message", { id: "1", text: "japa", mode: "followup" });
+    if (role === "user" && text === "japa") return call("job_complete", { summary: "cloned" });
+  });
+  await ask(daemon, "start clone");
+  await waitFor(async () => (await reported(daemon)).length === 1);
+  expect(await reported(daemon)).toEqual(['[job 1 "Clone" needs_input] Which repo?']);
+  expect((await jobs(daemon))["1"]!.status).toBe("needs_input");
+
+  await ask(daemon, "answer");
+  expect(await texts(daemon.root, "toolResult")).toContain("Sent to job 1.");
+  await waitFor(async () => (await reported(daemon)).length === 2);
+  expect((await reported(daemon))[1]).toEqual('[job 1 "Clone" done] cloned');
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", seq: 2 });
+  await daemon.close();
+});
+
+test("job_message refuses an unknown job", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "message") return call("job_message", { id: "9", text: "hi", mode: "followup" });
+  });
+  await ask(daemon, "message");
+  expect(await texts(daemon.root, "toolResult")).toEqual(["No job 9."]);
+  await daemon.close();
+});
+
+test("a job whose model fails reports once", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "start fail") return call("job_start", { title: "Fail", brief: "Break" });
+    // Not a retryable provider error, so Pi Durable gives up at once.
+    if (text === "Break") return fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom" });
+  });
+  await ask(daemon, "start fail");
+  await waitFor(() => idle(daemon));
+  expect((await jobs(daemon))["1"]!.status).toBe("failed");
+  expect(await reported(daemon)).toEqual([expect.stringMatching(/^\[job 1 "Fail" failed\] /)]);
+  await daemon.close();
+});
+
+/** A faux response held until `release()`; an abort of its request releases it too. */
+function held() {
+  let release = () => {};
+  let started = false;
+  const wait = (message: AssistantMessage, signal?: AbortSignal) => {
+    started = true;
+    return new Promise<AssistantMessage>((resolve) => {
+      release = () => resolve(message);
+      signal?.addEventListener("abort", release);
+    });
+  };
+  return { wait, release: () => release(), started: () => started };
+}
+
+test("a steer during a run ends in one answer and one report", async () => {
+  const { daemon, faux } = await bootWith();
+  const hold = held();
+  script(faux, (role, text, signal) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "Do work") return hold.wait(call("job_progress", { note: "working" }), signal);
+    if (text === "steer") return call("job_message", { id: "1", text: "use japa", mode: "steer" });
+    if (role === "user" && text === "use japa") return call("job_complete", { summary: "used japa" });
+  });
+  await ask(daemon, "start work");
+  await waitFor(hold.started);
+  await ask(daemon, "steer");
+  const job = (await jobs(daemon))["1"]!.conversationId;
+  const queued = async () =>
+    (await daemon.harness.inspect(ctx)).submissions.some((s) => s.conversationId === job && s.status === "queued");
+  await waitFor(queued);
+  hold.release();
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Work" done] used japa']);
+  await daemon.close();
+});
+
+test("a job interrupted by a restart finishes and reports once", async () => {
+  const kit = testKit();
+  const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
+  const hold = held();
+  script(kit.faux, (_role, text, signal) => {
+    if (text === "start long") return call("job_start", { title: "Long", brief: "Take long" });
+    if (text === "Take long")
+      return hold.started() ? call("job_complete", { summary: "finished" }) : hold.wait(say("lost"), signal);
+  });
+  let daemon = await boot({ home, extensions: [kit.extension] });
+  await ask(daemon, "start long");
+  await waitFor(hold.started);
+  await daemon.close();
+
+  daemon = await boot({ home, extensions: [kit.extension] });
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Long" done] finished']);
+  const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+  expect((await texts(job, "user")).filter((t) => t === "Take long")).toHaveLength(1);
   await daemon.close();
 });
 

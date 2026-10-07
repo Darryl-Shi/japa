@@ -1,4 +1,4 @@
-import { Type, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { StringEnum, Type, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   configure,
   defineExtension,
@@ -14,7 +14,9 @@ import { Anchor, BACKGROUND, jobRun } from "./run.ts";
 import { board, JobDoc, JobsDoc } from "./state.ts";
 import { workerExtension } from "./worker.ts";
 
-/** The CoS's job extension: the `job_start` tool, the jobs board section, and the job tasks. */
+const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
+
+/** The CoS's job extension: the `job_start` and `job_message` tools, the jobs board section, and the job tasks. */
 export function jobsExtension(options: {
   profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
@@ -44,7 +46,6 @@ export function jobsExtension(options: {
       [...profiles.values()].map((p) => `${p.name}: ${p.description}`).join("\n"),
     parameters: Type.Object({ title: Type.String(), brief: Type.String(), worker: Type.Optional(Type.String()) }),
     execute: async ({ title, brief, worker: name = "general" }, api, context) => {
-      const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
       const profile = profiles.get(name);
       if (profile === undefined) return reply(`Unknown worker "${name}". Workers: ${[...profiles.keys()].join(", ")}.`);
       const job = await api.commit(async (tx) => {
@@ -78,10 +79,34 @@ export function jobsExtension(options: {
     },
   });
 
+  const jobMessage = defineTool({
+    name: "job_message",
+    description: "Send a message to a job: steer it while it works, or follow up once it has answered.",
+    parameters: Type.Object({ id: Type.String(), text: Type.String(), mode: StringEnum(["steer", "followup"]) }),
+    execute: async ({ id, text, mode }, api, context) => {
+      const refusal = await api.commit(async (tx) => {
+        const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[id];
+        if (job === undefined) return `No job ${id}.`;
+        if (job.status === "queued") return `Job ${id} hasn't started yet.`;
+        if (job.status === "cancelled") return `Job ${id} was stopped.`;
+        job.status = "running";
+        job.updatedAt = Date.now();
+        const input = {
+          jobId: id,
+          conversationId: job.conversationId,
+          text,
+          mode: mode === "steer" ? "steer" : "followUp",
+        } as const;
+        await tx.createTask(JobRun, input, BACKGROUND);
+      }, context);
+      return reply(refusal ?? `Sent to job ${id}.`);
+    },
+  });
+
   return defineExtension({
     name: "japa-jobs",
     tasks: [Anchor, JobRun],
-    tools: [jobStart],
+    tools: [jobStart, jobMessage],
     sections: [
       section("jobs", async ({ read }, context) => {
         const doc = await read.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context);
