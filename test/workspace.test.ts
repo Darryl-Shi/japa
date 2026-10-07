@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { commit, dirHash, ensureWorkspace, restorePath, revert } from "../src/kernel/workspace.ts";
@@ -23,10 +23,11 @@ test("ensureWorkspace creates the repo, .gitignore, the initial commit and the s
 });
 
 test("commit never includes secrets or the database", () => {
-  const home = workspace();
+  const home = tempHome();
   mkdirSync(join(home, "secrets"));
   writeFileSync(join(home, "secrets", "x"), "secret");
   writeFileSync(join(home, "state.db"), "db");
+  ensureWorkspace(home);
   expect(commit(home, ["."], "m")).toBeUndefined();
   expect(git(home, "ls-files")).toBe(".gitignore");
 });
@@ -51,6 +52,54 @@ test("restorePath removes a path that is absent at the ref", () => {
   commit(home, ["skills/s"], "add s");
   restorePath(home, "HEAD~1", "skills/s");
   expect(existsSync(join(home, "skills", "s"))).toBe(false);
+});
+
+test("ensureWorkspace recovers from a hand-deleted .staging", () => {
+  const home = workspace();
+  rmSync(join(home, ".staging"), { recursive: true, force: true });
+  ensureWorkspace(home);
+  expect(git(join(home, ".staging"), "branch", "--show-current")).toBe("staging");
+});
+
+test("ensureWorkspace works with a global commit.gpgsign=true", () => {
+  const home = tempHome();
+  const config = join(tempHome(), "gitconfig");
+  writeFileSync(config, "[commit]\n\tgpgsign = true\n");
+  const prev = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = config;
+  try {
+    ensureWorkspace(home);
+  } finally {
+    if (prev === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = prev;
+  }
+  expect(git(home, "log", "--format=%s")).toBe("Initial workspace");
+});
+
+test("restorePath removes files added to a dir since the ref", () => {
+  const home = workspace();
+  mkdirSync(join(home, "extensions"));
+  writeFileSync(join(home, "extensions", "good.ts"), "good");
+  const ref = commit(home, ["extensions"], "good")!;
+  writeFileSync(join(home, "extensions", "bad.ts"), "bad");
+  commit(home, ["extensions"], "bad");
+  restorePath(home, ref, "extensions");
+  expect(existsSync(join(home, "extensions", "bad.ts"))).toBe(false);
+  expect(readFileSync(join(home, "extensions", "good.ts"), "utf8")).toBe("good");
+});
+
+test("a conflicting revert aborts, throws and leaves the live file untouched", () => {
+  const home = workspace();
+  const file = join(home, "f");
+  writeFileSync(file, "v0\n");
+  commit(home, ["f"], "v0");
+  writeFileSync(file, "v1\n");
+  const a = commit(home, ["f"], "v1")!;
+  writeFileSync(file, "v2\n");
+  commit(home, ["f"], "v2");
+  expect(() => revert(home, [a])).toThrow();
+  expect(readFileSync(file, "utf8")).toBe("v2\n");
+  expect(git(home, "status", "--porcelain")).toBe("");
 });
 
 test("dirHash changes with the content and is empty for a missing dir", () => {
