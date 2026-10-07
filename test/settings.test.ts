@@ -15,6 +15,12 @@ test("merges user settings over defaults", () => {
   expect(s.storage.adapter).toBe("sqlite");
 });
 
+test("storage and secrets merge over their defaults", () => {
+  const s = loadSettings(tempHome({ storage: { file: "/x.db" }, secrets: { dir: "/s" } }));
+  expect(s.storage).toEqual({ adapter: "sqlite", file: "/x.db" });
+  expect(s.secrets).toEqual({ adapter: "file", dir: "/s" });
+});
+
 test("invalid JSON names the file", () => {
   const home = tempHome();
   writeFileSync(join(home, "settings.json"), "{nope");

@@ -1,6 +1,6 @@
 import { Container, Editor, matchesKey, ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui";
 import { connect } from "./client.ts";
-import { applyEvents, fromSnapshot, type Line, type Transcript } from "./transcript.ts";
+import { applyEvents, type Line, type Transcript } from "./transcript.ts";
 
 const plain = (s: string) => s;
 const editorTheme = {
@@ -30,7 +30,6 @@ export async function runChat(home: string): Promise<void> {
     tui.requestRender();
   };
   client.onMessage((m) => {
-    if (m.type === "snapshot") t = fromSnapshot(m.snapshot);
     if (m.type === "events") t = applyEvents(t, m.events);
     if (m.type === "error") t = { ...t, lines: [...t.lines, { kind: "info", text: m.message }] };
     render();

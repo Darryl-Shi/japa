@@ -20,7 +20,7 @@ export function defineJapaExtension(e: JapaExtension): JapaExtension {
 
 const KEBAB_CASE = /^[a-z][a-z0-9-]*$/;
 
-/** Validates a manifest against the core contracts plus any the extension itself defines; `[]` when valid. */
+/** Validates a manifest against the given contracts; `[]` when valid. */
 export function validateExtension(e: JapaExtension, contracts: ReadonlyMap<string, Contract>): string[] {
   const errors: string[] = [];
 

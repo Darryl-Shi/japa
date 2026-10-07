@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
@@ -67,6 +67,25 @@ test("status lists the model and the extensions", async () => {
   });
   expect(status.extensions.map((e) => e.name)).toContain("providers");
   expect(status.errors).toEqual([]);
+  await daemon.close();
+});
+
+test("workspace extensions load from <home>/extensions; a broken one is reported", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  const write = (name: string, body: string) => {
+    mkdirSync(join(home, "extensions", name), { recursive: true });
+    writeFileSync(join(home, "extensions", name, "index.ts"), body);
+  };
+  write(
+    "ws-good",
+    `import { defineJapaExtension } from "japa/sdk";\n` +
+      `export default defineJapaExtension({ name: "ws-good", summary: "Good" });\n`,
+  );
+  write("ws-broken", `throw new Error("boom");\n`);
+  const daemon = await boot({ home, extensions: [kit.extension] });
+  expect(daemon.status().extensions.map((e) => e.name)).toContain("ws-good");
+  expect(daemon.status().errors.map((e) => e.name)).toEqual(["ws-broken"]);
   await daemon.close();
 });
 

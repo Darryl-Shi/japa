@@ -2,28 +2,27 @@ import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import { expect, test, vi } from "vitest";
 import { connect } from "../extensions/gateway/client.ts";
-import { applyEvents, fromSnapshot, type Transcript } from "../extensions/gateway/transcript.ts";
+import { applyEvents, type Transcript } from "../extensions/gateway/transcript.ts";
 import { bootTest } from "./helpers.ts";
 
 test("transcript shows the exchange from real gateway events", async () => {
   const { daemon, faux, home } = await bootTest();
   faux.setResponses([fauxAssistantMessage([fauxText("Hi there")])]);
   const client = await connect(home);
-  let t: Transcript | undefined;
+  let t: Transcript = { lines: [{ kind: "info", text: "stale" }], streaming: "", busy: false };
   client.onMessage((m) => {
-    if (m.type === "snapshot") t = fromSnapshot(m.snapshot);
-    if (m.type === "events" && t) t = applyEvents(t, m.events);
+    if (m.type === "events") t = applyEvents(t, m.events);
   });
   client.send({ type: "attach" });
-  await vi.waitFor(() => expect(t).toBeDefined());
+  await vi.waitFor(() => expect(t.lines).toEqual([]));
   client.send({ type: "submit", text: "hello" });
   await vi.waitFor(() =>
-    expect(t!.lines).toEqual([
+    expect(t.lines).toEqual([
       { kind: "user", text: "hello" },
       { kind: "assistant", text: "Hi there" },
     ]),
   );
-  expect(t!.busy).toBe(false);
+  expect(t.busy).toBe(false);
   client.close();
   await daemon.close();
 });

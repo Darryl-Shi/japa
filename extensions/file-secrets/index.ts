@@ -1,4 +1,5 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { defineJapaExtension, type SecretsAdapter, type SecretsStore } from "../../src/sdk.ts";
 
@@ -31,7 +32,8 @@ async function openFileSecrets(dir: string): Promise<SecretsStore> {
 
 const secrets: SecretsAdapter = {
   name: "file",
-  open: async (config, { home }) => openFileSecrets(typeof config.dir === "string" ? config.dir : join(home, "secrets")),
+  open: async (config, { home }) =>
+    openFileSecrets(typeof config.dir === "string" ? config.dir.replace(/^~/, homedir()) : join(home, "secrets")),
 };
 
 export default defineJapaExtension({

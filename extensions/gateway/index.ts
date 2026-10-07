@@ -1,21 +1,11 @@
-import { existsSync, unlinkSync } from "node:fs";
-import { createConnection, createServer, type Socket } from "node:net";
+import { rmSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { defineJapaExtension, type Surface, type SurfaceContext } from "../../src/sdk.ts";
 import { type ClientMessage, readMessages, socketPath, writeMessage } from "./protocol.ts";
 
 async function start(ctx: SurfaceContext) {
   const path = socketPath(ctx.home);
-  if (existsSync(path)) {
-    const live = await new Promise<boolean>((resolve) => {
-      const probe = createConnection(path, () => {
-        probe.end();
-        resolve(true);
-      });
-      probe.on("error", () => resolve(false));
-    });
-    if (live) throw new Error(`Another japa daemon owns ${path}`);
-    unlinkSync(path);
-  }
+  rmSync(path, { force: true }); // stale: the daemon lock guarantees one daemon per home
 
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
@@ -26,7 +16,6 @@ async function start(ctx: SurfaceContext) {
         case "attach": {
           const stream = await ctx.root.events((events) => writeMessage(socket, { type: "events", events: [...events] }));
           stop = stream.stop;
-          writeMessage(socket, { type: "snapshot", snapshot: stream.snapshot });
           break;
         }
         case "abort":

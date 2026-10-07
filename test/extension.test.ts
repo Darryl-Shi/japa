@@ -32,6 +32,10 @@ test("invalid contribution reports contract and index", () => {
   expect(validateExtension({ name: "x", summary: "s", provides: { surface: [{}] } }, contracts)[0]).toMatch(
     /^surface\[0\]: /,
   );
+  const noParameters = { ...tool, parameters: undefined };
+  expect(validateExtension({ name: "x", summary: "s", provides: { tool: [noParameters] } }, contracts)).toContain(
+    "tool[0]: parameters must be an object",
+  );
 });
 
 test("all seven core contracts exist", () => {

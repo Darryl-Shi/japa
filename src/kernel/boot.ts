@@ -102,9 +102,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           abort: () => root.abort(ctx),
           events: async (listener) => {
             const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
+            listener([stream.snapshot]);
             stream.start(async (events) => listener(events));
             return {
-              snapshot: stream.snapshot,
               stop: async () => {
                 await stream.stop();
               },

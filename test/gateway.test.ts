@@ -17,7 +17,7 @@ test("attach, submit, and receive the answer", async () => {
   client.send({ type: "attach" });
   client.send({ type: "submit", text: "hello" });
   await vi.waitFor(() => expect(JSON.stringify(seen)).toContain("Hi there"));
-  expect(seen[0].type).toBe("snapshot");
+  expect(seen[0].type === "events" && seen[0].events[0].type).toBe("snapshot");
   client.close();
   await daemon.close();
 });

@@ -1,4 +1,4 @@
-import type { AgentEvent, JsonObject, ModelRef, SnapshotEvent, Storage } from "@earendil-works/pi-durable";
+import type { AgentEvent, JsonObject, ModelRef, Storage } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 
@@ -24,7 +24,7 @@ export type EnvironmentAdapter = {
   create(input: { conversationId: string; cwd?: string }): ExecutionEnv;
 };
 
-/** Rendered by `japa check` and the capabilities section (spec §9.2). */
+/** What `japa status` shows. */
 export type Status = {
   model?: ModelRef;
   extensions: { name: string; summary: string; provides: string[] }[];
@@ -36,9 +36,8 @@ export type SurfaceContext = {
   root: {
     submit(text: string, mode?: "steer" | "followUp"): Promise<void>;
     abort(): Promise<void>;
-    events(
-      listener: (events: readonly AgentEvent[]) => void,
-    ): Promise<{ snapshot: SnapshotEvent; stop(): Promise<void> }>;
+    /** Delivers the current snapshot as the first event, then live events. */
+    events(listener: (events: readonly AgentEvent[]) => void): Promise<{ stop(): Promise<void> }>;
   };
   status(): Status;
 };
@@ -74,7 +73,8 @@ function requireFields(c: unknown, fields: Record<string, "string" | "function" 
   const o = c as Record<string, unknown>;
   for (const [field, type] of Object.entries(fields)) {
     const value = o[field];
-    if (typeof value !== type || (type === "object" && value === null)) return `${field} must be a ${type}`;
+    const article = type === "object" ? "an" : "a";
+    if (typeof value !== type || (type === "object" && value === null)) return `${field} must be ${article} ${type}`;
   }
   return undefined;
 }

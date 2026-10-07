@@ -1,4 +1,4 @@
-import type { AgentEvent, SnapshotEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent } from "@earendil-works/pi-durable";
 import type { Socket } from "node:net";
 import { join } from "node:path";
 import type { Status } from "../../src/sdk.ts";
@@ -10,7 +10,6 @@ export type ClientMessage =
   | { type: "status" };
 
 export type ServerMessage =
-  | { type: "snapshot"; snapshot: SnapshotEvent }
   | { type: "events"; events: AgentEvent[] }
   | { type: "status"; status: Status }
   | { type: "error"; message: string };

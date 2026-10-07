@@ -58,6 +58,20 @@ test("sqlite storage opens at <home>/state.db", async () => {
   expect(existsSync(join(home, "state.db"))).toBe(true);
 });
 
+test("config.file and config.dir expand a leading ~", async () => {
+  const original = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const storage = await provided<StorageAdapter>(sqlite, "storage").open({ file: "~/tilde.db" }, { home });
+    await storage.close(ctx);
+    await provided<SecretsAdapter>(fileSecrets, "secrets").open({ dir: "~/tilde-secrets" }, { home });
+  } finally {
+    process.env.HOME = original;
+  }
+  expect(existsSync(join(home, "tilde.db"))).toBe(true);
+  expect(existsSync(join(home, "tilde-secrets"))).toBe(true);
+});
+
 test("sqlite storage honors config.file", async () => {
   const file = join(home, "nested/other.db");
   const storage = await provided<StorageAdapter>(sqlite, "storage").open({ file }, { home });

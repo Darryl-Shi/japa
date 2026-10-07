@@ -1,11 +1,14 @@
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { defineJapaExtension, type StorageAdapter } from "../../src/sdk.ts";
 
 const storage: StorageAdapter = {
   name: "sqlite",
   open: async (config, { home }) =>
-    openNodeSqliteStorage(typeof config.file === "string" ? config.file : join(home, "state.db")),
+    openNodeSqliteStorage(
+      typeof config.file === "string" ? config.file.replace(/^~/, homedir()) : join(home, "state.db"),
+    ),
 };
 
 export default defineJapaExtension({

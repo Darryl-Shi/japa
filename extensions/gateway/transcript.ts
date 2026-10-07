@@ -1,18 +1,14 @@
-import type { AgentEvent, EntryRecord, SnapshotEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 
 export type Line = { kind: "user" | "assistant" | "tool" | "info"; text: string };
 export type Transcript = { lines: Line[]; streaming: string; busy: boolean };
 
-export function fromSnapshot(snapshot: SnapshotEvent): Transcript {
-  return { lines: snapshot.entries.flatMap(linesOf), streaming: "", busy: snapshot.run !== undefined };
-}
-
-/** Returns the transcript after `events`. */
+/** Returns the transcript after `events`; a `snapshot` event resets it. */
 export function applyEvents(t: Transcript, events: readonly AgentEvent[]): Transcript {
   for (const e of events) {
     switch (e.type) {
       case "snapshot":
-        t = fromSnapshot(e);
+        t = { lines: e.entries.flatMap(linesOf), streaming: "", busy: e.run !== undefined };
         break;
       case "message_update": {
         const deltas = e.changes.map((c) => (c.type === "text_delta" ? c.delta : ""));

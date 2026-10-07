@@ -22,11 +22,16 @@ export const DEFAULT_SETTINGS: Settings = {
   extensions: {},
 };
 
-/** Reads `<home>/settings.json`, shallow-merged over the defaults per top-level key. */
+/** Reads `<home>/settings.json` merged over the defaults per top-level key; `storage` and `secrets` one level deep. */
 export function loadSettings(home: string): Settings {
   const path = join(home, "settings.json");
   const user = existsSync(path) ? parseJson(path) : {};
-  return { ...DEFAULT_SETTINGS, ...user };
+  return {
+    ...DEFAULT_SETTINGS,
+    ...user,
+    storage: { ...DEFAULT_SETTINGS.storage, ...user.storage },
+    secrets: { ...DEFAULT_SETTINGS.secrets, ...user.secrets },
+  };
 }
 
 function parseJson(path: string): Partial<Settings> {
