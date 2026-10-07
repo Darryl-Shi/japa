@@ -19,6 +19,7 @@ import { createModels, type Models } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { capabilities } from "./capabilities.ts";
 import { ChangesDoc } from "./changes.ts";
 import {
   ACTIVATION_ORDER,
@@ -196,7 +197,13 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
-    const cos = cosExtension(settings, [Consolidate], settingsTools(home, settings, models, extensions));
+    let profiles = new Map<string, WorkerProfile>(); // the usable worker profiles, set once environments are active
+    let capabilitiesText = "";
+    const refreshCapabilities = () => {
+      capabilitiesText = capabilities({ extensions, contracts: contracts.values(), profiles, models: settings.models });
+    };
+    const tools = settingsTools(home, settings, models, extensions, refreshCapabilities);
+    const cos = cosExtension(settings, [Consolidate], tools, () => capabilitiesText);
     registry.install(cos);
     const built = new Map<string, Extension>();
     for (const e of extensions) {
@@ -228,7 +235,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         workers.profiles.delete(profile.name);
       }
       const skillsExt = skillsExtension(skills.skills);
-      const jobs = jobsExtension({ profiles: workers.profiles, settings, extensions: built, skills: skillsExt });
+      profiles = workers.profiles;
+      refreshCapabilities();
+      const jobs = jobsExtension({ profiles, settings, extensions: built, skills: skillsExt });
       registry.install(WorkerExtension);
       registry.install(CodingTools);
       registry.install(skillsExt);

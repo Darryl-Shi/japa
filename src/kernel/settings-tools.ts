@@ -16,8 +16,17 @@ import {
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-/** The CoS's tools to read and change settings (live, in place) and to list and undo changes. */
-export function settingsTools(home: string, settings: Settings, models: Models, extensions: JapaExtension[]) {
+/**
+ * The CoS's tools to read and change settings (live, in place) and to list and undo changes; `changed` runs after
+ * each settings change.
+ */
+export function settingsTools(
+  home: string,
+  settings: Settings,
+  models: Models,
+  extensions: JapaExtension[],
+  changed: () => void,
+) {
   const schemas = Object.fromEntries(extensions.flatMap((e) => (e.settings ? [[e.name, e.settings]] : [])));
   const validate = (user: JsonObject) => {
     const next = validateSettings(mergeSettings(user), schemas);
@@ -56,6 +65,7 @@ export function settingsTools(home: string, settings: Settings, models: Models, 
       setPath(user, path, getPath(next, path)); // as validated, e.g. "2" converted to 2
       saveSettings(home, user);
       Object.assign(settings, next);
+      changed();
       const configOps = [before === undefined ? { path } : { path, before }];
       const change = { title: title ?? `Set ${path}`, howToUse: howToUse ?? "", undo: { commits: [], configOps } };
       const id = await api.commit(async (tx) => {
@@ -97,6 +107,7 @@ export function settingsTools(home: string, settings: Settings, models: Models, 
       }
       saveSettings(home, user);
       Object.assign(settings, next);
+      changed();
       await api.commit(async (tx) => {
         await configure(tx, ROOT_CONVERSATION_ID, { model: next.models.cos! });
         const doc = await tx.doc(ChangesDoc, ROOT_CONVERSATION_ID);

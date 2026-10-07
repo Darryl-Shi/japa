@@ -27,14 +27,21 @@ function capped(text: string, max: number): string {
 }
 
 /**
- * The CoS's own Pi Durable extension: its identity, its memory sections and tools, the built-in `read` tool, the
- * cap on tool results it sees, and the kernel's root tools and tasks.
+ * The CoS's own Pi Durable extension: its identity, its capabilities (the current text of `capabilities()`), its
+ * memory sections and tools, the built-in `read` tool, the cap on tool results it sees, and the kernel's root tools
+ * and tasks.
  */
-export function cosExtension(settings: Settings, tasks: AnyTask[], tools: ToolRegistration[]): Extension {
+export function cosExtension(
+  settings: Settings,
+  tasks: AnyTask[],
+  tools: ToolRegistration[],
+  capabilities: () => string,
+): Extension {
   return defineExtension({
     name: "japa-cos",
     sections: [
       section("identity", () => identityText, { tag: false }),
+      section("capabilities", capabilities),
       section("about-you", async ({ read }, context) => {
         const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
         return memory && renderFacts(memory.facts);
