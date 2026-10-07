@@ -77,6 +77,19 @@ test("a failing surface is reported and boot continues", async () => {
   await daemon.close();
 });
 
+test("a failing tool install is reported and boot continues", async () => {
+  const echo = defineTool({
+    name: "echo",
+    description: "Echo",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [] }),
+  });
+  const ext = defineJapaExtension({ name: "dup", summary: "Duplicates", provides: { tool: [echo, echo] } });
+  const { daemon } = await bootTest({}, [ext]);
+  expect(daemon.status().errors).toContainEqual({ name: "dup", error: expect.stringMatching(/^tool: /) });
+  await daemon.close();
+});
+
 test("extension-defined contracts activate between tools and triggers", async () => {
   const order: string[] = [];
   const probe: Contract = {

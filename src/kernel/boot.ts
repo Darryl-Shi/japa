@@ -146,7 +146,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     for (const e of extensions) {
       if (e.provides?.tool || e.durable) {
         const tools = e.provides?.tool as ToolRegistration[] | undefined;
-        registry.install(defineExtension({ name: e.name, tools, ...e.durable }));
+        try {
+          registry.install(defineExtension({ name: e.name, tools, ...e.durable }));
+        } catch (err) {
+          errors.push({ name: e.name, error: `tool: ${message(err)}` });
+        }
       }
     }
     const root = await ensureRoot(harness, model, ctx);
