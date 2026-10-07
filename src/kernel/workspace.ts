@@ -44,8 +44,10 @@ export function commit(home: string, paths: string[], message: string): string |
   git(home, "add", "-A", "--", ...paths);
   if (!git(home, "diff", "--cached", "--name-only")) return undefined;
   git(home, "commit", "-q", "-m", message);
-  return git(home, "rev-parse", "HEAD");
+  return head(home);
 }
+
+export const head = (home: string) => git(home, "rev-parse", "HEAD");
 
 /** Reverts `shas` (given oldest first) newest first; returns the new HEAD. On a conflict, aborts and throws. */
 export function revert(home: string, shas: string[]): string {
@@ -57,7 +59,7 @@ export function revert(home: string, shas: string[]): string {
       throw err;
     }
   }
-  return git(home, "rev-parse", "HEAD");
+  return head(home);
 }
 
 /** Restores `path` as it is at `ref`, removing it when it doesn't exist there. */

@@ -1,12 +1,47 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type Conversation, defineExtension, type Extension, hook, ToolTask } from "@earendil-works/pi-durable";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { logChange } from "./changes.ts";
 import { rollBack } from "./install.ts";
 import { message } from "./loader.ts";
-import type { Settings } from "./settings.ts";
-import { LKG, tag } from "./workspace.ts";
+import { readUserSettings, saveSettings, setPath, type Settings } from "./settings.ts";
+import { commit, hasTag, head, LKG, restorePath, tag } from "./workspace.ts";
+
+const bootsFile = (home: string) => join(home, "boots.json");
+const readBoots = (home: string): number[] =>
+  existsSync(bootsFile(home)) ? JSON.parse(readFileSync(bootsFile(home), "utf8")) : [];
+
+/** Whether `<home>/boots.json` holds 3 boots from the last 5 minutes: the daemon keeps crashing. */
+export const crashLooping = (home: string) => readBoots(home).filter((t) => Date.now() - t < 5 * 60_000).length >= 3;
+
+/** Appends this boot's time to `<home>/boots.json`; cleared when the daemon stays up or closes cleanly. */
+export const recordBoot = (home: string) =>
+  writeFileSync(bootsFile(home), JSON.stringify([...readBoots(home), Date.now()]));
+
+export const clearBoots = (home: string) => rmSync(bootsFile(home), { force: true });
+
+/**
+ * Restores the workspace's extensions, skills and worker profiles to `LKG` and, with `defaultAdapters`, selects the
+ * packaged storage and secrets adapters; commits and clears the crash log. Returns the new HEAD.
+ */
+export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapters: boolean }): string {
+  if (hasTag(home, LKG)) {
+    for (const path of ["extensions", "skills", "workers"]) {
+      rmSync(join(home, path), { recursive: true, force: true }); // untracked files too
+      restorePath(home, LKG, path);
+    }
+  }
+  if (defaultAdapters) {
+    const user = readUserSettings(home);
+    setPath(user, "storage.adapter", "sqlite");
+    setPath(user, "secrets.adapter", "file");
+    saveSettings(home, user);
+  }
+  commit(home, ["."], "Safe mode: restored last-known-good");
+  clearBoots(home);
+  return head(home);
+}
 
 /**
  * Last-known-good tagging and runtime auto-rollback: the `japa-safety` extension counts each workspace extension's

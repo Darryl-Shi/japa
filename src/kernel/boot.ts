@@ -38,10 +38,10 @@ import { WorkerExtension } from "./jobs/worker.ts";
 import { consolidation } from "./memory/consolidate.ts";
 import { estimateTokens, MemoryDoc } from "./memory/state.ts";
 import { shouldConsolidate } from "./memory/trigger.ts";
-import { discoverExtensions, type LoadError, linkSdk, loadExtensions } from "./loader.ts";
+import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
-import { createSafety } from "./safety.ts";
+import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
@@ -86,9 +86,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   let harness: Harness | undefined;
 
   try {
+    ensureWorkspace(home);
+    const safeMode = crashLooping(home) ? enterSafeMode(home, { defaultAdapters: false }) : undefined;
+    recordBoot(home);
     const settings = loadSettings(home);
     linkSdk(home, packageRoot);
-    ensureWorkspace(home);
 
     const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
     const workspace = join(home, "extensions");
@@ -103,13 +105,12 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       found.filter((f) => dirname(dirname(f.file)) === workspace).map((f) => [f.name, dirHash(dirname(f.file))]),
     );
 
-    const secrets = await adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(
-      settings.secrets,
-      { home },
+    const secrets = await withSafeModeHint(() =>
+      adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(settings.secrets, { home }),
     );
-    storage = await adapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, {
-      home,
-    });
+    storage = await withSafeModeHint(() =>
+      adapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, { home }),
+    );
 
     const models = createModels({ credentials: secretsCredentialStore(secrets) });
     const environments = new Map<string, EnvironmentAdapter>();
@@ -264,6 +265,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // The rest of the contracts; `japa-jobs` is installed after tools, so pending job tasks resume with it.
     await rt.start(extensions, rt.order().slice(1));
     harness.resume();
+    if (safeMode !== undefined) {
+      const content =
+        "[japa] I restarted in safe mode after repeated crashes and restored the last working setup.";
+      await root.submit({ type: "input", content, requestId: `safe-mode:${safeMode}` }, ctx);
+    }
 
     const consolidate = async () => {
       await opened.waitForTask(await startConsolidation(root), ctx);
@@ -279,6 +285,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       if (shouldConsolidate({ busy, windowTokens, lastUserAt, now }, settings.context)) await consolidate();
     };
     const timer = setInterval(() => checkConsolidation().catch(() => {}), 60_000).unref();
+    const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
 
     return {
       harness: opened,
@@ -292,11 +299,13 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       markGood: safety.markGood,
       close: async () => {
         clearInterval(timer);
+        clearTimeout(stayedUp);
         safety.close();
         try {
           await rt.dispose((c) => !isAdapter(c));
           await opened.close(ctx);
           await rt.dispose(isAdapter);
+          clearBoots(home);
         } finally {
           release();
         }
@@ -324,6 +333,15 @@ function adapter<T extends { name: string }>(extensions: JapaExtension[], contra
   const found = extensions.flatMap((e) => (e.provides?.[contract] ?? []) as T[]).findLast((a) => a.name === name);
   if (found === undefined) throw new Error(`No ${contract} adapter "${name}" is installed`);
   return found;
+}
+
+/** `open()`, its error naming `japa safe-mode --default-adapters`. */
+async function withSafeModeHint<T>(open: () => Promise<T>): Promise<T> {
+  try {
+    return await open();
+  } catch (error) {
+    throw new Error(`${message(error)} — run "japa safe-mode --default-adapters" to restore the defaults.`);
+  }
 }
 
 function resolveCosModel(settings: Settings, models: Models, home: string): ModelRef {

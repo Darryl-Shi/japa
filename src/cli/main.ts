@@ -5,6 +5,7 @@ import { socketPath } from "../../extensions/gateway/protocol.ts";
 import { boot } from "../kernel/boot.ts";
 import { check, CHECK_KINDS } from "../kernel/check.ts";
 import { rollBack } from "../kernel/install.ts";
+import { enterSafeMode } from "../kernel/safety.ts";
 import { japaHome } from "../kernel/settings.ts";
 import type { Status } from "../kernel/contracts.ts";
 
@@ -17,7 +18,9 @@ Commands:
   check <skill|worker|extension> <name>
            Check a skill, worker profile or extension in the current directory
   rollback <skill|worker|extension> <name> [to]
-           Roll it back to its last known good version, or to the git ref to`;
+           Roll it back to its last known good version, or to the git ref to
+  safe-mode [--default-adapters]
+           Restore the last working setup, and optionally the default storage and secrets adapters`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
@@ -58,12 +61,18 @@ async function rollback(home: string): Promise<void> {
   console.log(sha === undefined ? "Nothing to roll back." : "Rolled back. Restart the daemon to apply.");
 }
 
+async function safeMode(home: string): Promise<void> {
+  enterSafeMode(home, { defaultAdapters: process.argv.includes("--default-adapters") });
+  console.log("Restored the last working setup. Start the daemon with: japa daemon");
+}
+
 const commands: Record<string, (home: string) => Promise<void>> = {
   daemon,
   chat: runChat,
   status,
   check: checkCommand,
   rollback,
+  "safe-mode": safeMode,
 };
 const command = commands[process.argv[2]];
 if (command === undefined) {
