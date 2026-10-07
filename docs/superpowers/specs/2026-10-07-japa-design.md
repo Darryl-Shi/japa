@@ -115,11 +115,7 @@ defineJapaExtension({
   summary: "Lets me read and manage your Google Calendar",   // user-facing
   docs: "./skills/using-gcal/SKILL.md",                       // agent-facing, on demand
   examples: ["what's on my calendar tomorrow?", "move my 3pm to 4"],
-  tools: [
-    { tool: gcalList,   effect: "read",   audience: ["cos", "worker"] },
-    { tool: gcalUpdate, effect: "mutate", audience: ["worker"] },
-    // effect "config": changes only japa's own documents/settings (e.g. schedules)
-  ],
+  tools: [gcalList, gcalUpdate],                 // plain Pi Durable tools
   durable: { sections, hooks, wraps, tasks },   // optional
   surfaces, triggers, workers, memory,           // optional contract contributions
   contracts: [MyContract], contribute: { "my-contract": [...] },
@@ -133,36 +129,45 @@ Rules:
 
 - `summary` and `examples` are required. `docs` is required when the extension
   has tools.
-- Every tool declares `effect` and `audience`:
-  - `read` — no side effects;
-  - `config` — changes only japa's own documents or settings through the
-    harness API (e.g. adding a schedule); never files, processes, or external
-    services;
-  - `mutate` — anything else.
-  A missing `effect` is treated as `mutate`; a missing `audience` is
-  `["worker"]`.
+- Extensions do **not** declare who may use their tools or how risky they
+  are. The manifest's descriptive fields (`summary`, `examples`, `docs`) only
+  affect routing; a poor description causes poor routing, which
+  `japa check` catches (§10.3), never a safety or role violation.
+- Tools listed in a worker profile (§5.2) belong to that profile only; tools
+  in the manifest's `tools` are shared capabilities.
 - The kernel converts `tools` + `durable` into one Pi Durable `Extension` named
   after the japa extension and installs it in the registry.
 
-### 4.3 Tool selection is enforced by the kernel
+### 4.3 Tool selection and the CoS's limits
 
-The kernel computes the offered tool list for every conversation from
-manifests, never from model judgment:
+The kernel computes each conversation's tool list; extensions never classify
+themselves.
 
 - **Root (CoS):** all core CoS tools (§5.3, §6.5, §7, §8.3–§8.5, §10) plus
-  extension tools with `effect: "read" | "config"` and `"cos" ∈ audience`.
-- **Jobs:** extension tools with `"worker" ∈ audience`, narrowed by the worker
-  profile; plus core worker tools (§5.4).
+  **every shared extension tool**. The CoS does quick things itself.
+- **Jobs:** core worker tools (§5.4) plus the shared tools of the extensions
+  the worker profile selects (`general`: all), plus the profile's own tools.
 
 On every install, reload, or rollback the kernel recomputes these lists and
 applies them with `configure({ tools })` to the root and every active job
 conversation, in one commit.
 
-The CoS's execution environment is a read-only wrapper around
-`NodeExecutionEnv` (file writes and `exec` are rejected), so core file tools
-cannot leak write access. Network side effects inside an extension's own code
-cannot be enforced; there `effect` is a declared contract backed by
-`japa check` and builder review.
+Limits on the CoS are enforced structurally, not by declarations:
+
+- **Read-only environment.** The CoS's execution environment is a read-only
+  wrapper around `NodeExecutionEnv`: file writes and `exec` are rejected. Any
+  tool that changes files or runs processes through the environment fails in
+  the CoS, so that work happens in jobs.
+- **Result cap.** A tool result entering the CoS context is capped at
+  `settings.context.toolResultTokens` (default 2k). The full output stays in
+  storage; the CoS sees a truncation note suggesting a job if it needs all of
+  it.
+- **Delegation guidance** (identity, §8.1): one or two calls → do it
+  yourself; multi-step, long-running, or heavy work → start a job.
+
+Safety is the same for the CoS and workers. v1 has no approval gates; in-process
+extension failures are handled by §10.4. A future guard for destructive
+actions would be a kernel-owned policy applied to the CoS and workers alike.
 
 ### 4.4 Loader
 
@@ -204,14 +209,16 @@ are `queued` and start in creation order.
 interface WorkerProfile {
   name: string; description: string;
   model?: ModelRef; thinkingLevel?: ThinkingLevel;
-  extensions?: string[]; tools?: string[]; skills?: string[];
+  extensions?: string[];   // extensions whose shared tools it gets; default: all
+  tools?: Tool[];          // profile-owned tools, available only to this profile
+  skills?: string[];       // narrows visible skills; default: all
   instructions: string; cwd?: string;
 }
 ```
 
 Core ships two profiles:
 
-- `general` — default model, all worker-audience tools, generic instructions.
+- `general` — default model, all extensions' shared tools, generic instructions.
 - `builder` — builds skills and extensions (§10); coding tools, cwd is a
   staging git worktree of `~/.japa`, authoring skills preloaded in its list.
 
@@ -329,13 +336,13 @@ default contribution.
 Pi Durable has no skills; japa adds them.
 
 - **Format:** Agent Skills `SKILL.md` with `name` and `description`
-  frontmatter, optional `scripts/` and reference files. Optional frontmatter
-  `audience: cos | worker | all` (default `all`).
+  frontmatter, optional `scripts/` and reference files. Skills do not
+  declare an audience.
 - **Locations, later overrides earlier by name:** packaged `skills/`,
   `extensions/<x>/skills/`, `~/.japa/skills/`.
 - **Progressive disclosure:** each conversation gets a section listing name +
-  description of the skills visible to it (filtered by audience and, for
-  jobs, by the worker profile). `skill_read({ name, file? })` loads the body
+  description of all skills (for jobs, narrowed by the worker profile's
+  `skills` if set). `skill_read({ name, file? })` loads the body
   or a referenced file.
 - Skills contain no code that the daemon runs; scripts inside a skill are run
   by workers through their own tools.
@@ -345,8 +352,9 @@ Pi Durable has no skills; japa adds them.
 ### 8.1 Identity section (static)
 
 - **Role:** the user's only point of contact. Keep your own context lean;
-  answer quick questions directly with read-only tools; delegate anything that
-  changes things or takes several steps to a job.
+  do quick things yourself (one or two tool calls); delegate multi-step,
+  long-running, or heavy work — and anything that writes files or runs
+  commands — to a job.
 - **How japa works:** one paragraph each on the thread, jobs, memory, skills,
   extensions, triggers, surfaces.
 - **Mechanism ladder** — use the smallest mechanism that meets the need:
@@ -471,17 +479,15 @@ change the kernel package, so the kernel can always repair everything else.
 ### 10.3 `japa check`
 
 - **Typecheck** (`tsc --noEmit`) and the extension's own tests (vitest).
-- **Static manifest checks:** `summary`, `examples`, `docs`, `effect`
-  present; tool description length limits; no unexpected tool-name
+- **Static manifest checks:** `summary`, `examples`, and (if it has
+  tools) `docs` present; tool description length limits; no unexpected tool-name
   collisions.
 - **Smoke load** in a throwaway harness on `MemoryStorage`: contract shapes
   valid, `activate`/`dispose` clean, the extension appears in the rendered
-  capabilities section, and root/job tool lists match the manifest.
+  capabilities section, and the computed root/job tool lists include its tools as §4.3 specifies.
 - **Routing eval:** the consolidation model sees the full capabilities
-  section and each `example`; it must route to this extension and choose
-  direct-tool vs job according to `effect` (`read`/`config` direct,
-  `mutate` via a job), without taking over other
-  extensions' examples.
+  section and each `example`; it must route to this extension (directly or
+  via a suitable worker), without taking over other extensions' examples.
 - **Regression:** re-run every installed extension's routing examples.
 
 Skills get a lighter check: frontmatter lint and, if they declare
@@ -509,13 +515,14 @@ Skills get a lighter check: frontmatter lint and, if they declare
 | Extension | Contracts | What it does |
 |-----------|-----------|--------------|
 | `gateway` | surface | WebSocket server on `~/.japa/japa.sock`; streams root `watch()` frames, `japa.jobs`, pending secret requests; accepts submit (input/steer/follow-up), abort, secret responses, job view attach. Includes the `japa chat` TUI client (pi-tui): thread on the left, live job board on the right, masked secret prompts. Closing the TUI does not stop the daemon. |
-| `schedule` | trigger, durable | Durable cron and one-shot timers in `japa.schedules`; CoS tools `schedule_add` / `schedule_list` / `schedule_remove` (`effect: "config"`, audience cos; logged in `japa.changes`); fires via `emit`. |
-| `web` | tools | `web_fetch` (no key) and `web_search` (pluggable provider; asks for its key with `secret_request` on first use). Both `effect: "read"`, audience cos + worker. |
-| `coder` | worker | Coding tools (`read`, `write`, `edit`, `bash`) with a configurable cwd. |
-| `researcher` | worker | `web` tools plus file output; uses the `research` skill. |
+| `schedule` | trigger, durable | Durable cron and one-shot timers in `japa.schedules`; CoS tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
+| `web` | tools | `web_fetch` (no key) and `web_search` (pluggable provider; asks for its key with `secret_request` on first use). |
+| `coder` | worker | Profile owning the coding tools (`read`, `write`, `edit`, `bash`) with a configurable cwd. |
+| `researcher` | worker | `web` tools plus a profile-owned `write` for report files; uses the `research` skill. |
 
-The CoS's read-only quick tools are therefore `web_fetch`, `web_search`, and
-`read` (in its read-only environment).
+With these defaults the CoS directly has `web_fetch`, `web_search`, and the
+`schedule_*` tools, plus the kernel's core `read` tool (in its read-only
+environment). Coding tools stay with the `coder` profile.
 
 ### 11.2 Default skills
 
@@ -524,7 +531,7 @@ Agent-facing (the self-model, loaded on demand):
 - `choosing-a-mechanism` — the ladder with worked examples.
 - `building-skills` — SKILL.md format, progressive disclosure, scripts.
 - `building-extensions` — manifest, contracts API, fake-model testing,
-  `japa check`, effect/audience rules.
+  `japa check`, shared vs profile-owned tools.
 - `writing-job-briefs` — good briefs, choosing a worker, parallel jobs,
   follow-ups.
 - `reporting-changes` — the done / how-to-use / how-to-undo format.
@@ -573,7 +580,8 @@ vitest with Pi AI's faux provider (scripted model responses; no network):
 
 - Contract registry and loader: define/contribute, hot reload, same-name
   replace, rollback.
-- Tool selection: effect/audience enforcement for root and jobs; read-only
+- Tool selection: root gets all shared tools, profile-owned tools stay in
+  their profile; result cap; read-only
   CoS environment.
 - Jobs: lifecycle, concurrency queue, `needs_input`, restart mid-job with no
   double reports.
@@ -581,7 +589,7 @@ vitest with Pi AI's faux provider (scripted model responses; no network):
   consolidation is discarded.
 - Reflection limits: long entries rejected/shortened, cap triggers merge,
   duplicates rejected.
-- Skills: discovery, override order, audience filtering, `skill_read`.
+- Skills: discovery, override order, worker-profile narrowing, `skill_read`.
 - Secrets: request → fulfil → notice; value absent from storage entries.
 - Changes log: undo of an install and of a settings change.
 - Safety: failed install rolls back; repeated runtime failures roll back;
