@@ -99,6 +99,8 @@ export function settingsTools(
       const { changes } = (await api.snapshot(ChangesDoc, ROOT_CONVERSATION_ID, context))!;
       const change = changes.find((c) => c.id === id);
       if (change === undefined) return reply(`No change ${id}.`);
+      const { call } = change.undo;
+      if (call) return reply(`To undo this, call ${call.tool} with ${JSON.stringify(call.args)}.`);
       if (change.undo.commits.length > 0) {
         try {
           revert(home, change.undo.commits);

@@ -1,5 +1,5 @@
 import type { JsonValue } from "@earendil-works/chord";
-import { defineDoc, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, type JsonObject, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
 
 /** A settings path and its user value before the change; `before` is absent when the path was not set. */
 export type ConfigOp = { path: string; before?: JsonValue };
@@ -9,7 +9,8 @@ export type Change = {
   at: number;
   title: string;
   howToUse: string;
-  undo: { commits: string[]; configOps?: ConfigOp[] };
+  /** `call`: a tool call that undoes the change, for the CoS to make. */
+  undo: { commits: string[]; configOps?: ConfigOp[]; call?: { tool: string; args: JsonObject } };
 };
 
 // On the root conversation.
