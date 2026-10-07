@@ -13,13 +13,14 @@ afterEach(() => vi.unstubAllGlobals());
 test("htmlToText drops script and style, strips tags, decodes entities and collapses whitespace", () => {
   const html =
     "<html><head><style>p { color: red }</style><script>alert('x')</script></head>\n" +
-    "<body><p>Fish   &amp; chips &lt;3 &quot;yes&quot; &#39;ok&#39;&nbsp;&#65;&#x42;</p>\n\n\n  <p>next</p></body></html>";
-  expect(htmlToText(html)).toBe(`Fish & chips <3 "yes" 'ok' AB\nnext`);
+    "<body><p>Fish   &amp; chips &lt;3 &quot;yes&quot; &#39;ok&#39;&nbsp;&#65;&#x42;&#x110000;</p>\n\n\n  <p>next</p></body></html>";
+  expect(htmlToText(html)).toBe(`Fish & chips <3 "yes" 'ok' AB\ufffd\nnext`);
 });
 
 test("web_fetch returns a page's text, and refuses errors and binary types", async () => {
   const server = createServer((req, res) => {
     if (req.url === "/page") res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<p>Hello <b>world</b></p>");
+    else if (req.url === "/big") res.writeHead(200, { "content-type": "text/plain" }).end("x".repeat(50_010));
     else if (req.url === "/image") res.writeHead(200, { "content-type": "image/png" }).end("png");
     else res.writeHead(404).end();
   });
@@ -29,8 +30,10 @@ test("web_fetch returns a page's text, and refuses errors and binary types", asy
   expect(await tool(daemon, faux, "web_fetch", { url: `${base}/page` })).toBe("Hello world");
   expect(await tool(daemon, faux, "web_fetch", { url: `${base}/missing` })).toBe(`HTTP 404 for ${base}/missing`);
   expect(await tool(daemon, faux, "web_fetch", { url: `${base}/image` })).toBe("Not a text page (image/png).");
-  await daemon.close();
+  expect(await tool(daemon, faux, "web_fetch", { url: `${base}/big` })).toBe(`${"x".repeat(50_000)}\n[truncated: 10 more characters]`);
   server.close();
+  expect(await tool(daemon, faux, "web_fetch", { url: `${base}/page` })).toMatch(/^Fetch failed: (?!fetch failed)/);
+  await daemon.close();
 });
 
 const fake: JapaExtension = {
