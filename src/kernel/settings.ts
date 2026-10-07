@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type TSchema, Type, validateToolArguments } from "@earendil-works/pi-ai";
+import { type Models, type TSchema, Type, validateToolArguments } from "@earendil-works/pi-ai";
 import type { JsonObject, ModelRef } from "@earendil-works/pi-durable";
 import { message } from "./loader.ts";
 
@@ -83,9 +83,16 @@ function check(schema: TSchema, value: object, prefix: string) {
     const tool = { name: "settings", description: "", parameters: schema };
     return validateToolArguments(tool, { type: "toolCall", id: "", name: "settings", arguments: { ...value } });
   } catch (error) {
-    // Keep only its "  - <path>: <problem>" lines.
+    // Keep only its "  - <path>: <problem>" lines, if any.
     const lines = message(error).split("\n").filter((l) => l.startsWith("  - "));
-    throw new Error(lines.map((l) => prefix + l.slice(4)).join("; "));
+    throw new Error(lines.length ? lines.map((l) => prefix + l.slice(4)).join("; ") : message(error));
+  }
+}
+
+/** Throws `Unknown model <provider>/<modelId>` if `models` lacks `ref`. */
+export function checkModel(models: Models, ref: ModelRef): void {
+  if (models.getModel(ref.provider, ref.modelId) === undefined) {
+    throw new Error(`Unknown model ${ref.provider}/${ref.modelId}`);
   }
 }
 

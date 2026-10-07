@@ -1,9 +1,10 @@
-import { Type } from "@earendil-works/pi-ai";
-import { defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { type Models, Type } from "@earendil-works/pi-ai";
+import { configure, defineTool, type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { ChangesDoc, type ConfigOp, logChange } from "./changes.ts";
 import type { JapaExtension } from "./extension.ts";
 import { message } from "./loader.ts";
 import {
+  checkModel,
   getPath,
   mergeSettings,
   readUserSettings,
@@ -16,8 +17,13 @@ import {
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
 /** The CoS's tools to read and change settings (live, in place) and to list and undo changes. */
-export function settingsTools(home: string, settings: Settings, extensions: JapaExtension[]) {
+export function settingsTools(home: string, settings: Settings, models: Models, extensions: JapaExtension[]) {
   const schemas = Object.fromEntries(extensions.flatMap((e) => (e.settings ? [[e.name, e.settings]] : [])));
+  const validate = (user: JsonObject) => {
+    const next = validateSettings(mergeSettings(user), schemas);
+    for (const ref of Object.values(next.models)) if (ref !== undefined) checkModel(models, ref);
+    return next;
+  };
 
   const settingsGet = defineTool({
     name: "settings_get",
@@ -43,7 +49,7 @@ export function settingsTools(home: string, settings: Settings, extensions: Japa
       setPath(user, path, value);
       let next: Settings;
       try {
-        next = validateSettings(mergeSettings(user), schemas);
+        next = validate(user);
       } catch (error) {
         return reply(`Not changed: ${message(error)}`);
       }
@@ -52,7 +58,10 @@ export function settingsTools(home: string, settings: Settings, extensions: Japa
       Object.assign(settings, next);
       const configOps = [before === undefined ? { path } : { path, before }];
       const change = { title: title ?? `Set ${path}`, howToUse: howToUse ?? "", undo: { commits: [], configOps } };
-      const id = await api.commit((tx) => logChange(tx, change), context);
+      const id = await api.commit(async (tx) => {
+        await configure(tx, ROOT_CONVERSATION_ID, { model: next.models.cos! });
+        return logChange(tx, change);
+      }, context);
       const restart = ["storage", "secrets"].includes(path.split(".")[0]!) ? " Takes effect after a restart." : "";
       return reply(`Set ${path}. (change ${id})${restart}`);
     },
@@ -82,13 +91,14 @@ export function settingsTools(home: string, settings: Settings, extensions: Japa
       for (const op of (change.undo.configOps ?? []).toReversed()) setPath(user, op.path, op.before);
       let next: Settings;
       try {
-        next = validateSettings(mergeSettings(user), schemas);
+        next = validate(user);
       } catch (error) {
         return reply(`Not undone: ${message(error)}`);
       }
       saveSettings(home, user);
       Object.assign(settings, next);
       await api.commit(async (tx) => {
+        await configure(tx, ROOT_CONVERSATION_ID, { model: next.models.cos! });
         const doc = await tx.doc(ChangesDoc, ROOT_CONVERSATION_ID);
         doc.changes = doc.changes.filter((c) => c.id !== id);
       }, context);

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { type Contract, defineJapaExtension, type KernelContext, logChange, Type } from "../src/sdk.ts";
-import { bootTest, waitFor } from "./helpers.ts";
+import { bootTest, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, jobs, say, script, texts } from "./jobs-helpers.ts";
 
 /** Has the CoS call `name` with `args`; returns the tool's reply. */
@@ -99,6 +99,35 @@ test("extension settings are validated against its schema and visible to it imme
   );
   await tool(daemon, faux, "settings_set", { path: "extensions.limited.limit", value: 5 });
   expect(kernel!.settings()).toEqual({ limit: 5 });
+  await daemon.close();
+});
+
+test("an unknown model is refused, and nothing changes", async () => {
+  const { daemon, faux, home } = await bootTest();
+  const before = userFile(home);
+  const value = { provider: "anthropic", modelId: "typo" };
+  expect(await tool(daemon, faux, "settings_set", { path: "models.worker", value })).toBe(
+    "Not changed: Unknown model anthropic/typo",
+  );
+  expect(userFile(home)).toEqual(before);
+  expect(await tool(daemon, faux, "settings_get", { path: "models.worker" })).toBe("Not set.");
+  expect(await tool(daemon, faux, "changes_list")).toBe("No changes yet.");
+  await daemon.close();
+});
+
+test("a models.cos change applies to the CoS's next request, and its undo too", async () => {
+  const kit = testKit({ models: [{ id: "one" }, { id: "two" }] });
+  const { daemon, faux } = await bootTest({}, [], kit);
+  const modelOf = async () => {
+    faux.setResponses([(_c, _o, _s, model) => say(model.id)]);
+    await ask(daemon, "which model?");
+    return (await texts(daemon.root, "assistant")).at(-1);
+  };
+  expect(await modelOf()).toBe("one");
+  await tool(daemon, faux, "settings_set", { path: "models.cos", value: { ...kit.model, modelId: "two" } });
+  expect(await modelOf()).toBe("two");
+  await tool(daemon, faux, "change_undo", { id: "1" });
+  expect(await modelOf()).toBe("one");
   await daemon.close();
 });
 

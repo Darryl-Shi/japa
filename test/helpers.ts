@@ -1,5 +1,5 @@
 import { MemoryStorage, type ModelRef } from "@earendil-works/pi-durable";
-import { type FauxProviderHandle, fauxProvider } from "@earendil-works/pi-ai";
+import { type FauxProviderHandle, fauxProvider, type RegisterFauxProviderOptions } from "@earendil-works/pi-ai";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,8 +19,8 @@ export function tempHome(settings?: object): string {
 }
 
 /** A faux model provider and in-memory storage, packaged as the extension "test-kit". */
-export function testKit(): { faux: FauxProviderHandle; extension: JapaExtension; model: ModelRef } {
-  const faux = fauxProvider();
+export function testKit(options?: RegisterFauxProviderOptions): { faux: FauxProviderHandle; extension: JapaExtension; model: ModelRef } {
+  const faux = fauxProvider(options);
   const extension: JapaExtension = {
     name: "test-kit",
     summary: "Faux models and in-memory storage for tests",
@@ -46,8 +46,8 @@ export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 
 export async function bootTest(
   settings: object = {},
   extra: JapaExtension[] = [],
+  kit = testKit(),
 ): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string }> {
-  const kit = testKit();
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, ...extra] });
   return { daemon, faux: kit.faux, home };

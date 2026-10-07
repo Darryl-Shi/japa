@@ -42,7 +42,7 @@ import { shouldConsolidate } from "./memory/trigger.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { settingsTools } from "./settings-tools.ts";
-import { loadSettings, type Settings } from "./settings.ts";
+import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import { loadWorkers, type WorkerProfile } from "./workers.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -186,7 +186,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
-    const cos = cosExtension(settings, [Consolidate], settingsTools(home, settings, extensions));
+    const cos = cosExtension(settings, [Consolidate], settingsTools(home, settings, models, extensions));
     registry.install(cos);
     const built = new Map<string, Extension>();
     for (const e of extensions) {
@@ -292,12 +292,6 @@ function resolveCosModel(settings: Settings, models: Models, home: string): Mode
   }
   checkModel(models, ref);
   return ref;
-}
-
-function checkModel(models: Models, ref: ModelRef): void {
-  if (models.getModel(ref.provider, ref.modelId) === undefined) {
-    throw new Error(`Unknown model ${ref.provider}/${ref.modelId}`);
-  }
 }
 
 /** Why `profile` cannot run here: an unknown model, environment, built-in tool or extension. */
