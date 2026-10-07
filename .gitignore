@@ -1,3 +1,4 @@
 .pi/git/
 .pi/npm/
 node_modules/
+.superpowers/
