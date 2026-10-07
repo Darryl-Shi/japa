@@ -90,6 +90,29 @@ test("a failing tool install is reported and boot continues", async () => {
   await daemon.close();
 });
 
+test("a throwing setup is reported and its extension's tools are not installed", async () => {
+  const echo = defineTool({
+    name: "broken_echo",
+    description: "Echo",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [] }),
+  });
+  const ext = defineJapaExtension({
+    name: "broken",
+    summary: "Breaks",
+    examples: ["echo"],
+    docs: "Echo.",
+    provides: { tool: [echo] },
+    setup: () => {
+      throw new Error("no key");
+    },
+  });
+  const { daemon } = await bootTest({}, [ext]);
+  expect(daemon.status().errors).toContainEqual({ name: "broken", error: "setup: no key" });
+  expect(daemon.registry.snapshot().tools().map((t) => t.tool.name)).not.toContain("broken_echo");
+  await daemon.close();
+});
+
 test("extension-defined contracts activate between tools and triggers", async () => {
   const order: string[] = [];
   const probe: Contract = {

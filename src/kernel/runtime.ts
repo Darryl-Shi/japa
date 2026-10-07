@@ -92,6 +92,13 @@ export function createRuntime(input: {
     for (const name of names) {
       for (const e of extensions) {
         if (name === "tool") {
+          try {
+            const dispose = await e.setup?.(input.kernel(e.name));
+            if (dispose) activations.push({ extension: e.name, contract: "setup", dispose });
+          } catch (err) {
+            errors.push({ name: e.name, error: `setup: ${message(err)}` });
+            continue;
+          }
           if (e.provides?.tool || e.durable) {
             try {
               const extension = defineExtension({

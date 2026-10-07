@@ -43,6 +43,7 @@ export default defineJapaExtension({
 - `durable`: `{ sections, hooks, wraps, tasks }`, Pi Durable parts (the escape hatch, below).
 - `secrets`: the secret names it may read, such as `"bank.apiKey"`.
 - `settings`: a `Type.Object(...)` schema for `settings.extensions.<name>`.
+- `setup(ctx)`: called with your `KernelContext` before your tools are installed (below).
 
 ## Core contracts
 
@@ -67,12 +68,19 @@ Storage and secrets are opened at boot, so they apply after a restart; the other
 
 ## Settings and secrets: `KernelContext`
 
-A contract's `activate(contribution, ctx)` receives a `KernelContext`, including `settings()` (the
-live `settings.extensions.<name>`; call it each time) and `secret(name)` (throws for a name not in
-your manifest `secrets`). Tools don't receive it: a tool that needs a setting or secret gets it
-through a contract of your own whose `activate` keeps `ctx`, as the `web` extension does for its
-search engines. When a secret is missing, reply telling the chief of staff to ask for it with
-`secret_request({ name, why })`.
+A `KernelContext` has `settings()` (the live `settings.extensions.<name>`; call it each time) and
+`secret(name)` (throws for a name not in your manifest `secrets`). Tools get it through the manifest's
+`setup(ctx)`, which runs before they are installed: keep `ctx` in a module variable and use it in
+`execute`. `setup` may return a dispose function; if it throws, your tools are not installed.
+
+```ts
+let ctx: KernelContext; // import type { KernelContext } from "japa/sdk"
+// in execute: const key = await ctx.secret("bank.apiKey");
+export default defineJapaExtension({ /* ... */ secrets: ["bank.apiKey"], setup: (c) => { ctx = c; } });
+```
+
+A contract's `activate(contribution, ctx)` receives one too. When a secret is missing, reply telling
+the chief of staff to ask for it with `secret_request({ name, why })`.
 
 ## Defining a contract
 

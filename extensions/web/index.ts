@@ -10,7 +10,7 @@ type SearchEngine = { name: string; search(query: string, count: number, secret:
 const engines: Map<string, (query: string, count: number) => Promise<Result[]>> = ((globalThis as any)[
   Symbol.for("japa.web.engines")
 ] ??= new Map());
-let settings: KernelContext["settings"] = () => ({}); // web's own live settings, set when it activates its engine
+let settings: KernelContext["settings"] = () => ({}); // web's own live settings, set by setup
 
 const searchEngine: Contract<SearchEngine> = {
   name: "search-engine",
@@ -22,7 +22,6 @@ const searchEngine: Contract<SearchEngine> = {
       ? undefined
       : "must have a string name and a search function",
   activate: async (c, ctx) => {
-    if (ctx.extension === "web") settings = ctx.settings;
     engines.set(c.name, (query, count) => c.search(query, count, ctx.secret));
     return () => {
       engines.delete(c.name);
@@ -90,4 +89,7 @@ export default defineJapaExtension({
   provides: { tool: [webFetch, webSearch], "search-engine": [brave] },
   secrets: ["web.brave.apiKey"],
   settings: Type.Object({ engine: Type.Optional(Type.String()) }),
+  setup: (ctx) => {
+    settings = ctx.settings;
+  },
 });

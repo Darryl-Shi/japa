@@ -7,6 +7,7 @@ import { expect, test } from "vitest";
 import type { Contract, KernelContext, SecretsStore } from "../src/kernel/contracts.ts";
 import { secretsCredentialStore } from "../src/kernel/credentials.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
+import { defineTool, Type } from "../src/sdk.ts";
 import { bootTest } from "./helpers.ts";
 import { call, script, texts } from "./jobs-helpers.ts";
 
@@ -65,6 +66,31 @@ test("secret() returns a declared secret and refuses an undeclared one", async (
   writeFileSync(join(home, "secrets/probe.token"), "t-1");
   expect(await kernel!.secret("probe.token")).toBe("t-1");
   await expect(kernel!.secret("other.token")).rejects.toThrow('Extension probe-ext did not declare secret "other.token"');
+  await daemon.close();
+});
+
+test("a tool reads its extension's secret through the KernelContext given to setup", async () => {
+  let kernel: KernelContext | undefined;
+  const length = defineTool({
+    name: "token_length",
+    description: "Test.",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: "text", text: String((await kernel!.secret("probe.token"))?.length) }] }),
+  });
+  const extension: JapaExtension = {
+    name: "probe-ext",
+    summary: "Test",
+    examples: ["test"],
+    docs: "Test.",
+    provides: { tool: [length] },
+    secrets: ["probe.token"],
+    setup: (ctx) => {
+      kernel = ctx;
+    },
+  };
+  const { daemon, home } = await bootTest({}, [extension]);
+  writeFileSync(join(home, "secrets/probe.token"), "t-123");
+  expect((await length.execute({}, {} as never, {} as never)).content).toEqual([{ type: "text", text: "5" }]);
   await daemon.close();
 });
 

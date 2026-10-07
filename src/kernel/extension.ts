@@ -1,6 +1,6 @@
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { AnyTask, HookRegistration, PromptSection, Wrap } from "@earendil-works/pi-durable";
-import type { Contract } from "./contracts.ts";
+import type { Contract, Dispose, KernelContext } from "./contracts.ts";
 
 /** An extension's manifest: identity, descriptive fields for routing, and its contributions. */
 export type JapaExtension = {
@@ -13,6 +13,7 @@ export type JapaExtension = {
   durable?: { sections?: PromptSection[]; hooks?: HookRegistration[]; wraps?: Wrap[]; tasks?: AnyTask[] };
   secrets?: string[];
   settings?: TSchema; // schema for settings.extensions.<name>
+  setup?(ctx: KernelContext): void | Dispose | Promise<void | Dispose>; // called before its tools are installed
 };
 
 /** Identity function that types an extension manifest. */
@@ -28,6 +29,7 @@ export function validateExtension(e: JapaExtension, contracts: ReadonlyMap<strin
 
   if (typeof e.name !== "string" || !KEBAB_CASE.test(e.name)) errors.push("name must be kebab-case");
   if (!e.summary) errors.push("summary is required");
+  if (e.setup !== undefined && typeof e.setup !== "function") errors.push("setup must be a function");
 
   const tools = e.provides?.tool;
   if (tools && tools.length > 0) {
