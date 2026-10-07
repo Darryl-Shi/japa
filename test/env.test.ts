@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type ConversationId, type EnvTarget, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
@@ -30,7 +30,7 @@ test("local-env manifest is valid", () => {
 
 test("read-only env reads but cannot write or exec", async () => {
   writeFileSync(join(dir, "a.txt"), "hi");
-  const env = readOnly(new NodeExecutionEnv({ cwd: dir }));
+  const env = readOnly(new NodeExecutionEnv({ cwd: dir }), []);
   expect(getOrThrow(await env.readTextFile(join(dir, "a.txt"), ctx))).toBe("hi");
   const w = await env.writeFile(join(dir, "b.txt"), "x", ctx);
   expect(w.ok).toBe(false);
@@ -45,8 +45,26 @@ test("read-only env reads but cannot write or exec", async () => {
   if (!e.ok) expect(e.error.message).toBe(READ_ONLY_MESSAGE);
 });
 
+test("read-only env refuses reads inside a denied dir, relative to cwd", async () => {
+  const secrets = join(dir, "secrets");
+  mkdirSync(secrets);
+  writeFileSync(join(secrets, "k"), "sk");
+  writeFileSync(join(dir, "secrets-notes"), "ok");
+  const env = readOnly(new NodeExecutionEnv({ cwd: dir }), [secrets]);
+  for (const r of [await env.readTextFile("secrets/k", ctx), await env.listDir(secrets, ctx)]) {
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("permission_denied");
+      expect(r.error.message).toBe("Secrets are not readable here.");
+    }
+  }
+  expect(getOrThrow(await env.readTextFile("secrets-notes", ctx))).toBe("ok");
+  const w = await env.writeFile(join(dir, "b.txt"), "x", ctx);
+  expect(!w.ok && w.error.message).toBe(READ_ONLY_MESSAGE);
+});
+
 test("dispatcher wraps the root conversation only", async () => {
-  const dispatch = createEnvDispatcher(new Map([["local", localAdapter]]));
+  const dispatch = createEnvDispatcher(new Map([["local", localAdapter]]), []);
   const rootEnv = await dispatch({ conversationId: ROOT_CONVERSATION_ID, cwd: dir, read } as EnvTarget, ctx);
   const otherEnv = await dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx);
   expect((await rootEnv!.writeFile(join(dir, "c.txt"), "x", ctx)).ok).toBe(false);
@@ -67,6 +85,7 @@ test("dispatcher gives a job its own environment, unwrapped", async () => {
       ["local", localAdapter],
       ["probe", probe],
     ]),
+    [],
   );
   const job = { conversationId: 2 as ConversationId, cwd: dir, read: reading({ jobId: "1", environment: "probe" }) };
   const env = await dispatch(job as EnvTarget, ctx);
@@ -77,7 +96,7 @@ test("dispatcher gives a job its own environment, unwrapped", async () => {
 });
 
 test("dispatcher throws when the default environment is missing", async () => {
-  const dispatch = createEnvDispatcher(new Map());
+  const dispatch = createEnvDispatcher(new Map(), []);
   await expect(async () =>
     dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx),
   ).rejects.toThrow('No environment "local" is installed');

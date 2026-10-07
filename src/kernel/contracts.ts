@@ -56,6 +56,8 @@ export type KernelContext = {
   extension: string;
   /** The live `settings.extensions.<extension>`; read it when used, as `settings_set` changes it. */
   settings(): JsonObject;
+  /** Reads a secret named in the extension's manifest `secrets`; throws for any other name. */
+  secret(name: string): Promise<string | undefined>;
   models: MutableModels;
   environments: Map<string, EnvironmentAdapter>;
   surface: SurfaceContext;

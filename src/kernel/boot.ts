@@ -17,6 +17,7 @@ import {
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, type Models } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { capabilities } from "./capabilities.ts";
@@ -32,6 +33,7 @@ import {
   type StorageAdapter,
 } from "./contracts.ts";
 import { cosExtension, ensureRoot } from "./cos.ts";
+import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
@@ -99,12 +101,15 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     for (const c of defined) contracts.set(c.name, c);
     const order = ACTIVATION_ORDER.flatMap((name) => (name === "tool" ? [name, ...defined.map((c) => c.name)] : name));
 
-    await adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(settings.secrets, { home });
+    const secrets = await adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(
+      settings.secrets,
+      { home },
+    );
     storage = await adapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, {
       home,
     });
 
-    const models = createModels();
+    const models = createModels({ credentials: secretsCredentialStore(secrets) });
     const environments = new Map<string, EnvironmentAdapter>();
     const errors = [...loaded.errors, ...skills.errors];
     const status = (): Status => ({
@@ -121,6 +126,12 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       home,
       extension,
       settings: () => settings.extensions[extension] ?? {},
+      secret: async (name) => {
+        if (!extensions.find((e) => e.name === extension)?.secrets?.includes(name)) {
+          throw new Error(`Extension ${extension} did not declare secret "${name}"`);
+        }
+        return secrets.get(name);
+      },
       models,
       environments,
       surface: {
@@ -193,7 +204,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const registry = createRegistry();
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
-    const env = createEnvDispatcher(environments);
+    const { dir } = settings.secrets;
+    const env = createEnvDispatcher(environments, [
+      join(home, "secrets"),
+      ...(typeof dir === "string" ? [dir.replace(/^~/, homedir())] : []),
+    ]);
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
