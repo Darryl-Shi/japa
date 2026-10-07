@@ -143,7 +143,8 @@ Rules:
 The kernel computes each conversation's tool list; extensions never classify
 themselves.
 
-- **Root (CoS):** all core CoS tools (§5.3, §6.5, §7, §8.3–§8.5, §10) plus
+- **Root (CoS):** all core CoS tools (§5.3, §6.5, §7, §8.3–§8.5, §10), the
+  core `read` tool, plus
   **every shared extension tool**. The CoS does quick things itself.
 - **Jobs:** core worker tools (§5.4) plus the shared tools of the extensions
   the worker profile selects (`general`: all), plus the profile's own tools.
