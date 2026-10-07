@@ -10,6 +10,7 @@ import {
   type ModelRef,
   ROOT_CONVERSATION_ID,
   section,
+  type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { readFileSync } from "node:fs";
@@ -27,10 +28,9 @@ function capped(text: string, max: number): string {
 
 /**
  * The CoS's own Pi Durable extension: its identity, its memory sections and tools, the built-in `read` tool, the
- * cap on tool results it sees, and the kernel's root tasks.
+ * cap on tool results it sees, and the kernel's root tools and tasks.
  */
-export function cosExtension(settings: Settings, tasks: AnyTask[]): Extension {
-  const max = settings.context.toolResultTokens * 4;
+export function cosExtension(settings: Settings, tasks: AnyTask[], tools: ToolRegistration[]): Extension {
   return defineExtension({
     name: "japa-cos",
     sections: [
@@ -44,14 +44,19 @@ export function cosExtension(settings: Settings, tasks: AnyTask[]): Extension {
         return memory && renderLoops(memory.loops);
       }),
     ],
-    tools: [createReadTool(), ...memoryTools],
+    tools: [createReadTool(), ...memoryTools, ...tools],
     tasks,
     hooks: [
       hook(GenerationTask, {
         beforeRequest: ({ messages }) => ({
           messages: messages.map((m) =>
             m.role === "toolResult"
-              ? { ...m, content: m.content.map((c) => (c.type === "text" ? { ...c, text: capped(c.text, max) } : c)) }
+              ? {
+                  ...m,
+                  content: m.content.map((c) =>
+                    c.type === "text" ? { ...c, text: capped(c.text, settings.context.toolResultTokens * 4) } : c,
+                  ),
+                }
               : m,
           ),
         }),

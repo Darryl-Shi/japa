@@ -1,3 +1,4 @@
+import type { TSchema } from "@earendil-works/pi-ai";
 import type { AnyTask, HookRegistration, PromptSection, Wrap } from "@earendil-works/pi-durable";
 import type { Contract } from "./contracts.ts";
 
@@ -11,6 +12,7 @@ export type JapaExtension = {
   contracts?: Contract[]; // contracts this extension defines
   durable?: { sections?: PromptSection[]; hooks?: HookRegistration[]; wraps?: Wrap[]; tasks?: AnyTask[] };
   secrets?: string[];
+  settings?: TSchema; // schema for settings.extensions.<name>
 };
 
 /** Identity function that types an extension manifest. */

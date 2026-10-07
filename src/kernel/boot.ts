@@ -19,6 +19,7 @@ import { createModels, type Models } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ChangesDoc } from "./changes.ts";
 import {
   ACTIVATION_ORDER,
   CORE_CONTRACTS,
@@ -40,6 +41,7 @@ import { estimateTokens, MemoryDoc } from "./memory/state.ts";
 import { shouldConsolidate } from "./memory/trigger.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { settingsTools } from "./settings-tools.ts";
 import { loadSettings, type Settings } from "./settings.ts";
 import { loadWorkers, type WorkerProfile } from "./workers.ts";
 
@@ -107,6 +109,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const kernel = (extension: string): KernelContext => ({
       home,
       extension,
+      settings: () => settings.extensions[extension] ?? {},
       models,
       environments,
       surface: {
@@ -183,7 +186,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
-    const cos = cosExtension(settings, [Consolidate]);
+    const cos = cosExtension(settings, [Consolidate], settingsTools(home, settings, extensions));
     registry.install(cos);
     const built = new Map<string, Extension>();
     for (const e of extensions) {
@@ -202,6 +205,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
       await tx.doc(MemoryDoc, root.id);
+      await tx.doc(ChangesDoc, root.id);
     }, ctx);
     // Profiles need the activated environments; pending job tasks resume once `japa-jobs` is installed.
     const installJobs = () => {

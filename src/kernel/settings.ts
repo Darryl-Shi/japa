@@ -1,7 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type TSchema, Type, validateToolArguments } from "@earendil-works/pi-ai";
 import type { JsonObject, ModelRef } from "@earendil-works/pi-durable";
+import { message } from "./loader.ts";
 
 /** Resolves the japa home directory: `$JAPA_HOME`, or `~/.japa` by default. */
 export function japaHome(): string {
@@ -28,10 +30,34 @@ export const DEFAULT_SETTINGS: Settings = {
   extensions: {},
 };
 
+/** The kernel keys' schema; `extensions.<name>` is checked against that extension's own schema. */
+export const settingsSchema = Type.Object({
+  models: Type.Record(Type.String(), Type.Object({ provider: Type.String(), modelId: Type.String() })),
+  storage: Type.Object({ adapter: Type.String() }),
+  secrets: Type.Object({ adapter: Type.String() }),
+  jobs: Type.Object({ maxConcurrent: Type.Integer({ minimum: 1 }) }),
+  context: Type.Record(Type.String(), Type.Number({ exclusiveMinimum: 0 })),
+  memory: Type.Record(Type.String(), Type.Integer({ minimum: 1 })),
+  extensions: Type.Record(Type.String(), Type.Object({})),
+});
+
 /** Reads `<home>/settings.json` merged over the defaults per top-level key; object-valued keys one level deep. */
 export function loadSettings(home: string): Settings {
+  return mergeSettings(readUserSettings(home));
+}
+
+/** The keys the user set in `<home>/settings.json`. */
+export function readUserSettings(home: string): JsonObject {
   const path = join(home, "settings.json");
-  const user: Record<string, unknown> = existsSync(path) ? parseJson(path) : {};
+  return existsSync(path) ? parseJson(path) : {};
+}
+
+/** Writes the user's keys to `<home>/settings.json`. */
+export function saveSettings(home: string, user: JsonObject): void {
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(user, null, 2)}\n`);
+}
+
+export function mergeSettings(user: JsonObject): Settings {
   const merged: Record<string, unknown> = { ...DEFAULT_SETTINGS, ...user };
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
     merged[key] = { ...value, ...(user[key] as object) };
@@ -39,7 +65,44 @@ export function loadSettings(home: string): Settings {
   return merged as Settings;
 }
 
-function parseJson(path: string): Partial<Settings> {
+/**
+ * A validated copy of `settings`, with values converted where the schema allows ("2" to 2); throws listing the
+ * invalid paths. `schemas` holds the extensions' settings schemas, by name.
+ */
+export function validateSettings(settings: Settings, schemas: Record<string, TSchema>): Settings {
+  const valid: Settings = check(settingsSchema, settings, "");
+  for (const [name, schema] of Object.entries(schemas)) {
+    const value = valid.extensions[name];
+    if (value !== undefined) valid.extensions[name] = check(schema, value, `extensions.${name}.`);
+  }
+  return valid;
+}
+
+function check(schema: TSchema, value: object, prefix: string) {
+  try {
+    const tool = { name: "settings", description: "", parameters: schema };
+    return validateToolArguments(tool, { type: "toolCall", id: "", name: "settings", arguments: { ...value } });
+  } catch (error) {
+    // Keep only its "  - <path>: <problem>" lines.
+    const lines = message(error).split("\n").filter((l) => l.startsWith("  - "));
+    throw new Error(lines.map((l) => prefix + l.slice(4)).join("; "));
+  }
+}
+
+export function getPath(obj: object, path: string): unknown {
+  return path.split(".").reduce<any>((o, key) => o?.[key], obj);
+}
+
+/** Sets the value at dotted `path`, creating objects on the way; `undefined` deletes the key. */
+export function setPath(obj: object, path: string, value: unknown): void {
+  const keys = path.split(".");
+  const last = keys.pop()!;
+  const parent = keys.reduce<any>((o, key) => (o[key] ??= {}), obj);
+  if (value === undefined) delete parent[last];
+  else parent[last] = value;
+}
+
+function parseJson(path: string): JsonObject {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {

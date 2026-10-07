@@ -54,6 +54,8 @@ export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispos
 export type KernelContext = {
   home: string;
   extension: string;
+  /** The live `settings.extensions.<extension>`; read it when used, as `settings_set` changes it. */
+  settings(): JsonObject;
   models: MutableModels;
   environments: Map<string, EnvironmentAdapter>;
   surface: SurfaceContext;
