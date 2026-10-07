@@ -54,8 +54,8 @@ async function rollback(home: string): Promise<void> {
   const [kind, name, to] = process.argv.slice(3);
   const known = CHECK_KINDS.find((k) => k === kind);
   if (known === undefined || name === undefined) throw new Error("Usage: japa rollback <skill|worker|extension> <name> [to]");
-  rollBack(home, known, name, to);
-  console.log("Rolled back. Restart the daemon to apply.");
+  const sha = rollBack(home, known, name, to);
+  console.log(sha === undefined ? "Nothing to roll back." : "Rolled back. Restart the daemon to apply.");
 }
 
 const commands: Record<string, (home: string) => Promise<void>> = {

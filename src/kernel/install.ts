@@ -23,13 +23,13 @@ export function rollBack(home: string, kind: Kind, name: string, to = LKG): stri
 /**
  * The CoS's `install` tool: checks a skill, worker profile or extension in `<home>/.staging`, copies it into the
  * workspace, commits and reconciles it; when it fails to load, reverts and reconciles again. `loaded` tells whether a
- * skill or worker profile is loaded; `installed` runs after a successful install.
+ * skill or worker profile is loaded; `installed` runs with the name after a successful install.
  */
 export function installTool(
   home: string,
   reconcile: () => Promise<{ errors: LoadError[]; notices: string[] }>,
   loaded: (kind: "skill" | "worker", name: string) => boolean,
-  installed: () => void,
+  installed: (name: string) => void,
 ) {
   return defineTool({
     name: "install",
@@ -56,7 +56,7 @@ export function installTool(
       }
       const change = { title: `Installed ${kind} ${name}`, howToUse: "", undo: { commits: [sha] } };
       const id = await api.commit((tx) => logChange(tx, change), context);
-      installed();
+      installed(name);
       return reply([`Installed ${kind} ${name}. (change ${id})`, ...notices].join(" "));
     },
   });

@@ -1,14 +1,16 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { defineExtension, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { ChangesDoc } from "../src/kernel/changes.ts";
+import { createSafety } from "../src/kernel/safety.ts";
+import type { Settings } from "../src/kernel/settings.ts";
 import { commit, ensureWorkspace } from "../src/kernel/workspace.ts";
 import { bootTest, stage, tempHome, waitFor } from "./helpers.ts";
-import { ask, call, script, texts, tool } from "./jobs-helpers.ts";
+import { ask, call, script, system, texts, tool } from "./jobs-helpers.ts";
 
 /** Extension `flaky`: tool `flaky` replies `v1`, or throws when `broken`. */
 const flaky = (broken: boolean) => `import { defineJapaExtension, defineTool, Type } from "japa/sdk";
@@ -66,6 +68,9 @@ test("rollback restores a skill's last known good version", async () => {
 
   expect(await tool(daemon, faux, "rollback", { kind: "skill", name: "s" })).toBe("Rolled back skill s.");
   expect(readFileSync(join(home, "skills", "s", "SKILL.md"), "utf8")).toBe(skill("Does s"));
+  const prompt = await system(daemon, faux);
+  expect(prompt).toContain("- s: Does s\n");
+  expect(prompt).not.toContain("Does s better");
   await daemon.close();
 });
 
@@ -80,4 +85,51 @@ test("japa rollback works on the files without a daemon", () => {
   const out = execFileSync(main, ["rollback", "skill", "s"], { env: { ...process.env, JAPA_HOME: home }, encoding: "utf8" });
   expect(out).toBe("Rolled back. Restart the daemon to apply.\n");
   expect(existsSync(join(home, "skills", "s"))).toBe(false);
+  expect(execFileSync("git", ["-C", home, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+});
+
+const lkg = (home: string) => execFileSync("git", ["-C", home, "rev-parse", "japa-lkg^{commit}"], { encoding: "utf8" });
+const head = (home: string) => execFileSync("git", ["-C", home, "rev-parse", "HEAD"], { encoding: "utf8" });
+const settings = { safety: { toolErrorThreshold: 2, goodAfterMinutes: 10 } } as Settings;
+const unused = () => {
+  throw new Error("unused");
+};
+
+test("only the latest schedule tags the last known good setup, after its own delay", () => {
+  const home = tempHome();
+  ensureWorkspace(home);
+  const initial = head(home);
+  vi.useFakeTimers();
+  try {
+    const safety = createSafety({ home, settings, built: () => new Map(), reconcile: unused, root: unused, report: unused });
+    safety.scheduleGood();
+    vi.advanceTimersByTime(8 * 60_000);
+    writeFileSync(join(home, "notes.md"), "v3");
+    commit(home, ["notes.md"], "v3");
+    safety.scheduleGood();
+    vi.advanceTimersByTime(2 * 60_000);
+    expect(lkg(home)).toBe(initial);
+    vi.advanceTimersByTime(8 * 60_000);
+    expect(lkg(home)).toBe(head(home));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("tool errors from packaged extensions never roll anything back", async () => {
+  const home = tempHome(); // not a git repository: touching git would report an error
+  const packaged = defineExtension({ name: "pkg", tools: [{ name: "t" } as never] });
+  const errors: string[] = [];
+  const safety = createSafety({
+    home,
+    settings,
+    built: () => new Map([["pkg", packaged]]),
+    reconcile: unused,
+    root: unused,
+    report: (e) => errors.push(e),
+  });
+  const { afterTool } = safety.extension.hooks![0].handlers as { afterTool: (c: unknown, r: unknown) => void };
+  for (let i = 0; i < 3; i++) afterTool({ name: "t" }, { isError: true });
+  await new Promise((r) => setImmediate(r));
+  expect(errors).toEqual([]);
 });

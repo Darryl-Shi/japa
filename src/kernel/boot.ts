@@ -200,7 +200,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const selection: Extension[] = [];
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
     const reconcile = () => rt.reconcile(root);
-    const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root });
+    const report = (error: string) => rt.errors.push({ name: "japa-safety", error });
+    const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root, report });
     // After an undo's commits are reverted.
     const undone = async () => {
       await reconcile();
@@ -291,6 +292,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       markGood: safety.markGood,
       close: async () => {
         clearInterval(timer);
+        safety.close();
         try {
           await rt.dispose((c) => !isAdapter(c));
           await opened.close(ctx);

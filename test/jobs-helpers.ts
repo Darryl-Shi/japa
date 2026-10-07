@@ -6,6 +6,7 @@ import {
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
+  getSystemMessageText,
   type Message,
 } from "@earendil-works/pi-ai";
 import { type Conversation, type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -74,4 +75,17 @@ export function held() {
     });
   };
   return { wait, release: () => release(), started: () => started };
+}
+
+/** The CoS's system prompt on its next request. */
+export async function system(daemon: Daemon, faux: FauxProviderHandle) {
+  let text = "";
+  faux.setResponses([
+    ({ messages }) => {
+      text = getSystemMessageText(messages.findLast((m) => m.role === "system")!);
+      return say("ok");
+    },
+  ]);
+  await ask(daemon, "hi");
+  return text;
 }

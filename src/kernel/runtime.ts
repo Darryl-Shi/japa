@@ -47,6 +47,7 @@ export function createRuntime(input: {
   const activations: { extension: string; contract: string; dispose: Dispose }[] = []; // in activation order
   const built = new Map<string, Extension>();
   let jobsOptions: JobsOptions | undefined;
+  let reconciling: Promise<unknown> = Promise.resolve();
 
   const runtime = {
     extensions: input.extensions,
@@ -71,7 +72,12 @@ export function createRuntime(input: {
       });
     },
     start,
-    reconcile,
+    /** `reconcile`, one at a time. */
+    reconcile: (root: Conversation) => {
+      const run = reconciling.then(() => reconcile(root));
+      reconciling = run.catch(() => {});
+      return run;
+    },
     /** Disposes the activations of every contract `which` names, newest first. */
     dispose: (which: (contract: string) => boolean) => dispose((a) => which(a.contract)),
   };

@@ -1,25 +1,11 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type FauxProviderHandle, getSystemMessageText } from "@earendil-works/pi-ai";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { bootTest, stage } from "./helpers.ts";
-import { ask, say, tool } from "./jobs-helpers.ts";
-
-/** The CoS's system prompt on its next request. */
-async function system(daemon: Daemon, faux: FauxProviderHandle) {
-  let text = "";
-  faux.setResponses([
-    ({ messages }) => {
-      text = getSystemMessageText(messages.findLast((m) => m.role === "system")!);
-      return say("ok");
-    },
-  ]);
-  await ask(daemon, "hi");
-  return text;
-}
+import { ask, say, system, tool } from "./jobs-helpers.ts";
 
 const subjects = (home: string) => execFileSync("git", ["-C", home, "log", "--format=%s"], { encoding: "utf8" }).trim().split("\n");
 const toolNames = async (daemon: Daemon) => (await daemon.root.agent(ctx)).tools.map((t) => t.name);
