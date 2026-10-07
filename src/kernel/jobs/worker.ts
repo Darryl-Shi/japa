@@ -41,6 +41,7 @@ const jobComplete = defineTool({
   parameters: Type.Object({ summary: Type.String() }),
   execute: async ({ summary }, api, context) => {
     await updateJob(api, context, (job) => {
+      if (job.status === "cancelled") return;
       job.status = "done";
       job.result = summary;
     });

@@ -37,7 +37,7 @@ export const JobDoc = defineDoc<{ jobId: string; environment: string }>({
   initial: () => ({ jobId: "", environment: "" }),
 });
 
-function byId(jobs: Record<string, Job>): Job[] {
+export function byId(jobs: Record<string, Job>): Job[] {
   return Object.values(jobs).sort((a, b) => Number(a.id) - Number(b.id));
 }
 

@@ -1,13 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import {
-  type AssistantMessage,
-  type FauxProviderHandle,
-  type FauxResponseFactory,
-  fauxAssistantMessage,
-  fauxText,
-  fauxToolCall,
-  type Message,
-} from "@earendil-works/pi-ai";
+import { type FauxProviderHandle, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -16,9 +8,9 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
-import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
 import { tempHome, testKit, waitFor } from "./helpers.ts";
+import { ask, call, held, idle, jobs, reported, say, script, texts } from "./jobs-helpers.ts";
 
 /** Each `create` of the probe extension's environments, by environment name. */
 const created: { env: string; conversationId: string }[] = [];
@@ -59,48 +51,6 @@ async function bootWith(workers: Record<string, string> = {}): Promise<{ daemon:
 
 const profile = (name: string, lines: string[]) =>
   ["---", `name: ${name}`, "description: Test", ...lines, "---", "Work."].join("\n");
-const call = (name: string, args: Record<string, string>) =>
-  fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
-const say = (text: string) => fauxAssistantMessage([fauxText(text)]);
-
-function textOf(m: Message): string {
-  return typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
-}
-
-type Respond = (
-  role: string,
-  text: string,
-  signal?: AbortSignal,
-) => AssistantMessage | Promise<AssistantMessage> | undefined;
-
-/** Answers every request with `respond(role, text, signal)` of its last non-system message, or "ok". */
-function script(faux: FauxProviderHandle, respond: Respond) {
-  const step: FauxResponseFactory = ({ messages }, options) => {
-    const last = messages.findLast((m) => m.role !== "system")!;
-    return respond(last.role, textOf(last), options?.signal) ?? say("ok");
-  };
-  faux.setResponses(Array.from({ length: 50 }, () => step));
-}
-
-/** The texts of `conversation`'s messages with `role`, oldest first. */
-async function texts(conversation: Conversation, role: string): Promise<string[]> {
-  const page = await conversation.entries({}, 200, undefined, ctx);
-  return page.items.toReversed().flatMap((e) => (e.model ?? []).filter((m) => m.role === role).map(textOf));
-}
-
-async function jobs(daemon: Daemon) {
-  return (await daemon.harness.snapshot(JobsDoc, ROOT_CONVERSATION_ID, ctx))!.jobs;
-}
-
-async function ask(daemon: Daemon, text: string) {
-  await (await daemon.root.submit({ type: "input", content: text }, ctx)).wait(ctx);
-}
-
-/** No live tasks, background ones included: every job has settled and reported. */
-const idle = async (daemon: Daemon) => (await daemon.harness.inspect(ctx)).tasks.length === 0;
-
-const reported = async (daemon: Daemon) => (await texts(daemon.root, "user")).filter((t) => t.startsWith("[job"));
-
 test("a job runs and reports once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
@@ -159,20 +109,6 @@ test("a job whose model fails reports once", async () => {
   expect(await reported(daemon)).toEqual([expect.stringMatching(/^\[job 1 "Fail" failed\] /)]);
   await daemon.close();
 });
-
-/** A faux response held until `release()`; an abort of its request releases it too. */
-function held() {
-  let release = () => {};
-  let started = false;
-  const wait = (message: AssistantMessage, signal?: AbortSignal) => {
-    started = true;
-    return new Promise<AssistantMessage>((resolve) => {
-      release = () => resolve(message);
-      signal?.addEventListener("abort", release);
-    });
-  };
-  return { wait, release: () => release(), started: () => started };
-}
 
 test("a steer during a run ends in one answer and one report", async () => {
   const { daemon, faux } = await bootWith();

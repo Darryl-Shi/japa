@@ -1,4 +1,4 @@
-import { StringEnum, Type, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { type Message, StringEnum, Type, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   configure,
   defineExtension,
@@ -11,12 +11,18 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import type { Settings } from "../settings.ts";
 import type { WorkerProfile } from "../workers.ts";
 import { Anchor, BACKGROUND, jobRun } from "./run.ts";
-import { board, JobDoc, JobsDoc } from "./state.ts";
+import { board, byId, JobDoc, JobsDoc } from "./state.ts";
 import { workerExtension } from "./worker.ts";
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-/** The CoS's job extension: the `job_start` and `job_message` tools, the jobs board section, and the job tasks. */
+function line(m: Message): string {
+  const text =
+    typeof m.content === "string" ? m.content : m.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
+  return m.role === "toolResult" ? `tool ${m.toolName}: ${text.slice(0, 200)}` : `${m.role}: ${text}`;
+}
+
+/** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
 export function jobsExtension(options: {
   profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
@@ -48,7 +54,7 @@ export function jobsExtension(options: {
     execute: async ({ title, brief, worker: name = "general" }, api, context) => {
       const profile = profiles.get(name);
       if (profile === undefined) return reply(`Unknown worker "${name}". Workers: ${[...profiles.keys()].join(", ")}.`);
-      const job = await api.commit(async (tx) => {
+      const started = await api.commit(async (tx) => {
         const doc = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
         const id = String(doc.nextId++);
         const anchor = await tx.createTask(Anchor, null, BACKGROUND);
@@ -69,13 +75,11 @@ export function jobsExtension(options: {
           reported: [],
         };
         await start(tx, doc.jobs);
-        return doc.jobs[id]!;
+        return doc.jobs[id]!.status === "running"
+          ? `Started job ${id}.`
+          : `Queued job ${id}; it starts when a running job finishes.`;
       }, context);
-      return reply(
-        job.status === "running"
-          ? `Started job ${job.id}.`
-          : `Queued job ${job.id}; it starts when a running job finishes.`,
-      );
+      return reply(started);
     },
   });
 
@@ -103,10 +107,64 @@ export function jobsExtension(options: {
     },
   });
 
+  const jobStop = defineTool({
+    name: "job_stop",
+    description: "Stop a job: it is cancelled and reports nothing more.",
+    parameters: Type.Object({ id: Type.String() }),
+    execute: async ({ id }, api, context) => {
+      const { text, abort } = await api.commit(async (tx) => {
+        const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[id];
+        if (job === undefined) return { text: `No job ${id}.` };
+        if (["done", "failed", "cancelled"].includes(job.status)) return { text: `Job ${id} already finished.` };
+        const abort = job.status === "running" ? job.conversationId : undefined;
+        job.status = "cancelled";
+        job.updatedAt = Date.now();
+        return { text: `Stopped job ${id}.`, abort };
+      }, context);
+      if (abort !== undefined) await (await api.conversation(abort, context))!.abort(context);
+      return reply(text);
+    },
+  });
+
+  const jobList = defineTool({
+    name: "job_list",
+    description: "List all jobs with their status.",
+    parameters: Type.Object({}),
+    execute: async (_args, api, context) => {
+      const doc = await api.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context);
+      const lines = byId(doc?.jobs ?? {}).map((j) => {
+        const detail = j.status === "running" ? j.progress : j.result;
+        return `${j.id} "${j.title}" ${j.status}${detail ? `: ${detail}` : ""}`;
+      });
+      return reply(lines.length ? lines.join("\n") : "No jobs.");
+    },
+  });
+
+  const jobTranscript = defineTool({
+    name: "job_transcript",
+    description: "Show the last messages of a job's conversation (default 10).",
+    parameters: Type.Object({ id: Type.String(), tail: Type.Optional(Type.Number()) }),
+    execute: async ({ id, tail = 10 }, api, context) => {
+      const lines = await api.commit(async (tx) => {
+        const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[id];
+        if (job === undefined) return undefined;
+        const messages: Message[] = [];
+        let cursor;
+        do {
+          const page = await tx.scanEntries({ conversationId: job.conversationId }, 50, cursor);
+          messages.push(...page.items.flatMap((e) => e.model ?? []).filter((m) => m.role !== "system"));
+          cursor = page.next;
+        } while (cursor !== undefined && messages.length < tail);
+        return messages.slice(0, tail).reverse().map(line);
+      }, context);
+      return reply(lines === undefined ? `No job ${id}.` : lines.join("\n"));
+    },
+  });
+
   return defineExtension({
     name: "japa-jobs",
     tasks: [Anchor, JobRun],
-    tools: [jobStart, jobMessage],
+    tools: [jobStart, jobMessage, jobStop, jobList, jobTranscript],
     sections: [
       section("jobs", async ({ read }, context) => {
         const doc = await read.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context);
