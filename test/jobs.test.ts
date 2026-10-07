@@ -272,7 +272,7 @@ test("bad worker profiles are reported and cannot be started", async () => {
     if (text === "start bad") return call("job_start", { title: "Bad", brief: "b", worker: "bad-tool" });
   });
   await ask(daemon, "start bad");
-  expect(await texts(daemon.root, "toolResult")).toEqual(['Unknown worker "bad-tool". Workers: general.']);
+  expect(await texts(daemon.root, "toolResult")).toEqual(['Unknown worker "bad-tool". Workers: builder, general.']);
   expect(await jobs(daemon)).toEqual({});
   await daemon.close();
 });

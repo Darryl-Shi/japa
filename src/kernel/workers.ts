@@ -18,8 +18,11 @@ export type WorkerProfile = {
   instructions: string;
 };
 
-/** Loads `<dir>/*.md` worker profiles; later dirs replace earlier ones by name, bad files are reported and skipped. */
-export function loadWorkers(dirs: string[]): {
+/**
+ * Loads `<dir>/*.md` worker profiles; later dirs replace earlier ones by name, bad files are reported and skipped.
+ * A profile `cwd` may start with `~` or `$JAPA_HOME` (expanded to `home`).
+ */
+export function loadWorkers(dirs: string[], home: string): {
   profiles: Map<string, WorkerProfile>;
   errors: { name: string; error: string }[];
 } {
@@ -29,7 +32,7 @@ export function loadWorkers(dirs: string[]): {
     if (!existsSync(dir)) continue;
     for (const file of readdirSync(dir).filter((f) => f.endsWith(".md"))) {
       try {
-        const profile = toProfile(parseFrontmatter(readFileSync(join(dir, file), "utf8")));
+        const profile = toProfile(parseFrontmatter(readFileSync(join(dir, file), "utf8")), home);
         profiles.set(profile.name, profile);
       } catch (error) {
         errors.push({ name: `worker:${file}`, error: error instanceof Error ? error.message : String(error) });
@@ -39,7 +42,7 @@ export function loadWorkers(dirs: string[]): {
   return { profiles, errors };
 }
 
-function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; body: string }): WorkerProfile {
+function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; body: string }, home: string): WorkerProfile {
   const { name, description, model, thinking, environment, tools, extensions, skills, cwd } = data;
   if (typeof name !== "string" || !KEBAB_CASE.test(name)) throw new Error("name must be kebab-case");
   if (typeof description !== "string" || !description) throw new Error("description is required");
@@ -58,7 +61,7 @@ function toProfile({ data, body }: { data: Record<string, FrontmatterValue>; bod
     tools: (tools as string[] | undefined) ?? [],
     ...(extensions && { extensions: extensions as string[] }),
     ...(skills && { skills: skills as string[] }),
-    ...(cwd !== undefined && { cwd: (cwd as string).replace(/^~/, homedir()) }),
+    ...(cwd !== undefined && { cwd: (cwd as string).replace(/^~/, homedir()).replace(/^\$JAPA_HOME/, home) }),
     instructions: body,
   };
 }

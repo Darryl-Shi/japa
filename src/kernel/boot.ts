@@ -49,6 +49,7 @@ import { settingsTools } from "./settings-tools.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
 import { loadWorkers, type WorkerProfile } from "./workers.ts";
+import { ensureWorkspace } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -84,6 +85,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   try {
     const settings = loadSettings(home);
     linkSdk(home, packageRoot);
+    ensureWorkspace(home);
 
     const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
     const dirs = options.extensionDirs ?? [join(packageRoot, "extensions"), join(home, "extensions")];
@@ -256,7 +258,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     }, ctx);
     // Profiles need the activated environments; pending job tasks resume once `japa-jobs` is installed.
     const installJobs = () => {
-      const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")]);
+      const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")], home);
       errors.push(...workers.errors);
       for (const profile of workers.profiles.values()) {
         const error = profileError(profile, models, environments, built, skills.skills);

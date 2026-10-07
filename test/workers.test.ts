@@ -39,7 +39,7 @@ test("malformed frontmatter throws", () => {
 test("later dirs override earlier ones by name", () => {
   const a = dirWith({ "g.md": "---\nname: g\ndescription: first\n---\nA" });
   const b = dirWith({ "other.md": "---\nname: g\ndescription: second\n---\nB" });
-  const { profiles, errors } = loadWorkers([a, b, join(a, "missing")]);
+  const { profiles, errors } = loadWorkers([a, b, join(a, "missing")], "/h");
   expect(errors).toEqual([]);
   expect(profiles.get("g")?.description).toBe("second");
   expect(profiles.get("g")?.instructions).toBe("B");
@@ -47,7 +47,7 @@ test("later dirs override earlier ones by name", () => {
 
 test("applies defaults", () => {
   const dir = dirWith({ "g.md": "---\nname: g\ndescription: d\n---\nbody" });
-  expect(loadWorkers([dir]).profiles.get("g")).toEqual({
+  expect(loadWorkers([dir], "/h").profiles.get("g")).toEqual({
     name: "g",
     description: "d",
     environment: "local",
@@ -61,18 +61,28 @@ test("a bad profile is reported and skipped while its sibling loads", () => {
     "bad.md": "---\nname: bad\n---\n",
     "good.md": "---\nname: good\ndescription: d\n---\n",
   });
-  const { profiles, errors } = loadWorkers([dir]);
+  const { profiles, errors } = loadWorkers([dir], "/h");
   expect([...profiles.keys()]).toEqual(["good"]);
   expect(errors).toEqual([{ name: "worker:bad.md", error: expect.stringContaining("description") }]);
 });
 
 test("cwd expands a leading ~", () => {
   const dir = dirWith({ "g.md": "---\nname: g\ndescription: d\ncwd: ~/x\n---\n" });
-  expect(loadWorkers([dir]).profiles.get("g")?.cwd).toBe(join(homedir(), "x"));
+  expect(loadWorkers([dir], "/h").profiles.get("g")?.cwd).toBe(join(homedir(), "x"));
 });
 
-test("the shipped general profile loads", () => {
-  const { profiles, errors } = loadWorkers([join(import.meta.dirname, "..", "workers")]);
+test("cwd expands a leading $JAPA_HOME", () => {
+  const dir = dirWith({ "g.md": "---\nname: g\ndescription: d\ncwd: $JAPA_HOME/.staging\n---\n" });
+  expect(loadWorkers([dir], "/h").profiles.get("g")?.cwd).toBe("/h/.staging");
+});
+
+test("the shipped general and builder profiles load", () => {
+  const { profiles, errors } = loadWorkers([join(import.meta.dirname, "..", "workers")], "/h");
   expect(errors).toEqual([]);
   expect(profiles.get("general")?.tools).toEqual(["read"]);
+  expect(profiles.get("builder")).toMatchObject({
+    tools: ["read", "write", "edit", "bash"],
+    extensions: [],
+    cwd: "/h/.staging",
+  });
 });
