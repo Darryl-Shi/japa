@@ -15,7 +15,7 @@
     "start": "tsx src/cli.ts",
     "check": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "format": "prettier --write src test examples README.md package.json tsconfig.json"
+    "format": "prettier --write src test examples README.md ARCHITECTURE.md CONTRIBUTING.md CHANGELOG.md \"docs/*.md\" package.json tsconfig.json"
   },
   "dependencies": {
     "@earendil-works/chord": "1.0.4",
