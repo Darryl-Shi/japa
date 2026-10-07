@@ -30,7 +30,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
-import { JobsDoc } from "./jobs/state.ts";
+import { byId, JobsDoc } from "./jobs/state.ts";
 import { workerExtension } from "./jobs/worker.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
@@ -116,6 +116,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               },
             };
           },
+        },
+        jobs: async (listener) => {
+          const watch = (await opened.watchDoc(JobsDoc, ROOT_CONVERSATION_ID, ctx))!;
+          listener(byId(watch.value!.jobs));
+          watch.start(async (doc) => listener(byId(doc!.jobs)));
+          return {
+            stop: async () => {
+              await watch.stop();
+            },
+          };
         },
         status,
       },

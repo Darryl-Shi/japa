@@ -1,6 +1,7 @@
 import type { AgentEvent, JsonObject, ModelRef, Storage } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
+import type { Job } from "./jobs/state.ts";
 
 /** Releases what an `activate()` set up. */
 export type Dispose = () => void | Promise<void>;
@@ -39,6 +40,8 @@ export type SurfaceContext = {
     /** Delivers the current snapshot as the first event, then live events. */
     events(listener: (events: readonly AgentEvent[]) => void): Promise<{ stop(): Promise<void> }>;
   };
+  /** Delivers the current jobs first, then every change, in id order. */
+  jobs(listener: (jobs: Job[]) => void): Promise<{ stop(): Promise<void> }>;
   status(): Status;
 };
 

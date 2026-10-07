@@ -10,12 +10,12 @@ async function start(ctx: SurfaceContext) {
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
-    let stop: (() => Promise<void>) | undefined;
+    const streams: { stop(): Promise<void> }[] = [];
     const handle = async (m: ClientMessage | undefined) => {
       switch (m?.type) {
         case "attach": {
-          const stream = await ctx.root.events((events) => writeMessage(socket, { type: "events", events: [...events] }));
-          stop = stream.stop;
+          streams.push(await ctx.root.events((events) => writeMessage(socket, { type: "events", events: [...events] })));
+          streams.push(await ctx.jobs((jobs) => writeMessage(socket, { type: "jobs", jobs })));
           break;
         }
         case "abort":
@@ -39,7 +39,7 @@ async function start(ctx: SurfaceContext) {
     socket.on("error", () => {});
     socket.on("close", () => {
       sockets.delete(socket);
-      queue.then(() => stop?.()).catch(() => {});
+      queue.then(() => Promise.all(streams.map((s) => s.stop()))).catch(() => {});
     });
   });
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(path, resolve));

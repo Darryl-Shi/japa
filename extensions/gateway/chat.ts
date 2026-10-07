@@ -1,4 +1,5 @@
 import { Container, Editor, matchesKey, ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui";
+import { board, type Job } from "../../src/sdk.ts";
 import { connect } from "./client.ts";
 import { applyEvents, type Line, type Transcript } from "./transcript.ts";
 
@@ -14,23 +15,28 @@ export async function runChat(home: string): Promise<void> {
   const client = await connect(home);
   const tui = new TuiMainScreen(new ProcessTerminal());
   const history = new Container();
+  const jobBoard = new Text("", 1, 0);
   const status = new Text("", 1, 0);
   const editor = new Editor(tui, editorTheme);
   tui.addChild(history);
+  tui.addChild(jobBoard);
   tui.addChild(status);
   tui.addChild(editor);
   tui.setFocus(editor);
 
   let t: Transcript = { lines: [], streaming: "", busy: false };
+  let jobs: Job[] = [];
   const render = () => {
     history.clear();
     for (const line of t.lines) history.addChild(new Text(prefix[line.kind] + line.text, 1, 0));
     if (t.streaming !== "") history.addChild(new Text(t.streaming, 1, 0));
+    jobBoard.setText(board(Object.fromEntries(jobs.map((j) => [j.id, j]))) ?? "");
     status.setText(t.busy ? "thinking…" : "");
     tui.requestRender();
   };
   client.onMessage((m) => {
     if (m.type === "events") t = applyEvents(t, m.events);
+    if (m.type === "jobs") jobs = m.jobs;
     if (m.type === "error") t = { ...t, lines: [...t.lines, { kind: "info", text: m.message }] };
     render();
   });

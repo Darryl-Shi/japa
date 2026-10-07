@@ -7,6 +7,7 @@ import { type ServerMessage, socketPath } from "../extensions/gateway/protocol.t
 import { boot } from "../src/kernel/boot.ts";
 import type { Status } from "../src/kernel/contracts.ts";
 import { bootTest, tempHome, testKit } from "./helpers.ts";
+import { call, script } from "./jobs-helpers.ts";
 
 test("attach, submit, and receive the answer", async () => {
   const { daemon, faux, home } = await bootTest();
@@ -18,6 +19,20 @@ test("attach, submit, and receive the answer", async () => {
   client.send({ type: "submit", text: "hello" });
   await vi.waitFor(() => expect(JSON.stringify(seen)).toContain("Hi there"));
   expect(seen[0].type === "events" && seen[0].events[0].type).toBe("snapshot");
+  client.close();
+  await daemon.close();
+});
+
+test("attach streams the job board", async () => {
+  const { daemon, faux, home } = await bootTest();
+  script(faux, (_role, text) => (text === "start sum" ? call("job_start", { title: "Sum", brief: "Add" }) : undefined));
+  const client = await connect(home);
+  const boards: unknown[][] = [];
+  client.onMessage((m) => m.type === "jobs" && boards.push(m.jobs));
+  client.send({ type: "attach" });
+  await vi.waitFor(() => expect(boards[0]).toEqual([]));
+  client.send({ type: "submit", text: "start sum" });
+  await vi.waitFor(() => expect(boards.at(-1)).toMatchObject([{ id: "1", title: "Sum" }]));
   client.close();
   await daemon.close();
 });
