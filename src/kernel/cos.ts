@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import {
+  type AnyTask,
   type Conversation,
   defineExtension,
   type Extension,
@@ -25,10 +26,10 @@ function capped(text: string, max: number): string {
 }
 
 /**
- * The CoS's own Pi Durable extension: its identity, its memory sections and tools, the built-in `read` tool, and
- * the cap on tool results it sees.
+ * The CoS's own Pi Durable extension: its identity, its memory sections and tools, the built-in `read` tool, the
+ * cap on tool results it sees, and the kernel's root tasks.
  */
-export function cosExtension(settings: Settings): Extension {
+export function cosExtension(settings: Settings, tasks: AnyTask[]): Extension {
   const max = settings.context.toolResultTokens * 4;
   return defineExtension({
     name: "japa-cos",
@@ -44,6 +45,7 @@ export function cosExtension(settings: Settings): Extension {
       }),
     ],
     tools: [createReadTool(), ...memoryTools],
+    tasks,
     hooks: [
       hook(GenerationTask, {
         beforeRequest: ({ messages }) => ({

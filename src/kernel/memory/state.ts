@@ -1,10 +1,18 @@
-import { defineDoc } from "@earendil-works/pi-durable";
+import { defineDoc, type TaskId } from "@earendil-works/pi-durable";
 import type { Job } from "../jobs/state.ts";
 
 export type Fact = { id: string; text: string; updatedAt: number };
 export type Loop = { id: string; text: string; createdAt: number };
 export type Episode = { id: string; at: number; text: string };
-export type Memory = { nextId: number; facts: Fact[]; loops: Loop[]; episodes: Episode[]; lastResetAt?: number };
+export type Memory = {
+  nextId: number;
+  facts: Fact[];
+  loops: Loop[];
+  episodes: Episode[];
+  lastResetAt?: number;
+  previousResetAt?: number; // the board lists jobs finished since then: their reports left the window at the last reset
+  consolidating?: TaskId; // the live `Consolidate` task
+};
 export type Limits = { maxFacts: number; maxTokens: number };
 
 export type FactOp = { op: "add"; text: string } | { op: "update"; id: string; text: string } | { op: "delete"; id: string };

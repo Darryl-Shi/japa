@@ -32,6 +32,7 @@ import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
+import { consolidation } from "./memory/consolidate.ts";
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
@@ -52,6 +53,8 @@ export type Daemon = {
   harness: Harness;
   root: Conversation;
   status(): Status;
+  /** Consolidates the CoS's context and waits for it. */
+  consolidate(): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -163,7 +166,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const env = createEnvDispatcher(environments);
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
-    const cos = cosExtension(settings);
+    const { Consolidate, startConsolidation } = consolidation({ models, settings });
+    const cos = cosExtension(settings, [Consolidate]);
     registry.install(cos);
     const built = new Map<string, Extension>();
     for (const e of extensions) {
@@ -209,6 +213,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       harness: opened,
       root,
       status,
+      consolidate: async () => {
+        await opened.waitForTask(await startConsolidation(root), ctx);
+      },
       close: async () => {
         try {
           await disposeAll(runtime);

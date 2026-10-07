@@ -17,7 +17,7 @@ import { WorkerExtension } from "./worker.ts";
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-function line(m: Message): string {
+export function line(m: Message): string {
   const text =
     typeof m.content === "string" ? m.content : m.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
   return m.role === "toolResult" ? `tool ${m.toolName}: ${text.slice(0, 200)}` : `${m.role}: ${text}`;
@@ -169,7 +169,7 @@ export function jobsExtension(options: {
       section("jobs", async ({ read }, context) => {
         const doc = await read.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context);
         const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
-        return doc && board(doc.jobs, memory?.lastResetAt ?? 0);
+        return doc && board(doc.jobs, memory?.previousResetAt ?? 0);
       }),
     ],
   });
