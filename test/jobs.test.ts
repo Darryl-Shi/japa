@@ -106,7 +106,7 @@ test("a job whose model fails reports once", async () => {
   await ask(daemon, "start fail");
   await waitFor(() => idle(daemon));
   expect((await jobs(daemon))["1"]!.status).toBe("failed");
-  expect(await reported(daemon)).toEqual([expect.stringMatching(/^\[job 1 "Fail" failed\] /)]);
+  expect(await reported(daemon)).toEqual(['[job 1 "Fail" failed] model_error: boom']);
   await daemon.close();
 });
 
@@ -129,6 +129,50 @@ test("a steer during a run ends in one answer and one report", async () => {
   hold.release();
   await waitFor(() => idle(daemon));
   expect(await reported(daemon)).toEqual(['[job 1 "Work" done] used japa']);
+  await daemon.close();
+});
+
+test("a follow-up queued before job_complete reports its own answer", async () => {
+  const { daemon, faux } = await bootWith();
+  const hold = held();
+  script(faux, (role, text, signal) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "Do work") return hold.wait(call("job_complete", { summary: "first done" }), signal);
+    if (text === "follow") return call("job_message", { id: "1", text: "more", mode: "followup" });
+    if (role === "user" && text === "more") return say("Which part?");
+  });
+  await ask(daemon, "start work");
+  await waitFor(hold.started);
+  await ask(daemon, "follow");
+  const job = (await jobs(daemon))["1"]!.conversationId;
+  const queued = async () =>
+    (await daemon.harness.inspect(ctx)).submissions.some((s) => s.conversationId === job && s.status === "queued");
+  await waitFor(queued);
+  hold.release();
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual([
+    '[job 1 "Work" done] first done',
+    '[job 1 "Work" needs_input] Which part?',
+  ]);
+  await daemon.close();
+});
+
+test("a report withdrawn by Esc still reaches the CoS once", async () => {
+  const { daemon, faux } = await bootWith();
+  const hold = held();
+  script(faux, (role, text, signal) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "Do work") return call("job_complete", { summary: "w" });
+    if (role === "toolResult" && text === "Started job 1.") return hold.wait(say("ok"), signal);
+  });
+  await daemon.root.submit({ type: "input", content: "start work" }, ctx);
+  await waitFor(hold.started);
+  const queued = async () =>
+    (await daemon.harness.inspect(ctx)).submissions.some((s) => s.requestId === "report:1:1" && s.status === "queued");
+  await waitFor(queued);
+  await daemon.root.abort(ctx);
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Work" done] w']);
   await daemon.close();
 });
 
@@ -159,7 +203,7 @@ test("the CoS and jobs are offered their own tools", async () => {
   const names = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
   const root = await names(daemon.root);
   expect(root).toEqual(expect.arrayContaining(["read", "job_start", "probe_write"]));
-  for (const name of ["write", "bash", "job_progress", "job_complete"]) expect(root).not.toContain(name);
+  for (const name of ["write", "edit", "bash", "job_progress", "job_complete"]) expect(root).not.toContain(name);
 
   script(faux, (_role, text) => {
     if (text === "start shell") return call("job_start", { title: "Shell", brief: "Look around", worker: "shell" });
@@ -199,13 +243,14 @@ test("bad worker profiles are reported and cannot be started", async () => {
     "bad-tool": profile("bad-tool", ["tools: [grep]"]),
     "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
     "bad-env": profile("bad-env", ["environment: nowhere"]),
+    "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
   });
   expect(
     daemon
       .status()
       .errors.map((e) => e.name)
       .sort(),
-  ).toEqual(["worker:bad-env", "worker:bad-ext", "worker:bad-tool"]);
+  ).toEqual(["worker:bad-env", "worker:bad-ext", "worker:bad-model", "worker:bad-tool"]);
   script(faux, (_role, text) => {
     if (text === "start bad") return call("job_start", { title: "Bad", brief: "b", worker: "bad-tool" });
   });

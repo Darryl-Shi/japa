@@ -31,7 +31,7 @@ import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
 import { jobsExtension } from "./jobs/cos.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
-import { workerExtension } from "./jobs/worker.ts";
+import { WorkerExtension } from "./jobs/worker.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { loadSettings, type Settings } from "./settings.ts";
@@ -154,6 +154,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
     await activate("provider");
     const model = resolveCosModel(settings, models, home);
+    if (settings.models.worker !== undefined) checkModel(models, settings.models.worker);
 
     const registry = createRegistry();
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
@@ -185,13 +186,13 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")]);
       errors.push(...workers.errors);
       for (const profile of workers.profiles.values()) {
-        const error = profileError(profile, environments, built);
+        const error = profileError(profile, models, environments, built);
         if (error === undefined) continue;
         errors.push({ name: `worker:${profile.name}`, error });
         workers.profiles.delete(profile.name);
       }
       const jobs = jobsExtension({ profiles: workers.profiles, settings, extensions: built });
-      registry.install(workerExtension());
+      registry.install(WorkerExtension);
       registry.install(CodingTools);
       registry.install(jobs);
       selection.push(cos, jobs, ...built.values());
@@ -245,18 +246,26 @@ function resolveCosModel(settings: Settings, models: Models, home: string): Mode
         `{"models":{"cos":{"provider":"anthropic","modelId":"<model>"}}}`,
     );
   }
-  if (models.getModel(ref.provider, ref.modelId) === undefined) {
-    throw new Error(`Unknown model ${ref.provider}/${ref.modelId}`);
-  }
+  checkModel(models, ref);
   return ref;
 }
 
-/** Why `profile` cannot run here: an unknown environment, built-in tool or extension. */
+function checkModel(models: Models, ref: ModelRef): void {
+  if (models.getModel(ref.provider, ref.modelId) === undefined) {
+    throw new Error(`Unknown model ${ref.provider}/${ref.modelId}`);
+  }
+}
+
+/** Why `profile` cannot run here: an unknown model, environment, built-in tool or extension. */
 function profileError(
   profile: WorkerProfile,
+  models: Models,
   environments: ReadonlyMap<string, EnvironmentAdapter>,
   extensions: ReadonlyMap<string, Extension>,
 ): string | undefined {
+  if (profile.model && models.getModel(profile.model.provider, profile.model.modelId) === undefined) {
+    return `unknown model "${profile.model.provider}/${profile.model.modelId}"`;
+  }
   if (!environments.has(profile.environment)) return `unknown environment "${profile.environment}"`;
   const tool = profile.tools.find((t) => !CodingTools.tools!.some((builtin) => builtin.name === t));
   if (tool !== undefined) return `unknown tool "${tool}"`;

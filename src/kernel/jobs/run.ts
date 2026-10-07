@@ -60,8 +60,15 @@ export function jobRun(settings: Settings) {
         const { report } = task.state.checkpoint as Extract<JobRunState, { phase: "report" }>;
         if (report !== undefined) {
           const root = (await runtime.conversation(ROOT_CONVERSATION_ID, context))!;
-          const requestId = `report:${task.input.jobId}:${report.seq}`;
-          await root.submit({ type: "input", content: report.content, whenBusy: "followUp", requestId }, context);
+          // Esc withdraws queued inputs; a report withdrawn before the CoS saw it is posted again once the CoS is
+          // idle, since an input queued behind an aborted run waits for the next submission.
+          for (let attempt = 0; ; attempt++) {
+            const requestId = `report:${task.input.jobId}:${report.seq}${attempt ? `:${attempt}` : ""}`;
+            const request = { type: "input", content: report.content, whenBusy: "followUp", requestId } as const;
+            const settled = await (await root.submit(request, context)).wait(context);
+            if (settled.status !== "unanswered" || settled.reason !== "aborted" || settled.entry !== undefined) break;
+            await root.waitForIdle(context);
+          }
         }
         await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
       },
@@ -87,13 +94,16 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord): Promi
   if (settled.status === "unanswered") {
     if (settled.reason === "aborted") return undefined;
     job.status = "failed";
-    job.result = settled.reason;
-    return reportText(job, settled.reason);
+    job.result = settled.detail === undefined ? settled.reason : `${settled.reason}: ${String(settled.detail)}`;
+    return reportText(job, job.result);
   }
   if (settled.type !== "input" || job.reported.includes(settled.answer)) return undefined;
   job.reported.push(settled.answer);
-  if (job.status === "done") return reportText(job, job.result!);
   const answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage;
+  // Only the run that called job_complete reports the job done; a later run's answer is its own.
+  if (answer.content.some((c) => c.type === "toolCall" && c.name === "job_complete")) {
+    return reportText(job, job.result!);
+  }
   job.status = "needs_input";
   job.result = answer.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
   return reportText(job, job.result);

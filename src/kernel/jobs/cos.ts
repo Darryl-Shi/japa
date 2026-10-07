@@ -12,7 +12,7 @@ import type { Settings } from "../settings.ts";
 import type { WorkerProfile } from "../workers.ts";
 import { Anchor, BACKGROUND, jobRun } from "./run.ts";
 import { board, byId, JobDoc, JobsDoc } from "./state.ts";
-import { workerExtension } from "./worker.ts";
+import { WorkerExtension } from "./worker.ts";
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
@@ -30,7 +30,6 @@ export function jobsExtension(options: {
 }): Extension {
   const { profiles, settings, extensions } = options;
   const { JobRun, start } = jobRun(settings);
-  const worker = workerExtension();
 
   const agentOf = (profile: WorkerProfile) => ({
     model: profile.model ?? settings.models.worker ?? settings.models.cos,
@@ -38,7 +37,7 @@ export function jobsExtension(options: {
     cwd: profile.cwd,
     instructions: profile.instructions,
     extensions: [
-      worker,
+      WorkerExtension,
       CodingTools,
       ...(profile.extensions?.map((name) => extensions.get(name)!) ?? extensions.values()),
     ],

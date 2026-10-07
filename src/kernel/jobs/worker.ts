@@ -50,10 +50,8 @@ const jobComplete = defineTool({
 });
 
 /** What every job conversation runs with: its role and the tools to report on its job. */
-export function workerExtension(): Extension {
-  return defineExtension({
-    name: "japa-worker",
-    sections: [section("worker", () => WORKER_TEXT)],
-    tools: [jobProgress, jobComplete],
-  });
-}
+export const WorkerExtension: Extension = defineExtension({
+  name: "japa-worker",
+  sections: [section("worker", () => WORKER_TEXT)],
+  tools: [jobProgress, jobComplete],
+});
