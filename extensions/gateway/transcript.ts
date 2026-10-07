@@ -31,6 +31,7 @@ export function applyEvents(t: Transcript, events: readonly AgentEvent[]): Trans
 }
 
 function linesOf(entry: EntryRecord): Line[] {
+  if (entry.kind === "pi.reset") return []; // the handoff is for the model, not the user
   return (entry.model ?? []).flatMap((m): Line[] => {
     if (m.role === "user") return [{ kind: "user", text: typeof m.content === "string" ? m.content : textOf(m.content) }];
     if (m.role !== "assistant") return [];

@@ -3,10 +3,12 @@ import { type Message, type Models, type TSchema, type Tool, Type } from "@earen
 import {
   type Conversation,
   defineTask,
+  type EntryId,
   LiveDoc,
   ResetEntry,
   ROOT_CONVERSATION_ID,
   type TaskId,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import { line } from "../jobs/cos.ts";
 import { BACKGROUND } from "../jobs/run.ts";
@@ -28,9 +30,10 @@ const REFLECT = `You consolidate a chief-of-staff assistant's conversation befor
   - fold new details into an existing entry and generalize, rather than adding entries;
   - rewrite entries that have become too specific at a higher level;
   - skip sensitive details unless the user explicitly asks to remember them.
-- loops: the open loops, commitments and things being waited on. Add new ones with add(text); close finished ones with close(id).
-- episode: a short summary of this conversation, for later search.
-- handoff: a note that starts the next context: what is in progress and what comes next.`;
+- loops: the open loops, commitments and things being waited on. Add new ones with add(text), but don't re-add a listed loop; close(id) loops that are done, dropped or no longer relevant.
+- episode: a short summary of this conversation, for later search. Name the people, projects and decisions.
+- handoff: a note written for you, the assistant, to continue seamlessly in the next context: the current topic, the user's last request, and any question you asked that awaits their answer. Don't repeat facts, loops or jobs; they are shown separately.
+\`user:\` lines starting with \`[job \` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user.`;
 
 const SHORTEN = `Shorten each of these user fact operations to at most 50 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
 
@@ -61,11 +64,14 @@ const saveFacts = saveTool({ facts: factOps });
 type Saved = { facts: FactOp[]; loops: LoopOp[]; episode: string; handoff: string };
 
 /** The text of a context's live window: its non-system messages, one per line. */
-export const windowText = (messages: readonly Message[]) =>
+const windowText = (messages: readonly Message[]) =>
   messages
     .filter((m) => m.role !== "system")
     .map(line)
     .join("\n");
+
+/** The id of the newest entry in the CoS's conversation. */
+const newest = async (tx: Tx) => (await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, 1)).items[0]?.id;
 
 const listed = (items: { id: string; text: string }[]) => items.map((i) => `${i.id}: ${i.text}`).join("\n") || "(none)";
 
@@ -89,8 +95,11 @@ export function consolidation({ models, settings }: { models: Models; settings: 
     initial: () => ({ phase: "consolidate" }),
     phases: {
       consolidate: async (_task, runtime, context) => {
+        let head: EntryId | undefined;
+        await runtime.commit(async (tx) => {
+          head = await newest(tx);
+        }, context);
         const view = await runtime.context(ROOT_CONVERSATION_ID, context);
-        const head = view.entries.at(-1)?.id;
         const memory = structuredClone((await runtime.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context))!) as Memory;
         const now = runtime.now();
         const text = `Conversation since the last reset:\n${windowText(view.messages)}\n\nFacts:\n${listed(memory.facts)}\n\nOpen loops:\n${listed(memory.loops)}`;
@@ -121,13 +130,13 @@ export function consolidation({ models, settings }: { models: Models; settings: 
         // One commit checks that the root is still idle and unchanged, saves the memory and resets the context.
         await runtime.commit(async (tx) => {
           const busy = (await tx.doc(LiveDoc, ROOT_CONVERSATION_ID)).run !== undefined;
-          const latest = (await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, 1)).items[0]?.id;
-          if (saved !== undefined && !busy && latest === head) {
+          if (saved !== undefined && !busy && (await newest(tx)) === head) {
             memory.episodes.push({ id: String(memory.nextId++), at: now, text: saved.episode });
             memory.previousResetAt = memory.lastResetAt ?? 0;
             memory.lastResetAt = now;
             Object.assign(await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID), memory);
-            const handoff = { role: "user" as const, content: saved.handoff, timestamp: now };
+            const content = `[Notes from before your context was refreshed]\n${saved.handoff}`;
+            const handoff = { role: "user" as const, content, timestamp: now };
             await tx.appendEntry(ResetEntry, ROOT_CONVERSATION_ID, { head: "self", model: [handoff] });
           }
           return { status: "terminal", outcome: { status: "completed", result: null } };

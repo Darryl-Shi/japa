@@ -65,13 +65,16 @@ test("consolidation saves memory and resets the CoS context to the handoff", asy
 
   await ask(daemon, "What's next?");
   const next = requests.at(-1)!;
-  expect(next.filter((m) => m.role !== "system").map(textOf)).toEqual(["Ada asked for short answers.", "What's next?"]);
+  expect(next.filter((m) => m.role !== "system").map(textOf)).toEqual([
+    "[Notes from before your context was refreshed]\nAda asked for short answers.",
+    "What's next?",
+  ]);
   expect(systemOf(next)).toMatch(
     /about-you[\s\S]*- Ada prefers short answers[\s\S]*open-loops[\s\S]*- Send Ada the plan/,
   );
   expect(await texts(daemon.root, "user")).toEqual([
     "I'm Ada, I prefer short answers",
-    "Ada asked for short answers.",
+    "[Notes from before your context was refreshed]\nAda asked for short answers.",
     "What's next?",
   ]);
   await daemon.close();

@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import {
+  type AgentEvent,
   type Conversation,
   createRegistry,
   defineExtension,
@@ -115,9 +116,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           },
           abort: () => root.abort(ctx),
           events: async (listener) => {
+            // A snapshot holds only the active context: prepend the stored history before it.
+            const withHistory = async (e: AgentEvent): Promise<AgentEvent> => {
+              const first = e.type === "snapshot" ? e.entries[0] : undefined;
+              if (e.type !== "snapshot" || first === undefined) return e;
+              const page = await root.entries({ maxEntryId: first.id }, 201, undefined, ctx);
+              return { ...e, entries: [...page.items.slice(1).toReversed(), ...e.entries] };
+            };
             const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
-            listener([stream.snapshot]);
-            stream.start(async (events) => listener(events));
+            listener([await withHistory(stream.snapshot)]);
+            stream.start(async (events) => listener(await Promise.all(events.map(withHistory))));
             return {
               stop: async () => {
                 await stream.stop();
