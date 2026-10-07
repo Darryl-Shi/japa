@@ -27,3 +27,14 @@ test("invalid expressions throw", () => {
   expect(() => nextAfter("* * *", 0)).toThrow(/^invalid cron: /);
   expect(() => nextAfter("0 0 30 2 *", 0)).toThrow(/^invalid cron: /);
 });
+
+test("in a DST fall-back hour the next time is still after the given one", () => {
+  const tz = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  try {
+    const est130 = Date.UTC(2026, 10, 1, 6, 30); // 01:30 EST on 2026-11-01, the repeated hour
+    expect(nextAfter("*/15 * * * *", est130)).toBeGreaterThan(est130);
+  } finally {
+    process.env.TZ = tz;
+  }
+});

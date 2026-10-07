@@ -30,7 +30,9 @@ export function nextAfter(expr: string, after: number): number {
   t.setSeconds(0, 0);
   for (let i = 0; i < 366 * 24 * 60; i++) {
     t.setMinutes(t.getMinutes() + 1);
+    // Skips local times before `after`, which a DST fall-back hour can produce.
     if (
+      t.getTime() > after &&
       minute!.has(t.getMinutes()) &&
       hour!.has(t.getHours()) &&
       day!.has(t.getDate()) &&

@@ -43,12 +43,13 @@ const ScheduleTask = defineTask<{ id: string }, State, null>({
         const s = doc.schedules[id];
         if (!s) return done;
         const fire = { phase: "fire", at: s.next, text: s.text } as const;
-        if (s.cron === undefined) {
+        // Missed occurrences fire once, then the schedule continues from now; one with no next occurrence ends.
+        const next = s.cron === undefined ? undefined : following(s.cron, Math.max(runtime.now(), s.next));
+        if (next === undefined) {
           delete doc.schedules[id];
           return { status: "running", checkpoint: { ...fire, last: true } };
         }
-        // Missed occurrences fire once, then the schedule continues from now.
-        s.next = nextAfter(s.cron, Math.max(runtime.now(), s.next));
+        s.next = next;
         return { status: "running", checkpoint: fire };
       }, context);
     },
@@ -65,6 +66,14 @@ const ScheduleTask = defineTask<{ id: string }, State, null>({
   abort: (_task, runtime, context) =>
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
+
+function following(cron: string, after: number): number | undefined {
+  try {
+    return nextAfter(cron, after);
+  } catch {
+    return undefined;
+  }
+}
 
 const lines = (schedules: Record<string, Schedule>) =>
   Object.values(schedules)
