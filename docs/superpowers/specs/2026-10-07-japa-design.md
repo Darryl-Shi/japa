@@ -90,7 +90,7 @@ One process owns the storage. japa therefore runs as one daemon.
 
 Four layers:
 
-1. **Kernel** (`packages/kernel`) — the CoS, jobs, context and memory, skills
+1. **Kernel** (`src/kernel`) — the CoS, jobs, context and memory, skills
    and worker-profile loading, self-extension, safety, changes log, settings.
    The only code the CoS cannot modify.
 2. **Contracts** — the seven seams in §4.
@@ -158,8 +158,8 @@ interface Surface {
   start(ctx: SurfaceContext): Promise<Dispose>;
 }
 interface SurfaceContext {
-  root: { submit(input, mode), abort(), watch(), viewState() };
-  job(id: string): { watch(), viewState() };    // read-only job view
+  root: { submit(text, mode), abort(), events(listener) };   // pi-durable agent events
+  job(id: string): { events(listener) };                      // read-only job view
   taskGraph(): ChordState;
   secrets: { pending(), fulfil(requestId, value) };
 }
@@ -669,7 +669,7 @@ environment, tools, extensions, and skills must all resolve.
 | `local-env` | environment | `local`: `NodeExecutionEnv` with the profile's cwd. |
 | `sqlite` | storage | `openNodeSqliteStorage`, default `~/.japa/state.db`. |
 | `file-secrets` | secrets | One file per secret in `~/.japa/secrets/`, mode 600. |
-| `gateway` | surface | WebSocket server on `~/.japa/japa.sock`; streams root `watch()` frames, `japa.jobs`, pending secret requests; accepts submit (input/steer/follow-up), abort, secret responses, job view attach. Includes the `japa chat` TUI client (pi-tui): thread on the left, live job board on the right, masked secret prompts. Closing the TUI does not stop the daemon. |
+| `gateway` | surface | Newline-delimited JSON over the Unix socket `~/.japa/japa.sock`; streams root agent events (`watchEvents`), `japa.jobs`, pending secret requests; accepts submit (input/steer/follow-up), abort, secret responses, job view attach. Includes the `japa chat` TUI client (pi-tui): thread on the left, live job board on the right, masked secret prompts. Closing the TUI does not stop the daemon. |
 | `schedule` | trigger, tool, durable | Durable cron and one-shot timers in `japa.schedules`; tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
 | `web` | tool; defines `search-engine` | `web_fetch` (no key) and `web_search` via the `search-engine` contract; the default engine asks for its key with `secret_request` on first use. |
 
@@ -703,13 +703,16 @@ skills are created from real requests.
 
 ## 13. Repository layout
 
-pnpm workspace in `/home/dshi/projects/japa`:
+One npm package (`japa`) in `/home/dshi/projects/japa`, run directly with
+Node 24 type stripping (no build step):
 
 ```
-packages/kernel/          contracts, loader, boot, jobs, context & memory,
+src/sdk.ts                what extensions import (`japa/sdk`); the kernel
+                          links ~/.japa/node_modules/japa to this package
+src/kernel/               contracts, loader, boot, jobs, context & memory,
                           skills & workers loading, changes, settings,
                           self-extension, safety
-packages/cli/             japa daemon and subcommands
+src/cli/                  japa daemon and subcommands
 extensions/providers/     provider
 extensions/local-env/     environment
 extensions/sqlite/        storage
