@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,6 +76,65 @@ test("an extension may contribute to a contract another extension defines", asyn
   expect(extensions.map((e) => e.name)).toEqual(["defines", "uses"]);
 });
 
+test("a module without a default export is reported", async () => {
+  const dir = writeExtension(tempDir(), "no-default", `export const x = 1;\n`);
+  const { errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  expect(errors).toEqual([{ name: "no-default", error: "missing default export" }]);
+});
+
+test("malformed contracts are reported, other extensions still load", async () => {
+  const dir = tempDir();
+  writeExtension(dir, "null-contract", manifest(`name: "null-contract", summary: "s", contracts: [null]`));
+  writeExtension(dir, "not-array", manifest(`name: "not-array", summary: "s", contracts: {}`));
+  writeExtension(
+    dir,
+    "no-validate",
+    manifest(`name: "no-validate", summary: "s", contracts: [{ name: "x", docs: "d", phase: "runtime",
+      cardinality: "many" }]`),
+  );
+  writeExtension(dir, "good", manifest(`name: "good", summary: "s"`));
+  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  expect(extensions.map((e) => e.name)).toEqual(["good"]);
+  expect(errors.map((e) => e.name).sort()).toEqual(["no-validate", "not-array", "null-contract"]);
+});
+
+test("a contract validate that throws is reported against the contributing extension", async () => {
+  const dir = tempDir();
+  writeExtension(
+    dir,
+    "defines",
+    manifest(`name: "defines", summary: "s", contracts: [{ name: "fragile", docs: "d", phase: "runtime",
+      cardinality: "many", validate: () => { throw new Error("validator exploded"); } }]`),
+  );
+  writeExtension(dir, "uses", manifest(`name: "uses", summary: "s", provides: { fragile: [{}] }`));
+  writeExtension(dir, "good", manifest(`name: "good", summary: "s"`));
+  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  expect(extensions.map((e) => e.name)).toEqual(["defines", "good"]);
+  expect(errors).toEqual([{ name: "uses", error: "validator exploded" }]);
+});
+
+test("contracts from extensions that fail validation are not available to others", async () => {
+  const dir = tempDir();
+  writeExtension(
+    dir,
+    "defines",
+    manifest(`name: "defines", summary: "", contracts: [{ name: "search-engine", docs: "d", phase: "runtime",
+      cardinality: "many", validate: () => undefined }]`),
+  );
+  writeExtension(dir, "uses", manifest(`name: "uses", summary: "s", provides: { "search-engine": [{}] }`));
+  writeExtension(dir, "uses-uses", manifest(`name: "uses-uses", summary: "s", contracts: [{ name: "meta", docs: "d",
+    phase: "runtime", cardinality: "many", validate: () => undefined }], provides: { "search-engine": [{}] }`));
+  writeExtension(dir, "meta-user", manifest(`name: "meta-user", summary: "s", provides: { meta: [{}] }`));
+  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  expect(extensions).toEqual([]);
+  expect(errors).toEqual([
+    { name: "defines", error: "summary is required" },
+    { name: "uses", error: 'unknown contract "search-engine"' },
+    { name: "uses-uses", error: 'unknown contract "search-engine"' },
+    { name: "meta-user", error: 'unknown contract "meta"' },
+  ]);
+});
+
 test("defining an existing contract name is an error", async () => {
   const dir = writeExtension(
     tempDir(),
@@ -92,4 +151,15 @@ test("linkSdk creates the japa symlink", () => {
   linkSdk(home, repoRoot);
   linkSdk(home, repoRoot); // idempotent
   expect(realpathSync(join(home, "node_modules/japa"))).toBe(realpathSync(repoRoot));
+});
+
+test("linkSdk writes a module package.json unless one exists", () => {
+  const home = tempHome();
+  linkSdk(home, repoRoot);
+  expect(JSON.parse(readFileSync(join(home, "package.json"), "utf8"))).toEqual({ type: "module" });
+
+  const other = tempHome();
+  writeFileSync(join(other, "package.json"), `{"name":"mine"}`);
+  linkSdk(other, repoRoot);
+  expect(readFileSync(join(other, "package.json"), "utf8")).toBe(`{"name":"mine"}`);
 });
