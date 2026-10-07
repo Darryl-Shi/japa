@@ -29,10 +29,11 @@ export type JobsOptions = {
   settings: Settings;
   extensions: ReadonlyMap<string, Extension>; // extension-built Pi Durable extensions, by japa extension name
   skills: Extension;
+  safety: Extension;
 };
 
 /** The agent of a job run by `profile`. */
-function agentOf({ settings, extensions, skills }: JobsOptions, profile: WorkerProfile) {
+function agentOf({ settings, extensions, skills, safety }: JobsOptions, profile: WorkerProfile) {
   return {
     model: profile.model ?? settings.models.worker ?? settings.models.cos,
     thinkingLevel: profile.thinking as ModelThinkingLevel | undefined,
@@ -42,6 +43,7 @@ function agentOf({ settings, extensions, skills }: JobsOptions, profile: WorkerP
       WorkerExtension,
       CodingTools,
       skills,
+      safety,
       ...(profile.extensions?.map((name) => extensions.get(name)!) ?? extensions.values()),
     ],
     tools: { remove: CodingTools.tools!.filter((t) => !profile.tools.includes(t.name)) },

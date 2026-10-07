@@ -8,7 +8,7 @@ import {
   fauxToolCall,
   type Message,
 } from "@earendil-works/pi-ai";
-import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { type Conversation, type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 
@@ -47,6 +47,13 @@ export async function jobs(daemon: Daemon) {
 
 export async function ask(daemon: Daemon, text: string) {
   await (await daemon.root.submit({ type: "input", content: text }, ctx)).wait(ctx);
+}
+
+/** Has the CoS call `name` with `args`; returns the tool's reply. */
+export async function tool(daemon: Daemon, faux: FauxProviderHandle, name: string, args: JsonObject = {}) {
+  faux.setResponses([fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" }), say("ok")]);
+  await ask(daemon, name);
+  return (await texts(daemon.root, "toolResult")).at(-1);
 }
 
 /** No live tasks, background ones included: every job has settled and reported. */

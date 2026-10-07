@@ -40,6 +40,7 @@ export function createRuntime(input: {
   registry: Registry;
   selection: Extension[]; // the root's, filled by `start`
   cos: Extension;
+  safety: Extension; // selected by the root and every job
   kernel: (extension: string) => KernelContext;
 }) {
   const { home, packageRoot, packaged, settings, contracts, sources, hashes, models, environments, registry, selection } = input;
@@ -50,6 +51,8 @@ export function createRuntime(input: {
   const runtime = {
     extensions: input.extensions,
     errors: input.errors,
+    /** The extension-built Pi Durable extensions, by japa extension name. */
+    built: built as ReadonlyMap<string, Extension>,
     capabilities: "",
     /** The loaded skills and worker profiles, by name. */
     skills: new Map<string, Skill>() as ReadonlyMap<string, Skill>,
@@ -135,11 +138,11 @@ export function createRuntime(input: {
     runtime.skills = skills.skills;
     runtime.profiles = workers.profiles;
     const skillsExt = skillsExtension(skills.skills);
-    jobsOptions = { profiles: workers.profiles, settings, extensions: built, skills: skillsExt };
+    jobsOptions = { profiles: workers.profiles, settings, extensions: built, skills: skillsExt, safety: input.safety };
     const jobs = jobsExtension(jobsOptions);
     registry.install(skillsExt);
     registry.install(jobs);
-    selection.splice(0, selection.length, input.cos, jobs, skillsExt, ...built.values());
+    selection.splice(0, selection.length, input.cos, input.safety, jobs, skillsExt, ...built.values());
     runtime.refreshCapabilities();
     return errors;
   }

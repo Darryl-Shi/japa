@@ -1,5 +1,5 @@
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,12 @@ export function tempHome(settings?: object): string {
 }
 
 export const testKit = fauxKit;
+
+/** Writes `<home>/.staging/<path>` with `text`. */
+export function stage(home: string, path: string, text: string) {
+  mkdirSync(join(home, ".staging", path, ".."), { recursive: true });
+  writeFileSync(join(home, ".staging", path), text);
+}
 
 /** Polls `fn` every 20 ms until it returns true; throws `waitFor timed out` after `timeoutMs`. */
 export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 5000): Promise<void> {

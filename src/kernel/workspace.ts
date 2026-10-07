@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
+/** The last-known-good tag. */
+export const LKG = "japa-lkg";
+
 const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json"];
 
 function git(home: string, ...args: string[]): string {
@@ -12,11 +15,15 @@ function git(home: string, ...args: string[]): string {
   }).trim();
 }
 
-/** Makes `home` a git repo on `main` with an initial commit and a `staging` worktree at `<home>/.staging`. */
+/**
+ * Makes `home` a git repo on `main` with an initial commit, a `staging` worktree at `<home>/.staging`, and the `LKG`
+ * tag, which starts at HEAD.
+ */
 export function ensureWorkspace(home: string): void {
   if (!existsSync(join(home, ".git"))) git(home, "init", "-q", "-b", "main");
   if (!existsSync(join(home, ".gitignore"))) writeFileSync(join(home, ".gitignore"), `${IGNORED.join("\n")}\n`);
   if (!hasHead(home)) commit(home, ["."], "Initial workspace");
+  if (!hasTag(home, LKG)) tag(home, LKG);
   if (!existsSync(join(home, ".staging"))) {
     git(home, "worktree", "prune");
     git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
@@ -55,12 +62,8 @@ export function revert(home: string, shas: string[]): string {
 
 /** Restores `path` as it is at `ref`, removing it when it doesn't exist there. */
 export function restorePath(home: string, ref: string, path: string): void {
-  if (git(home, "ls-tree", ref, "--", path)) {
-    git(home, "checkout", "--no-overlay", ref, "--", path);
-  } else {
-    git(home, "rm", "-r", "-q", "--ignore-unmatch", "--", path);
-    rmSync(join(home, path), { recursive: true, force: true });
-  }
+  if (git(home, "ls-tree", ref, "--", path)) git(home, "checkout", "--no-overlay", ref, "--", path);
+  else rmSync(join(home, path), { recursive: true, force: true }); // `commit` stages the removal
 }
 
 export function tag(home: string, name: string): void {

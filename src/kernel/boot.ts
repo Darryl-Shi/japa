@@ -32,7 +32,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
-import { installTool } from "./install.ts";
+import { installTool, rollbackTool } from "./install.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { consolidation } from "./memory/consolidate.ts";
@@ -41,6 +41,7 @@ import { shouldConsolidate } from "./memory/trigger.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
+import { createSafety } from "./safety.ts";
 import { settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
@@ -70,6 +71,8 @@ export type Daemon = {
   checkConsolidation(now?: number): Promise<void>;
   /** Reloads the changed workspace extensions, skills and worker profiles; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
+  /** Tags the workspace's HEAD as last known good. */
+  markGood(): void;
   close(): Promise<void>;
 };
 
@@ -197,9 +200,21 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const selection: Extension[] = [];
     const { Consolidate, startConsolidation } = consolidation({ models, settings });
     const reconcile = () => rt.reconcile(root);
+    const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root });
+    // After an undo's commits are reverted.
+    const undone = async () => {
+      await reconcile();
+      safety.scheduleGood();
+    };
     const tools = [
-      ...settingsTools(home, settings, models, () => rt.extensions, () => rt.refreshCapabilities(), reconcile),
-      installTool(home, reconcile, (kind, name) => (kind === "skill" ? rt.skills : rt.profiles).has(name)),
+      ...settingsTools(home, settings, models, () => rt.extensions, () => rt.refreshCapabilities(), undone),
+      installTool(
+        home,
+        reconcile,
+        (kind, name) => (kind === "skill" ? rt.skills : rt.profiles).has(name),
+        safety.scheduleGood,
+      ),
+      rollbackTool(home, reconcile),
     ];
     const cos = cosExtension(settings, [Consolidate], tools, () => rt.capabilities);
     const rt = createRuntime({
@@ -217,6 +232,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       registry,
       selection,
       cos,
+      safety: safety.extension,
       kernel,
     });
     runtime = rt;
@@ -234,6 +250,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     registry.install(cos);
+    registry.install(safety.extension);
     registry.install(WorkerExtension);
     registry.install(CodingTools);
     const root = await ensureRoot(harness, model, ctx);
@@ -271,6 +288,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       consolidate,
       checkConsolidation,
       reconcile,
+      markGood: safety.markGood,
       close: async () => {
         clearInterval(timer);
         try {

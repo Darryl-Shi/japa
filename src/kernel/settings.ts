@@ -17,6 +17,7 @@ export type Settings = {
   jobs: { maxConcurrent: number };
   context: { resetTokens: number; idleResetHours: number; toolResultTokens: number };
   memory: { maxFacts: number; maxTokens: number };
+  safety: { toolErrorThreshold: number; goodAfterMinutes: number };
   extensions: Record<string, JsonObject>;
 };
 
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: Settings = {
   jobs: { maxConcurrent: 4 },
   context: { resetTokens: 20000, idleResetHours: 2, toolResultTokens: 2000 },
   memory: { maxFacts: 30, maxTokens: 1500 },
+  safety: { toolErrorThreshold: 5, goodAfterMinutes: 10 },
   extensions: {},
 };
 
@@ -39,6 +41,10 @@ export const settingsSchema = Type.Object({
   jobs: Type.Object({ maxConcurrent: Type.Integer({ minimum: 1 }) }),
   context: Type.Record(Type.String(), Type.Number({ exclusiveMinimum: 0 })),
   memory: Type.Record(Type.String(), Type.Integer({ minimum: 1 })),
+  safety: Type.Object({
+    toolErrorThreshold: Type.Integer({ minimum: 1 }),
+    goodAfterMinutes: Type.Number({ exclusiveMinimum: 0 }),
+  }),
   extensions: Type.Record(Type.String(), Type.Object({})),
 });
 

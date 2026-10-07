@@ -1,20 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
-import type { JsonObject } from "@earendil-works/pi-durable";
+import { type FauxProviderHandle, getSystemMessageText } from "@earendil-works/pi-ai";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
-import { bootTest } from "./helpers.ts";
-import { ask, say, texts } from "./jobs-helpers.ts";
-
-/** Has the CoS call `name` with `args`; returns the tool's reply. */
-async function tool(daemon: Daemon, faux: FauxProviderHandle, name: string, args: JsonObject = {}) {
-  faux.setResponses([fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" }), say("ok")]);
-  await ask(daemon, name);
-  return (await texts(daemon.root, "toolResult")).at(-1);
-}
+import { bootTest, stage } from "./helpers.ts";
+import { ask, say, tool } from "./jobs-helpers.ts";
 
 /** The CoS's system prompt on its next request. */
 async function system(daemon: Daemon, faux: FauxProviderHandle) {
@@ -27,12 +19,6 @@ async function system(daemon: Daemon, faux: FauxProviderHandle) {
   ]);
   await ask(daemon, "hi");
   return text;
-}
-
-/** Writes `<home>/.staging/<path>` with `text`. */
-function stage(home: string, path: string, text: string) {
-  mkdirSync(join(home, ".staging", path, ".."), { recursive: true });
-  writeFileSync(join(home, ".staging", path), text);
 }
 
 const subjects = (home: string) => execFileSync("git", ["-C", home, "log", "--format=%s"], { encoding: "utf8" }).trim().split("\n");
