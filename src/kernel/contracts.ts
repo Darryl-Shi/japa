@@ -124,6 +124,8 @@ export type MessagingContext = {
   saveCursor(adapter: string, cursor: string): Promise<void>;
   /** The `by` of the latest secret fulfilled from a chat. */
   secretFulfilledBy(): Promise<string | undefined>;
+  /** Records `by` (`<adapter>:<id>`) as the chat message that carried the latest secret, as `secretFulfilledBy`. */
+  recordSecretMessage(by: string): Promise<void>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;
   /** Rolls a workspace extension back to its last known good version, as the `rollback` tool; its reply. */

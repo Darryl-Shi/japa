@@ -12,7 +12,7 @@ import type { Job } from "../jobs/state.ts";
 import { message } from "../loader.ts";
 import { originOf } from "../origin.ts";
 import { inputOf } from "./attachments.ts";
-import { COMMANDS, createMenu } from "./menu.ts";
+import { COMMANDS, createMenu } from "./menu/index.ts";
 import { splitMessage } from "./split.ts";
 
 /** Owner messages arriving within this long of each other are merged into one input. */
@@ -35,7 +35,8 @@ export const MessagingDoc = defineDoc<{ cursors: Record<string, string> }>({
  * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts and images, merged,
  * to the CoS. Asks the owner for the oldest pending secret request; their next text fulfils it and is deleted at once
  * (a command cancels this); delivered again, it is dropped and deleted again. Commands and button presses go to the
- * menu, never to the CoS.
+ * menu, never to the CoS, as does the next text while a menu screen waits for a value; that wait takes precedence over
+ * the secret request, which is asked for again when it ends.
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
  */
 export async function startMessaging(
@@ -52,8 +53,18 @@ export async function startMessaging(
   let buffer: Incoming[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let awaiting: string | undefined; // the secret request the owner's next text fulfils
+  let request: { id: string; name: string; why: string } | undefined; // the oldest pending secret request
   let jobs: Job[] = [];
   const menu = createMenu(adapter, kernel, messaging, () => jobs);
+
+  /** Asks the owner for the oldest pending secret request, unless already asked or a menu screen waits for a value. */
+  const announce = () => {
+    const owner = kernel.settings().owner as string | undefined;
+    if (owner === undefined || request === undefined || request.id === awaiting || menu.pendingInput()) return;
+    awaiting = request.id;
+    const markdown = `japa needs \`${request.name}\`: ${request.why}. Send it as your next message; I'll delete it at once.`;
+    adapter.send(owner, { markdown }).catch(log);
+  };
 
   /** Submits the buffer, if any, after the submissions before it; resolves once they are all done. */
   const flush = () => {
@@ -79,12 +90,24 @@ export async function startMessaging(
     }
     if (m.command !== undefined) {
       awaiting = undefined;
+      menu.cancelInput();
       return menu.command(m);
     }
-    if (m.action !== undefined) return menu.press(m);
+    if (m.action !== undefined) {
+      const inputting = menu.pendingInput();
+      await menu.press(m);
+      if (menu.pendingInput()) awaiting = undefined;
+      else if (inputting) announce();
+      return;
+    }
     const by = `${adapter.name}:${m.id}`;
     if ((await messaging.secretFulfilledBy()) === by) {
       await adapter.delete(m.chat, m.messageId).catch(() => {}); // a secret delivered again
+      return;
+    }
+    if (menu.pendingInput() && m.text !== undefined) {
+      await menu.input(m);
+      if (!menu.pendingInput()) announce();
       return;
     }
     if (awaiting !== undefined && m.text !== undefined) {
@@ -140,14 +163,9 @@ export async function startMessaging(
     },
   });
   const secrets = await kernel.surface.secrets.pending((pending) => {
-    const owner = kernel.settings().owner as string | undefined;
-    const first = pending[0];
-    if (first === undefined) awaiting = undefined;
-    else if (owner !== undefined && first.id !== awaiting) {
-      awaiting = first.id;
-      const markdown = `japa needs \`${first.name}\`: ${first.why}. Send it as your next message; I'll delete it at once.`;
-      adapter.send(owner, { markdown }).catch(log);
-    }
+    request = pending[0];
+    if (request === undefined) awaiting = undefined;
+    else announce();
   });
   const replies = await kernel.surface.root.replies(deliver, await messaging.cursor(adapter.name));
   const events = await kernel.surface.root.events((batch) => {

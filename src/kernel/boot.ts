@@ -153,6 +153,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           (await tx.doc(MessagingDoc, root.id)).cursors[adapter] = cursor;
         }, ctx),
       secretFulfilledBy: async () => (await opened.snapshot(SecretRequestsDoc, root.id, ctx))!.fulfilledBy,
+      recordSecretMessage: (by) =>
+        root.commit(async (tx) => {
+          (await tx.doc(SecretRequestsDoc, root.id)).fulfilledBy = by;
+        }, ctx),
       setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
       rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),
       tool: async (name, args) => {
