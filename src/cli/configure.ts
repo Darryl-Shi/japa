@@ -101,6 +101,14 @@ function enumValues(schema: PropSchema): unknown[] | undefined {
   return undefined;
 }
 
+/** Whether `promptProperty` can actually prompt for this property: string/number/integer/boolean, or an
+ * enum/union of literals -- the only branches that await a new answer. Everything else (objects, arrays, ...)
+ * falls to its "edit settings.json" note without awaiting input, so the validate-and-reprompt loop below must
+ * not retry on those: it would never make progress. */
+function promptable(schema: PropSchema): boolean {
+  return enumValues(schema) !== undefined || ["string", "number", "integer", "boolean"].includes(schema.type ?? "");
+}
+
 const YES_NO: Choice<boolean>[] = [
   { label: "Yes", value: true },
   { label: "No", value: false },
@@ -183,8 +191,10 @@ function failingProperty(error: string, extensionName: string): string {
 /**
  * Prompts for `e`'s secrets and settings (design spec §4.4): each secret as masked input with its description as
  * help (blank leaves it unset), then each settings property by type. The resulting `extensions.<name>` is
- * validated; on failure the wizard shows the error and re-prompts the failing property. Returns whether anything
- * was actually written.
+ * validated; on failure the wizard shows the error and re-prompts the failing property. If that property can't
+ * be prompted for (an object, array, or other non-primitive type), the wizard notes the edit-by-hand hint
+ * instead and returns without saving -- it never re-validates the same value without having awaited a new
+ * answer. Returns whether anything was actually written.
  */
 export async function configureExtension(ctx: SetupContext, p: Prompter, e: JapaExtension): Promise<boolean> {
   let saved = false;
@@ -218,7 +228,12 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
       const text = message(error);
       p.note(text);
       const prop = failingProperty(text, e.name);
-      if (await promptProperty(p, e.name, next, prop, properties[prop]!)) changed = true;
+      const propSchema = properties[prop]!;
+      if (!promptable(propSchema)) {
+        await promptProperty(p, e.name, next, prop, propSchema); // notes the edit-by-hand hint; can't fix this here
+        return saved;
+      }
+      if (await promptProperty(p, e.name, next, prop, propSchema)) changed = true;
     }
   }
 

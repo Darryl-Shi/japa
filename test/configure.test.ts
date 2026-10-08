@@ -84,6 +84,51 @@ test("a non-number re-prompts", async () => {
   expect(readSettings(home).extensions.demo.count).toBe(4);
 });
 
+test("an invalid answer for a promptable property re-prompts, then a valid one saves", async () => {
+  const home = tempHome();
+  const ctx = await demoContext(home);
+  const demo = ctx.extensions.find((e) => e.name === "demo")!;
+  const p = scripted([
+    ["demo.key", ""],
+    ["count", "Infinity"],
+    ["mode", "a"],
+    ["on", false],
+    ["count", "3"],
+  ]);
+
+  const saved = await configureExtension(ctx, p, demo);
+
+  expect(saved).toBe(true);
+  p.done();
+  expect(p.notes).toContain("extensions.demo.count: must be integer");
+  expect(readSettings(home).extensions.demo).toEqual({ count: 3, mode: "a", on: false });
+});
+
+test(
+  "a pre-existing invalid object value for a non-promptable property does not hang",
+  async () => {
+    const home = tempHome({ extensions: { demo: { tags: { foo: "bar" } } } });
+    const before = readFileSync(join(home, "settings.json"), "utf8");
+    const ctx = await demoContext(home);
+    const demo = ctx.extensions.find((e) => e.name === "demo")!;
+    const p = scripted([
+      ["demo.key", ""],
+      ["count", "3"],
+      ["mode", "a"],
+      ["on", false],
+    ]);
+
+    const saved = await configureExtension(ctx, p, demo);
+
+    expect(saved).toBe(false);
+    p.done();
+    expect(p.notes.some((n) => n.startsWith("extensions.demo.tags"))).toBe(true);
+    expect(p.notes).toContain("edit extensions.demo.tags in settings.json or ask the CoS");
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(before);
+  },
+  2000,
+);
+
 test("declining leaves everything unchanged but marks it offered", async () => {
   const home = tempHome();
   const ctx = await demoContext(home);
