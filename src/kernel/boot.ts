@@ -106,10 +106,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     );
 
     const secrets = await withSafeModeHint(() =>
-      adapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(settings.secrets, { home }),
+      findAdapter<SecretsAdapter>(extensions, "secrets", settings.secrets.adapter).open(settings.secrets, { home }),
     );
     storage = await withSafeModeHint(() =>
-      adapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, { home }),
+      findAdapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, { home }),
     );
 
     const store = storage;
@@ -390,7 +390,7 @@ function withOverrides(discovered: JapaExtension[], added: JapaExtension[]): Jap
 }
 
 /** The boot-phase adapter named `name` among the extensions' `contract` contributions; the last one wins. */
-function adapter<T extends { name: string }>(extensions: JapaExtension[], contract: string, name: string): T {
+export function findAdapter<T extends { name: string }>(extensions: JapaExtension[], contract: string, name: string): T {
   const found = extensions.flatMap((e) => (e.provides?.[contract] ?? []) as T[]).findLast((a) => a.name === name);
   if (found === undefined) throw new Error(`No ${contract} adapter "${name}" is installed`);
   return found;
@@ -414,16 +414,21 @@ async function withSafeModeHint<T>(open: () => Promise<T>): Promise<T> {
   }
 }
 
+/** The `*_API_KEY` environment variable `provider`'s auth resolution looks up, if any (the first one asked). */
+export async function envKeyName(models: Models, provider: string): Promise<string | undefined> {
+  const asked: string[] = [];
+  const ctx = { env: async (name: string) => void asked.push(name), fileExists: async () => false };
+  await models.getProvider(provider)?.auth.apiKey?.resolve({ ctx, signal: new AbortController().signal }).catch(() => {});
+  return asked.find((name) => name.endsWith("_API_KEY"));
+}
+
 /**
  * The error for a `provider` without credentials, naming its API key env var (the first `*_API_KEY` its auth
  * looks up) and its file in `secretsDir`; undefined when it has credentials.
  */
 export async function missingKey(models: Models, provider: string, secretsDir: string): Promise<string | undefined> {
   if ((await models.checkAuth(provider)) !== undefined) return undefined;
-  const asked: string[] = [];
-  const ctx = { env: async (name: string) => void asked.push(name), fileExists: async () => false };
-  await models.getProvider(provider)?.auth.apiKey?.resolve({ ctx, signal: new AbortController().signal }).catch(() => {});
-  const envVar = asked.find((name) => name.endsWith("_API_KEY"));
+  const envVar = await envKeyName(models, provider);
   const file = join(secretsDir, `${provider}.apiKey`);
   return `No API key for ${provider}. ${envVar === undefined ? "Write it" : `Set ${envVar} or write it`} to ${file}, then restart.`;
 }
