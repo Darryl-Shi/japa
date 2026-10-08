@@ -113,6 +113,15 @@ test("attachments are ignored by git, also in a workspace made before them", () 
   expect(git(home, "status", "--porcelain")).toBe("");
 });
 
+test("appending to a .gitignore without a trailing newline keeps its last line intact", () => {
+  const home = tempHome();
+  writeFileSync(join(home, ".gitignore"), "build");
+  ensureWorkspace(home);
+  const lines = readFileSync(join(home, ".gitignore"), "utf8").split("\n");
+  expect(lines).toContain("build");
+  expect(lines).toContain("attachments/");
+});
+
 test("dirHash changes with the content and is empty for a missing dir", () => {
   const home = tempHome();
   writeFileSync(join(home, "a"), "1");

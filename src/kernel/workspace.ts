@@ -22,9 +22,10 @@ function git(home: string, ...args: string[]): string {
 export function ensureWorkspace(home: string): void {
   if (!existsSync(join(home, ".git"))) git(home, "init", "-q", "-b", "main");
   const gitignore = join(home, ".gitignore");
-  const lines = existsSync(gitignore) ? readFileSync(gitignore, "utf8").split("\n") : [];
-  const missing = IGNORED.filter((line) => !lines.includes(line));
-  if (missing.length > 0) appendFileSync(gitignore, `${missing.join("\n")}\n`);
+  const existing = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
+  const missing = IGNORED.filter((line) => !existing.split("\n").includes(line));
+  const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
+  if (missing.length > 0) appendFileSync(gitignore, `${separator}${missing.join("\n")}\n`);
   if (!hasHead(home)) commit(home, ["."], "Initial workspace");
   if (missing.length > 0) commit(home, [".gitignore"], "Update .gitignore");
   if (!hasTag(home, LKG)) tag(home, LKG);

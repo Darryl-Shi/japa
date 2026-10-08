@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
@@ -144,6 +144,17 @@ test("a model without image input gets only the path notes", async () => {
   await fake.receive({ id: "51", text: "look", images: [{ data: PNG, mimeType: "image/png" }] });
   const path = join(home, "attachments", day(), "51.png");
   expect(await userContent(daemon)).toBe(`look\n[image saved to ${path}]\n(this model cannot see images)`);
+  await daemon.close();
+});
+
+test("an image that cannot be saved still lets the text through, with a note", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home } = await bootMessaging(fake);
+  writeFileSync(join(home, "attachments"), "not a dir");
+  await fake.receive({ id: "61", text: "look", images: [{ data: PNG, mimeType: "image/png" }] });
+  const content = (await userContent(daemon)) as { type: string; text: string }[];
+  expect(content).toHaveLength(1);
+  expect(content[0].text).toMatch(/^look\n\[image could not be saved: .+\]$/);
   await daemon.close();
 });
 
