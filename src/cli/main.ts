@@ -1,4 +1,7 @@
 #!/usr/bin/env -S node --disable-warning=ExperimentalWarning
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { runChat } from "../../extensions/gateway/chat.ts";
 import { connect } from "../../extensions/gateway/client.ts";
 import { socketPath } from "../../extensions/gateway/protocol.ts";
@@ -8,6 +11,7 @@ import { rollBack } from "../kernel/install.ts";
 import { enterSafeMode } from "../kernel/safety.ts";
 import { japaHome } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
+import { APP } from "./layout.ts";
 import type { Status } from "../kernel/contracts.ts";
 
 const USAGE = `Usage: japa <command>
@@ -64,6 +68,21 @@ async function safeMode(home: string): Promise<void> {
   console.log(restored === undefined ? "Already at the last working setup." : "Restored the last working setup. Start the daemon with: japa daemon");
 }
 
+/** `japa <package.json version> (<short HEAD sha in APP, or "unknown">)`. */
+function versionText(): string {
+  const pkg = JSON.parse(readFileSync(join(APP, "package.json"), "utf8")) as { version: string };
+  let sha = "unknown";
+  try {
+    sha = execFileSync("git", ["-C", APP, "rev-parse", "--short", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // Not a git checkout (e.g. an extracted tarball) or git is missing: "unknown" stands.
+  }
+  return `japa ${pkg.version} (${sha})`;
+}
+
 const commands: Record<string, (home: string) => Promise<void>> = {
   daemon,
   chat: runChat,
@@ -72,13 +91,17 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   rollback,
   "safe-mode": safeMode,
 };
-const command = commands[process.argv[2]];
-if (command === undefined) {
-  console.error(USAGE);
-  process.exitCode = 1;
+if (process.argv[2] === "--version") {
+  console.log(versionText());
 } else {
-  command(japaHome()).catch((error: Error) => {
-    console.error(error.message);
-    process.exit(1);
-  });
+  const command = commands[process.argv[2]];
+  if (command === undefined) {
+    console.error(USAGE);
+    process.exitCode = 1;
+  } else {
+    command(japaHome()).catch((error: Error) => {
+      console.error(error.message);
+      process.exit(1);
+    });
+  }
 }
