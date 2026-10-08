@@ -44,10 +44,30 @@ const short = (sha: string) => sha.slice(0, 7);
 const bare = (version: string) => (version.startsWith("v") ? version.slice(1) : version);
 const under = (path: string, dir: string) => path.startsWith(`${dir}${sep}`);
 
-/** The last meaningful line of a failed command's output (git and npm put the reason last). */
+/** Output lines that tell the user nothing: blanks (npm's bare "npm error" too), stack frames, Node's "Node.js v24.x"
+ * trailer and npm's "A complete log of this run..." pointer. */
+const NOISE = [/^\s*(npm error|npm ERR!)?\s*$/, /^\s+at /, /^Node\.js v\d/, /A complete log of this run/];
+
+/** The last 10 lines of a failed command's stderr (its stdout when stderr is empty) that say something: git, Node
+ * and npm put the reason last. "" when there are none. */
+function output(r: ExecResult): string {
+  const text = r.stderr.trim() === "" ? r.stdout : r.stderr;
+  const lines = text.split("\n").map((line) => line.trimEnd());
+  return lines
+    .filter((line) => !NOISE.some((noise) => noise.test(line)))
+    .slice(-10)
+    .join("\n");
+}
+
+/** Why a command failed, for a message that already names it. */
 function reason(r: ExecResult): string {
-  const lines = `${r.stderr}\n${r.stdout}`.split("\n").filter((line) => line.trim() !== "");
-  return lines.at(-1)?.trim() ?? `exit code ${r.code}`;
+  return output(r) || `exit code ${r.code}`;
+}
+
+/** A failed command for the user (design doc §9): its command line and exit code, then what it said. */
+function commandFailed(cmd: string, args: string[], r: ExecResult): Error {
+  const said = output(r);
+  return new Error(`${[cmd, ...args].join(" ")} exited with code ${r.code}${said === "" ? "" : `\n${said}`}`);
 }
 
 /** `<app>/.node-version`, or undefined when the checkout has none. */
@@ -77,11 +97,12 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
     npmCi: async (app, node) => {
       const env = { ...process.env, PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ""}` };
       const r = await exec("npm", ["ci"], { cwd: app, env });
-      if (r.code !== 0) throw new Error(reason(r));
+      if (r.code !== 0) throw commandFailed("npm", ["ci"], r);
     },
     validate: async (app, node) => {
-      const r = await exec(node, [join(app, "src/cli/main.ts"), "--version"]);
-      if (r.code !== 0) throw new Error(reason(r));
+      const args = [join(app, "src/cli/main.ts"), "--version"];
+      const r = await exec(node, args);
+      if (r.code !== 0) throw commandFailed(node, args, r);
     },
     baseline: async (home) => markOffered(home, configurable((await openSetupContext(home)).extensions)),
     whatsNew: async (app, node, interactive) => {
@@ -251,7 +272,9 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
     } finally {
       await popStash();
     }
-    throw new UpdateFailed(`update failed at ${step}: ${(error as Error).message}; ${where}`);
+    // A failed command's output follows its one-line summary, below the verdict.
+    const [summary, ...said] = (error as Error).message.split("\n");
+    throw new UpdateFailed([`update failed at ${step}: ${summary}; ${where}`, ...said].join("\n"));
   }
   if (replacedNode !== undefined) dropOldNode(replacedNode);
 

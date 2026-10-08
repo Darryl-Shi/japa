@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import { launcherText, layoutOf, writeLauncher } from "../src/cli/layout.ts";
 import { update, type UpdateDeps, type UpdateOptions } from "../src/cli/update.ts";
@@ -22,7 +22,10 @@ const FIRST = { "package-lock.json": '{ "lockfileVersion": 1 }\n', ".node-versio
 
 /** Writes `files` in `dir` and commits them; the new sha. */
 function commitFiles(dir: string, message: string, files: Record<string, string>): string {
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  }
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", message);
   return head(dir);
@@ -259,6 +262,24 @@ test("a failing validate rolls back to the old sha and re-runs npm ci when the l
   expect(readFileSync(join(c.app, "package-lock.json"), "utf8")).toBe(FIRST["package-lock.json"]);
   expect(readFileSync(join(c.app, "scratch.txt"), "utf8")).toBe("scratch\n");
   expect(git(c.app, "stash", "list")).toBe("");
+});
+
+test("a new version that crashes reports the command and its error, not Node's trailer", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  push(c, "broken", { "src/cli/main.ts": 'throw new Error("broken build");\n' });
+  const h = harness(c, { node: process.execPath });
+  const { validate: _, ...deps } = h.deps; // the real validate: runs the new main.ts --version
+
+  const error = (await update(h.o, deps).catch((e: unknown) => e)) as Error;
+
+  const [first, ...rest] = error.message.split("\n");
+  expect(first).toMatch(/^update failed at validation: \S+ .*src\/cli\/main\.ts --version exited with code 1; still on /);
+  expect(first).toContain(`still on ${short(old)}`);
+  expect(rest).toContain("Error: broken build");
+  expect(error.message).not.toMatch(/Node\.js v\d/);
+  expect(error.message).not.toMatch(/^\s+at /m);
+  expect(head(c.app)).toBe(old);
 });
 
 test("a rollback that fails itself keeps the original error and the local edits", async () => {
