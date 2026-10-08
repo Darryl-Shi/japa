@@ -26,7 +26,6 @@ const GENERAL = [
 
 /** Changes listed under Recent changes. */
 const RECENT = 10;
-const NOT_UNDONE = "Not undone: ";
 
 const textOf = (result: ToolExecutionResult | undefined) => (result!.content![0] as { text: string }).text;
 const refText = (ref: ModelRef | undefined) => (ref === undefined ? undefined : `${ref.provider}/${ref.modelId}`);
@@ -110,17 +109,9 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
   const change = (c: Change): Page => async (outcome) => {
     const when = new Date(c.at).toLocaleString();
     const body = [`${c.title}\n${when}`, c.howToUse].filter((p) => p !== "").join("\n\n");
-    const confirm = nav.confirm(`Undo "${c.title}"?`, "Undo", undo(c), recent, change(c));
+    const confirm = nav.confirm(`Undo "${c.title}"?`, "Undo", () => messaging.undoChange(c.id), recent, change(c));
     const rows = [[nav.button("Undo", confirm)]];
     return nav.screen({ title: `Change ${c.id}`, body, rows, back: recent, home, outcome });
-  };
-  // As `change_undo`, or, for a change undone by a tool call (as schedules are), that call.
-  const undo = (c: Change) => async () => {
-    const by = c.undo.call;
-    const reply = by === undefined ? await call("change_undo", { id: c.id }) : await call(by.tool, by.args);
-    if (reply.startsWith(NOT_UNDONE)) throw new Error(reply.slice(NOT_UNDONE.length));
-    if (reply === `No change ${c.id}.`) throw new Error(`Change ${c.id} is gone.`);
-    return reply;
   };
 
   const schedules: Page = async (outcome) => {

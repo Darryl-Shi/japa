@@ -137,6 +137,11 @@ export type MessagingContext = {
   clearFinishedJobs(): Promise<number>;
   /** The logged changes, newest first. */
   changes(): Promise<Change[]>;
+  /**
+   * Undoes change `id`: as `change_undo`, or, for a change undone by a tool call, makes that call and, when it
+   * succeeds (its reply doesn't start `No ` or `Not `), drops the change from the log; the reply.
+   */
+  undoChange(id: string): Promise<string>;
 };
 
 export type KernelContext = {

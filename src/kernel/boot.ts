@@ -6,6 +6,7 @@ import {
   type EntryId,
   type Extension,
   Harness,
+  type JsonObject,
   type ModelRef,
   type RegistryReader,
   ROOT_CONVERSATION_ID,
@@ -146,6 +147,17 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const pruneJobs = (before: number) =>
       root.commit(async (tx) => prune((await tx.doc(JobsDoc, root.id)).jobs, before), ctx);
     const pruneOld = () => pruneJobs(Date.now() - settings.jobs.keepFinishedDays * DAY);
+    const runTool: MessagingContext["tool"] = async (name, args) => {
+      const api = { commit: root.commit.bind(root), snapshot: opened.snapshot.bind(opened) };
+      const found = registry.snapshot().tools().find((t) => t.tool.name === name);
+      return found?.tool.execute(args, api as unknown as ToolExecutionApi, ctx);
+    };
+    /** The text reply of tool `name`, `No tool <name>.` without one. */
+    const toolText = async (name: string, args: JsonObject) => {
+      const result = await runTool(name, args);
+      if (result === undefined) return `No tool ${name}.`;
+      return (result.content?.[0] as { text?: string } | undefined)?.text ?? "";
+    };
     const messaging: MessagingContext = {
       cursor: async (adapter) => (await opened.snapshot(MessagingDoc, root.id, ctx))?.cursors[adapter],
       saveCursor: (adapter, cursor) =>
@@ -159,13 +171,22 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         }, ctx),
       setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
       rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),
-      tool: async (name, args) => {
-        const api = { commit: root.commit.bind(root), snapshot: opened.snapshot.bind(opened) };
-        const found = registry.snapshot().tools().find((t) => t.tool.name === name);
-        return found?.tool.execute(args, api as unknown as ToolExecutionApi, ctx);
-      },
+      tool: runTool,
       clearFinishedJobs: () => pruneJobs(Infinity),
       changes: async () => ((await opened.snapshot(ChangesDoc, root.id, ctx))?.changes ?? []).toReversed(),
+      undoChange: async (id) => {
+        const change = (await opened.snapshot(ChangesDoc, root.id, ctx))?.changes.find((c) => c.id === id);
+        const call = change?.undo.call;
+        if (call === undefined) return toolText("change_undo", { id });
+        const reply = await toolText(call.tool, call.args);
+        if (/^Not? /.test(reply)) return reply;
+        // Undone: no longer listed, so it can't be undone twice.
+        await root.commit(async (tx) => {
+          const doc = await tx.doc(ChangesDoc, root.id);
+          doc.changes = doc.changes.filter((c) => c.id !== id);
+        }, ctx);
+        return reply;
+      },
     };
     // Resolved by the surfaces' `fulfil`, by secret name.
     const waiters = new Map<string, ((value: string) => void)[]>();

@@ -9,7 +9,7 @@ import { ChangesDoc, logChange } from "../src/kernel/changes.ts";
 import type { Incoming, KernelContext, MessagingContext } from "../src/kernel/contracts.ts";
 import type { Job } from "../src/kernel/jobs/state.ts";
 import { COMMANDS, createMenu } from "../src/kernel/messaging/menu/index.ts";
-import { ago, type Nav, type Page } from "../src/kernel/messaging/menu/nav.ts";
+import { ago, type Nav, outcomeLine, type Page } from "../src/kernel/messaging/menu/nav.ts";
 import { addSecretRequest } from "../src/kernel/secret-requests.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { echo, stage, testKit, waitFor } from "./helpers.ts";
@@ -288,6 +288,14 @@ test("a schedule is removed from the menu after confirmation", async () => {
   expect(await tool(daemon, faux, "changes_list")).toMatch(/Removed schedule "water plants"/);
 });
 
+test("outcomeLine: Not changed: X is ✗ X; another No or Not reply is ✗; anything else ✓", () => {
+  expect(outcomeLine("Not changed: bad value")).toBe("✗ bad value");
+  expect(outcomeLine("Not undone: conflict")).toBe("✗ Not undone: conflict");
+  expect(outcomeLine("No schedule 1.")).toBe("✗ No schedule 1.");
+  expect(outcomeLine("Set jobs.maxConcurrent. (change 1)")).toBe("✓ Set jobs.maxConcurrent. (change 1)");
+  expect(outcomeLine("Notes saved.")).toBe("✓ Notes saved.");
+});
+
 test("ago gives an age in minutes, hours under 48, then days", () => {
   const [m, h] = [60_000, 3_600_000];
   expect([0, m - 1, m, 60 * m - 1, h, 48 * h - 1, 48 * h, 100 * h].map(ago)).toEqual(
@@ -388,14 +396,33 @@ describe("recent changes", { timeout: 30_000 }, () => {
     expect(await tool(daemon, faux, "settings_get", { path: "jobs.maxConcurrent" })).toBe("4");
   });
 
-  test("undoing a schedule-add removes the schedule", async () => {
+  test("undoing a schedule-add removes the schedule and the change; pressing Undo again shows ✗", async () => {
     await tool(daemon, faux, "schedule_add", { text: "water plants", cron: "0 9 * * *" });
     await fake.receive({ command: "settings" });
     await fake.press("Recent changes");
     await fake.press('1 Scheduled "water plants" (0 9 * * *) · <1m');
     await fake.press("Undo");
+    const confirm = fake.edited.at(-1)!;
     await fake.press("Undo");
     expect(fake.edited.at(-1)!.markdown).toMatch(/^✓ Removed schedule 1\.\n\n\*\*Recent changes\*\*$/);
+    expect(labels()).toEqual(['2 Removed schedule "water plants" · <1m', "‹ Back", "⌂ Home"]);
+    expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
+    const again = confirm.buttons!.flat().find((b) => b.label === "Undo")!.action;
+    await fake.receive({ action: again, messageId: confirm.messageId });
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^✗ No change 1\.\n\n\*\*Recent changes\*\*$/);
+    expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
+  });
+
+  test("an undo call that does nothing shows ✗ and the change stays listed", async () => {
+    await tool(daemon, faux, "schedule_add", { text: "water plants", cron: "0 9 * * *" });
+    await fake.receive({ command: "settings" });
+    await fake.press("Recent changes");
+    await fake.press('1 Scheduled "water plants" (0 9 * * *) · <1m');
+    await tool(daemon, faux, "schedule_remove", { id: "1" });
+    await fake.press("Undo");
+    await fake.press("Undo");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^✗ No schedule 1\.\n\n\*\*Recent changes\*\*$/);
+    expect(labels()).toContain('1 Scheduled "water plants" (0 9 * * *) · <1m');
     expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
   });
 

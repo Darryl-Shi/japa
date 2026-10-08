@@ -14,9 +14,13 @@ const PAGE = 8;
 const KEEP = 500;
 const NOT_CHANGED = "Not changed: ";
 
-/** A reply as an outcome line: `Not changed: X` becomes `✗ X`, anything else `✓ <reply>`. */
+/**
+ * A reply as an outcome line: `Not changed: X` becomes `✗ X`, any other reply starting `No ` or `Not ` (nothing was
+ * done) `✗ <reply>`, anything else `✓ <reply>`.
+ */
 export function outcomeLine(reply: string): string {
-  return reply.startsWith(NOT_CHANGED) ? `✗ ${reply.slice(NOT_CHANGED.length)}` : `✓ ${reply}`;
+  if (reply.startsWith(NOT_CHANGED)) return `✗ ${reply.slice(NOT_CHANGED.length)}`;
+  return /^Not? /.test(reply) ? `✗ ${reply}` : `✓ ${reply}`;
 }
 
 /** An age of `ms`: `<1m`, then whole minutes `Nm`, hours `Nh` under 48 hours, then days `Nd`. */
