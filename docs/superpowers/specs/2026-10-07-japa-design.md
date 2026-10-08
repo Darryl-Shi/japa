@@ -44,8 +44,7 @@ yet do.
 
 ### Non-goals (v1)
 
-Messaging surfaces (Slack/Telegram/iMessage), multiple users, out-of-process
-extensions, embedding search, approval gates for side-effecting actions,
+Multiple users, out-of-process extensions, embedding search, approval gates for side-effecting actions,
 nested jobs, built-in OAuth flows (possible later through the `provider` and
 `tool` contracts), storage migration between backends, a hosted deployment.
 
@@ -78,7 +77,7 @@ One process owns the storage. japa therefore runs as one daemon.
                 ┌──────────────── japad (one Node process) ────────────────┐
   surface ──────┼─▶ Kernel: CoS · jobs · context & memory · skills ·       │
   trigger ──────┼─▶   self-extension · safety · changes · settings         │
-                │                                                          │
+  messaging ────┼─▶ chat platforms (through the messaging surface)         │
   provider ─────┼─▶ models          Pi Durable Harness                     │
   tool ─────────┼─▶ capabilities      root conversation = CoS thread       │
   environment ──┼─▶ where work runs   job conversations (background)       │
@@ -93,7 +92,7 @@ Four layers:
 1. **Kernel** (`src/kernel`) — the CoS, jobs, context and memory, skills
    and worker-profile loading, self-extension, safety, changes log, settings.
    The only code the CoS cannot modify.
-2. **Contracts** — the seven seams in §4.
+2. **Contracts** — the eight seams in §4.
 3. **Extensions** — TypeScript modules that implement contracts (§5).
 4. **Content** — data, no code: skills, worker profiles, memory, settings,
    schedules.
@@ -121,12 +120,21 @@ interface Contract<C> {
 }
 ```
 
-### 4.2 The seven core contracts
+`KernelContext` is per extension. Besides its settings and `secret(name)`
+(only names in its manifest `secrets`), it has `secretProvided(name)`, which
+resolves with the value the next time a request for `name` is fulfilled, and
+`requestSecret(name, why)`, which raises a secret request (§9.5) and then
+resolves the same way; an extension that can't work without a key waits on
+these. `messaging` is activated with a third, kernel-internal argument (reply
+cursors, the settings menu's changes) that is not part of `KernelContext`.
+
+### 4.2 The eight core contracts
 
 | Contract | Phase | Cardinality | Swaps | Default |
 |---|---|---|---|---|
 | `provider` | runtime | many | model access | pi-ai built-ins |
 | `surface` | runtime | many | where the user talks | `gateway` + TUI |
+| `messaging` | runtime | many | chat platforms | `telegram` |
 | `trigger` | runtime | many | what wakes the CoS | `schedule` |
 | `tool` | runtime | many | what agents can do | `web` |
 | `environment` | runtime | many | where work runs | `local` |
@@ -158,15 +166,53 @@ interface Surface {
   start(ctx: SurfaceContext): Promise<Dispose>;
 }
 interface SurfaceContext {
-  root: { submit(text, mode), abort(), events(listener) };   // pi-durable agent events
+  root: {
+    submit(input, mode?, origin?: { surface; chat?; id? }),   // text, or text and image parts
+    abort(),
+    events(listener),                                         // pi-durable agent events
+    replies(listener, after?),                                // finished replies with their origin
+  };
   job(id: string): { events(listener) };                      // read-only job view
   taskGraph(): ChordState;
   secrets: { pending(), fulfil(requestId, value) };
 }
 ```
 
+`submit`'s origin is encoded in the input's `requestId`, so a run knows which
+surface and chat started it (an `id` also makes a resubmission a no-op);
+`replies` delivers each finished assistant message's text with its turn's
+origin (`{ surface, chat? }` or `"proactive"`) and a cursor to resume after.
+See the messaging spec (`2026-10-08-japa-messaging-telegram-design.md`) §3.
+
 A surface may be interactive (chat) or outbound-only (notifications). Every
-interactive surface must render pending secret requests as masked prompts.
+interactive surface must render pending secret requests as masked prompts, or,
+where the platform cannot mask input, by deleting the message holding the
+secret as soon as it is read.
+
+#### `messaging`
+
+```ts
+interface MessagingAdapter {
+  name: string;                         // the extension's name; also the surface name in origins
+  maxMessageChars: number;              // outgoing limit per message
+  start(ctx: { receive(m: Incoming): Promise<void> }): Promise<Dispose>;
+  send(chat: string, m: OutgoingMessage): Promise<string>;           // returns the message id
+  edit(chat: string, messageId: string, m: OutgoingMessage): Promise<void>;
+  delete(chat: string, messageId: string): Promise<void>;
+  typing(chat: string): Promise<void>;
+  commands(list: { name: string; description: string }[]): Promise<void>;
+}
+type Incoming = {
+  chat: string; user: string; messageId: string; id: string;   // id: platform-unique, for dedup
+  text?: string; images?: { data: Uint8Array; mimeType: string }[];
+  command?: string; action?: string;
+};
+type OutgoingMessage = { markdown: string; buttons?: { label: string; action: string }[][] };
+```
+
+A chat platform's transport only. The kernel starts one messaging surface per
+adapter that provides the owner check, commands, settings menu, secrets,
+routing, merging, images, splitting and typing; see the messaging spec §4–§5.
 
 #### `trigger`
 
@@ -264,7 +310,7 @@ defineJapaExtension({
   docs: "./skills/using-gcal/SKILL.md",                       // agent-facing
   provides: {                         // keyed by contract name
     tool: [gcalList, gcalUpdate],
-    // surface: [...], trigger: [...], provider: [...], environment: [...],
+    // surface: [...], messaging: [...], trigger: [...], provider: [...], environment: [...],
     // storage: adapter, secrets: adapter
   },
   durable: { sections, hooks, wraps, tasks },   // escape hatch, optional
@@ -297,7 +343,7 @@ Boot:
 4. Open the harness with the storage, model registry, settings getters, and
    the kernel's `env` dispatcher.
 5. Activate `provider`, then `environment`, then `tool` (registry install),
-   then `trigger` and `surface`.
+   then `trigger`, then `surface`, then `messaging`.
 6. Ensure the root conversation (§5.4) and call `harness.resume()`, so pending
    tasks continue.
 
@@ -577,7 +623,8 @@ schema. CoS tools: `settings_get({ path? })`, `settings_set({ path, value })`
 
 - `secret_request({ name, why })` (CoS tool) records a pending request in the
   root document `japa.secretRequests` and returns immediately.
-- Interactive surfaces show pending requests as masked prompts. The value goes
+- Interactive surfaces show pending requests as masked prompts (messaging
+  surfaces instead delete the message holding the secret at once). The value goes
   straight to the `secrets` adapter and never enters the transcript.
 - On fulfilment the kernel posts `[secret <name> provided]` into the CoS
   thread (`requestId = secret:<requestId>`).
@@ -666,6 +713,7 @@ environment, tools, extensions, and skills must all resolve.
 | `file-secrets` | secrets | One file per secret in `~/.japa/secrets/`, mode 600. |
 | `gateway` | surface | Newline-delimited JSON over the Unix socket `~/.japa/japa.sock`; streams root agent events (`watchEvents`), `japa.jobs`, pending secret requests; accepts submit (input/steer/follow-up), abort, secret responses, job view attach. Includes the `japa chat` TUI client (pi-tui): thread on the left, live job board on the right, masked secret prompts. Closing the TUI does not stop the daemon. |
 | `schedule` | trigger, tool, durable | Durable cron and one-shot timers in `japa.schedules`; tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
+| `telegram` | messaging | Telegram over Bot API long polling: text and images in, the `/jobs`, `/status` and `/settings` commands and settings menu. Dormant until the user provides `telegram.botToken`. |
 | `web` | tool | `web_fetch` (no key) and `web_search` (Brave; asks for its key with `secret_request` on first use). |
 
 With these defaults the CoS directly has `web_fetch`, `web_search`, the
@@ -713,6 +761,7 @@ extensions/local-env/     environment
 extensions/sqlite/        storage
 extensions/file-secrets/  secrets
 extensions/gateway/       surface + TUI client
+extensions/telegram/      messaging
 extensions/schedule/      trigger + tools
 extensions/web/           tools
 workers/                  default worker profiles

@@ -113,8 +113,8 @@ type Incoming = {
 type OutgoingMessage = { markdown: string; buttons?: { label: string; action: string }[][] };
 ```
 
-The adapter converts `markdown` to the platform's format. It knows nothing
-about japa features. Contract docs (agent-facing): "A chat platform the user
+The adapter's `name` must equal its extension's name. It converts `markdown`
+to the platform's format and knows nothing about japa features. Contract docs (agent-facing): "A chat platform the user
 talks to the CoS through. Implement only transport; japa provides commands,
 settings, secrets, routing and images."
 
@@ -122,7 +122,9 @@ settings, secrets, routing and images."
 
 The kernel starts one messaging surface per active adapter. All behaviour
 below is written once, in `src/kernel/messaging/`, and tested against a fake
-adapter.
+adapter. The `messaging` contract's `activate` gets a third, kernel-internal
+argument (reply cursors, the latest secret's `fulfilledBy`, and the settings
+menu's changes); it is not part of the public `KernelContext`.
 
 ### 5.1 Owner
 
@@ -134,8 +136,8 @@ with the owner are handled.
 
 ### 5.2 Input
 
-- Text and images go to `root.submit` with the surface's origin; when the
-  CoS is busy, the mode is `followUp`.
+- Text and images go to `root.submit` with the surface's origin and mode
+  `followUp` (which matters only when the CoS is busy).
 - **Merging.** Consecutive owner messages arriving within 1.5 s of each other
   are merged into one input (text joined by blank lines, images collected).
   This covers a long paste the platform split and a photo album.
@@ -143,14 +145,16 @@ with the owner are handled.
   (ignored by git) and passed as an image part, together with a text note
   holding its path, so the CoS can hand it to a job. If the CoS model has no
   image input, only the path note is sent, plus "(this model cannot see
-  images)".
+  images)". An image that cannot be saved is noted as such instead; the text
+  still goes through.
 
 ### 5.3 Output
 
 - The surface subscribes to `root.replies` from its persisted cursor and
   sends each matching reply, split at `maxMessageChars` (on paragraph, then
   line, then word boundaries; code blocks are closed and reopened across a
-  split).
+  split, with the opening fence line when it is at most 20 characters, e.g.
+  "```ts", else a bare "```").
 - While a run of its own origin is active, it calls `typing` every 4 s.
 - A send that still fails after retries (§6) is logged and skipped; the
   cursor moves on, and the CoS turn is unaffected.
@@ -175,7 +179,10 @@ The owner's next text message fulfils the oldest pending request through
 `secrets.fulfil` and is deleted straight away; it is never submitted to the
 CoS or merged. If deleting fails, the secret is still stored and the surface
 says "Couldn't delete your message — please delete it yourself." A command
-cancels this state (the request stays pending).
+cancels this state (the request stays pending). The fulfilment records the
+message (`<adapter>:<id>`, as `fulfilledBy`); if the platform delivers that
+message again (a crash before it was confirmed), it is dropped and deleted
+again, never submitted.
 
 ### 5.6 Settings menu
 
@@ -186,23 +193,27 @@ and logged in `japa.changes` (undoable).
 - **Models** → choose CoS / worker / consolidation → a paged list of the
   registered models (provider, then model) → set.
 - **Schedules** → active schedules → remove (asks for confirmation).
-- **Extensions** → installed extensions with their status → roll back to the
-  last known good version (asks for confirmation; restart notice as in
-  `japa rollback`).
+- **Extensions** → the loaded extensions and the workspace ones, with their
+  status (a failed one shows its error) → roll back to the last known good
+  version (asks for confirmation; the rollback applies live, and the answer
+  is its reload notices).
 
 Errors come back as a message: "Not changed: <reason>". Button actions are
-short ids (≤ 64 bytes) mapped to menu state held in memory; a stale button
+short ids (≤ 64 bytes, with a per-run token) mapped to menu state held in
+memory; a stale button
 (after a restart) answers "This menu expired — send /settings again."
 
 ## 6. Telegram adapter (`extensions/telegram`)
 
 Plain `fetch` against the Bot API; no new dependencies.
 
-- **Setup.** In `japa chat`, the user asks the CoS to connect Telegram. The
-  extension's secret `telegram.botToken` is missing, so it raises a secret
-  request (shown masked in the TUI); the token comes from @BotFather. Once
-  started, the bot answers the user with their id (§5.1); the user tells the
-  CoS, which sets `extensions.telegram.owner`.
+- **Setup.** Without the secret `telegram.botToken` the adapter stays
+  dormant: it waits for the token and polls nothing. In `japa chat`, the user
+  asks the CoS to connect Telegram; the CoS raises the secret request (the
+  extension's summary tells it how), shown masked in the TUI; the token comes
+  from @BotFather. Once it is provided, polling starts and the bot answers the
+  user with their id (§5.1); the user tells the CoS, which sets
+  `extensions.telegram.owner`.
 - **Receiving.** `getUpdates` long polling (50 s timeout). Passing the next
   offset confirms earlier updates on Telegram's side, so the adapter keeps no
   state of its own; it confirms a batch only after handing it to `receive`.
@@ -219,9 +230,9 @@ Plain `fetch` against the Bot API; no new dependencies.
   blockquote`), escaping everything else. If Telegram rejects the HTML (400
   "can't parse entities"), the message is resent as plain text.
 - **Limits and errors.** `maxMessageChars` 4096. Honours `429 retry_after`;
-  retries network and 5xx errors with backoff (1 s doubling to 60 s); polling
-  never stops on errors. A 401 (bad token) stops polling and raises a new
-  secret request.
+  retries network and 5xx errors with backoff (1 s doubling to 60 s), up to
+  8 attempts per call; polling never stops on errors. A 401 (bad token) stops
+  polling and raises a new secret request; polling resumes with the new token.
 
 ## 7. Error handling
 

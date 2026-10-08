@@ -82,6 +82,19 @@ Other commands:
 japa enters safe mode by itself after three crashes within five minutes. A setup that has run for
 `safety.goodAfterMinutes` is tagged as the last known good one.
 
+## Telegram
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy its token.
+2. In `japa chat`, ask the CoS to connect Telegram, and paste the token at the masked prompt.
+3. Message your bot; it answers with your Telegram user id. Tell the CoS, which sets
+   `extensions.telegram.owner`. The bot ignores everyone else.
+
+Then chat with the CoS from Telegram: replies to your messages and proactive ones (schedules, job
+reports) come to you there. `/jobs` lists jobs, `/status` shows the model, extensions and errors, and
+`/settings` opens a menu for models, schedules and extension rollbacks. Photos and image files are
+saved under `~/.japa/attachments/` and handed to the CoS. When japa needs a secret, it asks in the
+chat: send it as your next message, and the bot deletes the message at once.
+
 ## Where state lives
 
 Everything lives in `~/.japa`, or in `$JAPA_HOME` when set. It is a git repository:
@@ -93,6 +106,7 @@ skills/              skills the CoS installed          (git-tracked)
 workers/             worker profiles the CoS installed (git-tracked)
 .staging/            git worktree (branch `staging`) where the CoS builds things before installing them
 secrets/             secrets, one file per secret      (ignored by git)
+attachments/         images received over Telegram     (ignored by git)
 state.db             conversations, jobs, memory, change log (SQLite; ignored by git)
 japa.sock            the socket `japa chat` and `japa status` connect to
 boots.json, daemon.lock, .cache/, node_modules/   runtime files

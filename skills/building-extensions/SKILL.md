@@ -54,8 +54,12 @@ export default defineJapaExtension({
   `emit({ key, text })` posts `[<extension>] <text>` to the chief of staff. The same `key` is delivered
   once, so make it unique per event.
 - **surface**: `{ name, start(ctx) }` returning a dispose function. `ctx` has `home`;
-  `root.submit(text, mode?)`, `root.abort()` and `root.events(listener)`; `jobs(listener)`;
+  `root.submit(input, mode?, origin?)` (text, or text and image parts; pass `{ surface: <name>, chat?, id? }`
+  so replies route back, and an `id` makes a resubmission a no-op); `root.abort()`; `root.events(listener)`;
+  `root.replies(listener, after?)` (each finished reply's `text` with its `origin`, `"proactive"` or
+  `{ surface, chat? }`, and a `cursor` to persist and pass as `after` after a restart); `jobs(listener)`;
   `secrets.pending(listener)` and `secrets.fulfil(requestId, value)`; and `status()`.
+- **messaging**: a chat platform adapter, transport only (see Messaging adapters below).
 - **environment**: `{ name, create({ conversationId, cwd }) }` returning a Pi Durable `ExecutionEnv`;
   worker profiles select it with `environment: <name>`.
 - **provider**: a pi-ai model provider object with an `id`; its models become selectable.
@@ -65,6 +69,46 @@ export default defineJapaExtension({
   settings `secrets.adapter`.
 
 Storage and secrets are opened at boot, so they apply after a restart; the others apply on install.
+
+## Messaging adapters
+
+The types, all exported by `japa/sdk`:
+
+```ts
+interface MessagingAdapter {
+  name: string; // the extension's name; also the surface name in origins
+  maxMessageChars: number; // outgoing limit per message
+  start(ctx: { receive(m: Incoming): Promise<void> }): Promise<Dispose>;
+  send(chat: string, m: OutgoingMessage): Promise<string>; // returns the message id
+  edit(chat: string, messageId: string, m: OutgoingMessage): Promise<void>;
+  delete(chat: string, messageId: string): Promise<void>;
+  typing(chat: string): Promise<void>;
+  commands(list: { name: string; description: string }[]): Promise<void>;
+}
+type Incoming = {
+  chat: string; user: string; messageId: string; id: string;
+  text?: string; images?: { data: Uint8Array; mimeType: string }[];
+  command?: string; // "jobs" for "/jobs"
+  action?: string; // a pressed button's action
+};
+type OutgoingMessage = { markdown: string; buttons?: { label: string; action: string }[][] };
+```
+
+japa runs one messaging surface per adapter and provides: the owner check (anyone but
+`settings.extensions.<name>.owner`, which japa adds to your settings schema, is told their user id),
+the `/jobs`, `/status` and `/settings` commands and menus, secret requests, routing replies, merging
+messages sent close together, saving images, splitting replies at `maxMessageChars`, and "typing…".
+
+Your adapter does transport only. Convert `markdown` to the platform's format; register the
+`commands(list)` it is given. In `start`, call `receive` for each message or button press and
+confirm it upstream only after `receive` resolves. `Incoming.id` must be
+unique on the platform (it deduplicates redeliveries). Handle only private chats. A proactive reply's
+`chat` is the owner's user id. Reject button actions over 64 bytes.
+
+Test it without japa: call `setup` with a stub `KernelContext` if it reads secrets, replace `fetch`
+with `vi.stubGlobal`, call `adapter.start({ receive })` with a `receive` that records what it gets,
+and assert the recorded messages and the requests made. The packaged `telegram` extension is the
+example.
 
 ## Settings and secrets: `KernelContext`
 
@@ -80,7 +124,9 @@ export default defineJapaExtension({ /* ... */ secrets: ["bank.apiKey"], setup: 
 ```
 
 When a secret is missing, reply telling the chief of staff to ask for it with
-`secret_request({ name, why })`.
+`secret_request({ name, why })`. Code that can't work without a key can wait for it:
+`secretProvided(name)` resolves with the value the next time a request for it is fulfilled, and
+`requestSecret(name, why)` asks the user itself, then resolves the same way.
 
 ## The escape hatch: `durable`
 

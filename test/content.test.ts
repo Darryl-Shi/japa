@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { check } from "../src/kernel/check.ts";
+import { CONTRACTS } from "../src/kernel/contracts.ts";
 import { bootTest, tempHome } from "./helpers.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -42,6 +43,12 @@ test("every tool name the skills and workers mention exists", async () => {
       .map((name) => `${file}: ${name}`),
   );
   expect(unknown).toEqual([]);
+});
+
+test("the building-extensions skill covers every core contract", () => {
+  const skill = readFileSync(join(packageRoot, "skills/building-extensions/SKILL.md"), "utf8");
+  for (const name of CONTRACTS.keys()) expect([name, skill.includes(`**${name}**`)]).toEqual([name, true]);
+  for (const text of ["root.replies", "secretProvided", "requestSecret"]) expect([text, skill.includes(text)]).toEqual([text, true]);
 });
 
 const PROMISE_RULE =
