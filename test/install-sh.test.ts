@@ -2,7 +2,7 @@
 // these tests exercise the real clone / Node-detection / npm ci / launcher-writing logic without network access.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -19,6 +19,15 @@ const tmp = () => mkdtempSync(join(tmpdir(), "japa-install-sh-"));
 
 /** The test's own Node plus the system tools install.sh needs (git, curl/wget, tar, sha256sum...). */
 const basePath = () => [dirname(process.execPath), "/usr/bin", "/bin"].join(":");
+
+/** A dir of symlinks to just the tools install.sh uses besides Node -- in particular no npm -- to build a PATH from. */
+function toolsWithoutNode(): string {
+  const dir = tmp();
+  for (const name of ["sh", "uname", "git", "tar", "gzip", "curl", "cat", "rm", "mkdir", "awk", "sha256sum", "tr", "dirname", "chmod", "grep"]) {
+    symlinkSync(execFileSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim(), join(dir, name));
+  }
+  return dir;
+}
 
 function gitIn(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {
@@ -317,6 +326,35 @@ test("a system node below the minimum triggers a private download the launcher t
     expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(join(dir, "node", "bin", "node"), join(dir, "app")));
     expect(execFileSync(launcherPath, ["--version"], { encoding: "utf8" })).toBe("japa 0.0.0 (fixture)\n");
     expect(existsSync(join(dir, "node", NODE_MARKER))).toBe(true); // japa's, as src/cli/node.ts marks it
+  } finally {
+    close();
+  }
+});
+
+test("a system Node 24 without npm triggers a private download", async () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const version = "24.14.1";
+  const { tarball, name } = buildFakeNodeTarball(tmp(), version, `${process.platform}-${process.arch}`);
+  const bytes = readFileSync(tarball);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  // A good enough Node, but no npm beside it or anywhere on PATH (e.g. Arch's split nodejs/npm packages).
+  const nodeOnly = tmp();
+  writeFileSync(join(nodeOnly, "node"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`);
+  chmodSync(join(nodeOnly, "node"), 0o755);
+
+  const { baseUrl, close } = await serve({
+    [`/v${version}/${name}`]: { status: 200, body: bytes },
+    [`/v${version}/SHASUMS256.txt`]: { status: 200, body: `${hash}  ${name}\n` },
+  });
+  try {
+    const env = { HOME: home, PATH: `${nodeOnly}:${toolsWithoutNode()}`, SHELL: "/bin/sh", JAPA_NODE_DIST: baseUrl };
+    const result = await runInstallAsync(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+
+    expect(result.status, result.output).toBe(0);
+    const launcherPath = join(home, ".local", "bin", "japa");
+    expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(join(dir, "node", "bin", "node"), join(dir, "app")));
   } finally {
     close();
   }

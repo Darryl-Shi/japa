@@ -65,13 +65,13 @@ sha256_of() {
   fi
 }
 
-# Sets NODE_BIN to an absolute path of a Node >= 24: the one on PATH if it qualifies, else japa's private Node in
-# $NODE_DIR -- the one a previous run left there when it's still good (a rerun doesn't download it again), else a
-# fresh download (design doc §3.1 step 5).
+# Sets NODE_BIN to an absolute path of a Node >= 24: the one on PATH if it qualifies and has npm, else japa's
+# private Node in $NODE_DIR -- the one a previous run left there when it's still good (a rerun doesn't download it
+# again), else a fresh download (design doc §3.1 step 5).
 NODE_BIN=""
 ensure_node() {
   system_node=$(command -v node 2>/dev/null || true)
-  if [ -n "$system_node" ] && node_ok "$system_node"; then
+  if [ -n "$system_node" ] && node_ok "$system_node" && has_npm "$system_node"; then
     NODE_BIN=$system_node
     return 0
   fi
@@ -86,6 +86,11 @@ ensure_node() {
 node_ok() {
   node_version=$("$1" -p 'process.versions.node' 2>/dev/null) || return 1
   [ "${node_version%%.*}" -ge 24 ] 2>/dev/null
+}
+
+# Whether `npm ci` can run for the node binary $1: npm beside it, or on PATH (distros may package npm separately).
+has_npm() {
+  [ -x "$(dirname "$1")/npm" ] || command -v npm >/dev/null 2>&1
 }
 
 # A node/ is japa's own private Node only if it holds this marker (src/cli/node.ts's NODE_MARKER): any other
