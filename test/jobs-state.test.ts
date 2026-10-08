@@ -1,6 +1,6 @@
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
-import { board, promote, reportText, type Job, type JobStatus } from "../src/kernel/jobs/state.ts";
+import { board, promote, recent, reportText, type Job, type JobStatus } from "../src/kernel/jobs/state.ts";
 
 function job(id: number, status: JobStatus, extra: Partial<Job> = {}): Job {
   return {
@@ -61,4 +61,11 @@ test("board lists jobs finished in the last 24 hours and the first line of their
     job(5, "failed", { result: "boom\nstack trace", updatedAt: now - 23 * HOUR }),
   );
   expect(board(jobs, now)).toBe('- 5 "t5" failed: boom');
+});
+
+test("recent keeps active jobs and those updated in the last 24 hours", () => {
+  const now = 100 * HOUR;
+  const old = { updatedAt: now - 25 * HOUR };
+  const list = [job(1, "done", old), job(2, "running", old), job(3, "failed", { updatedAt: now - HOUR })];
+  expect(recent(list, now).map((j) => j.id)).toEqual(["2", "3"]);
 });

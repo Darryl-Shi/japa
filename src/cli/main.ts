@@ -7,6 +7,7 @@ import { check, CHECK_KINDS } from "../kernel/check.ts";
 import { rollBack } from "../kernel/install.ts";
 import { enterSafeMode } from "../kernel/safety.ts";
 import { japaHome } from "../kernel/settings.ts";
+import { statusText } from "../kernel/status.ts";
 import type { Status } from "../kernel/contracts.ts";
 
 const USAGE = `Usage: japa <command>
@@ -38,11 +39,7 @@ async function status(home: string): Promise<void> {
     client.send({ type: "status" });
   });
   client.close();
-  console.log(`model: ${s.model ? `${s.model.provider}/${s.model.modelId}` : "none"}`);
-  console.log("extensions:");
-  for (const e of s.extensions) console.log(`  ${e.name} — ${e.summary}`);
-  if (s.errors.length > 0) console.log("errors:");
-  for (const e of s.errors) console.log(`  ${e.name}: ${e.error}`);
+  console.log(statusText(s));
 }
 
 async function checkCommand(home: string): Promise<void> {

@@ -59,14 +59,17 @@ function cut(text: string): string {
 const DAY = 86_400_000;
 
 /** Active jobs, and finished ones updated in the last 24 hours. */
-export function board(jobs: Record<string, Job>, now = Date.now()): string | undefined {
+export function recent(jobs: Job[], now = Date.now()): Job[] {
   const active = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
-  const lines = byId(jobs)
-    .filter((j) => active(j) || j.updatedAt > now - DAY)
-    .map((j) => {
-      const detail = j.status === "running" ? j.progress : j.status === "queued" ? undefined : j.result;
-      const first = detail?.split("\n")[0];
-      return `- ${j.id} "${j.title}" ${j.status}${first ? `: ${cut(first)}` : ""}`;
-    });
+  return jobs.filter((j) => active(j) || j.updatedAt > now - DAY);
+}
+
+/** The `recent` jobs, a line each. */
+export function board(jobs: Record<string, Job>, now = Date.now()): string | undefined {
+  const lines = recent(byId(jobs), now).map((j) => {
+    const detail = j.status === "running" ? j.progress : j.status === "queued" ? undefined : j.result;
+    const first = detail?.split("\n")[0];
+    return `- ${j.id} "${j.title}" ${j.status}${first ? `: ${cut(first)}` : ""}`;
+  });
   return lines.length ? lines.join("\n") : undefined;
 }

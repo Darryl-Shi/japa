@@ -1,8 +1,10 @@
 import { defineDoc } from "@earendil-works/pi-durable";
 import type { Dispose, Incoming, KernelContext, MessagingAdapter, Origin, Reply } from "../contracts.ts";
+import type { Job } from "../jobs/state.ts";
 import { message } from "../loader.ts";
 import { originOf } from "../origin.ts";
 import { inputOf } from "./attachments.ts";
+import { COMMANDS, createMenu } from "./menu.ts";
 import { splitMessage } from "./split.ts";
 
 /** Owner messages arriving within this long of each other are merged into one input. */
@@ -24,7 +26,7 @@ export const MessagingDoc = defineDoc<{ cursors: Record<string, string> }>({
  * The kernel's messaging surface for `adapter`: handles its messages one at a time, in arrival order, answering anyone
  * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts and images, merged,
  * to the CoS. Asks the owner for the oldest pending secret request; their next text fulfils it and is deleted at once
- * (a command cancels this).
+ * (a command cancels this). Commands and button presses go to the menu, never to the CoS.
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
  */
 export async function startMessaging(adapter: MessagingAdapter, kernel: KernelContext): Promise<Dispose> {
@@ -36,6 +38,8 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
   let buffer: Incoming[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let awaiting: string | undefined; // the secret request the owner's next text fulfils
+  let jobs: Job[] = [];
+  const menu = createMenu(adapter, kernel, () => jobs);
 
   /** Submits the buffer, if any, after the submissions before it; resolves once they are all done. */
   const flush = () => {
@@ -59,8 +63,12 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
       await adapter.send(m.chat, { markdown: `Not authorized. Your ${adapter.name} user id is ${m.user}.` });
       return;
     }
-    if (m.command !== undefined) awaiting = undefined;
-    if (awaiting !== undefined && m.text !== undefined && m.action === undefined) {
+    if (m.command !== undefined) {
+      awaiting = undefined;
+      return menu.command(m);
+    }
+    if (m.action !== undefined) return menu.press(m);
+    if (awaiting !== undefined && m.text !== undefined) {
       const requestId = awaiting;
       awaiting = undefined;
       try {
@@ -103,6 +111,8 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
   let typingTimer: ReturnType<typeof setInterval> | undefined;
   const typing = (chat: string) => void adapter.typing(chat).catch(() => {});
 
+  const jobsStream = await kernel.surface.jobs((list) => (jobs = list));
+  await adapter.commands(COMMANDS);
   const stopAdapter = await adapter.start({
     receive: (m) => {
       if (stopped) return handled;
@@ -142,6 +152,7 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
     await stopAdapter();
     await flush();
     await secrets.stop();
+    await jobsStream.stop();
     await replies.stop();
     await events.stop();
     clearInterval(typingTimer);
