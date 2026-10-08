@@ -17,7 +17,10 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 ```
 
 This clones japa into `~/.local/share/japa/app`, downloads a private Node.js if your system doesn't have Node 24 or
-newer, puts a `japa` launcher on your PATH (`~/.local/bin/japa`), and runs `japa setup` (see First run below).
+newer (with npm), puts a `japa` launcher in `~/.local/bin`, and runs `japa setup` (see First run below). If
+`~/.local/bin` isn't on your PATH yet, it adds it in your shell's rc file (`~/.bashrc`, `~/.zshrc` or
+`~/.config/fish/config.fish`, from `$SHELL`) and prints "open a new shell or run: export PATH=...". Setup needs a
+terminal: without one (e.g. in CI) the installer skips it and tells you to run `japa setup` to finish.
 Supports Linux and macOS, x64 or arm64 (WSL counts as Linux); needs `git`, `tar`, and `curl` or `wget` — a missing
 one is named, along with how to install it.
 
@@ -32,11 +35,16 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 | `--dir <path>` | `JAPA_INSTALL_DIR` | `~/.local/share/japa` | Where to install japa |
 | `--branch <name>` | `JAPA_BRANCH` | `main` | git branch to install |
 | `--repo <url>` | `JAPA_REPO` | `https://github.com/Darryl-Shi/japa.git` | git repo to clone |
-| `--non-interactive` | | off | Don't run `japa setup`'s prompts (for scripted installs; see Non-interactive setup) |
-| `--no-service` | | off | Don't install or start the background service |
-| `--skip-setup` | | off | Install but don't run `japa setup` at all |
+| `--non-interactive` | | off | Install but don't run `japa setup`; for scripted installs, see Non-interactive setup |
+| `--no-service` | | off | Passed to `japa setup`: don't install or start the background service |
+| `--skip-setup` | | off | Install but don't run `japa setup` |
 
-Running the same command again later upgrades an existing install — see Updating.
+If a step fails, or you press Ctrl-C, the installer names the step and removes the `app/` and `node/` it created.
+It never touches `~/.japa`, refuses a `--dir` whose `app/` isn't a japa checkout, and never replaces or removes a
+`node/` it didn't install itself.
+
+Running the same command again later upgrades an existing install (writing the launcher first if it's missing or
+points at another install) — see Updating.
 
 ### Install from a checkout
 
@@ -48,12 +56,13 @@ npm install
 npm link        # puts `japa` on your PATH
 ```
 
-`japa update` works here too, in place of a manual `git pull`.
+`japa update` works here too, in place of a manual `git pull`, and the background service runs this checkout (see
+Service).
 
 ## First run
 
-The installer runs the setup wizard for you. Run it again any time — to finish a setup you skipped, or to change
-models, keys, extensions or the service later:
+The installer runs the setup wizard for you when it has a terminal. Run it again any time — to finish a setup you
+skipped, or to change models, keys, extensions or the service later:
 
 ```sh
 japa setup
@@ -70,10 +79,11 @@ The first run walks through, in order:
 3. **Extensions.** Anything that declares secrets or settings — Telegram, web search, the desktop, extensions the
    CoS built for you — can be configured here, or later by asking the CoS.
 4. **Service.** Optionally installs and starts `japa service` (see Running), so japa keeps running after you log
-   out.
+   out. Setup then waits for japa to answer and prints `japa status`; otherwise it tells you to run `japa daemon`.
 
 A rerun shows a menu (Models, Extensions, Service, Done) instead, with every current value preselected; Enter keeps
-it. If you changed anything and the service is running, it offers to restart it.
+it. When you're done, if the Models or Extensions step saved anything and the service is running, it offers to
+restart it.
 
 The wizard covers models, keys, extensions and the service. Other settings — `jobs.maxConcurrent`,
 `context.toolResultTokens`, `memory.*`, `safety.*`, `storage.adapter`, `secrets.adapter` — aren't in it; edit
@@ -83,17 +93,24 @@ Esc or Ctrl-C cancels the current step without saving; steps already completed s
 
 ### Non-interactive setup
 
-For scripted installs (CI, provisioning), set these and add `--non-interactive` to `install.sh` or `japa setup`
-(and `--no-service` too, if you don't want the background service):
+For scripted installs (CI, provisioning), install without setup, then run `japa setup --non-interactive` with the
+variables below set (add `--no-service` if you don't want the background service). `japa` may not be on the PATH
+of the shell that installed it yet, hence the full path:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh -s -- --non-interactive
+JAPA_PROVIDER=anthropic JAPA_MODEL=<model id> JAPA_API_KEY=<key> ~/.local/bin/japa setup --non-interactive
+```
 
 | Variable | What it does |
 | --- | --- |
 | `JAPA_PROVIDER` | The CoS model's provider, e.g. `anthropic` |
 | `JAPA_MODEL` | The CoS model's id |
-| `JAPA_API_KEY` | Its API key — stored the same way as the interactive prompt |
+| `JAPA_API_KEY` | Its API key (read only together with the two above) — stored the same way as the interactive prompt |
 
-Extensions aren't configured this way. `japa setup --non-interactive` exits with an error naming what's missing if
-`models.cos` is still unset afterwards.
+This sets `models.cos` and the key, installs the background service unless `--no-service`, and skips extensions.
+`japa setup` without a terminal (no tty) behaves the same way, with or without the flag. It exits with an error
+naming what's missing if `models.cos` is still unset afterwards.
 
 ## Running
 
@@ -119,12 +136,15 @@ the editor; Enter submits it and Esc dismisses it.
 
 `japa service <subcommand>` manages the background service — a systemd user unit on Linux, a launchd agent on
 macOS — so japa keeps running after you log out. `japa setup` offers to install it; this is the same thing by hand.
+It runs the `japa` launcher or, when the launcher doesn't run this checkout (one you `npm link`ed, say), this
+checkout's `src/cli/main.ts` directly on the Node you installed the service with; either way with the PATH (and
+`JAPA_HOME`, if set) of the shell you installed it from.
 
 | Subcommand | What it does |
 | --- | --- |
-| `install` | Write and enable the unit/agent, then start it |
+| `install` | Write and enable the unit/agent, then start it (refused while `japa daemon` runs in the foreground) |
 | `uninstall` | Stop and remove it |
-| `start`, `stop`, `restart` | Control it |
+| `start`, `stop`, `restart` | Control it (`start` is refused while `japa daemon` runs in the foreground) |
 | `status` | The service manager's state, then `japa status` if the socket answers |
 | `logs` | Tail its log (`journalctl --user -u japa -f` on Linux, `~/.japa/logs/daemon.log` on macOS) |
 
@@ -159,8 +179,11 @@ Fetches the branch you're on (`main` by default) and fast-forwards your checkout
 checkout are stashed first and restored after; a history that has diverged (local commits that aren't upstream)
 is refused rather than guessed at, leaving your checkout unchanged. It reinstalls dependencies if they changed,
 downloads a newer private Node.js if one is needed, and validates the result before doing anything else; on
-failure it rolls back to the commit you were on and says why. It then lists any new extension secrets or settings since your last update (the same
-step `japa setup` runs), then restarts the service (or tells you to restart `japa daemon` yourself).
+failure it rolls back to the commit you were on and says why (the step and, for a command that failed, the command
+and the end of its error output). It then lists what's new since your last update — new extensions, and new secrets
+or settings in existing ones — and, in a terminal, offers to configure them (the same step `japa setup` runs). Last,
+it restarts the service if it's running (a service you stopped stays stopped), or tells you to restart
+`japa daemon` yourself.
 
 | Flag | What it does |
 | --- | --- |
@@ -170,8 +193,9 @@ step `japa setup` runs), then restarts the service (or tells you to restart `jap
 | `--no-restart` | Update the files but leave the running service alone |
 
 Re-running `install.sh` does the same thing: it detects an existing install and runs `japa update` instead of
-cloning again. Your `~/.japa` data — settings, secrets, extensions, skills, workers — is never touched by an
-update, except to record which extensions it has offered to configure.
+cloning again (writing the launcher first if it's missing or points at another install). Your `~/.japa` data —
+settings, secrets, extensions, skills, workers — is never touched by an update, except to record which extensions
+it has told you about.
 
 ### Uninstall
 
@@ -179,10 +203,11 @@ update, except to record which extensions it has offered to configure.
 japa uninstall
 ```
 
-Stops and removes the service and the `japa` launcher, and removes the install directory (a checkout you cloned
-and linked yourself is left in place). Your data stays in `~/.japa`; the command prints where. Add `--purge` to
-delete that too, once you type `delete` to confirm. PATH lines `install.sh` added to your shell's rc file are left
-as they are.
+Stops and removes the service and the `japa` launcher (if it runs this install), and removes the install
+directory's `app/` and the private Node.js japa installed, then the directory itself once it's empty (a checkout you
+cloned and linked yourself is left in place). Your data stays in `~/.japa`; the command prints where. Add `--purge`
+to delete that too, once you type `delete` to confirm. The PATH line `install.sh` added to your shell's rc file is
+left as it is; the command names the file.
 
 ## Telegram
 
@@ -219,7 +244,7 @@ The code — japa's git checkout, and a private Node.js if one was installed —
 
 ```
 app/      git checkout of japa (the branch you installed, `main` by default)
-node/     a private Node.js, only if your system's was missing or older than 24
+node/     a private Node.js, only if your system's was missing, older than 24, or without npm
 ```
 
 The `japa` launcher (`~/.local/bin/japa`) is a small shell script with an absolute path to that Node and that
@@ -237,7 +262,7 @@ secrets/             secrets, one file per secret      (ignored by git)
 attachments/         images received over Telegram     (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
 logs/                service log, macOS only           (ignored by git)
-setup.json           extensions the setup wizard has already offered (ignored by git)
+setup.json           extensions `japa setup` and `japa update` have already told you about (ignored by git)
 state.db             conversations, jobs, memory, change log (SQLite; ignored by git)
 japa.sock            the socket `japa chat` and `japa status` connect to
 boots.json, daemon.lock, .cache/, node_modules/   runtime files
