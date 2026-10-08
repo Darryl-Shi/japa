@@ -243,13 +243,6 @@ Selected by `settings.secrets` (default: files in `~/.japa/secrets/`, mode
 600, outside git). Extensions read only the secret names their manifest
 lists.
 
-### 4.3 Extension-defined contracts
-
-An extension may define new contracts (with the same `Contract` shape, phase
-`runtime`); later extensions contribute to them. Example: `web` defines a
-`search-engine` contract so search backends are swappable. The kernel treats
-these exactly like the core seven.
-
 ### 4.4 Escape hatch: raw Pi Durable
 
 An extension may also include raw Pi Durable `sections`, `hooks`, `wraps`, and
@@ -272,9 +265,8 @@ defineJapaExtension({
   provides: {                         // keyed by contract name
     tool: [gcalList, gcalUpdate],
     // surface: [...], trigger: [...], provider: [...], environment: [...],
-    // storage: adapter, secrets: adapter, "search-engine": [...]
+    // storage: adapter, secrets: adapter
   },
-  contracts: [],                      // contracts this extension defines
   durable: { sections, hooks, wraps, tasks },   // escape hatch, optional
   secrets: ["gcal.token"],            // secret names it may read
   settings: Type.Object({ ... }),     // TypeBox schema for its settings
@@ -305,7 +297,7 @@ Boot:
 4. Open the harness with the storage, model registry, settings getters, and
    the kernel's `env` dispatcher.
 5. Activate `provider`, then `environment`, then `tool` (registry install),
-   then extension-defined contracts, then `trigger` and `surface`.
+   then `trigger` and `surface`.
 6. Ensure the root conversation (§5.4) and call `harness.resume()`, so pending
    tasks continue.
 
@@ -552,9 +544,8 @@ Pi Durable has no skills; japa adds them.
 
 Rebuilt on every install, reload, rollback, or content change: one line per
 extension `summary`, worker profiles with descriptions, active schedules,
-connected surfaces, available models, and the contracts (core and
-extension-defined) with one-line descriptions. Contract docs and authoring
-guides are skills (§11.2), not always-loaded context.
+connected surfaces, and available models. Contract docs and authoring guides
+are skills (§11.2), not always-loaded context.
 
 ### 9.3 Changes log
 
@@ -624,7 +615,7 @@ Extensions:
 - **Typecheck** (`tsc --noEmit`) and the extension's own tests (vitest).
 - **Manifest checks:** `summary` present; `examples` and `docs` present if it
   provides tools; tool description length limits; no unexpected tool-name
-  collisions; every `provides` key names a known contract and each
+  collisions; every `provides` key names a core contract and each
   contribution passes that contract's `validate`.
 - **Conformance:** `storage` and `environment` contributions run Pi Durable's
   conformance suites.
@@ -671,7 +662,7 @@ environment, tools, extensions, and skills must all resolve.
 | `file-secrets` | secrets | One file per secret in `~/.japa/secrets/`, mode 600. |
 | `gateway` | surface | Newline-delimited JSON over the Unix socket `~/.japa/japa.sock`; streams root agent events (`watchEvents`), `japa.jobs`, pending secret requests; accepts submit (input/steer/follow-up), abort, secret responses, job view attach. Includes the `japa chat` TUI client (pi-tui): thread on the left, live job board on the right, masked secret prompts. Closing the TUI does not stop the daemon. |
 | `schedule` | trigger, tool, durable | Durable cron and one-shot timers in `japa.schedules`; tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
-| `web` | tool; defines `search-engine` | `web_fetch` (no key) and `web_search` via the `search-engine` contract; the default engine asks for its key with `secret_request` on first use. |
+| `web` | tool | `web_fetch` (no key) and `web_search` (Brave; asks for its key with `secret_request` on first use). |
 
 With these defaults the CoS directly has `web_fetch`, `web_search`, the
 `schedule_*` tools, and built-in `read` (in its read-only environment).
@@ -687,8 +678,8 @@ Agent-facing skills (the self-model, loaded on demand):
 - `choosing-a-mechanism` — the ladder with worked examples.
 - `building-skills` — SKILL.md format, progressive disclosure, scripts.
 - `building-workers` — worker profile format and choices.
-- `building-extensions` — manifest, each core contract's API, defining new
-  contracts, the escape hatch, fake-model testing, `japa check`.
+- `building-extensions` — manifest, each core contract's API, the escape
+  hatch, fake-model testing, `japa check`.
 - `writing-job-briefs` — good briefs, choosing a worker, parallel jobs,
   follow-ups.
 - `reporting-changes` — the done / how-to-use / how-to-undo format.
@@ -719,7 +710,7 @@ extensions/sqlite/        storage
 extensions/file-secrets/  secrets
 extensions/gateway/       surface + TUI client
 extensions/schedule/      trigger + tools
-extensions/web/           tools + search-engine contract
+extensions/web/           tools
 workers/                  default worker profiles
 skills/                   default skills
 docs/superpowers/specs/
@@ -739,8 +730,7 @@ docs/superpowers/specs/
 
 vitest with pi-ai's faux provider (scripted model responses; no network):
 
-- Contracts: validation, activation order, cardinality (one boot adapter),
-  extension-defined contracts.
+- Contracts: validation, activation order, cardinality (one boot adapter).
 - Loader and boot: override order, hot reload, same-name replace, boot-phase
   changes apply only on restart.
 - Tool selection: root gets all extension tools and built-in `read`; worker

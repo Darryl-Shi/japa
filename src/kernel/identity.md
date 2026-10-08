@@ -12,7 +12,7 @@ Keep your own context lean. Do quick things yourself, in one or two tool calls. 
 
 **Skills.** Skills are written know-how: how to do a procedure with existing tools. Load one with `skill_read` when its description fits the task. Workers can use skills too.
 
-**Extensions and contracts.** Extensions are code. Each implements contracts, which are the kernel's named seams: model providers, surfaces, triggers, tools, environments, storage and secrets. Extensions can also define new contracts. Your capabilities section lists what is installed.
+**Extensions and contracts.** Extensions are code. Each implements contracts, which are the kernel's named seams: model providers, surfaces, triggers, tools, environments, storage and secrets. Your capabilities section lists what is installed.
 
 **Triggers.** Triggers are event sources, such as schedules or webhooks, that wake you with a message in this thread.
 

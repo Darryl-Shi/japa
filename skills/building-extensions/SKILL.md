@@ -40,7 +40,6 @@ export default defineJapaExtension({
 - `examples` (user requests it serves) and `docs` (its tools and their arguments): required when it
   provides tools.
 - `provides`: contributions as lists keyed by contract name: `{ tool: [...], trigger: [...] }`.
-- `contracts`: contracts this extension defines.
 - `durable`: `{ sections, hooks, wraps, tasks }`, Pi Durable parts (the escape hatch, below).
 - `secrets`: the secret names it may read, such as `"bank.apiKey"`.
 - `settings`: a `Type.Object(...)` schema for `settings.extensions.<name>`.
@@ -80,21 +79,12 @@ let ctx: KernelContext; // import type { KernelContext } from "japa/sdk"
 export default defineJapaExtension({ /* ... */ secrets: ["bank.apiKey"], setup: (c) => { ctx = c; } });
 ```
 
-A contract's `activate(contribution, ctx)` receives one too. When a secret is missing, reply telling
-the chief of staff to ask for it with `secret_request({ name, why })`.
-
-## Defining a contract
-
-Put a `Contract` (a type from `japa/sdk`) in `contracts`: `{ name, docs, phase: "runtime",
-cardinality: "many", validate, activate }`. `docs` is one agent-facing paragraph; `validate(c)`
-returns an error message or `undefined`; `activate(c, ctx)` sets the contribution up and returns a
-dispose function. Extensions then contribute with
-`provides: { "<contract>": [...] }`. Extension-defined contracts activate after tools and before
-triggers and surfaces. `web/index.ts` defines `search-engine` this way.
+When a secret is missing, reply telling the chief of staff to ask for it with
+`secret_request({ name, why })`.
 
 ## The escape hatch: `durable`
 
-When contracts aren't enough, use Pi Durable through `japa/sdk`'s `defineDoc`, `defineTask`,
+When the core contracts aren't enough, use Pi Durable through `japa/sdk`'s `defineDoc`, `defineTask`,
 `section`, `hook` (with `ToolTask` or `GenerationTask`) and `wrapTool`:
 - `sections`: text added to the system prompt (`section("name", async ({ read }, context) => ...)`).
 - `hooks`: run code around tool calls and generations.
