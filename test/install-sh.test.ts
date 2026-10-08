@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { launcherText } from "../src/cli/layout.ts";
+import { NODE_MARKER } from "../src/cli/node.ts";
 
 const INSTALL_SH = fileURLToPath(new URL("../install.sh", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("fixtures/mini-japa", import.meta.url));
@@ -157,6 +158,54 @@ test("a failed clone removes what it created", () => {
   expect(result.output).toContain("install failed at: clone");
 });
 
+test("a failed install leaves a node/ it didn't create", () => {
+  const home = tmp();
+  const dir = join(tmp(), "apps");
+  mkdirSync(join(dir, "node"), { recursive: true });
+  writeFileSync(join(dir, "node", "keep.txt"), "mine");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const result = runInstall(["--dir", dir, "--repo", join(tmp(), "nope.git"), "--non-interactive", "--skip-setup"], env);
+
+  expect(result.status).not.toBe(0);
+  expect(readFileSync(join(dir, "node", "keep.txt"), "utf8")).toBe("mine");
+});
+
+test("a node/ japa didn't install is never replaced", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "apps");
+  mkdirSync(join(dir, "node"), { recursive: true });
+  writeFileSync(join(dir, "node", "keep.txt"), "mine");
+  const fakeBin = tmp();
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\necho 20.0.0\n"); // too old: install.sh wants its own Node
+  chmodSync(join(fakeBin, "node"), 0o755);
+  const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh", JAPA_NODE_DIST: "http://127.0.0.1:9" };
+
+  const result = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+
+  expect(result.status).not.toBe(0);
+  expect(result.output).toContain(`${join(dir, "node")} exists and wasn't installed by japa`);
+  expect(readFileSync(join(dir, "node", "keep.txt"), "utf8")).toBe("mine");
+  expect(existsSync(join(dir, "app"))).toBe(false); // what this run did create is still cleaned up
+});
+
+test("a --dir whose app/ isn't a git checkout is refused", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "apps");
+  mkdirSync(join(dir, "app"), { recursive: true });
+  writeFileSync(join(dir, "app", "keep.txt"), "mine");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const result = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+
+  expect(result.status).not.toBe(0);
+  expect(result.output).toContain(`${join(dir, "app")} exists and isn't a japa checkout`);
+  expect(readFileSync(join(dir, "app", "keep.txt"), "utf8")).toBe("mine");
+  expect(existsSync(join(home, ".local", "bin", "japa"))).toBe(false);
+});
+
 test("an unsupported platform is refused", () => {
   const fakeBin = tmp();
   writeFileSync(join(fakeBin, "uname"), "#!/bin/sh\necho FreeBSD\n");
@@ -230,6 +279,7 @@ test("a system node below the minimum triggers a private download the launcher t
     const launcherPath = join(home, ".local", "bin", "japa");
     expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(join(dir, "node", "bin", "node"), join(dir, "app")));
     expect(execFileSync(launcherPath, ["--version"], { encoding: "utf8" })).toBe("japa 0.0.0 (fixture)\n");
+    expect(existsSync(join(dir, "node", NODE_MARKER))).toBe(true); // japa's, as src/cli/node.ts marks it
   } finally {
     close();
   }

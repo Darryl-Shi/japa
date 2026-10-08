@@ -4,6 +4,7 @@
 // With `--purge`, confirmation happens before anything is touched: an answer other than "delete" removes nothing.
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { launcherPointsAt, type Layout } from "./layout.ts";
+import { isPrivateNode } from "./node.ts";
 import { type ServiceEnv, uninstallService } from "./service.ts";
 
 export type UninstallOptions = {
@@ -25,10 +26,13 @@ export async function uninstall(layout: Layout, home: string, o: UninstallOption
   if (launcherPointsAt(layout)) rmSync(layout.launcher, { force: true });
 
   if (layout.installDir !== undefined) {
-    // Bound the blast radius to this install: remove only app/ and node/, and the install dir itself only once
-    // it's empty -- a dev checkout at e.g. ~/src/app must never take its sibling projects under ~/src with it.
+    // Bound the blast radius to this install: remove only app/ and japa's own node/, and the install dir itself
+    // only once it's empty -- a dev checkout at e.g. ~/src/app must never take its sibling projects under ~/src
+    // with it, nor a node/ beside it that japa didn't install.
     rmSync(layout.app, { recursive: true, force: true });
-    if (layout.nodeDir !== undefined) rmSync(layout.nodeDir, { recursive: true, force: true });
+    if (layout.nodeDir !== undefined && isPrivateNode(layout.nodeDir)) {
+      rmSync(layout.nodeDir, { recursive: true, force: true });
+    }
     if (existsSync(layout.installDir) && readdirSync(layout.installDir).length === 0) {
       rmSync(layout.installDir, { recursive: true, force: true });
     }

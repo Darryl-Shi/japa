@@ -6,7 +6,17 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { dropOldNode, ensurePrivateNode, major, MIN_NODE_MAJOR, nodeDist, restoreNode, verifySha256 } from "../src/cli/node.ts";
+import {
+  dropOldNode,
+  ensurePrivateNode,
+  isPrivateNode,
+  major,
+  MIN_NODE_MAJOR,
+  NODE_MARKER,
+  nodeDist,
+  restoreNode,
+  verifySha256,
+} from "../src/cli/node.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "japa-node-"));
 
@@ -72,6 +82,7 @@ test("ensurePrivateNode installs from a mirror and keeps the old one aside", asy
 
   const nodeDir = join(tmp(), "node");
   mkdirSync(nodeDir, { recursive: true });
+  writeFileSync(join(nodeDir, NODE_MARKER), "");
   writeFileSync(join(nodeDir, "marker"), "old node");
 
   const { baseUrl, close } = await serve({
@@ -83,9 +94,23 @@ test("ensurePrivateNode installs from a mirror and keeps the old one aside", asy
     expect(node).toBe(join(nodeDir, "bin", "node"));
     expect(execFileSync(node, { encoding: "utf8" }).trim()).toBe("v9.9.9");
     expect(readFileSync(join(`${nodeDir}.old`, "marker"), "utf8")).toBe("old node");
+    expect(isPrivateNode(nodeDir)).toBe(true); // marked as japa's, so a later update or uninstall may replace it
   } finally {
     close();
   }
+});
+
+test("ensurePrivateNode never replaces a node/ japa didn't install", async () => {
+  const nodeDir = join(tmp(), "node");
+  mkdirSync(nodeDir, { recursive: true });
+  writeFileSync(join(nodeDir, "keep.txt"), "mine");
+
+  await expect(ensurePrivateNode("9.9.9", nodeDir, { baseUrl: "http://127.0.0.1:9", platform: "linux", arch: "x64" })).rejects.toThrow(
+    `${nodeDir} exists and wasn't installed by japa`,
+  );
+  expect(readFileSync(join(nodeDir, "keep.txt"), "utf8")).toBe("mine");
+  expect(existsSync(`${nodeDir}.old`)).toBe(false);
+  expect(isPrivateNode(nodeDir)).toBe(false);
 });
 
 test("ensurePrivateNode with a bad checksum leaves nodeDir untouched", async () => {
@@ -95,6 +120,7 @@ test("ensurePrivateNode with a bad checksum leaves nodeDir untouched", async () 
 
   const nodeDir = join(tmp(), "node");
   mkdirSync(nodeDir, { recursive: true });
+  writeFileSync(join(nodeDir, NODE_MARKER), "");
   writeFileSync(join(nodeDir, "marker"), "old node");
 
   const { baseUrl, close } = await serve({

@@ -76,7 +76,15 @@ ensure_node() {
   download_node
 }
 
+# A node/ is japa's own private Node only if it holds this marker (src/cli/node.ts's NODE_MARKER): any other
+# node/ under the install dir is the user's, and is never replaced or removed.
+NODE_MARKER=.japa-node
+
 download_node() {
+  if [ -e "$NODE_DIR" ] && [ ! -e "$NODE_DIR/$NODE_MARKER" ]; then
+    say_err "$NODE_DIR exists and wasn't installed by japa; remove it or choose another --dir"
+    exit 1
+  fi
   say "Downloading Node.js"
   node_ver=$(cat "$APP_DIR/.node-version")
   dist="${OS}-${ARCH}"
@@ -107,9 +115,11 @@ download_node() {
     exit 1
   fi
 
+  NODE_CREATED=1
   rm -rf "$NODE_DIR"
   mkdir -p "$NODE_DIR"
   tar -xzf "$tmp_tar" -C "$NODE_DIR" --strip-components=1
+  : >"$NODE_DIR/$NODE_MARKER"
   rm -f "$tmp_tar"
   NODE_BIN="$NODE_DIR/bin/node"
 }
@@ -212,6 +222,9 @@ fi
 APP_DIR="$DIR/app"
 NODE_DIR="$DIR/node"
 LAUNCHER="$HOME/.local/bin/japa"
+# What this run created, so a failure removes exactly that (design doc §3.3) and nothing that was already there.
+APP_CREATED=0
+NODE_CREATED=0
 
 # --- Step 3: existing install -> upgrade path ---
 if [ -e "$APP_DIR/.git" ]; then
@@ -230,6 +243,11 @@ if [ -e "$APP_DIR/.git" ]; then
   exit "$status"
 fi
 
+if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; then
+  say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
+  exit 1
+fi
+
 # --- Steps 4-7: fresh install. On failure, remove the app/ and node/ this run created. ---
 mkdir -p "$DIR"
 STEP=""
@@ -237,7 +255,8 @@ cleanup() {
   code=$?
   trap - EXIT
   if [ "$code" -ne 0 ]; then
-    rm -rf "$APP_DIR" "$NODE_DIR"
+    if [ "$APP_CREATED" -eq 1 ]; then rm -rf "$APP_DIR"; fi
+    if [ "$NODE_CREATED" -eq 1 ]; then rm -rf "$NODE_DIR"; fi
     say_err "install failed at: $STEP"
   fi
   exit "$code"
@@ -246,6 +265,7 @@ trap cleanup EXIT
 
 STEP="clone"
 say "Cloning $REPO"
+APP_CREATED=1
 git clone --branch "$BRANCH" "$REPO" "$APP_DIR"
 
 STEP="node"

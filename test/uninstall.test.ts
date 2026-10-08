@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
 import type { Exec, ExecResult } from "../src/cli/exec.ts";
 import { layoutOf, launcherText, writeLauncher } from "../src/cli/layout.ts";
+import { NODE_MARKER } from "../src/cli/node.ts";
 import type { ServiceEnv } from "../src/cli/service.ts";
 import { uninstall } from "../src/cli/uninstall.ts";
 import { tempHome } from "./helpers.ts";
@@ -126,6 +127,7 @@ test("a sibling checkout outside app/ and node/ survives", async () => {
   const layout = layoutOf(join(src, "app"), root);
   mkdirSync(layout.app, { recursive: true });
   mkdirSync(layout.nodeDir!, { recursive: true });
+  writeFileSync(join(layout.nodeDir!, NODE_MARKER), "");
   const sibling = join(src, "other");
   mkdirSync(sibling, { recursive: true });
   writeFileSync(join(sibling, "marker"), "keep me");
@@ -138,4 +140,18 @@ test("a sibling checkout outside app/ and node/ survives", async () => {
   expect(readFileSync(join(sibling, "marker"), "utf8")).toBe("keep me");
   // installDir isn't empty (the sibling remains), so it's left in place too.
   expect(existsSync(layout.installDir!)).toBe(true);
+});
+
+test("a node/ japa didn't install survives", async () => {
+  const root = tmp();
+  const home = tempHome();
+  const layout = layoutOf(join(root, "apps", "app"), root);
+  mkdirSync(layout.app, { recursive: true });
+  mkdirSync(layout.nodeDir!, { recursive: true });
+  writeFileSync(join(layout.nodeDir!, "keep.txt"), "mine");
+
+  await uninstall(layout, home, { purge: false, confirm: async () => "delete", serviceEnv: fakeServiceEnv(), log: () => {} });
+
+  expect(existsSync(layout.app)).toBe(false);
+  expect(readFileSync(join(layout.nodeDir!, "keep.txt"), "utf8")).toBe("mine");
 });

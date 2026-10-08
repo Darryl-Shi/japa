@@ -6,6 +6,15 @@ import { dirname, join } from "node:path";
 
 export const MIN_NODE_MAJOR = 24;
 
+/** The file marking a `node/` dir as japa's own private Node (install.sh writes it too): only such a dir is ever
+ * replaced or removed -- a `node/` the user had under the install dir is theirs. */
+export const NODE_MARKER = ".japa-node";
+
+/** Whether `nodeDir` holds a private Node japa installed (see `NODE_MARKER`). */
+export function isPrivateNode(nodeDir: string): boolean {
+  return existsSync(join(nodeDir, NODE_MARKER));
+}
+
 /** The major version number from `v24.1.0` or `24.1.0`. */
 export function major(version: string): number {
   const bare = version.startsWith("v") ? version.slice(1) : version;
@@ -45,8 +54,9 @@ async function fetchOrThrow(url: string): Promise<Response> {
 /**
  * Downloads and verifies `node-v<version>-<dist>.tar.gz` from `<baseUrl>/v<version>/` against its `SHASUMS256.txt`,
  * extracts it into `<nodeDir>.new` (stripping the tarball's top-level dir), moves the current `nodeDir` aside to
- * `<nodeDir>.old` (if one exists), and promotes `<nodeDir>.new` to `nodeDir`. Returns the new `node` binary's path.
- * On failure, `nodeDir` (and any existing `.old`) are left untouched.
+ * `<nodeDir>.old` (if one exists), and promotes `<nodeDir>.new` to `nodeDir`, marked as japa's. Returns the new
+ * `node` binary's path. On failure, `nodeDir` (and any existing `.old`) are left untouched; a `nodeDir` japa didn't
+ * install is refused before anything is downloaded.
  */
 export async function ensurePrivateNode(
   version: string,
@@ -61,6 +71,7 @@ export async function ensurePrivateNode(
   const newDir = `${nodeDir}.new`;
   const oldDir = `${nodeDir}.old`;
 
+  if (existsSync(nodeDir) && !isPrivateNode(nodeDir)) throw new Error(`${nodeDir} exists and wasn't installed by japa`);
   mkdirSync(dirname(nodeDir), { recursive: true });
   const tarResponse = await fetchOrThrow(`${dir}/${name}`);
   writeFileSync(tarball, Buffer.from(await tarResponse.arrayBuffer()));
@@ -70,6 +81,7 @@ export async function ensurePrivateNode(
     rmSync(newDir, { recursive: true, force: true });
     mkdirSync(newDir, { recursive: true });
     execFileSync("tar", ["-xzf", tarball, "-C", newDir, "--strip-components=1"]);
+    writeFileSync(join(newDir, NODE_MARKER), "");
   } finally {
     rmSync(tarball, { force: true });
   }
