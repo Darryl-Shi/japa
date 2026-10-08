@@ -55,7 +55,7 @@ extensions/gateway  → submits with origin { surface: "gateway" }; otherwise un
 ```
 
 Contract activation order becomes
-`provider, environment, tool, <extension-defined>, trigger, surface, messaging`.
+`provider, environment, tool, trigger, surface, messaging`.
 
 ## 3. Origin routing (core `surface` contract)
 
