@@ -206,6 +206,7 @@ test("create: dates make an all-day event, attendees become objects", async () =
       "POST",
       "calendars/primary/events",
       {
+        query: { sendUpdates: "all" },
         body: {
           summary: "Offsite",
           start: { date: "2026-10-20" },
@@ -231,6 +232,7 @@ test("create: times become dateTime, with the time zone only when given", async 
   await calendar(api, { ...call, start: "2026-10-20T10:00:00Z", end: "2026-10-20T11:00:00Z" }, now);
   expect(calls.map((c) => c[2])).toEqual([
     {
+      query: { sendUpdates: "all" },
       body: {
         summary: "Call",
         start: { dateTime: "2026-10-20T10:00:00", timeZone: "Europe/Paris" },
@@ -238,6 +240,7 @@ test("create: times become dateTime, with the time zone only when given", async 
       },
     },
     {
+      query: { sendUpdates: "all" },
       body: { summary: "Call", start: { dateTime: "2026-10-20T10:00:00Z" }, end: { dateTime: "2026-10-20T11:00:00Z" } },
     },
   ]);
@@ -259,7 +262,7 @@ test("update: PATCH with only the given fields", async () => {
     [
       "PATCH",
       "calendars/primary/events/e%2F1",
-      { body: { start: { dateTime: "2026-10-09T16:00:00Z" }, location: "Room 5" } },
+      { query: { sendUpdates: "all" }, body: { start: { dateTime: "2026-10-09T16:00:00Z" }, location: "Room 5" } },
     ],
   ]);
   expect(out).toBe("Updated Standup (id e/1)");
@@ -272,7 +275,10 @@ test("update: all-day dates, attendees, and nothing to change", async () => {
     { action: "update", id: "e1", calendar: "c@x", end: "2026-10-18", attendees: ["z@example.com"] },
     now,
   );
-  expect(calls[0][2]).toEqual({ body: { end: { date: "2026-10-18" }, attendees: [{ email: "z@example.com" }] } });
+  expect(calls[0][2]).toEqual({
+    query: { sendUpdates: "all" },
+    body: { end: { date: "2026-10-18" }, attendees: [{ email: "z@example.com" }] },
+  });
   await expect(calendar(api, { action: "update", id: "e1" }, now)).rejects.toThrow(
     new GoogleError("update needs id and a field to change"),
   );
@@ -284,7 +290,7 @@ test("update: all-day dates, attendees, and nothing to change", async () => {
 test("delete: DELETE the event", async () => {
   const { api, calls } = fake({ "DELETE calendars/primary/events/e1": undefined });
   expect(await calendar(api, { action: "delete", id: "e1" }, now)).toBe("Deleted e1.");
-  expect(calls).toEqual([["DELETE", "calendars/primary/events/e1", undefined]]);
+  expect(calls).toEqual([["DELETE", "calendars/primary/events/e1", { query: { sendUpdates: "all" } }]]);
   await expect(calendar(api, { action: "delete" }, now)).rejects.toThrow(new GoogleError("delete needs id"));
 });
 
@@ -349,6 +355,20 @@ test("freebusy: several people in a given zone; free and unavailable calendars",
       "b@example.com: free\n" +
       "c@example.com: unavailable (notFound)",
   );
+});
+
+test("freebusy: the asked zone formats times when the response has none", async () => {
+  const { api } = fake({
+    "POST freeBusy": {
+      calendars: { primary: { busy: [{ start: "2026-10-09T15:00:00Z", end: "2026-10-09T16:00:00Z" }] } },
+    },
+  });
+  const out = await calendar(
+    api,
+    { action: "freebusy", from: "2026-10-09", to: "2026-10-10", timeZone: "Asia/Tokyo" },
+    now,
+  );
+  expect(out).toBe("primary: busy Oct 10, 2026, 12:00 AM–Oct 10, 2026, 1:00 AM");
 });
 
 test("freebusy needs from and to", async () => {

@@ -40,7 +40,8 @@ export const CALENDAR_DESCRIPTION = [
     "given fields change; attendees replaces the list",
   "delete { id, calendar? }",
   "freebusy { from, to, emails?, timeZone? } — busy times of people's calendars (default the user's)",
-  "Event ids come from earlier list results; calendar ids from calendars.",
+  "Event ids come from earlier list results; calendar ids from calendars. Attendees are emailed on create, update " +
+    "and delete.",
 ].join("\n");
 
 type When = { date?: string; dateTime?: string; timeZone?: string };
@@ -134,26 +135,29 @@ function fields(args: CalendarArgs): Record<string, unknown> {
   return body;
 }
 
+/** Changes email the attendees: invitations, updates, cancellations. */
+const NOTIFY = { sendUpdates: "all" };
+
 /** "<summary> (id <id>) <link>", the link when Google gives one. */
 const named = (event: Partial<Event>) =>
   [`${event.summary ?? "(no title)"} (id ${event.id})`, event.htmlLink].filter(Boolean).join(" ");
 
 async function create(api: Api, args: CalendarArgs): Promise<string> {
   if (!args.summary || !args.start || !args.end) throw new GoogleError("create needs summary, start and end");
-  const made = await api.json<Event>("POST", events(args.calendar), { body: fields(args) });
+  const made = await api.json<Event>("POST", events(args.calendar), { query: NOTIFY, body: fields(args) });
   return `Created ${named(made)}`;
 }
 
 async function update(api: Api, args: CalendarArgs): Promise<string> {
   const body = fields(args);
   if (!args.id || Object.keys(body).length === 0) throw new GoogleError("update needs id and a field to change");
-  const changed = await api.json<Event>("PATCH", events(args.calendar, args.id), { body });
+  const changed = await api.json<Event>("PATCH", events(args.calendar, args.id), { query: NOTIFY, body });
   return `Updated ${named(changed)}`;
 }
 
 async function remove(api: Api, args: CalendarArgs): Promise<string> {
   if (!args.id) throw new GoogleError("delete needs id");
-  await api.json("DELETE", events(args.calendar, args.id));
+  await api.json("DELETE", events(args.calendar, args.id), { query: NOTIFY });
   return `Deleted ${args.id}.`;
 }
 
