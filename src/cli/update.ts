@@ -8,7 +8,7 @@ import { foregroundPid, waitForDaemon } from "./daemon.ts";
 import { exec, type ExecResult } from "./exec.ts";
 import { APP, launcherPointsAt, layoutOf, writeLauncher } from "./layout.ts";
 import { dropOldNode, ensurePrivateNode, major, restoreNode } from "./node.ts";
-import { isInstalled, restartService, serviceEnv } from "./service.ts";
+import { restartService, serviceEnv, type ServiceEnv, serviceState } from "./service.ts";
 
 export type UpdateOptions = {
   app: string;
@@ -39,6 +39,9 @@ export class UpdateFailed extends Error {}
 
 /** `git stash` writes commits, so it needs an identity: an install's user may have no git config at all. */
 const GIT_CONFIG = ["-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false"];
+
+/** As the launcher runs japa: without Node's "SQLite is an experimental feature" warning on every run. */
+const NO_WARNINGS = "--disable-warning=ExperimentalWarning";
 
 const short = (sha: string) => sha.slice(0, 7);
 const bare = (version: string) => (version.startsWith("v") ? version.slice(1) : version);
@@ -100,26 +103,34 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
       if (r.code !== 0) throw commandFailed("npm", ["ci"], r);
     },
     validate: async (app, node) => {
-      const args = [join(app, "src/cli/main.ts"), "--version"];
+      const args = [NO_WARNINGS, join(app, "src/cli/main.ts"), "--version"];
       const r = await exec(node, args);
       if (r.code !== 0) throw commandFailed(node, args, r);
     },
     baseline: async (home) => markOffered(home, configurable((await openSetupContext(home)).extensions)),
     whatsNew: async (app, node, interactive) => {
-      const args = [join(app, "src/cli/main.ts"), "setup", "--whats-new"];
+      const args = [NO_WARNINGS, join(app, "src/cli/main.ts"), "setup", "--whats-new"];
       if (!interactive) args.push("--non-interactive");
       await exec(node, args, { stdio: "inherit" });
     },
-    restart: async (log) => {
-      const env = serviceEnv(layoutOf(o.app, o.userHome));
-      if (isInstalled(env)) {
-        await restartService(env);
-        if ((await waitForDaemon(o.home)) === undefined) log("japa didn't answer within 30 s; see: japa service logs");
-        return;
-      }
-      if (foregroundPid(o.home) !== undefined) log("restart `japa daemon` to apply");
-    },
+    restart: (log) => restartAfterUpdate(serviceEnv(layoutOf(o.app, o.userHome)), o.home, log),
   };
+}
+
+/**
+ * Step 8 (design doc §5.1): restarts the service when it's running and waits for it to answer. A service the user
+ * stopped stays stopped, and a foreground `japa daemon` is never killed -- both are only told about.
+ */
+export async function restartAfterUpdate(env: ServiceEnv, home: string, log: (s: string) => void, waitMs?: number): Promise<void> {
+  const state = await serviceState(env);
+  if (state === "active") {
+    await restartService(env);
+    if ((await waitForDaemon(home, waitMs)) === undefined) log("japa didn't answer within 30 s; see: japa service logs");
+  } else if (foregroundPid(home) !== undefined) {
+    log("restart `japa daemon` to apply");
+  } else if (state === "inactive") {
+    log("japa's service is stopped, so it was left stopped; start it with: japa service start");
+  }
 }
 
 /** Updates the checkout at `o.app` (design doc §5.1). Throws `UpdateFailed` with the reason; nothing is left half-done. */

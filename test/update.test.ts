@@ -3,8 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFile
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
+import type { Exec } from "../src/cli/exec.ts";
 import { launcherText, layoutOf, writeLauncher } from "../src/cli/layout.ts";
-import { update, type UpdateDeps, type UpdateOptions } from "../src/cli/update.ts";
+import { type ServiceEnv, unitPath } from "../src/cli/service.ts";
+import { restartAfterUpdate, update, type UpdateDeps, type UpdateOptions } from "../src/cli/update.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "japa-update-"));
 
@@ -282,6 +284,25 @@ test("a new version that crashes reports the command and its error, not Node's t
   expect(head(c.app)).toBe(old);
 });
 
+test("the new code runs with Node's experimental warnings off", async () => {
+  const c = checkout();
+  const runs = join(c.root, "runs.txt");
+  // A main.ts that appends "<node flags> | <args>" to runs.txt each time it runs.
+  const main = [
+    'import { appendFileSync } from "node:fs";',
+    `appendFileSync(${JSON.stringify(runs)}, process.execArgv.join(" ") + " | " + process.argv.slice(2).join(" ") + "\\n");`,
+  ].join("\n");
+  push(c, "records its runs", { "src/cli/main.ts": main });
+  const h = harness(c, { node: process.execPath });
+  const { validate: _v, whatsNew: _w, ...deps } = h.deps; // the real ones: run the new main.ts
+
+  await update(h.o, deps);
+
+  expect(readFileSync(runs, "utf8")).toBe(
+    "--disable-warning=ExperimentalWarning | --version\n--disable-warning=ExperimentalWarning | setup --whats-new --non-interactive\n",
+  );
+});
+
 test("a rollback that fails itself keeps the original error and the local edits", async () => {
   const c = checkout();
   const old = head(c.app);
@@ -489,4 +510,73 @@ test("a detached HEAD is refused", async () => {
   const h = harness(c);
 
   await expect(update(h.o, h.deps)).rejects.toThrow("not on a branch");
+});
+
+/** A Linux `ServiceEnv` whose `systemctl --user is-active japa` answers `state`, with the unit installed unless
+ * `state` is "not installed"; `calls` records every command. */
+function service(state: "active" | "inactive" | "not installed") {
+  const calls: string[] = [];
+  const exec: Exec = async (cmd, args) => {
+    calls.push([cmd, ...args].join(" "));
+    return { code: 0, stdout: args.includes("is-active") ? `${state}\n` : "", stderr: "" };
+  };
+  const env: ServiceEnv = {
+    platform: "linux",
+    userHome: tmp(),
+    configHome: tmp(),
+    command: ["/home/x/.local/bin/japa", "daemon"],
+    japaHome: tmp(),
+    customHome: false,
+    path: "/usr/bin",
+    user: "alice",
+    uid: 1000,
+    exec,
+  };
+  if (state !== "not installed") {
+    mkdirSync(dirname(unitPath(env)), { recursive: true });
+    writeFileSync(unitPath(env), "placeholder");
+  }
+  return { env, calls };
+}
+
+test("a running service is restarted", async () => {
+  const { env, calls } = service("active");
+  const logs: string[] = [];
+
+  await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+
+  expect(calls).toContain("systemctl --user restart japa");
+  expect(logs).toEqual(["japa didn't answer within 30 s; see: japa service logs"]); // nothing listens in this test
+});
+
+test("a stopped service is left stopped", async () => {
+  const { env, calls } = service("inactive");
+  const logs: string[] = [];
+
+  await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+
+  expect(calls).not.toContain("systemctl --user restart japa");
+  expect(logs).toEqual(["japa's service is stopped, so it was left stopped; start it with: japa service start"]);
+});
+
+test("a foreground daemon is told about, never restarted", async () => {
+  const { env, calls } = service("inactive");
+  const home = tmp();
+  writeFileSync(join(home, "daemon.lock"), String(process.pid));
+  const logs: string[] = [];
+
+  await restartAfterUpdate(env, home, (s) => logs.push(s), 50);
+
+  expect(calls).not.toContain("systemctl --user restart japa");
+  expect(logs).toEqual(["restart `japa daemon` to apply"]);
+});
+
+test("no service and no daemon: nothing to restart", async () => {
+  const { env, calls } = service("not installed");
+  const logs: string[] = [];
+
+  await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+
+  expect(calls).toEqual([]);
+  expect(logs).toEqual([]);
 });
