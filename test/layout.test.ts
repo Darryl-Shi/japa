@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,4 +62,11 @@ test("japa --version prints the version and sha", () => {
   expect(execFileSync(process.execPath, ["src/cli/main.ts", "--version"], { encoding: "utf8" })).toMatch(
     /^japa 0\.1\.0 \([0-9a-f]{7,}\)\n$/,
   );
+});
+
+test("japa's usage lists --version", () => {
+  const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "src/cli/main.ts"], { encoding: "utf8" });
+
+  expect(r.status).toBe(1);
+  expect(r.stderr).toMatch(/^ {2}--version +Print the version and git commit$/m);
 });

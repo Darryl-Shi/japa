@@ -37,7 +37,8 @@ Commands:
   update [--check] [--branch <b>] [--to <sha>] [--no-restart]
            Update japa to origin's latest commit and restart it
   uninstall [--purge]
-           Remove japa; --purge also deletes the japa home once you type "delete"`;
+           Remove japa; --purge also deletes the japa home once you type "delete"
+  --version  Print the version and git commit`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
