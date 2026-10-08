@@ -77,15 +77,18 @@ export function held() {
   return { wait, release: () => release(), started: () => started };
 }
 
-/** The CoS's system prompt on its next request. */
+/** The CoS's system prompt on its next request; a background reflection that joins in is answered too. */
 export async function system(daemon: Daemon, faux: FauxProviderHandle) {
   let text = "";
-  faux.setResponses([
-    ({ messages }) => {
-      text = getSystemMessageText(messages.findLast((m) => m.role === "system")!);
-      return say("ok");
-    },
-  ]);
+  const step: FauxResponseFactory = ({ messages }) => {
+    const prompt = getSystemMessageText(messages.findLast((m) => m.role === "system")!);
+    if (prompt.startsWith("You reflect")) {
+      return fauxAssistantMessage([fauxToolCall("save", { facts: [], episode: "e" })], { stopReason: "toolUse" });
+    }
+    text = prompt;
+    return say("ok");
+  };
+  faux.setResponses(Array.from({ length: 5 }, () => step));
   await ask(daemon, "hi");
   return text;
 }

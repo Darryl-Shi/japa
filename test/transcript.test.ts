@@ -4,7 +4,7 @@ import { type AgentEvent, CompactionEntry } from "@earendil-works/pi-durable";
 import { expect, test, vi } from "vitest";
 import { connect } from "../extensions/gateway/client.ts";
 import { applyEvents, type Transcript } from "../extensions/gateway/transcript.ts";
-import { bootTest } from "./helpers.ts";
+import { bootTest, carryOver } from "./helpers.ts";
 import { ask, script } from "./jobs-helpers.ts";
 
 test("transcript shows the exchange from real gateway events", async () => {
@@ -26,6 +26,39 @@ test("transcript shows the exchange from real gateway events", async () => {
   );
   expect(t.busy).toBe(false);
   client.close();
+  await daemon.close();
+});
+
+test("surfaces keep the whole history and hide the carry-over", async () => {
+  const { daemon, faux, home } = await bootTest();
+  script(faux, () => undefined);
+  const attach = async () => {
+    const client = await connect(home);
+    const view = { t: { lines: [], streaming: "", busy: false } as Transcript, client, attached: false };
+    client.onMessage((m) => {
+      if (m.type === "events") view.t = applyEvents(view.t, m.events);
+      view.attached = true;
+    });
+    client.send({ type: "attach" });
+    return view;
+  };
+  const live = await attach();
+  await vi.waitFor(() => expect(live.attached).toBe(true));
+  await ask(daemon, "before");
+  await carryOver(daemon);
+  await ask(daemon, "after");
+  const later = await attach();
+
+  const expected = [
+    { kind: "user", text: "before" },
+    { kind: "assistant", text: "ok" },
+    { kind: "user", text: "after" },
+    { kind: "assistant", text: "ok" },
+  ];
+  await vi.waitFor(() => expect(live.t.lines).toEqual(expected));
+  await vi.waitFor(() => expect(later.t.lines).toEqual(expected));
+  live.client.close();
+  later.client.close();
   await daemon.close();
 });
 

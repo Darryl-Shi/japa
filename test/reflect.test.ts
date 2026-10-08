@@ -14,7 +14,7 @@ import { expect, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { reflectDelay, unreflectedTurns } from "../src/kernel/memory/reflect.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
-import { bootTest, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootTest, carryOver, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, say, textOf, texts } from "./jobs-helpers.ts";
 
 type Respond = (
@@ -52,6 +52,7 @@ test("reflection saves facts and an episode and advances the cursor", async () =
     }
   });
   await ask(daemon, "I'm Ada, I prefer short answers");
+  await carryOver(daemon);
   await daemon.reflect();
 
   const saved = await memory(daemon);
@@ -84,6 +85,7 @@ test("reflection does not change the root's context", async () => {
   const { daemon, faux } = await bootTest();
   route(faux, (system) => (system.startsWith("You reflect") ? save(facts()) : undefined));
   await ask(daemon, "hello");
+  await carryOver(daemon);
   const before = (await daemon.root.context(ctx)).messages.length;
   await daemon.reflect();
   expect((await daemon.root.context(ctx)).messages.length).toBe(before);
@@ -101,7 +103,9 @@ test("a long range is reflected in chunks, oldest first", async () => {
     }
   });
   await ask(daemon, `A ${"x".repeat(5000)}`);
+  await carryOver(daemon);
   await ask(daemon, `B ${"y".repeat(5000)}`);
+  await carryOver(daemon);
   await daemon.reflect();
 
   expect(prompts).toHaveLength(2);

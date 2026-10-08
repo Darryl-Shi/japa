@@ -38,6 +38,7 @@ import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./mem
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { watchResets } from "./reset.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { settingsTools } from "./settings-tools.ts";
@@ -274,7 +275,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const reflect = async () => {
       await opened.waitForTask(await startReflect(root), ctx);
     };
-    if (reflectDelay(await unreflectedTurns(opened, root)) === 0) void reflect().catch(() => {});
+    // Reflection follows the resets: now once enough turns are unreflected, otherwise after 15 quiet minutes.
+    let quiet: ReturnType<typeof setTimeout> | undefined;
+    const afterReset = async () => {
+      clearTimeout(quiet);
+      const delay = reflectDelay(await unreflectedTurns(opened, root));
+      if (delay === 0) await reflect();
+      else if (delay !== undefined) quiet = setTimeout(() => void reflect().catch(() => {}), delay).unref();
+    };
+    const resets = await watchResets(opened, root, afterReset);
+    void afterReset().catch(() => {}); // at boot, for the turns the last run left unreflected
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
     safety.scheduleGood(); // a pending tag doesn't survive a restart
 
@@ -289,6 +299,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       markGood: safety.markGood,
       close: async () => {
         clearTimeout(stayedUp);
+        clearTimeout(quiet);
+        await resets.stop();
         safety.close();
         try {
           await rt.dispose((c) => !isAdapter(c));

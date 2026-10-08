@@ -108,11 +108,13 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         const from = memory.reflectedThrough !== undefined ? ((memory.reflectedThrough + 1) as EntryId) : undefined;
 
         // Read-only: finds this invocation's chunk, or ends the task at once when nothing is left to reflect on.
-        let batch: Chunk | undefined;
+        let batch: (Chunk & { through: EntryId }) | undefined;
         await runtime.commit(async (tx) => {
-          const found = chunk(await drain(tx, from), budget);
+          const entries = await drain(tx, from);
+          const found = chunk(entries, budget);
           if (found.taken.length === 0) return { status: "terminal", outcome: { status: "completed", result: null } };
-          batch = found;
+          // The cursor covers what follows the last taken entry as well: the resets and summaries it never renders.
+          batch = { ...found, through: (found.more ? found.taken.at(-1)! : entries.at(-1)!).id };
           return undefined;
         }, context);
         if (batch === undefined) return;
@@ -132,7 +134,7 @@ export function reflection({ models, settings }: { models: Models; settings: Set
           memory.facts = truncateToCap(memory.facts, settings.memory);
         }
         memory.episodes.push({ id: String(memory.nextId++), at: now, text: saved.episode });
-        memory.reflectedThrough = piece.taken.at(-1)!.id;
+        memory.reflectedThrough = piece.through;
 
         // One commit saves the memory and either continues with the next chunk or ends the task. `through` marks
         // the checkpoint as changed (it differs from the previous one), so the scheduler keeps the task running.

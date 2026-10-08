@@ -1,4 +1,6 @@
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
+import { type EntryRecord, ResetEntry } from "@earendil-works/pi-durable";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +35,17 @@ export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 
     if (Date.now() > deadline) throw new Error("waitFor timed out");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/** The carry-over of the latest reset, waiting until the turn in flight has reset. */
+export async function carryOver(daemon: Daemon): Promise<string | undefined> {
+  let newest: EntryRecord | undefined;
+  await waitFor(async () => {
+    newest = (await daemon.root.entries({}, 1, undefined, ctx)).items[0];
+    return newest?.kind === ResetEntry.kind;
+  });
+  const content = newest!.model?.[0]?.content;
+  return typeof content === "string" ? content : undefined;
 }
 
 /** Boots a daemon in a temp home on in-memory storage, with the faux model as `models.cos`. */
