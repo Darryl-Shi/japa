@@ -8,6 +8,10 @@ set -eu
 # a prefix of function definitions and never reaches the final `main "$@"`, so nothing destructive ever runs.
 main() {
 
+# dash runs the EXIT trap only on exit, not when a signal kills it: turn Ctrl-C, a closed terminal or a kill into
+# an exit, so a fresh install interrupted mid-way still removes what it created.
+trap 'exit 130' INT TERM HUP
+
 say() {
   printf '==> %s\n' "$1"
 }
@@ -61,19 +65,27 @@ sha256_of() {
   fi
 }
 
-# Sets NODE_BIN to an absolute path of a Node >= 24: the one on PATH if it qualifies, else a private download
-# into $NODE_DIR (design doc §3.1 step 5).
+# Sets NODE_BIN to an absolute path of a Node >= 24: the one on PATH if it qualifies, else japa's private Node in
+# $NODE_DIR -- the one a previous run left there when it's still good (a rerun doesn't download it again), else a
+# fresh download (design doc §3.1 step 5).
 NODE_BIN=""
 ensure_node() {
-  if command -v node >/dev/null 2>&1; then
-    node_version=$(node -p 'process.versions.node' 2>/dev/null || echo 0.0.0)
-    node_major=${node_version%%.*}
-    if [ "$node_major" -ge 24 ] 2>/dev/null; then
-      NODE_BIN=$(command -v node)
-      return 0
-    fi
+  system_node=$(command -v node 2>/dev/null || true)
+  if [ -n "$system_node" ] && node_ok "$system_node"; then
+    NODE_BIN=$system_node
+    return 0
+  fi
+  if [ -e "$NODE_DIR/$NODE_MARKER" ] && node_ok "$NODE_DIR/bin/node"; then
+    NODE_BIN="$NODE_DIR/bin/node"
+    return 0
   fi
   download_node
+}
+
+# Whether the node binary $1 runs and is version 24 or newer.
+node_ok() {
+  node_version=$("$1" -p 'process.versions.node' 2>/dev/null) || return 1
+  [ "${node_version%%.*}" -ge 24 ] 2>/dev/null
 }
 
 # A node/ is japa's own private Node only if it holds this marker (src/cli/node.ts's NODE_MARKER): any other
@@ -226,20 +238,60 @@ LAUNCHER="$HOME/.local/bin/japa"
 APP_CREATED=0
 NODE_CREATED=0
 
+# Step 7: writes the launcher for $NODE_BIN and, when ~/.local/bin isn't on PATH, a line to the shell's rc file.
+install_launcher() {
+  say "Writing launcher"
+  mkdir -p "$(dirname "$LAUNCHER")"
+  write_launcher "$NODE_BIN" "$APP_DIR" >"$LAUNCHER"
+  chmod 755 "$LAUNCHER"
+
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *)
+      case "${SHELL:-}" in
+        */zsh)
+          rcfile="$HOME/.zshrc"
+          line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+        */fish)
+          rcfile="$HOME/.config/fish/config.fish"
+          line='fish_add_path $HOME/.local/bin'
+          ;;
+        *)
+          rcfile="$HOME/.bashrc"
+          line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+      esac
+      if [ ! -f "$rcfile" ] || ! grep -qF "$line" "$rcfile"; then
+        mkdir -p "$(dirname "$rcfile")"
+        printf '%s\n' "$line" >>"$rcfile"
+        say "added PATH line to $rcfile"
+      fi
+      echo 'open a new shell or run: export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+  esac
+}
+
+# Whether the launcher is there and runs this install's checkout (as src/cli/layout.ts's launcherPointsAt checks).
+launcher_points_here() {
+  [ -x "$LAUNCHER" ] && grep -qF "$(shell_quote "$APP_DIR/src/cli/main.ts")" "$LAUNCHER"
+}
+
 # --- Step 3: existing install -> upgrade path ---
 if [ -e "$APP_DIR/.git" ]; then
+  # An install interrupted before its launcher step, or a launcher since taken over by another install: (re)write
+  # it, so the update below -- and every later `japa` -- runs this checkout.
+  if ! launcher_points_here; then
+    ensure_node
+    install_launcher
+  fi
   say "Updating existing install"
   status=0
   set -- update
   if [ "$BRANCH_GIVEN" -eq 1 ]; then
     set -- "$@" --branch "$BRANCH"
   fi
-  if [ -x "$LAUNCHER" ]; then
-    "$LAUNCHER" "$@" || status=$?
-  else
-    ensure_node
-    "$NODE_BIN" "$APP_DIR/src/cli/main.ts" "$@" || status=$?
-  fi
+  "$LAUNCHER" "$@" || status=$?
   exit "$status"
 fi
 
@@ -277,36 +329,7 @@ say "Installing dependencies"
 (cd "$APP_DIR" && PATH="$(dirname "$NODE_BIN"):$PATH" npm ci)
 
 STEP="launcher"
-say "Writing launcher"
-mkdir -p "$(dirname "$LAUNCHER")"
-write_launcher "$NODE_BIN" "$APP_DIR" >"$LAUNCHER"
-chmod 755 "$LAUNCHER"
-
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *)
-    case "${SHELL:-}" in
-      */zsh)
-        rcfile="$HOME/.zshrc"
-        line='export PATH="$HOME/.local/bin:$PATH"'
-        ;;
-      */fish)
-        rcfile="$HOME/.config/fish/config.fish"
-        line='fish_add_path $HOME/.local/bin'
-        ;;
-      *)
-        rcfile="$HOME/.bashrc"
-        line='export PATH="$HOME/.local/bin:$PATH"'
-        ;;
-    esac
-    if [ ! -f "$rcfile" ] || ! grep -qF "$line" "$rcfile"; then
-      mkdir -p "$(dirname "$rcfile")"
-      printf '%s\n' "$line" >>"$rcfile"
-      say "added PATH line to $rcfile"
-    fi
-    echo 'open a new shell or run: export PATH="$HOME/.local/bin:$PATH"'
-    ;;
-esac
+install_launcher
 
 # The install itself is done; a failure past this point (setup) must not undo it.
 trap - EXIT

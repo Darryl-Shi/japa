@@ -2,7 +2,7 @@
 // these tests exercise the real clone / Node-detection / npm ci / launcher-writing logic without network access.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -129,6 +129,43 @@ test("a second run takes the update path", () => {
   expect(second.status, second.output).toBe(0);
   expect(second.output).toContain("update called");
   expect(second.output).not.toMatch(/--branch/);
+});
+
+test("a rerun without a launcher writes it, then runs update through it", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+  const launcherPath = join(home, ".local", "bin", "japa");
+
+  const first = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+  expect(first.status, first.output).toBe(0);
+  rmSync(launcherPath); // e.g. an install interrupted before its launcher step
+
+  const second = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+
+  expect(second.status, second.output).toBe(0);
+  const node = execFileSync("sh", ["-c", "command -v node"], { encoding: "utf8", env }).trim();
+  expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(node, join(dir, "app")));
+  expect(second.output).toContain("update called");
+});
+
+test("a rerun whose launcher points at another install rewrites it", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+  const launcherPath = join(home, ".local", "bin", "japa");
+
+  const first = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+  expect(first.status, first.output).toBe(0);
+  writeFileSync(launcherPath, launcherText("/elsewhere/node/bin/node", "/elsewhere/app"));
+
+  const second = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+
+  expect(second.status, second.output).toBe(0);
+  expect(readFileSync(launcherPath, "utf8")).toContain(join(dir, "app", "src/cli/main.ts"));
+  expect(second.output).toContain("update called");
 });
 
 test("a second run with --branch forwards it to update", () => {
@@ -284,6 +321,73 @@ test("a system node below the minimum triggers a private download the launcher t
     close();
   }
 });
+
+test("a rerun without a launcher reuses japa's private node/ instead of downloading again", async () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const version = "24.14.1";
+  const { tarball, name } = buildFakeNodeTarball(tmp(), version, `${process.platform}-${process.arch}`);
+  const bytes = readFileSync(tarball);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const fakeBin = tmp();
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\necho 20.0.0\n");
+  chmodSync(join(fakeBin, "node"), 0o755);
+  const launcherPath = join(home, ".local", "bin", "japa");
+  const args = ["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"];
+
+  const { baseUrl, close } = await serve({
+    [`/v${version}/${name}`]: { status: 200, body: bytes },
+    [`/v${version}/SHASUMS256.txt`]: { status: 200, body: `${hash}  ${name}\n` },
+  });
+  try {
+    const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh", JAPA_NODE_DIST: baseUrl };
+    const first = await runInstallAsync(args, env);
+    expect(first.status, first.output).toBe(0);
+  } finally {
+    close();
+  }
+  rmSync(launcherPath);
+
+  // Nothing to download from now: the rerun has to reuse <dir>/node.
+  const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh", JAPA_NODE_DIST: "http://127.0.0.1:9" };
+  const second = runInstall(args, env);
+
+  expect(second.status, second.output).toBe(0);
+  expect(second.output).not.toContain("Downloading Node.js");
+  expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(join(dir, "node", "bin", "node"), join(dir, "app")));
+  expect(second.output).toContain("update called");
+});
+
+test("Ctrl-C during npm ci removes what the install created", async () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  // A Node >= 24 whose npm hangs, so the install is interrupted mid-dependencies.
+  const fakeBin = tmp();
+  const started = join(tmp(), "npm-started");
+  writeFileSync(join(fakeBin, "node"), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`);
+  writeFileSync(join(fakeBin, "npm"), `#!/bin/sh\n: >"${started}"\nsleep 30\n`);
+  chmodSync(join(fakeBin, "node"), 0o755);
+  chmodSync(join(fakeBin, "npm"), 0o755);
+  const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh" };
+
+  // Its own process group, signalled as a whole, as a terminal's Ctrl-C is.
+  const child = spawn("sh", [INSTALL_SH, "--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], { env, detached: true });
+  let output = "";
+  child.stdout.on("data", (d: Buffer) => (output += d));
+  child.stderr.on("data", (d: Buffer) => (output += d));
+  const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
+  for (let i = 0; i < 400 && !existsSync(started); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(existsSync(started), output).toBe(true);
+
+  process.kill(-child.pid!, "SIGINT");
+  const status = await closed;
+
+  expect(status, output).toBe(130);
+  expect(existsSync(join(dir, "app"))).toBe(false);
+  expect(output).toContain("install failed at: dependencies");
+}, 30_000);
 
 test("install.sh without a controlling terminal skips setup with the finish message", () => {
   const bare = fixtureRepo();
