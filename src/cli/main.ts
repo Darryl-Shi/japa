@@ -15,6 +15,7 @@ import { APP, layoutOf } from "./layout.ts";
 import { tuiPrompter } from "./prompt.ts";
 import { serviceCommand, serviceEnv } from "./service.ts";
 import { uninstall } from "./uninstall.ts";
+import { updateCommand } from "./update.ts";
 
 const USAGE = `Usage: japa <command>
 
@@ -30,6 +31,8 @@ Commands:
            Restore the last working setup, and optionally the default storage and secrets adapters
   service <install|uninstall|start|stop|restart|status|logs>
            Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)
+  update [--check] [--branch <b>] [--to <sha>] [--no-restart]
+           Update japa to origin's latest commit and restart it
   uninstall [--purge]
            Remove japa; --purge also deletes the japa home once you type "delete"`;
 
@@ -108,6 +111,7 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   rollback,
   "safe-mode": safeMode,
   service: (home) => serviceCommand(home, process.argv.slice(3)),
+  update: (home) => updateCommand(home, process.argv.slice(3)),
   uninstall: uninstallCommand,
 };
 if (process.argv[2] === "--version") {
