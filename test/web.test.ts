@@ -3,7 +3,6 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import type { JapaExtension } from "../src/kernel/extension.ts";
 import { htmlToText } from "../extensions/web/html.ts";
 import { bootTest, stage } from "./helpers.ts";
 import { tool } from "./jobs-helpers.ts";
@@ -36,45 +35,26 @@ test("web_fetch returns a page's text, and refuses errors and binary types", asy
   await daemon.close();
 });
 
-const fake: JapaExtension = {
-  name: "fake-search",
-  summary: "A fake search engine",
-  provides: {
-    "search-engine": [
-      {
-        name: "fake",
-        search: async (query: string, count: number) =>
-          Array.from({ length: count }, (_, i) => ({ title: `${query} ${i + 1}`, url: `https://x/${i + 1}`, snippet: "s" })),
-      },
-    ],
-  },
-};
+test("web provides only its tools, and defines no contract or settings", async () => {
+  const { default: web } = await import("../extensions/web/index.ts");
+  expect(Object.keys(web.provides ?? {})).toEqual(["tool"]);
+  expect(web.settings).toBeUndefined();
+  expect("contracts" in web).toBe(false);
+});
 
-test("web_search uses the engine chosen in settings", async () => {
-  const { daemon, faux } = await bootTest({ extensions: { web: { engine: "fake" } } }, [fake]);
-  expect(await tool(daemon, faux, "web_search", { query: "cats", count: 2 })).toBe(
-    "1. cats 1\nhttps://x/1\ns\n\n2. cats 2\nhttps://x/2\ns",
-  );
+test("a leftover extensions.web.engine setting is ignored", async () => {
+  const { daemon, faux } = await bootTest({ extensions: { web: { engine: "fake" } } });
+  expect(daemon.status().errors).toEqual([]);
+  expect(await tool(daemon, faux, "web_search", { query: "cats" })).toMatch(/^web_search needs a Brave Search API key/);
   await daemon.close();
 });
 
-test("web_search still uses the chosen engine after an extension install", { timeout: 60_000 }, async () => {
-  const { daemon, faux, home } = await bootTest({ extensions: { web: { engine: "fake" } } }, [fake]);
-  stage(
-    home,
-    "extensions/dice/index.ts",
-    `import { defineJapaExtension } from "japa/sdk";\nexport default defineJapaExtension({ name: "dice", summary: "Dice", examples: ["roll"], docs: "Dice." });\n`,
-  );
+test("web_search still works after an extension install reloads the registry", { timeout: 60_000 }, async () => {
+  const { daemon, faux, home } = await bootTest();
+  stage(home, "extensions/dice/index.ts",
+    `import { defineJapaExtension } from "japa/sdk";\nexport default defineJapaExtension({ name: "dice", summary: "Dice", examples: ["roll"], docs: "Dice." });\n`);
   expect(await tool(daemon, faux, "install", { kind: "extension", name: "dice" })).toBe("Installed extension dice. (change 1)");
-  expect(await tool(daemon, faux, "web_search", { query: "cats", count: 1 })).toBe("1. cats 1\nhttps://x/1\ns");
-  await daemon.close();
-});
-
-test("web_search names the engines when the chosen one is unknown", async () => {
-  const { daemon, faux } = await bootTest({ extensions: { web: { engine: "nope" } } }, [fake]);
-  expect(await tool(daemon, faux, "web_search", { query: "cats" })).toBe(
-    'No search engine "nope". Engines: brave, fake.',
-  );
+  expect(await tool(daemon, faux, "web_search", { query: "cats" })).toMatch(/^web_search needs a Brave Search API key/);
   await daemon.close();
 });
 
