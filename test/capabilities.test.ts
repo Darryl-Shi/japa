@@ -11,15 +11,11 @@ import { capabilities } from "../src/kernel/capabilities.ts";
 import { bootTest, testKit } from "./helpers.ts";
 import { ask, call, say, textOf } from "./jobs-helpers.ts";
 
-test("capabilities lists extensions, workers, models, surfaces and contracts", () => {
+test("capabilities lists extensions, workers, models and surfaces", () => {
   const text = capabilities({
     extensions: [
       { name: "gateway", summary: "Lets you chat from the terminal", provides: { surface: [{ name: "gateway" }] } },
       { name: "notes", summary: "Keeps notes" },
-    ],
-    contracts: [
-      { name: "surface", docs: "Starts a place the user talks. More detail here." },
-      { name: "calendar", docs: "Reads the calendar." },
     ],
     profiles: new Map([["general", { name: "general", description: "Does general work" }]]),
     models: { cos: { provider: "anthropic", modelId: "big" }, consolidation: { provider: "openai", modelId: "small" } },
@@ -33,9 +29,6 @@ test("capabilities lists extensions, workers, models, surfaces and contracts", (
       "- general: Does general work",
       "Models: cos anthropic/big, worker same as cos, consolidation openai/small",
       "Surfaces: gateway",
-      "Contracts:",
-      "- surface: Starts a place the user talks.",
-      "- calendar: Reads the calendar.",
     ].join("\n"),
   );
 });

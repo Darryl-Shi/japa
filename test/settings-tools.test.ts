@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
-import { type Contract, defineJapaExtension, type KernelContext, Type } from "../src/sdk.ts";
+import { defineJapaExtension, type KernelContext, Type } from "../src/sdk.ts";
 import { bootTest, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, jobs, say, script, texts } from "./jobs-helpers.ts";
 
@@ -69,23 +69,13 @@ test("undoing a set of an existing key restores it", async () => {
 
 test("extension settings are validated against its schema and visible to it immediately", async () => {
   let kernel: KernelContext | undefined;
-  const probe: Contract = {
-    name: "probe",
-    docs: "Captures the kernel context.",
-    phase: "runtime",
-    cardinality: "many",
-    validate: () => undefined,
-    activate: async (_c, k) => {
-      kernel = k;
-      return () => {};
-    },
-  };
   const ext = defineJapaExtension({
     name: "limited",
     summary: "Has a limit",
     settings: Type.Object({ limit: Type.Optional(Type.Integer({ maximum: 10 })) }),
-    contracts: [probe],
-    provides: { probe: [{}] },
+    setup: (k) => {
+      kernel = k;
+    },
   });
   const { daemon, faux } = await bootTest({}, [ext]);
   await waitFor(() => kernel !== undefined);

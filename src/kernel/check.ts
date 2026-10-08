@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boot } from "./boot.ts";
-import { CORE_CONTRACTS, type EnvironmentAdapter } from "./contracts.ts";
+import type { EnvironmentAdapter } from "./contracts.ts";
 import type { JapaExtension } from "./extension.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { fauxKit } from "./kit.ts";
@@ -18,7 +18,6 @@ import { cachedCopy } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const packaged = join(packageRoot, "extensions");
-const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
 
 export const CHECK_KINDS = ["skill", "worker", "extension"] as const;
 
@@ -59,7 +58,7 @@ async function checkWorker(name: string, dir: string, home: string): Promise<str
   }
   if (profile.name !== name) return [`name "${profile.name}" must match the file name "${name}"`];
   const found = discoverExtensions([packaged, join(dir, "extensions")]);
-  const { extensions } = await loadExtensions(found, contracts);
+  const { extensions } = await loadExtensions(found);
   const environments = extensions.flatMap((e) => (e.provides?.environment ?? []) as EnvironmentAdapter[]);
   const error = profileError(
     profile,
@@ -76,7 +75,7 @@ async function checkExtension(name: string, dir: string, home: string): Promise<
   const source = join(dir, "extensions", name);
   const fresh = existsSync(source) ? [{ name, file: join(cachedCopy(home, source), "index.ts") }] : [];
   const found = discoverExtensions([packaged, join(dir, "extensions")]).filter((f) => f.name !== name);
-  const { extensions, errors } = await loadExtensions([...found, ...fresh], contracts);
+  const { extensions, errors } = await loadExtensions([...found, ...fresh]);
   const failed = errors.filter((e) => e.name === name).map((e) => e.error);
   if (failed.length > 0) return failed;
   const extension = extensions.find((e) => e.name === name);

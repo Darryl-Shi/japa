@@ -162,5 +162,7 @@ export const CORE_CONTRACTS: Contract[] = [
   },
 ];
 
-/** Contract activation order at boot; extension-defined contracts activate where marked (Task 8). */
-export const ACTIVATION_ORDER = ["provider", "environment", "tool", /* extension-defined */ "trigger", "surface"];
+export const CONTRACTS: ReadonlyMap<string, Contract> = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
+
+/** Contract activation order at boot. */
+export const ACTIVATION_ORDER = ["provider", "environment", "tool", "trigger", "surface"];

@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { expect, test } from "vitest";
-import { type Contract, defineJapaExtension, defineTool, type TriggerContext, Type } from "../src/sdk.ts";
+import { defineJapaExtension, defineTool, type TriggerContext, Type } from "../src/sdk.ts";
 import { bootTest } from "./helpers.ts";
 
 test("an extension tool is offered to the CoS", async () => {
@@ -113,25 +113,24 @@ test("a throwing setup is reported and its extension's tools are not installed",
   await daemon.close();
 });
 
-test("extension-defined contracts activate between tools and triggers", async () => {
+test("tools are installed before triggers start, and triggers before surfaces", async () => {
   const order: string[] = [];
-  const probe: Contract = {
-    name: "probe",
-    docs: "Test seam.",
-    phase: "runtime",
-    cardinality: "many",
-    validate: () => undefined,
-    activate: async () => {
-      order.push("probe");
-      return () => {};
-    },
-  };
+  const echo = defineTool({
+    name: "probe_echo",
+    description: "Echo",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [] }),
+  });
   const ext = defineJapaExtension({
-    name: "recorder",
-    summary: "Records",
-    contracts: [probe],
+    name: "order-probe",
+    summary: "Probes activation order",
+    examples: ["echo"],
+    docs: "Echo.",
+    setup: () => {
+      order.push("setup");
+    },
     provides: {
-      probe: [{}],
+      tool: [echo],
       trigger: [
         {
           name: "t",
@@ -153,6 +152,6 @@ test("extension-defined contracts activate between tools and triggers", async ()
     },
   });
   const { daemon } = await bootTest({}, [ext]);
-  expect(order).toEqual(["probe", "trigger", "surface"]);
+  expect(order).toEqual(["setup", "trigger", "surface"]);
   await daemon.close();
 });

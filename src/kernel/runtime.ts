@@ -9,7 +9,7 @@ import {
 import type { Models } from "@earendil-works/pi-ai";
 import { dirname, join } from "node:path";
 import { capabilities } from "./capabilities.ts";
-import { ACTIVATION_ORDER, type Contract, type Dispose, type EnvironmentAdapter, type KernelContext } from "./contracts.ts";
+import { ACTIVATION_ORDER, CONTRACTS, type Dispose, type EnvironmentAdapter, type KernelContext } from "./contracts.ts";
 import type { JapaExtension } from "./extension.ts";
 import { jobsExtension, type JobsOptions, reconfigureJobs } from "./jobs/cos.ts";
 import { discoverExtensions, type LoadError, loadExtensions, message } from "./loader.ts";
@@ -30,7 +30,6 @@ export function createRuntime(input: {
   packageRoot: string;
   packaged: string[]; // the packaged extension dirs, whose extensions a workspace one can override
   settings: Settings;
-  contracts: Map<string, Contract>;
   extensions: JapaExtension[];
   errors: LoadError[];
   sources: Map<string, string>; // the directory of each extension loaded from disk, by name
@@ -43,7 +42,7 @@ export function createRuntime(input: {
   safety: Extension; // selected by the root and every job
   kernel: (extension: string) => KernelContext;
 }) {
-  const { home, packageRoot, packaged, settings, contracts, sources, hashes, models, environments, registry, selection } = input;
+  const { home, packageRoot, packaged, settings, sources, hashes, models, environments, registry, selection } = input;
   const activations: { extension: string; contract: string; dispose: Dispose }[] = []; // in activation order
   const built = new Map<string, Extension>();
   let jobsOptions: JobsOptions | undefined;
@@ -58,15 +57,9 @@ export function createRuntime(input: {
     /** The loaded skills and worker profiles, by name. */
     skills: new Map<string, Skill>() as ReadonlyMap<string, Skill>,
     profiles: new Map<string, WorkerProfile>() as ReadonlyMap<string, WorkerProfile>,
-    /** The contract activation order, with the extension-defined contracts after tools. */
-    order: () => {
-      const defined = runtime.extensions.flatMap((e) => e.contracts ?? []).map((c) => c.name);
-      return ACTIVATION_ORDER.flatMap((name) => (name === "tool" ? [name, ...defined] : name));
-    },
     refreshCapabilities: () => {
       runtime.capabilities = capabilities({
         extensions: runtime.extensions,
-        contracts: contracts.values(),
         profiles: jobsOptions!.profiles,
         models: settings.models,
       });
@@ -116,7 +109,7 @@ export function createRuntime(input: {
         }
         for (const c of e.provides?.[name] ?? []) {
           try {
-            const dispose = await contracts.get(name)!.activate?.(c, input.kernel(e.name));
+            const dispose = await CONTRACTS.get(name)!.activate?.(c, input.kernel(e.name));
             if (dispose) activations.push({ extension: e.name, contract: name, dispose });
           } catch (err) {
             errors.push({ name: e.name, error: `${name}: ${message(err)}` });
@@ -194,7 +187,6 @@ export function createRuntime(input: {
       built.delete(name);
       sources.delete(name);
       hashes.delete(name);
-      for (const c of runtime.extensions.find((e) => e.name === name)?.contracts ?? []) contracts.delete(c.name);
     }
     runtime.extensions = runtime.extensions.filter((e) => !names.has(e.name));
 
@@ -203,18 +195,15 @@ export function createRuntime(input: {
       hashes.set(f.name, f.hash);
       return { name: f.name, file: join(copy, "index.ts") };
     });
-    const { extensions: loaded, errors: loadErrors } = await loadExtensions([...copies, ...restored], contracts);
-    for (const e of loaded) {
-      sources.set(e.name, dirname([...changed, ...restored].find((f) => f.name === e.name)!.file));
-      for (const c of e.contracts ?? []) contracts.set(c.name, c);
-    }
+    const { extensions: loaded, errors: loadErrors } = await loadExtensions([...copies, ...restored]);
+    for (const e of loaded) sources.set(e.name, dirname([...changed, ...restored].find((f) => f.name === e.name)!.file));
     runtime.extensions = [...runtime.extensions, ...loaded];
     const notices = loaded
-      .filter((e) => Object.keys(e.provides ?? {}).some((name) => contracts.get(name)?.phase === "boot"))
+      .filter((e) => Object.keys(e.provides ?? {}).some((name) => CONTRACTS.get(name)?.phase === "boot"))
       .map((e) => `${e.name}: storage/secrets changes apply after a restart`);
 
     replaceErrors((e) => names.has(e.name), loadErrors);
-    const errors = [...loadErrors, ...(await start(loaded, runtime.order()))];
+    const errors = [...loadErrors, ...(await start(loaded, ACTIVATION_ORDER))];
     await root.commit((tx) => reconfigureJobs(tx, jobsOptions!), ctx);
     return { errors, notices };
   }

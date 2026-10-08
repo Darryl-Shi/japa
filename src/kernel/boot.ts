@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ChangesDoc } from "./changes.ts";
 import {
-  CORE_CONTRACTS,
+  ACTIVATION_ORDER,
   type EnvironmentAdapter,
   type KernelContext,
   type SecretsAdapter,
@@ -92,13 +92,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     recordBoot(home);
     const settings = loadSettings(home);
 
-    const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
     const workspace = join(home, "extensions");
     const dirs = options.extensionDirs ?? [join(packageRoot, "extensions"), workspace];
     const found = discoverExtensions(dirs);
-    const loaded = await loadExtensions(found, contracts);
+    const loaded = await loadExtensions(found);
     const extensions = withOverrides(loaded.extensions, options.extensions ?? []);
-    for (const c of extensions.flatMap((e) => e.contracts ?? [])) contracts.set(c.name, c);
     const fromDisk = found.filter((f) => extensions.some((e) => e.name === f.name && loaded.extensions.includes(e)));
     const sources = new Map(fromDisk.map((f) => [f.name, dirname(f.file)]));
     const hashes = new Map(
@@ -224,7 +222,6 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       packageRoot,
       packaged: dirs.filter((d) => d !== workspace),
       settings,
-      contracts,
       extensions,
       errors: [...loaded.errors],
       sources,
@@ -263,7 +260,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await tx.doc(SecretRequestsDoc, root.id);
     }, ctx);
     // The rest of the contracts; `japa-jobs` is installed after tools, so pending job tasks resume with it.
-    await rt.start(extensions, rt.order().slice(1));
+    await rt.start(extensions, ACTIVATION_ORDER.slice(1));
     harness.resume();
     if (safeMode !== undefined) {
       const content =

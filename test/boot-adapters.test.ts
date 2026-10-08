@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import fileSecrets from "../extensions/file-secrets/index.ts";
 import sqlite from "../extensions/sqlite/index.ts";
-import { CORE_CONTRACTS, type SecretsAdapter, type StorageAdapter } from "../src/sdk.ts";
+import type { SecretsAdapter, StorageAdapter } from "../src/sdk.ts";
 import { type JapaExtension, validateExtension } from "../src/kernel/extension.ts";
 import { tempHome } from "./helpers.ts";
 
@@ -21,9 +21,8 @@ beforeEach(() => {
 });
 
 test("both manifests are valid", () => {
-  const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
-  expect(validateExtension(sqlite, contracts)).toEqual([]);
-  expect(validateExtension(fileSecrets, contracts)).toEqual([]);
+  expect(validateExtension(sqlite)).toEqual([]);
+  expect(validateExtension(fileSecrets)).toEqual([]);
 });
 
 test("file secrets round-trip with private permissions", async () => {

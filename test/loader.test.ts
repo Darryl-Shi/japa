@@ -3,13 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { CORE_CONTRACTS } from "../src/kernel/contracts.ts";
 import { discoverExtensions, linkSdk, loadExtensions } from "../src/kernel/loader.ts";
 import { tempHome } from "./helpers.ts";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const sdk = join(repoRoot, "src/sdk.ts");
-const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
 
 /** Writes `<dir>/<name>/index.ts` with `body` and returns `dir`. */
 function writeExtension(dir: string, name: string, body: string): string {
@@ -48,7 +46,7 @@ test("broken extensions are reported, valid ones load", async () => {
   writeExtension(dir, "good", manifest(`name: "good", summary: "Does good"`));
   writeExtension(dir, "throws", `throw new Error("boom");\n`);
   writeExtension(dir, "invalid", manifest(`name: "invalid", summary: ""`));
-  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]));
   expect(extensions.map((e) => e.name)).toEqual(["good"]);
   expect(errors.map((e) => e.name).sort()).toEqual(["invalid", "throws"]);
   expect(errors.find((e) => e.name === "throws")!.error).toMatch(/boom/);
@@ -57,93 +55,26 @@ test("broken extensions are reported, valid ones load", async () => {
 
 test("manifest name must match directory", async () => {
   const dir = writeExtension(tempDir(), "dir-name", manifest(`name: "other", summary: "s"`));
-  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]));
   expect(extensions).toEqual([]);
   expect(errors).toEqual([{ name: "dir-name", error: "manifest name must match directory" }]);
 });
 
-test("an extension may contribute to a contract another extension defines", async () => {
+test("an extension providing a non-core contract fails alone; a contracts field is ignored", async () => {
   const dir = tempDir();
-  writeExtension(
-    dir,
-    "defines",
-    manifest(`name: "defines", summary: "s", contracts: [{ name: "search-engine", docs: "d", phase: "runtime",
-      cardinality: "many", validate: (c) => (typeof c?.name === "string" ? undefined : "name must be a string") }]`),
-  );
-  writeExtension(dir, "uses", manifest(`name: "uses", summary: "s", provides: { "search-engine": [{ name: "e" }] }`));
-  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
-  expect(errors).toEqual([]);
-  expect(extensions.map((e) => e.name)).toEqual(["defines", "uses"]);
+  writeExtension(dir, "old", manifest(`name: "old", summary: "s", contracts: [{ name: "search-engine", docs: "d",
+    phase: "runtime", cardinality: "many", validate: () => undefined }], provides: { "search-engine": [{ name: "e" }] }`));
+  writeExtension(dir, "defines-only", manifest(`name: "defines-only", summary: "s", contracts: [{ name: "x" }]`));
+  writeExtension(dir, "good", manifest(`name: "good", summary: "s"`));
+  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]));
+  expect(extensions.map((e) => e.name)).toEqual(["defines-only", "good"]);
+  expect(errors).toEqual([{ name: "old", error: 'unknown contract "search-engine"' }]);
 });
 
 test("a module without a default export is reported", async () => {
   const dir = writeExtension(tempDir(), "no-default", `export const x = 1;\n`);
-  const { errors } = await loadExtensions(discoverExtensions([dir]), contracts);
+  const { errors } = await loadExtensions(discoverExtensions([dir]));
   expect(errors).toEqual([{ name: "no-default", error: "missing default export" }]);
-});
-
-test("malformed contracts are reported, other extensions still load", async () => {
-  const dir = tempDir();
-  writeExtension(dir, "null-contract", manifest(`name: "null-contract", summary: "s", contracts: [null]`));
-  writeExtension(dir, "not-array", manifest(`name: "not-array", summary: "s", contracts: {}`));
-  writeExtension(
-    dir,
-    "no-validate",
-    manifest(`name: "no-validate", summary: "s", contracts: [{ name: "x", docs: "d", phase: "runtime",
-      cardinality: "many" }]`),
-  );
-  writeExtension(dir, "good", manifest(`name: "good", summary: "s"`));
-  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
-  expect(extensions.map((e) => e.name)).toEqual(["good"]);
-  expect(errors.map((e) => e.name).sort()).toEqual(["no-validate", "not-array", "null-contract"]);
-});
-
-test("a contract validate that throws is reported against the contributing extension", async () => {
-  const dir = tempDir();
-  writeExtension(
-    dir,
-    "defines",
-    manifest(`name: "defines", summary: "s", contracts: [{ name: "fragile", docs: "d", phase: "runtime",
-      cardinality: "many", validate: () => { throw new Error("validator exploded"); } }]`),
-  );
-  writeExtension(dir, "uses", manifest(`name: "uses", summary: "s", provides: { fragile: [{}] }`));
-  writeExtension(dir, "good", manifest(`name: "good", summary: "s"`));
-  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
-  expect(extensions.map((e) => e.name)).toEqual(["defines", "good"]);
-  expect(errors).toEqual([{ name: "uses", error: "validator exploded" }]);
-});
-
-test("contracts from extensions that fail validation are not available to others", async () => {
-  const dir = tempDir();
-  writeExtension(
-    dir,
-    "defines",
-    manifest(`name: "defines", summary: "", contracts: [{ name: "search-engine", docs: "d", phase: "runtime",
-      cardinality: "many", validate: () => undefined }]`),
-  );
-  writeExtension(dir, "uses", manifest(`name: "uses", summary: "s", provides: { "search-engine": [{}] }`));
-  writeExtension(dir, "uses-uses", manifest(`name: "uses-uses", summary: "s", contracts: [{ name: "meta", docs: "d",
-    phase: "runtime", cardinality: "many", validate: () => undefined }], provides: { "search-engine": [{}] }`));
-  writeExtension(dir, "meta-user", manifest(`name: "meta-user", summary: "s", provides: { meta: [{}] }`));
-  const { extensions, errors } = await loadExtensions(discoverExtensions([dir]), contracts);
-  expect(extensions).toEqual([]);
-  expect(errors).toEqual([
-    { name: "defines", error: "summary is required" },
-    { name: "uses", error: 'unknown contract "search-engine"' },
-    { name: "uses-uses", error: 'unknown contract "search-engine"' },
-    { name: "meta-user", error: 'unknown contract "meta"' },
-  ]);
-});
-
-test("defining an existing contract name is an error", async () => {
-  const dir = writeExtension(
-    tempDir(),
-    "dup",
-    manifest(`name: "dup", summary: "s", contracts: [{ name: "tool", docs: "d", phase: "runtime",
-      cardinality: "many", validate: () => undefined }]`),
-  );
-  const { errors } = await loadExtensions(discoverExtensions([dir]), contracts);
-  expect(errors).toEqual([{ name: "dup", error: 'contract "tool" is already defined' }]);
 });
 
 test("linkSdk creates the japa symlink", () => {

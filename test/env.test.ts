@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import localEnv from "../extensions/local-env/index.ts";
-import { CORE_CONTRACTS, type EnvironmentAdapter } from "../src/sdk.ts";
+import type { EnvironmentAdapter } from "../src/sdk.ts";
 import { validateExtension } from "../src/kernel/extension.ts";
 import { createEnvDispatcher, READ_ONLY_MESSAGE, readOnly } from "../src/kernel/env.ts";
 
@@ -23,8 +23,7 @@ beforeEach(() => {
 });
 
 test("local-env manifest is valid", () => {
-  const contracts = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
-  expect(validateExtension(localEnv, contracts)).toEqual([]);
+  expect(validateExtension(localEnv)).toEqual([]);
   expect(localAdapter.name).toBe("local");
 });
 

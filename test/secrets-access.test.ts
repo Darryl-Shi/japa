@@ -4,7 +4,7 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import type { Contract, KernelContext, SecretsStore } from "../src/kernel/contracts.ts";
+import type { KernelContext, SecretsStore } from "../src/kernel/contracts.ts";
 import { secretsCredentialStore } from "../src/kernel/credentials.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { defineTool, Type } from "../src/sdk.ts";
@@ -44,23 +44,13 @@ test("models resolve a provider's API key from the secrets store", async () => {
 
 test("secret() returns a declared secret and refuses an undeclared one", async () => {
   let kernel: KernelContext | undefined;
-  const probe: Contract = {
-    name: "probe",
-    docs: "Test.",
-    phase: "runtime",
-    cardinality: "many",
-    validate: () => undefined,
-    activate: async (_c, ctx) => {
-      kernel = ctx;
-      return () => {};
-    },
-  };
   const extension: JapaExtension = {
     name: "probe-ext",
     summary: "Test",
-    contracts: [probe],
-    provides: { probe: [{}] },
     secrets: ["probe.token"],
+    setup: (ctx) => {
+      kernel = ctx;
+    },
   };
   const { daemon, home } = await bootTest({}, [extension]);
   writeFileSync(join(home, "secrets/probe.token"), "t-1");
