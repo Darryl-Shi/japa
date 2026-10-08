@@ -103,6 +103,12 @@ export type TriggerContext = { home: string; emit(event: { key: string; text: st
 
 export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispose> };
 
+/** The kernel's messaging state: each adapter's reply cursor. */
+export type MessagingContext = {
+  cursor(adapter: string): Promise<string | undefined>;
+  saveCursor(adapter: string, cursor: string): Promise<void>;
+};
+
 export type KernelContext = {
   home: string;
   extension: string;
@@ -114,6 +120,7 @@ export type KernelContext = {
   environments: Map<string, EnvironmentAdapter>;
   surface: SurfaceContext;
   trigger: TriggerContext;
+  messaging: MessagingContext;
 };
 
 /** A named seam with a contribution type, agent-facing docs, a validator, and an activation lifecycle. */

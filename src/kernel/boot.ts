@@ -23,6 +23,7 @@ import {
   ACTIVATION_ORDER,
   type EnvironmentAdapter,
   type KernelContext,
+  type MessagingContext,
   type SecretsAdapter,
   type Status,
   type StorageAdapter,
@@ -38,6 +39,7 @@ import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./mem
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { MessagingDoc } from "./messaging/surface.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
@@ -122,6 +124,13 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       errors: rt.errors,
     });
     // `root` and `opened` are set before any surface or trigger starts.
+    const messaging: MessagingContext = {
+      cursor: async (adapter) => (await opened.snapshot(MessagingDoc, root.id, ctx))?.cursors[adapter],
+      saveCursor: (adapter, cursor) =>
+        root.commit(async (tx) => {
+          (await tx.doc(MessagingDoc, root.id)).cursors[adapter] = cursor;
+        }, ctx),
+    };
     const kernel = (extension: string): KernelContext => ({
       home,
       extension,
@@ -195,6 +204,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           await root.submit({ type: "input", content: `[${extension}] ${text}`, requestId }, ctx);
         },
       },
+      messaging,
     });
     const registry = createRegistry();
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
