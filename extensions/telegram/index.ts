@@ -1,8 +1,17 @@
-import { defineJapaExtension, type KernelContext, type MessagingAdapter, type OutgoingMessage } from "../../src/sdk.ts";
-import { ApiError, type BotApi, botApi } from "./api.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import {
+  defineJapaExtension,
+  type KernelContext,
+  type MessagingAdapter,
+  type MessagingAdapterContext,
+  type OutgoingMessage,
+} from "../../src/sdk.ts";
+import { ApiError, type BotApi, backoff, botApi } from "./api.ts";
 import { toHtml } from "./html.ts";
+import { parseUpdate, type Update } from "./updates.ts";
 
 const NAME = "telegram.botToken";
+const BASE = "https://api.telegram.org";
 
 let kernel!: KernelContext;
 let signal!: AbortSignal; // the running adapter's; aborted by its dispose
@@ -13,7 +22,7 @@ async function call<T>(method: string, params: object): Promise<T> {
   if (api === undefined) {
     const token = await kernel.secret(NAME);
     if (token === undefined) throw new Error("Telegram is not connected");
-    api = botApi("https://api.telegram.org", token, signal);
+    api = botApi(BASE, token, signal);
   }
   try {
     return await api.call<T>(method, params);
@@ -39,13 +48,60 @@ async function post<T>(method: string, params: object, m: OutgoingMessage): Prom
   }
 }
 
+/**
+ * Long-polls updates into `ctx.receive` until `signal` aborts; each batch is confirmed (by the next offset) only after
+ * it has been handled. Waits for the bot token, and asks for a new one when Telegram rejects it.
+ */
+async function poll(ctx: MessagingAdapterContext, signal: AbortSignal) {
+  const provided = kernel.secretProvided(NAME); // waiting already, so a token provided meanwhile isn't missed
+  let token = kernel.secret(NAME).then((t) => t ?? provided);
+  let bot: BotApi | undefined;
+  let offset: number | undefined;
+  for (let attempt = 0; ; ) {
+    try {
+      if (bot === undefined) {
+        const value = await token;
+        if (signal.aborted) return; // a waiter of a stopped adapter
+        bot = api = botApi(BASE, value, signal);
+        const list = commands.map((c) => ({ command: c.name, description: c.description }));
+        await bot.call("setMyCommands", { commands: list });
+      }
+      const allowed_updates = ["message", "callback_query"];
+      for (const update of await bot.once<Update[]>("getUpdates", { offset, timeout: 50, allowed_updates })) {
+        if (signal.aborted) return;
+        await handle(ctx, bot, update).catch((error) => console.error(`telegram: ${error.message}`));
+        offset = update.update_id + 1;
+      }
+      attempt = 0;
+    } catch (error) {
+      if (signal.aborted) return;
+      if (error instanceof ApiError && error.code === 401) {
+        bot = api = undefined;
+        token = kernel.requestSecret(NAME, "Telegram rejected the bot token. Send a new one from @BotFather.");
+      } else {
+        await sleep(backoff(attempt++), undefined, { signal }).catch(() => {});
+      }
+    }
+  }
+}
+
+async function handle(ctx: MessagingAdapterContext, bot: BotApi, update: Update) {
+  if (update.callback_query) {
+    await bot.call("answerCallbackQuery", { callback_query_id: update.callback_query.id }).catch(() => {});
+  }
+  const parsed = await parseUpdate(update, bot);
+  if (typeof parsed === "string") await adapter.send(String(update.message!.chat.id), { markdown: parsed });
+  else if (parsed) await ctx.receive(parsed);
+}
+
 const adapter: MessagingAdapter = {
   name: "telegram",
   maxMessageChars: 4096,
-  start: async () => {
+  start: async (ctx) => {
     const controller = new AbortController();
     signal = controller.signal;
     api = undefined;
+    void poll(ctx, signal);
     return async () => controller.abort();
   },
   send: async (chat, m) => String((await post<{ message_id: number }>("sendMessage", { chat_id: chat }, m)).message_id),
