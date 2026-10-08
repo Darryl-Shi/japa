@@ -19,8 +19,8 @@ from the terminal — not schedule results, not job reports. This spec adds:
    images in, over Bot API long polling.
 
 Success: from a phone, the user chats with the same single CoS thread, gets
-proactive messages (schedules, job reports), uses `/jobs`, `/status`, `/new`
-and `/settings`, sends photos, and can finish a secret request — with no
+proactive messages (schedules, job reports), uses `/jobs`, `/status` and
+`/settings`, sends photos, and can finish a secret request — with no
 inbound port on the server.
 
 ### Changes to the main spec
@@ -64,7 +64,6 @@ type Origin = { surface: string; chat?: string } | "proactive";
 
 SurfaceContext.root.submit(input: UserInput, mode?: "steer" | "followUp", origin?: { surface: string; chat?: string; id?: string })
 SurfaceContext.root.replies(listener: (r: Reply) => void, after?: string): Promise<{ stop(): Promise<void> }>
-SurfaceContext.root.reset(): Promise<void>   // fresh model context now, memory kept (used by /new)
 type Reply = { cursor: string; origin: Origin; text: string };
 ```
 
@@ -164,7 +163,6 @@ Registered with `commands()` on start:
 |---------|------|
 | `/jobs` | Lists running and recent jobs (the `jobs` stream) as buttons; pressing one shows its status and latest report. |
 | `/status` | The same content as `japa status`: CoS model, extensions, errors. |
-| `/new` | Resets the CoS's model context now (memory kept), like the automatic reset. |
 | `/settings` | The settings menu (§5.6). |
 
 Unknown commands get a short help list. Commands never reach the CoS.
@@ -239,7 +237,7 @@ Plain `fetch` against the Bot API; no new dependencies.
 
 vitest, following existing patterns (fake model, scratch `JAPA_HOME`).
 
-- **Origin routing:** requestId encoding; `root.reset`; origins of gateway input, triggers,
+- **Origin routing:** requestId encoding; origins of gateway input, triggers,
   job reports, secrets; steer/follow-up taking over a run's origin; `replies`
   ordering and resuming from a cursor; old inputs without a requestId.
 - **Messaging surface** (fake in-memory adapter): owner check and the
