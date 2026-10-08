@@ -29,7 +29,8 @@ Commands:
            Restore the last working setup, and optionally the default storage and secrets adapters
   service <install|uninstall|start|stop|restart|status|logs>
            Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)
-  setup    Configure models, extensions and the background service`;
+  setup [--non-interactive] [--no-service]
+           Configure models, extensions and the background service`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });

@@ -223,6 +223,32 @@ export function logsCommand(env: ServiceEnv): [string, string[]] {
   return ["tail", ["-f", join(env.japaHome, "logs", "daemon.log")]];
 }
 
+/**
+ * `install`'s logic, shared by `serviceCommand` and setup's rerun Service menu (design spec §4.3): logs why the
+ * platform's service manager isn't usable and stops, or installs it.
+ */
+export async function installAction(env: ServiceEnv, log: (s: string) => void): Promise<void> {
+  const reason = await unavailable(env);
+  if (reason !== undefined) {
+    log(reason);
+    return;
+  }
+  return installService(env, log);
+}
+
+/**
+ * `status`'s logic, shared by `serviceCommand` and setup's rerun Service menu (design spec §4.3): the service
+ * manager's state, then the daemon's status line when the socket answers.
+ */
+export async function statusAction(env: ServiceEnv, home: string, log: (s: string) => void): Promise<void> {
+  log(await serviceState(env));
+  try {
+    log(statusText(await daemonStatus(home)));
+  } catch {
+    // The socket didn't answer; the state line above already said so.
+  }
+}
+
 const SERVICE_USAGE = "Usage: japa service <install|uninstall|start|stop|restart|status|logs>";
 
 /** The `japa service <...>` CLI dispatcher. Setup, update and uninstall call the functions above directly instead. */
@@ -230,14 +256,8 @@ export async function serviceCommand(home: string, args: string[]): Promise<void
   const env = serviceEnv(layoutOf(APP).launcher);
   const log = (s: string) => console.log(s);
   switch (args[0]) {
-    case "install": {
-      const reason = await unavailable(env);
-      if (reason !== undefined) {
-        console.log(reason);
-        return;
-      }
-      return installService(env, log);
-    }
+    case "install":
+      return installAction(env, log);
     case "uninstall":
       return uninstallService(env, log);
     case "start":
@@ -246,15 +266,8 @@ export async function serviceCommand(home: string, args: string[]): Promise<void
       return stopService(env);
     case "restart":
       return restartService(env);
-    case "status": {
-      console.log(await serviceState(env));
-      try {
-        console.log(statusText(await daemonStatus(home)));
-      } catch {
-        // The socket didn't answer; the state line above already said so.
-      }
-      return;
-    }
+    case "status":
+      return statusAction(env, home, log);
     case "logs": {
       const [cmd, cmdArgs] = logsCommand(env);
       await env.exec(cmd, cmdArgs, { stdio: "inherit" });

@@ -6,17 +6,19 @@ import { checkModel, loadSettings, readUserSettings, saveSettings, setPath } fro
 import { statusText } from "../kernel/status.ts";
 import { configurable, configureStep, markOffered, unseen, type Unseen } from "./configure.ts";
 import { openSetupContext, type SetupContext } from "./context.ts";
-import { daemonStatus, waitForDaemon } from "./daemon.ts";
+import { waitForDaemon } from "./daemon.ts";
 import { APP, layoutOf } from "./layout.ts";
 import { chooseModels } from "./models-step.ts";
 import { Cancelled, type Prompter, tuiPrompter } from "./prompt.ts";
 import {
+  installAction,
   installService,
   restartService,
   serviceEnv,
   type ServiceEnv,
   serviceState,
   startService,
+  statusAction,
   stopService,
   unavailable,
   uninstallService,
@@ -80,29 +82,16 @@ async function serviceMenu(ctx: SetupContext, p: Prompter, o: SetupOptions): Pro
   ]);
 
   switch (action) {
-    case "install": {
-      const reason = await unavailable(o.serviceEnv);
-      if (reason !== undefined) {
-        o.log(reason);
-        return;
-      }
-      return installService(o.serviceEnv, o.log);
-    }
+    case "install":
+      return installAction(o.serviceEnv, o.log);
     case "start":
       return startService(o.serviceEnv, o.log);
     case "stop":
       return stopService(o.serviceEnv);
     case "uninstall":
       return uninstallService(o.serviceEnv, o.log);
-    case "status": {
-      o.log(await serviceState(o.serviceEnv));
-      try {
-        o.log(statusText(await daemonStatus(ctx.home)));
-      } catch {
-        // The socket didn't answer; the state line above already said so.
-      }
-      return;
-    }
+    case "status":
+      return statusAction(o.serviceEnv, ctx.home, o.log);
   }
 }
 
