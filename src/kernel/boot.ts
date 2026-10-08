@@ -39,6 +39,7 @@ import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { requestIdFor } from "./origin.ts";
+import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
@@ -108,6 +109,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       adapter<StorageAdapter>(extensions, "storage", settings.storage.adapter).open(settings.storage, { home }),
     );
 
+    const store = storage;
     const models = createModels({ credentials: secretsCredentialStore(secrets) });
     const environments = new Map<string, EnvironmentAdapter>();
     const status = (): Status => ({
@@ -159,6 +161,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               },
             };
           },
+          replies: (listener, after) => watchReplies(opened, store, root, listener, after),
         },
         jobs: async (listener) => {
           const watch = (await opened.watchDoc(JobsDoc, ROOT_CONVERSATION_ID, ctx))!;

@@ -18,6 +18,7 @@ export type {
   EnvironmentAdapter,
   KernelContext,
   Origin,
+  Reply,
   SecretsAdapter,
   SecretsStore,
   StorageAdapter,

@@ -36,6 +36,9 @@ export type Status = {
 /** Where an input came from: a surface and chat, or the kernel on its own (`"proactive"`). */
 export type Origin = { surface: string; chat?: string } | "proactive";
 
+/** A finished assistant message's text, its turn's origin, and the cursor to resume `replies` after it. */
+export type Reply = { cursor: string; origin: Origin; text: string };
+
 export type SurfaceContext = {
   home: string;
   root: {
@@ -48,6 +51,11 @@ export type SurfaceContext = {
     abort(): Promise<void>;
     /** Delivers the current snapshot as the first event, then live events. */
     events(listener: (events: readonly AgentEvent[]) => void): Promise<{ stop(): Promise<void> }>;
+    /**
+     * Delivers each finished assistant message with text, in order, one at a time (awaiting a returned promise);
+     * after the cursor `after`, or from now when absent. `stop()` waits for the delivery in progress.
+     */
+    replies(listener: (r: Reply) => void | Promise<void>, after?: string): Promise<{ stop(): Promise<void> }>;
   };
   /** Delivers the current jobs first, then every change, in id order. */
   jobs(listener: (jobs: Job[]) => void): Promise<{ stop(): Promise<void> }>;
