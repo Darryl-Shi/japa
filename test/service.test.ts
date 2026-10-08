@@ -126,8 +126,34 @@ test("macOS install writes the plist, ignores a failed bootout, and bootstraps",
   expect(readFileSync(plistPath(env), "utf8")).toBe(plistText(env));
   expect(calls).toEqual([
     { cmd: "launchctl", args: ["bootout", "gui/501", plistPath(env)] },
+    { cmd: "launchctl", args: ["print", "gui/501/dev.japa.daemon"] },
     { cmd: "launchctl", args: ["bootstrap", "gui/501", plistPath(env)] },
   ]);
+});
+
+test("a second macOS install with the same plist does not bootout", async () => {
+  const { exec, calls } = fakeExec();
+  const env = makeEnv({ platform: "darwin", exec, uid: 501 });
+
+  await installService(env, () => {});
+  calls.length = 0;
+  await installService(env, () => {});
+
+  expect(calls.some((c) => c.args[0] === "bootout")).toBe(false);
+  // The ensure-running step is still unconditional.
+  expect(calls.some((c) => c.args[0] === "bootstrap")).toBe(true);
+});
+
+test("macOS install refuses while a foreground daemon holds the lock", async () => {
+  const { exec, calls } = fakeExec();
+  const home = tmp();
+  writeFileSync(join(home, "daemon.lock"), String(process.pid));
+  const env = makeEnv({ platform: "darwin", exec, japaHome: home, uid: 501 });
+
+  await expect(installService(env, () => {})).rejects.toThrow(
+    `japa is already running in the foreground (pid ${process.pid}); stop it first`,
+  );
+  expect(calls.some((c) => c.args[0] === "bootstrap")).toBe(false);
 });
 
 test("no systemd → unavailable reason mentions /etc/wsl.conf", async () => {
@@ -170,6 +196,20 @@ test("isInstalled and serviceState reflect the unit file and systemctl is-active
 
   expect(isInstalled(env)).toBe(true);
   expect(await serviceState(env)).toBe("active");
+});
+
+test("serviceState on macOS reads launchctl print's state field, not just its exit code", async () => {
+  const waiting = fakeExec(() => ({ code: 0, stdout: "\tstate = waiting\n" }));
+  const waitingEnv = makeEnv({ platform: "darwin", exec: waiting.exec, uid: 501 });
+  mkdirSync(dirname(plistPath(waitingEnv)), { recursive: true });
+  writeFileSync(plistPath(waitingEnv), "placeholder");
+  expect(await serviceState(waitingEnv)).toBe("inactive");
+
+  const running = fakeExec(() => ({ code: 0, stdout: "\tstate = running\n" }));
+  const runningEnv = makeEnv({ platform: "darwin", exec: running.exec, uid: 501 });
+  mkdirSync(dirname(plistPath(runningEnv)), { recursive: true });
+  writeFileSync(plistPath(runningEnv), "placeholder");
+  expect(await serviceState(runningEnv)).toBe("active");
 });
 
 test("uninstallService stops, disables and removes the unit file", async () => {

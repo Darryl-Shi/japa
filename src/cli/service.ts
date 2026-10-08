@@ -143,7 +143,7 @@ export async function serviceState(env: ServiceEnv): Promise<"active" | "inactiv
   }
   if (env.platform === "darwin") {
     const r = await env.exec("launchctl", ["print", `gui/${env.uid}/${LABEL}`]);
-    return r.code === 0 ? "active" : "inactive";
+    return r.code === 0 && /^\s*state = running\s*$/m.test(r.stdout) ? "active" : "inactive";
   }
   return "not installed";
 }
@@ -171,9 +171,10 @@ export async function installService(env: ServiceEnv, log: (s: string) => void):
   }
   if (env.platform === "darwin") {
     const path = plistPath(env);
-    writeIfChanged(path, plistText(env));
-    await env.exec("launchctl", ["bootout", `gui/${env.uid}`, path]);
-    await env.exec("launchctl", ["bootstrap", `gui/${env.uid}`, path]);
+    // A changed plist must take effect even if the job is currently loaded: bootout (ignore failure) before
+    // ensuring it's running. An unchanged plist only needs the unconditional "ensure running" step below.
+    if (writeIfChanged(path, plistText(env))) await env.exec("launchctl", ["bootout", `gui/${env.uid}`, path]);
+    await startService(env, log);
   }
 }
 
@@ -197,8 +198,14 @@ export async function startService(env: ServiceEnv, log: (s: string) => void): P
     const pid = foregroundPid(env.japaHome);
     if (pid !== undefined) throw new Error(`japa is already running in the foreground (pid ${pid}); stop it first`);
   }
-  if (env.platform === "linux") await env.exec("systemctl", ["--user", "start", "japa"]);
-  else if (env.platform === "darwin") await env.exec("launchctl", ["bootstrap", `gui/${env.uid}`, plistPath(env)]);
+  if (env.platform === "linux") {
+    await env.exec("systemctl", ["--user", "start", "japa"]);
+  } else if (env.platform === "darwin") {
+    const r = await env.exec("launchctl", ["bootstrap", `gui/${env.uid}`, plistPath(env)]);
+    // A loaded-but-stopped job (KeepAlive.SuccessfulExit is false, so a non-zero exit leaves it loaded) makes
+    // bootstrap fail because it's already loaded; kickstart (no -k, so it won't kill an already-running job) starts it.
+    if (r.code !== 0) await env.exec("launchctl", ["kickstart", `gui/${env.uid}/${LABEL}`]);
+  }
 }
 
 export async function stopService(env: ServiceEnv): Promise<void> {
