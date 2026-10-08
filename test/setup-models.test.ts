@@ -5,7 +5,7 @@ import { openSetupContext } from "../src/cli/context.ts";
 import { chooseModels } from "../src/cli/models-step.ts";
 import type { Choice } from "../src/cli/prompt.ts";
 import { echo, REPO_EXTENSIONS, tempHome } from "./helpers.ts";
-import { scripted } from "./prompt-helpers.ts";
+import { ENTER, scripted } from "./prompt-helpers.ts";
 
 const readSettings = (home: string) => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
 const keyFile = (home: string, provider: string) => join(home, "secrets", `${provider}.apiKey`);
@@ -104,6 +104,49 @@ test("a worker on the same provider asks for no second key", async () => {
     consolidation: { provider: "anthropic", modelId: firstModel },
   });
   expect(existsSync(keyFile(home, "anthropic"))).toBe(true);
+});
+
+test("a rerun with Enter everywhere keeps custom worker and consolidation models", async () => {
+  const probe = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  const [a, b] = probe.models.getModels("anthropic");
+  const models = {
+    cos: { provider: "anthropic", modelId: a!.id },
+    worker: { provider: "anthropic", modelId: b!.id },
+    consolidation: { provider: "anthropic", modelId: b!.id },
+  };
+  const home = tempHome({ models });
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const p = scripted([
+    ["CoS provider", ENTER],
+    ["CoS model", ENTER],
+    ["API key", ENTER],
+    ["Use the CoS model", ENTER],
+    ["Worker provider", ENTER],
+    ["Worker model", ENTER],
+    ["Consolidation provider", ENTER],
+    ["Consolidation model", ENTER],
+  ]);
+
+  await chooseModels(ctx, p, {});
+
+  p.done();
+  expect(readSettings(home).models).toEqual(models);
+});
+
+test("Enter on a first run uses the CoS model for every role", async () => {
+  const home = tempHome();
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const p = scripted([
+    ["CoS provider", "anthropic"],
+    ["CoS model", first],
+    ["API key", "sk-1"],
+    ["Use the CoS model", ENTER],
+  ]);
+
+  await chooseModels(ctx, p, {});
+
+  p.done();
+  expect(Object.keys(readSettings(home).models)).toEqual(["cos"]);
 });
 
 test("other user settings are kept", async () => {

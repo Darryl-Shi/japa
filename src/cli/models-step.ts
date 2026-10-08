@@ -51,7 +51,9 @@ export async function chooseModels(ctx: SetupContext, p: Prompter, env: NodeJS.P
   await apiKey(ctx, p, env, cos.provider);
   const asked = new Set([cos.provider]);
 
-  const sameForAll = await p.confirm("Use the CoS model for workers and memory consolidation?", true);
+  // Preselect what's there (design spec §4.3): a rerun with custom worker/consolidation models keeps them on Enter.
+  const shared = current.worker === undefined && current.consolidation === undefined;
+  const sameForAll = await p.confirm("Use the CoS model for workers and memory consolidation?", shared);
   let worker: ModelRef | undefined;
   let consolidation: ModelRef | undefined;
   if (!sameForAll) {
