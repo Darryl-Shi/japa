@@ -1,12 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { boot } from "../src/kernel/boot.ts";
+import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { ACTIVATION_ORDER, CONTRACTS, type TriggerContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
-import { bootTest, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootTest, carryOver, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, held, say, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -90,6 +90,61 @@ test("a message still in the merge window is submitted when the daemon stops", a
   const again = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fakeAdapter().extension] });
   await waitFor(async () => (await texts(again.root, "user")).includes("bye"));
   await again.close();
+});
+
+const PNG = new Uint8Array([137, 80, 78, 71]);
+const day = () => new Date().toISOString().slice(0, 10);
+
+/** The content of the root's newest user entry, once there is one. */
+async function userContent(daemon: Daemon) {
+  let content: unknown;
+  await waitFor(async () => {
+    const entries = (await daemon.root.entries({}, 200, undefined, ctx)).items;
+    content = entries.find((e) => e.kind === "pi.user")?.model?.[0]?.content;
+    return content !== undefined;
+  });
+  return content;
+}
+
+test("an image is saved under attachments and sent as an image part with its path", async () => {
+  const fake = fakeAdapter();
+  const { daemon, faux, home } = await bootMessaging(fake);
+  script(faux, () => undefined);
+  await fake.receive({ id: "31", text: "look", images: [{ data: PNG, mimeType: "image/png" }] });
+  const path = join(home, "attachments", day(), "31.png");
+  await waitFor(() => existsSync(path));
+  expect(new Uint8Array(readFileSync(path))).toEqual(PNG);
+  expect(await userContent(daemon)).toEqual([
+    { type: "text", text: `look\n[image saved to ${path}]` },
+    { type: "image", data: Buffer.from(PNG).toString("base64"), mimeType: "image/png" },
+  ]);
+  expect(await carryOver(daemon)).toContain(`[image saved to ${path}]`);
+  await daemon.close();
+});
+
+test("an album inside the window is one input with every image", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home } = await bootMessaging(fake);
+  await fake.receive({ id: "41", images: [{ data: PNG, mimeType: "image/jpeg" }] });
+  await sleep(200);
+  await fake.receive({ id: "42", images: [{ data: PNG, mimeType: "image/jpeg" }] });
+  const [p41, p42] = ["41", "42"].map((id) => join(home, "attachments", day(), `${id}.jpg`));
+  expect(await userContent(daemon)).toMatchObject([
+    { type: "text", text: `[image saved to ${p41}]\n[image saved to ${p42}]` },
+    { type: "image" },
+    { type: "image" },
+  ]);
+  await daemon.close();
+});
+
+test("a model without image input gets only the path notes", async () => {
+  const fake = fakeAdapter();
+  const kit = testKit({ models: [{ id: "blind", input: ["text"] }] });
+  const { daemon, home } = await bootMessaging(fake, {}, [], kit);
+  await fake.receive({ id: "51", text: "look", images: [{ data: PNG, mimeType: "image/png" }] });
+  const path = join(home, "attachments", day(), "51.png");
+  expect(await userContent(daemon)).toBe(`look\n[image saved to ${path}]\n(this model cannot see images)`);
+  await daemon.close();
 });
 
 /** A `tick` trigger extension; `emit` wakes the CoS with a proactive input. */

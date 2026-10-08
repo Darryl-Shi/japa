@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 /** The last-known-good tag. */
 export const LKG = "japa-lkg";
 
-const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json"];
+const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/"];
 
 function git(home: string, ...args: string[]): string {
   return execFileSync("git", ["-C", home, "-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false", ...args], {
@@ -17,12 +17,16 @@ function git(home: string, ...args: string[]): string {
 
 /**
  * Makes `home` a git repo on `main` with an initial commit, a `staging` worktree at `<home>/.staging`, and the `LKG`
- * tag, which starts at HEAD.
+ * tag, which starts at HEAD. Commits the `IGNORED` lines missing from `.gitignore`.
  */
 export function ensureWorkspace(home: string): void {
   if (!existsSync(join(home, ".git"))) git(home, "init", "-q", "-b", "main");
-  if (!existsSync(join(home, ".gitignore"))) writeFileSync(join(home, ".gitignore"), `${IGNORED.join("\n")}\n`);
+  const gitignore = join(home, ".gitignore");
+  const lines = existsSync(gitignore) ? readFileSync(gitignore, "utf8").split("\n") : [];
+  const missing = IGNORED.filter((line) => !lines.includes(line));
+  if (missing.length > 0) appendFileSync(gitignore, `${missing.join("\n")}\n`);
   if (!hasHead(home)) commit(home, ["."], "Initial workspace");
+  if (missing.length > 0) commit(home, [".gitignore"], "Update .gitignore");
   if (!hasTag(home, LKG)) tag(home, LKG);
   if (!existsSync(join(home, ".staging"))) {
     git(home, "worktree", "prune");

@@ -102,6 +102,17 @@ test("a conflicting revert aborts, throws and leaves the live file untouched", (
   expect(git(home, "status", "--porcelain")).toBe("");
 });
 
+test("attachments are ignored by git, also in a workspace made before them", () => {
+  const home = workspace();
+  const gitignore = join(home, ".gitignore");
+  writeFileSync(gitignore, readFileSync(gitignore, "utf8").replace("attachments/\n", ""));
+  commit(home, [".gitignore"], "before attachments");
+  ensureWorkspace(home);
+  ensureWorkspace(home);
+  expect(readFileSync(gitignore, "utf8").split("\n").filter((l) => l === "attachments/")).toHaveLength(1);
+  expect(git(home, "status", "--porcelain")).toBe("");
+});
+
 test("dirHash changes with the content and is empty for a missing dir", () => {
   const home = tempHome();
   writeFileSync(join(home, "a"), "1");

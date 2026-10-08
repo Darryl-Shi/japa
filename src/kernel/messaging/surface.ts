@@ -2,6 +2,7 @@ import { defineDoc } from "@earendil-works/pi-durable";
 import type { Dispose, Incoming, KernelContext, MessagingAdapter, Origin, Reply } from "../contracts.ts";
 import { message } from "../loader.ts";
 import { originOf } from "../origin.ts";
+import { inputOf } from "./attachments.ts";
 import { splitMessage } from "./split.ts";
 
 /** Owner messages arriving within this long of each other are merged into one input. */
@@ -21,7 +22,8 @@ export const MessagingDoc = defineDoc<{ cursors: Record<string, string> }>({
 
 /**
  * The kernel's messaging surface for `adapter`: handles its messages one at a time, in arrival order, answering anyone
- * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts, merged, to the CoS.
+ * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts and images, merged,
+ * to the CoS.
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
  */
 export async function startMessaging(adapter: MessagingAdapter, kernel: KernelContext): Promise<Dispose> {
@@ -36,12 +38,16 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
   /** Submits the buffer, if any, after the submissions before it; resolves once they are all done. */
   const flush = () => {
     clearTimeout(timer);
-    const first = buffer[0];
+    const messages = buffer;
+    const first = messages[0];
     if (first !== undefined) {
-      const input = buffer.map((m) => m.text).join("\n\n");
       buffer = [];
       const origin = { surface: adapter.name, chat: first.chat, id: first.id };
-      submitted = submitted.then(() => kernel.surface.root.submit(input, "followUp", origin)).catch(log);
+      const m = kernel.surface.status().model!;
+      const vision = kernel.models.getModel(m.provider, m.modelId)?.input.includes("image") ?? false;
+      submitted = submitted
+        .then(() => kernel.surface.root.submit(inputOf(kernel.home, messages, vision), "followUp", origin))
+        .catch(log);
     }
     return submitted;
   };
@@ -51,7 +57,7 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
       await adapter.send(m.chat, { markdown: `Not authorized. Your ${adapter.name} user id is ${m.user}.` });
       return;
     }
-    if (m.text === undefined || buffer.some((b) => b.id === m.id)) return;
+    if ((m.text === undefined && m.images === undefined) || buffer.some((b) => b.id === m.id)) return;
     buffer.push(m);
     clearTimeout(timer);
     timer = setTimeout(flush, MERGE_MS);
