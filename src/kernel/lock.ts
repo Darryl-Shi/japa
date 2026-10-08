@@ -2,7 +2,7 @@ import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:f
 import { join } from "node:path";
 
 /** True if `pid` names a live process (checked with the null signal). */
-function isAlive(pid: number): boolean {
+export function isAlive(pid: number): boolean {
   if (!Number.isInteger(pid)) return false;
   try {
     process.kill(pid, 0);

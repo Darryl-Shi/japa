@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 /** The last-known-good tag. */
 export const LKG = "japa-lkg";
 
-const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/"];
+const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/", "logs/"];
 
 function git(home: string, ...args: string[]): string {
   return execFileSync("git", ["-C", home, "-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false", ...args], {
