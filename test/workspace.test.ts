@@ -120,7 +120,7 @@ test("appending to a .gitignore without a trailing newline keeps its last line i
   const lines = readFileSync(join(home, ".gitignore"), "utf8").split("\n");
   expect(lines).toContain("build");
   expect(lines).toContain("attachments/");
-  expect(lines).toContain("desktop/");
+  expect(lines).toContain("/desktop/");
 });
 
 test("dirHash changes with the content and is empty for a missing dir", () => {

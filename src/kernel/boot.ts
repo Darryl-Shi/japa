@@ -121,7 +121,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         name: e.name,
         summary: e.summary,
         provides: Object.keys(e.provides ?? {}),
-        ...(e.status && { status: e.status() }),
+        ...(e.status && { status: statusLine(e.status) }),
       })),
       errors: rt.errors,
     });
@@ -393,6 +393,15 @@ function adapter<T extends { name: string }>(extensions: JapaExtension[], contra
   const found = extensions.flatMap((e) => (e.provides?.[contract] ?? []) as T[]).findLast((a) => a.name === name);
   if (found === undefined) throw new Error(`No ${contract} adapter "${name}" is installed`);
   return found;
+}
+
+/** An extension's status line; `status: <message>` when it throws. */
+function statusLine(status: () => string | undefined): string | undefined {
+  try {
+    return status();
+  } catch (error) {
+    return `status: ${message(error)}`;
+  }
 }
 
 /** `open()`, its error naming `japa safe-mode --default-adapters`. */

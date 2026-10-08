@@ -87,6 +87,12 @@ test("an extension's status line is shown under it, read each time", async () =>
   await daemon.close();
 });
 
+test("a throwing status line is reported, not thrown", async () => {
+  const { daemon } = await bootTest({}, [{ name: "bad", summary: "Bad", status: () => { throw new Error("boom"); } }]);
+  expect(daemon.status().extensions).toContainEqual({ name: "bad", summary: "Bad", provides: [], status: "status: boom" });
+  await daemon.close();
+});
+
 test("workspace extensions load from <home>/extensions; a broken one is reported", async () => {
   const kit = testKit();
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
