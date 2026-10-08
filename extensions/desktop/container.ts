@@ -107,6 +107,8 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
       const args = ["build", "-t", image, "--label", `japa.desktop.hash=${IMAGE_HASH}`, DESKTOP_DIR];
       const result = await docker(args, { signal: abort.signal });
       if (result.code !== 0) failed = buildFailed(result.stderr.trim().split("\n").at(-1)!.trim());
+    } catch (error) {
+      failed = needsDocker((error as Error).message);
     } finally {
       building = undefined;
     }

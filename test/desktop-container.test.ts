@@ -23,7 +23,8 @@ test("the first call builds the image in the background and answers that the des
   const { fake, desktop } = setup();
   fake.state.image = false;
   const release = fake.holdBuild();
-  await expect(desktop.ready(false)).rejects.toThrow(STARTING);
+  const results = await Promise.allSettled([desktop.ready(false), desktop.ready(false)]);
+  expect(results.map((r) => r.status === "rejected" && (r.reason as Error).message)).toEqual([STARTING, STARTING]);
   await expect(desktop.ready(false)).rejects.toThrow(STARTING);
   expect(fake.calls.filter((c) => c[0] === "build")).toEqual([
     ["build", "-t", `japa-desktop:${IMAGE_HASH}`, "--label", `japa.desktop.hash=${IMAGE_HASH}`, DESKTOP_DIR],
@@ -121,6 +122,15 @@ test("a failed build is reported once, then built again", async () => {
   await expect(desktop.ready(false)).rejects.toThrow("The desktop image failed to build: E: Unable to locate package nope");
   await expect(desktop.ready(false)).rejects.toThrow(STARTING);
   expect(fake.calls.filter((c) => c[0] === "build")).toHaveLength(2);
+});
+
+test("a build that can't run is reported, not thrown", async () => {
+  const { fake, desktop } = setup();
+  fake.state.image = false;
+  fake.reply((a) => a[0] === "build", new Error("the docker command was not found"));
+  await expect(desktop.ready(false)).rejects.toThrow(STARTING);
+  await vi.waitFor(() => expect(desktop.status()).not.toBe(BUILDING));
+  await expect(desktop.ready(false)).rejects.toThrow("The desktop needs Docker: the docker command was not found");
 });
 
 test("exec runs as japa inside the container", async () => {
