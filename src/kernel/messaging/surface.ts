@@ -59,11 +59,11 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
 
   /** Sends `r` in parts to its chat, if it has one here; its cursor is saved unless the daemon is stopping. */
   const deliver = async (r: Reply) => {
-    if (stopped) return;
     const owner = kernel.settings().owner as string | undefined;
     const chat = r.origin === "proactive" ? owner : r.origin.surface === adapter.name ? r.origin.chat : undefined;
     if (chat !== undefined) {
       for (const part of splitMessage(r.text, adapter.maxMessageChars)) {
+        if (stopped) return;
         try {
           await adapter.send(chat, { markdown: part });
         } catch (error) {

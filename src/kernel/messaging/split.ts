@@ -11,11 +11,11 @@ function openFence(text: string): string | undefined {
 const fits = (text: string, end: number, max: number) =>
   end + (openFence(text.slice(0, end)) === undefined ? 0 : CLOSE.length) <= max;
 
-/** Where to cut `text`: the end of the first part and the start of the rest. */
+/** Where to cut `text`: the end of the first part and the start of the rest; never after a lone fence line. */
 function cut(text: string, max: number): [number, number] {
   for (const separator of ["\n\n", "\n", " "]) {
     for (let i = text.lastIndexOf(separator, max); i > 0; i = text.lastIndexOf(separator, i - 1)) {
-      if (fits(text, i, max)) return [i, i + separator.length];
+      if (fits(text, i, max) && !/^```[^\n]*$/.test(text.slice(0, i))) return [i, i + separator.length];
     }
   }
   const end = fits(text, max, max) ? max : max - CLOSE.length;

@@ -21,4 +21,12 @@ test("a code block split across parts is closed and reopened", () => {
   expect(parts.length).toBeGreaterThan(1);
   expect(parts.every((p) => p.length <= 4096 && (p.match(/```/g) ?? []).length % 2 === 0)).toBe(true);
   expect(parts[1]!.startsWith("```ts\n")).toBe(true);
+  expect(parts[2]!.startsWith("```ts\n")).toBe(true); // reopened after a cut inside the block
+});
+
+test("a code block with a line too long for a part still splits", { timeout: 2000 }, () => {
+  for (const code of ["x".repeat(5000), "word ".repeat(1200)]) {
+    const parts = splitMessage("```\n" + code + "\n```", 4096);
+    expect(parts.every((p) => p.length <= 4096 && (p.match(/```/g) ?? []).length % 2 === 0)).toBe(true);
+  }
 });
