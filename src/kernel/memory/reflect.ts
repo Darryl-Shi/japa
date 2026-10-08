@@ -24,7 +24,7 @@ const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and up
   - fold new details into an existing entry and generalize, rather than adding entries;
   - rewrite entries that have become too specific at a higher level;
   - skip sensitive details unless the user explicitly asks to remember them.
-- episode: a short summary of these turns.
+- episode: a short summary of these turns, for later search. Name the people, projects and decisions.
 \`user:\` lines starting with \`[job \` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user.`;
 
 const SHORTEN = `Shorten each of these user fact operations to at most 50 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
@@ -73,7 +73,7 @@ function chunk(entries: EntryRecord[], budget: number): Chunk {
   const taken: EntryRecord[] = [];
   const lines: string[] = [];
   for (const entry of candidates) {
-    const text = entryText(entry);
+    const text = entryText(entry).slice(0, budget * 4); // an oversized entry is reflected truncated, not forever
     if (lines.length > 0 && estimateTokens([...lines, text].join("\n")) > budget) break;
     taken.push(entry);
     lines.push(text);
@@ -86,12 +86,16 @@ function chunk(entries: EntryRecord[], budget: number): Chunk {
  * about the user as facts and an episode, and `startReflect`, which starts it unless it is already running.
  */
 export function reflection({ models, settings }: { models: Models; settings: Settings }) {
+  /** The model that reflects: the consolidation model when set, the CoS's otherwise. Read live: settings change. */
+  const reflectModel = () => {
+    const ref = settings.models.consolidation ?? settings.models.cos!;
+    return models.getModel(ref.provider, ref.modelId)!;
+  };
+
   /** The `save` arguments of the reflection model's answer, if it called `save`. */
   async function ask<T>(systemPrompt: string, text: string, tool: Tool, signal: AbortSignal): Promise<T | undefined> {
-    const ref = settings.models.consolidation ?? settings.models.cos!;
-    const model = models.getModel(ref.provider, ref.modelId)!;
     const messages = [{ role: "user" as const, content: text, timestamp: Date.now() }];
-    const answer = await models.completeSimple(model, { systemPrompt, messages, tools: [tool] }, { signal });
+    const answer = await models.completeSimple(reflectModel(), { systemPrompt, messages, tools: [tool] }, { signal });
     return answer.content.find((c) => c.type === "toolCall")?.arguments as T | undefined;
   }
 
@@ -102,9 +106,7 @@ export function reflection({ models, settings }: { models: Models; settings: Set
     phases: {
       reflect: async (_task, runtime, context) => {
         const memory = structuredClone((await runtime.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context))!) as Memory;
-        const ref = settings.models.consolidation ?? settings.models.cos!;
-        const model = models.getModel(ref.provider, ref.modelId)!;
-        const budget = Math.floor(model.contextWindow / 2);
+        const budget = Math.floor(reflectModel().contextWindow / 2);
         const from = memory.reflectedThrough !== undefined ? ((memory.reflectedThrough + 1) as EntryId) : undefined;
 
         // Read-only: finds this invocation's chunk, or ends the task at once when nothing is left to reflect on.
@@ -123,25 +125,30 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         const text = `Turns since the last reflection:\n${piece.lines.join("\n")}\n\nFacts:\n${listed(memory.facts)}`;
         const saved = (await ask<Saved>(REFLECT, text, save, runtime.signal))!; // a missing field throws below, faulting the task
         const now = runtime.now();
+        // The decisions are made on the snapshot; the operations they produce are applied to the live memory below.
+        const ops = [...saved.facts];
         const { tooLong } = applyFactOps(memory, saved.facts, now);
         if (tooLong.length > 0) {
           const shortened = await ask<{ facts: FactOp[] }>(SHORTEN, JSON.stringify(tooLong), saveFacts, runtime.signal);
+          ops.push(...(shortened?.facts ?? []));
           applyFactOps(memory, shortened?.facts ?? [], now); // still too long: dropped
         }
         if (overCap(memory.facts, settings.memory)) {
           const merged = await ask<{ facts: FactOp[] }>(merge(settings.memory), listed(memory.facts), saveFacts, runtime.signal);
-          applyFactOps(memory, merged?.facts ?? [], now);
-          memory.facts = truncateToCap(memory.facts, settings.memory);
+          ops.push(...(merged?.facts ?? []));
         }
-        memory.episodes.push({ id: String(memory.nextId++), at: now, text: saved.episode });
-        memory.reflectedThrough = piece.through;
 
-        // One commit saves the memory and either continues with the next chunk or ends the task. `through` marks
-        // the checkpoint as changed (it differs from the previous one), so the scheduler keeps the task running.
+        // One commit applies the operations to the memory as it stands now — so a `memory_remember` or
+        // `memory_forget` made while the models ran survives — and either continues with the next chunk or ends the
+        // task. `through` marks the checkpoint as changed (it differs from the previous one), so the task keeps going.
         await runtime.commit(async (tx) => {
-          Object.assign(await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID), memory);
+          const draft = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
+          applyFactOps(draft, ops, now);
+          draft.facts = truncateToCap(draft.facts, settings.memory); // a no-op under the cap
+          draft.episodes.push({ id: String(draft.nextId++), at: now, text: saved.episode });
+          draft.reflectedThrough = piece.through;
           return piece.more
-            ? { status: "running", checkpoint: { phase: "reflect", through: memory.reflectedThrough } }
+            ? { status: "running", checkpoint: { phase: "reflect", through: piece.through } }
             : { status: "terminal", outcome: { status: "completed", result: null } };
         }, context);
       },

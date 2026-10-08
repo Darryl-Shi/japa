@@ -284,7 +284,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       else if (delay !== undefined) quiet = setTimeout(() => void reflect().catch(() => {}), delay).unref();
     };
     const resets = await watchResets(opened, root, afterReset);
-    void afterReset().catch(() => {}); // at boot, for the turns the last run left unreflected
+    // At boot, reflect at once on whatever the last run left unreflected.
+    if ((await unreflectedTurns(opened, root)) > 0) void reflect().catch(() => {});
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
     safety.scheduleGood(); // a pending tag doesn't survive a restart
 

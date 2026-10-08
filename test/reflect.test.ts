@@ -13,9 +13,9 @@ import { type JsonObject, ResetEntry, ROOT_CONVERSATION_ID } from "@earendil-wor
 import { expect, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { reflectDelay, unreflectedTurns } from "../src/kernel/memory/reflect.ts";
-import { MemoryDoc } from "../src/kernel/memory/state.ts";
+import { applyFactOps, MemoryDoc } from "../src/kernel/memory/state.ts";
 import { bootTest, carryOver, tempHome, testKit, waitFor } from "./helpers.ts";
-import { ask, say, textOf, texts } from "./jobs-helpers.ts";
+import { ask, call, held, say, textOf, texts } from "./jobs-helpers.ts";
 
 type Respond = (
   system: string,
@@ -113,6 +113,49 @@ test("a long range is reflected in chunks, oldest first", async () => {
   expect(prompts[0]!.includes("B ")).toBe(false);
   expect((await memory(daemon)).reflectedThrough).toBe((await daemon.root.entries({}, 1, undefined, ctx)).items[0]!.id);
   expect((await memory(daemon)).episodes).toHaveLength(2);
+  await daemon.close();
+});
+
+test("a fact forgotten while the reflection runs stays forgotten", async () => {
+  const { daemon, faux } = await bootTest();
+  const hold = held();
+  route(faux, (system, text, signal) => {
+    if (system.startsWith("You reflect")) return hold.wait(save(facts({ op: "add", text: "Ada likes tea" })), signal);
+    if (text === "forget it") return call("memory_forget", { id: "1" });
+  });
+  await ask(daemon, "hello");
+  await daemon.root.commit(async (tx) => {
+    applyFactOps(await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID), [{ op: "add", text: "Ada lives in Oslo" }], 0);
+  }, ctx);
+
+  const reflecting = daemon.reflect();
+  await waitFor(() => hold.started()); // the reflection has read the memory and is waiting for its model
+  await ask(daemon, "forget it");
+  hold.release();
+  await reflecting;
+
+  expect(await factTexts(daemon)).toEqual(["Ada likes tea"]);
+  await daemon.close();
+});
+
+test("an entry larger than the chunk budget is sent truncated", async () => {
+  const kit = testKit({ models: [{ id: "narrow", contextWindow: 4000 }] });
+  const { daemon, faux } = await bootTest({}, [], kit);
+  const prompts: string[] = [];
+  route(faux, (system, text) => {
+    if (system.startsWith("You reflect")) {
+      prompts.push(text);
+      return save(facts());
+    }
+  });
+  await ask(daemon, `A ${"x".repeat(10_000)}`);
+  await carryOver(daemon);
+  await daemon.reflect();
+
+  const sent = prompts[0]!.split("\n")[1]!; // the oversized entry's line
+  expect(sent.length).toBe(8000); // half of the 4 000-token window, four characters per token
+  expect(sent.startsWith(`user: A ${"x".repeat(100)}`)).toBe(true);
+  expect((await memory(daemon)).reflectedThrough).toBe((await daemon.root.entries({}, 1, undefined, ctx)).items[0]!.id);
   await daemon.close();
 });
 

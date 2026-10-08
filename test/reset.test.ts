@@ -8,7 +8,7 @@ import {
   type Message,
 } from "@earendil-works/pi-ai";
 import { type EntryRecord, InboxDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { expect, test, vi } from "vitest";
+import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
 import { lastExchange, resetRoot } from "../src/kernel/reset.ts";
@@ -205,7 +205,7 @@ test("reflection runs after the 5th unreflected turn", async () => {
   await daemon.close();
 });
 
-test("boot arms the quiet timer for the turns left unreflected", async () => {
+test("boot reflects the turns left unreflected", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite, so the turn survives the restart
   const first = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
@@ -215,18 +215,9 @@ test("boot arms the quiet timer for the turns left unreflected", async () => {
   await first.close();
 
   const prompts = reflections(kit.faux);
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  try {
-    const reopened = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
-    const armed = vi.getTimerCount();
-    await waitFor(() => vi.getTimerCount() > armed); // the quiet timer joins the boot's own
-    expect(prompts).toEqual([]); // one turn is too few to reflect at once
-    await vi.advanceTimersByTimeAsync(900_000);
-    await waitFor(() => prompts.length > 0);
-    await reopened.close();
-  } finally {
-    vi.useRealTimers();
-  }
+  const reopened = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  await waitFor(() => prompts.length > 0); // one unreflected turn is enough at boot
+  await reopened.close();
 });
 
 const bulky = defineJapaExtension({
