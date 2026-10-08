@@ -26,6 +26,7 @@ describe.skipIf(process.env.JAPA_DOCKER_TESTS !== "1")("the desktop on Docker", 
     desktop.dispose();
     await dockerCli(["rm", "-f", config.name]);
     await dockerCli(["volume", "rm", `${config.name}-home`]);
+    await dockerCli(["network", "rm", `${config.name}-net`]);
   }, 60_000);
 
   test("the image builds, the container starts, and a screenshot is a 1280×800 PNG", async () => {

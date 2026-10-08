@@ -54,11 +54,13 @@ test("the container gets the limits, ports, mounts and a generated VNC password"
   expect(password).toMatch(/^[A-Za-z0-9]{16}$/);
   expect(fake.calls.find((c) => c[0] === "run")).toEqual([
     "run", "-d", "--label", expect.stringMatching(/^japa\.desktop\.hash=[0-9a-f]{12}$/),
-    "--name", "japa-desktop", "--restart", "unless-stopped", "--cpus", "4", "--memory", "8g", "--shm-size", "1g",
+    "--name", "japa-desktop", "--restart", "unless-stopped", "--network", "japa-desktop-net", "--cpus", "4", "--memory", "8g", "--shm-size", "1g",
     "-p", "100.64.0.1:6080:6080", "-p", "127.0.0.1:9222:9223", "-v", "japa-desktop-home:/home/japa",
     "-v", `${stub.home}/desktop/shared:/home/japa/shared`, "-v", `${stub.home}/attachments:/home/japa/attachments:ro`,
     "-e", `VNC_PASSWORD=${password}`, `japa-desktop:${IMAGE_HASH}`,
   ]);
+  const commands = fake.calls.map((c) => c[0]);
+  expect(fake.calls[commands.indexOf("run") - 1]).toEqual(["network", "create", "japa-desktop-net"]);
   expect(existsSync(join(stub.home, "desktop/shared"))).toBe(true);
   expect(desktop.status()).toBe("noVNC: http://100.64.0.1:6080/vnc.html (password: secret desktop.vncPassword)");
 
@@ -88,7 +90,7 @@ test("a changed setting or image recreates the container on the same volume and 
   stub.settings.bind = "100.64.0.1";
   fake.calls.length = 0;
   await desktop.ready(false);
-  expect(fake.calls.map((c) => c[0])).toEqual(["container", "image", "stop", "rm", "run", "exec", "exec"]);
+  expect(fake.calls.map((c) => c[0])).toEqual(["container", "image", "stop", "rm", "network", "run", "exec", "exec"]);
   expect(fake.calls.find((c) => c[0] === "run")).toContain("japa-desktop-home:/home/japa");
   expect(stub.emitted).toEqual([{ key: `upgrade:${fake.state.container!.hash}`, text: UPGRADED }]);
   fake.state.container!.hash = "0123456789ab"; // made from older image files

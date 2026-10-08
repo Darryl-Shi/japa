@@ -16,7 +16,7 @@ export const LockDoc = defineDoc<{ job?: string }>({
 });
 
 export const OPERATOR = "This acts on the desktop — start an operator job for it.";
-export const waiting = (job: string) => `Waiting for the desktop (in use by job ${job})`;
+const waiting = (job: string) => `Waiting for the desktop (in use by job ${job})`;
 
 /** Takes the lock for the caller's job, waiting while another job holds it; outside the desktop environment, the refusal. */
 export async function claimDesktop(api: ToolExecutionApi, context: Context): Promise<string | undefined> {

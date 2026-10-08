@@ -107,7 +107,8 @@ use builds the image (a few minutes); `japa status` shows the desktop's line und
 - **Files** are exchanged in `~/.japa/desktop/shared` (`/home/japa/shared` on the desktop).
 - **Settings** (`extensions.desktop`): `cpus` (default `2`), `memory` (`"4g"`), `shm` (`"2g"`) and `bind`
   (`"127.0.0.1"`). A change recreates the container on the next use and keeps its home (`/home/japa`, with the
-  browser's logins).
+  browser's logins; those from the last ~30 s before a stop, recreate or reboot may be lost, as Chromium commits
+  cookies every ~30 s).
 
 ## Where state lives
 

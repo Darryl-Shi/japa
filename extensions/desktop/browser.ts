@@ -154,7 +154,10 @@ export function browserTool(desktop: Desktop, connect: () => Promise<Browser>): 
               return;
             case "tab_new":
               current = await chromium.newPage();
-              if (args.url) await current.goto(args.url);
+              if (args.url) {
+                await current.goto(args.url);
+                await current.bringToFront(); // as navigate
+              }
               return;
             case "tab_select":
               current = byId(args.id);

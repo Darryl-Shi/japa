@@ -24,10 +24,10 @@ export const STARTING = "The desktop is starting (building its image) — try ag
 export const BUILDING = "Building the desktop's image (first use or an upgrade; a few minutes).";
 export const UPGRADED =
   "The desktop was recreated with a new image or settings: software installed with apt is gone; everything under /home/japa is kept.";
-export const NOT_STARTED = "The desktop did not start within 60 s.";
-export const needsDocker = (reason: string) => `The desktop needs Docker: ${reason}`;
-export const couldNotStart = (line: string) => `The desktop could not start: ${line}`;
-export const buildFailed = (line: string) => `The desktop image failed to build: ${line}`;
+const NOT_STARTED = "The desktop did not start within 60 s.";
+const needsDocker = (reason: string) => `The desktop needs Docker: ${reason}`;
+const couldNotStart = (line: string) => `The desktop could not start: ${line}`;
+const buildFailed = (line: string) => `The desktop image failed to build: ${line}`;
 
 /** This directory: the image's build context. */
 export const DESKTOP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -72,7 +72,7 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   };
   const run = async (args: string[]) => {
     const result = await docker(args);
-    if (result.code !== 0) fail(couldNotStart(firstLine(result.stderr)));
+    if (result.code !== 0) fail(couldNotStart(firstLine(result.stderr) || `exit code ${result.code}`));
   };
   const exec = (argv: string[], input?: string) =>
     docker(["exec", ...(input === undefined ? [] : ["-i"]), "-u", "japa", name, ...argv], { input });
@@ -120,7 +120,7 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
     const { home } = kernel();
     const s = settings();
     const args = [
-      "--name", name, "--restart", "unless-stopped",
+      "--name", name, "--restart", "unless-stopped", "--network", `${name}-net`,
       "--cpus", String(s.cpus ?? 2), "--memory", s.memory ?? "4g", "--shm-size", s.shm ?? "2g",
       "-p", `${bind()}:${config.vncPort}:6080`, "-p", `127.0.0.1:${config.cdpPort}:9223`,
       "-v", `${name}-home:/home/japa`, "-v", `${home}/desktop/shared:/home/japa/shared`,
@@ -154,6 +154,7 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
     mkdirSync(join(home, "desktop/shared"), { recursive: true });
     chmodSync(join(home, "desktop/shared"), 0o777);
     mkdirSync(join(home, "attachments"), { recursive: true });
+    await docker(["network", "create", `${name}-net`]); // fails harmlessly when it exists
     await run(["run", "-d", "--label", `japa.desktop.hash=${hash}`, ...args]);
     if (found) await kernel().trigger.emit({ key: `upgrade:${hash}`, text: UPGRADED });
     await healthy();

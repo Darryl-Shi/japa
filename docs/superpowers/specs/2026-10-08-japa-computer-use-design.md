@@ -238,7 +238,9 @@ and the CoS never take the lock.
   it exists) or first use. It is never removed in normal operation, so
   software installed with `apt` and open windows survive daemon restarts.
 - `/home/japa` is the named volume `japa-desktop-home`: browser profile,
-  logins, files. It survives container recreation.
+  logins, files. It survives container recreation, though logins made in the
+  last ~30 s before a stop, recreate or reboot may be lost (Chromium commits
+  cookies every ~30 s).
 - **Upgrade:** when the image hash label differs from the extension's files,
   the extension rebuilds the image, recreates the container with the same
   volume and mounts, and tells the CoS through the kernel context's
