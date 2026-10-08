@@ -1,6 +1,13 @@
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
-import { type Conversation, defineDoc, defineTool, type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import {
+  type Conversation,
+  defineDoc,
+  defineTool,
+  type Harness,
+  ROOT_CONVERSATION_ID,
+  type Tx,
+} from "@earendil-works/pi-durable";
 import type { SecretsStore } from "./contracts.ts";
 
 export type SecretRequest = { id: string; name: string; why: string; at: number };
@@ -19,6 +26,14 @@ export function renderPending(pending: SecretRequest[]): string | undefined {
   return pending.length ? pending.map((r) => `- ${r.name}: ${r.why}`).join("\n") : undefined;
 }
 
+/** Adds a pending request for `name`; false when one is already pending. */
+export async function addSecretRequest(tx: Tx, name: string, why: string): Promise<boolean> {
+  const doc = await tx.doc(SecretRequestsDoc, ROOT_CONVERSATION_ID);
+  if (doc.pending.some((r) => r.name === name)) return false;
+  doc.pending.push({ id: String(doc.nextId++), name, why, at: Date.now() });
+  return true;
+}
+
 const SECRET_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
@@ -32,17 +47,15 @@ export const secretRequest = defineTool({
   parameters: Type.Object({ name: Type.String(), why: Type.String() }),
   execute: async ({ name, why }, api, context) => {
     if (!SECRET_NAME.test(name)) return reply("Invalid secret name.");
-    const added = await api.commit(async (tx) => {
-      const doc = await tx.doc(SecretRequestsDoc, ROOT_CONVERSATION_ID);
-      if (doc.pending.some((r) => r.name === name)) return false;
-      doc.pending.push({ id: String(doc.nextId++), name, why, at: Date.now() });
-      return true;
-    }, context);
+    const added = await api.commit((tx) => addSecretRequest(tx, name, why), context);
     return reply(added ? `Asked the user for ${name}. You'll be told when it's provided.` : `Already asked for ${name}.`);
   },
 });
 
-/** Stores `value` as the secret pending request `requestId` asked for, removes the request and tells the CoS. */
+/**
+ * Stores `value` as the secret pending request `requestId` asked for, removes the request and tells the CoS;
+ * returns the secret's name.
+ */
 export async function fulfilSecret(
   harness: Harness,
   root: Conversation,
@@ -50,7 +63,7 @@ export async function fulfilSecret(
   requestId: string,
   value: string,
   context: Context,
-): Promise<void> {
+): Promise<string> {
   const { pending } = (await harness.snapshot(SecretRequestsDoc, root.id, context))!;
   const request = pending.find((r) => r.id === requestId);
   if (request === undefined) throw new Error(`No pending request ${requestId}`);
@@ -61,4 +74,5 @@ export async function fulfilSecret(
   }, context);
   const content = `[secret ${request.name} provided]`;
   await root.submit({ type: "input", content, requestId: `secret:${requestId}` }, context);
+  return request.name;
 }

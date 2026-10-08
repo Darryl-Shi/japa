@@ -1,8 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import type { FauxProviderHandle } from "@earendil-works/pi-ai";
 import { type AgentEvent, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { Daemon } from "../src/kernel/boot.ts";
+import type { KernelContext, SurfaceContext } from "../src/kernel/contracts.ts";
+import type { JapaExtension } from "../src/kernel/extension.ts";
 import { ChangesDoc } from "../src/kernel/changes.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
@@ -71,4 +75,54 @@ test("a pending secret request shows in the waiting-on-you section and goes when
   await surface().secrets.fulfil(pending[0]!.id, "s3cr3t");
   expect(await system(daemon, faux)).not.toMatch(/waiting-on-you/);
   await daemon.close();
+});
+
+describe("extensions", () => {
+  let daemon: Daemon;
+  let faux: FauxProviderHandle;
+  let kernel: () => KernelContext;
+  let surface: () => SurfaceContext;
+  const pending = async () => (await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending;
+  const pendingId = async () => (await pending())[0]!.id;
+
+  beforeEach(async () => {
+    let kept: KernelContext | undefined;
+    const svc: JapaExtension = {
+      name: "svc",
+      summary: "Test",
+      secrets: ["svc.token"],
+      setup: (c) => {
+        kept = c;
+      },
+    };
+    const probed = probe();
+    surface = probed.surface;
+    kernel = () => kept!;
+    ({ daemon, faux } = await bootTest({}, [svc, probed.extension]));
+    script(faux, () => undefined);
+  });
+
+  afterEach(() => daemon.close());
+
+  test("an extension waits for its secret without asking", async () => {
+    const value = kernel().secretProvided("svc.token");
+    expect(await pending()).toEqual([]);
+    await tool(daemon, faux, "secret_request", { name: "svc.token", why: "to sync" });
+    await surface().secrets.fulfil(await pendingId(), "s3cr3t");
+    await expect(value).resolves.toBe("s3cr3t");
+  });
+
+  test("an extension asks for its secret and gets it once provided", async () => {
+    const value = kernel().requestSecret("svc.token", "to sync");
+    await vi.waitFor(async () => expect(await pending()).toMatchObject([{ name: "svc.token", why: "to sync" }]));
+    await surface().secrets.fulfil(await pendingId(), "s3cr3t");
+    await expect(value).resolves.toBe("s3cr3t");
+    await vi.waitFor(async () =>
+      expect((await texts(daemon.root, "user")).filter((t) => t === "[secret svc.token provided]")).toHaveLength(1),
+    );
+  });
+
+  test("an undeclared secret can't be requested", async () => {
+    await expect(kernel().requestSecret("other", "x")).rejects.toThrow('Extension svc did not declare secret "other"');
+  });
 });

@@ -44,7 +44,7 @@ import { MessagingDoc } from "./messaging/surface.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
-import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
+import { addSecretRequest, fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
@@ -147,15 +147,32 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         return found?.tool.execute(args, api as unknown as ToolExecutionApi, ctx);
       },
     };
+    // Resolved by the surfaces' `fulfil`, by secret name.
+    const waiters = new Map<string, ((value: string) => void)[]>();
+    const declared = (extension: string, name: string) => {
+      if (!rt.extensions.find((e) => e.name === extension)?.secrets?.includes(name)) {
+        throw new Error(`Extension ${extension} did not declare secret "${name}"`);
+      }
+    };
+    const provided = (name: string) =>
+      new Promise<string>((resolve) => waiters.set(name, [...(waiters.get(name) ?? []), resolve]));
     const kernel = (extension: string): KernelContext => ({
       home,
       extension,
       settings: () => settings.extensions[extension] ?? {},
       secret: async (name) => {
-        if (!rt.extensions.find((e) => e.name === extension)?.secrets?.includes(name)) {
-          throw new Error(`Extension ${extension} did not declare secret "${name}"`);
-        }
+        declared(extension, name);
         return secrets.get(name);
+      },
+      secretProvided: async (name) => {
+        declared(extension, name);
+        return provided(name);
+      },
+      requestSecret: async (name, why) => {
+        declared(extension, name);
+        const value = provided(name);
+        await root.commit((tx) => addSecretRequest(tx, name, why), ctx);
+        return value;
       },
       models,
       environments,
@@ -209,7 +226,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               },
             };
           },
-          fulfil: (requestId, value) => fulfilSecret(opened, root, secrets, requestId, value, ctx),
+          fulfil: async (requestId, value) => {
+            const name = await fulfilSecret(opened, root, secrets, requestId, value, ctx);
+            for (const resolve of waiters.get(name) ?? []) resolve(value);
+            waiters.delete(name);
+          },
         },
         status,
       },

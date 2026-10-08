@@ -132,6 +132,10 @@ export type KernelContext = {
   settings(): JsonObject;
   /** Reads a secret named in the extension's manifest `secrets`; throws for any other name. */
   secret(name: string): Promise<string | undefined>;
+  /** Resolves with the value the next time a request for `name` is fulfilled; throws as `secret`. */
+  secretProvided(name: string): Promise<string>;
+  /** Asks the user for `name` (as `secret_request`), then resolves as `secretProvided`. */
+  requestSecret(name: string, why: string): Promise<string>;
   models: MutableModels;
   environments: Map<string, EnvironmentAdapter>;
   surface: SurfaceContext;
