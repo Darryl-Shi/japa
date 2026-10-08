@@ -247,6 +247,8 @@ NODE_CREATED=0
 install_launcher() {
   say "Writing launcher"
   mkdir -p "$(dirname "$LAUNCHER")"
+  # Replace, never write through, a symlink (`npm link` makes one to a checkout's main.ts).
+  rm -f "$LAUNCHER"
   write_launcher "$NODE_BIN" "$APP_DIR" >"$LAUNCHER"
   chmod 755 "$LAUNCHER"
 
@@ -282,8 +284,17 @@ launcher_points_here() {
   [ -x "$LAUNCHER" ] && grep -qF "$(shell_quote "$APP_DIR/src/cli/main.ts")" "$LAUNCHER"
 }
 
+# Whether $APP_DIR's package.json names it japa.
+is_japa_checkout() {
+  [ -f "$APP_DIR/package.json" ] && grep -q '^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"japa"' "$APP_DIR/package.json"
+}
+
 # --- Step 3: existing install -> upgrade path ---
 if [ -e "$APP_DIR/.git" ]; then
+  if ! is_japa_checkout; then
+    say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
+    exit 1
+  fi
   # An install interrupted before its launcher step, or a launcher since taken over by another install: (re)write
   # it, so the update below -- and every later `japa` -- runs this checkout.
   if ! launcher_points_here; then

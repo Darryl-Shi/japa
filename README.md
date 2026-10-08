@@ -40,8 +40,8 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 | `--skip-setup` | | off | Install but don't run `japa setup` |
 
 If a step fails, or you press Ctrl-C, the installer names the step and removes the `app/` and `node/` it created.
-It never touches `~/.japa`, refuses a `--dir` whose `app/` isn't a japa checkout, and never replaces or removes a
-`node/` it didn't install itself.
+It never touches `~/.japa`, refuses a `--dir` whose `app/` isn't a japa checkout (changing nothing), and never
+replaces or removes a `node/` it didn't install itself.
 
 Running the same command again later upgrades an existing install (writing the launcher first if it's missing or
 points at another install) — see Updating.
@@ -142,7 +142,7 @@ checkout's `src/cli/main.ts` directly on the Node you installed the service with
 
 | Subcommand | What it does |
 | --- | --- |
-| `install` | Write and enable the unit/agent, then start it (refused while `japa daemon` runs in the foreground) |
+| `install` | Write and enable the unit/agent, then start it (while `japa daemon` runs in the foreground it's written and enabled but not started, with an error telling you to stop the foreground daemon) |
 | `uninstall` | Stop and remove it |
 | `start`, `stop`, `restart` | Control it (`start` is refused while `japa daemon` runs in the foreground) |
 | `status` | The service manager's state, then `japa status` if the socket answers |

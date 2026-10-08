@@ -2,7 +2,7 @@
 // these tests exercise the real clone / Node-detection / npm ci / launcher-writing logic without network access.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -177,6 +177,30 @@ test("a rerun whose launcher points at another install rewrites it", () => {
   expect(second.output).toContain("update called");
 });
 
+test("a rerun replaces a symlinked launcher (npm link) instead of writing through it", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+  const launcherPath = join(home, ".local", "bin", "japa");
+  const devMain = join(tmp(), "main.ts");
+  writeFileSync(devMain, "// a dev checkout's main.ts\n");
+
+  const first = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+  expect(first.status, first.output).toBe(0);
+  rmSync(launcherPath);
+  symlinkSync(devMain, launcherPath);
+  chmodSync(devMain, 0o755);
+
+  const second = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
+
+  expect(second.status, second.output).toBe(0);
+  expect(readFileSync(devMain, "utf8")).toBe("// a dev checkout's main.ts\n");
+  expect(lstatSync(launcherPath).isSymbolicLink()).toBe(false);
+  const node = execFileSync("sh", ["-c", "command -v node"], { encoding: "utf8", env }).trim();
+  expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(node, join(dir, "app")));
+});
+
 test("a second run with --branch forwards it to update", () => {
   const bare = fixtureRepo();
   const home = tmp();
@@ -250,6 +274,28 @@ test("a --dir whose app/ isn't a git checkout is refused", () => {
   expect(result.output).toContain(`${join(dir, "app")} exists and isn't a japa checkout`);
   expect(readFileSync(join(dir, "app", "keep.txt"), "utf8")).toBe("mine");
   expect(existsSync(join(home, ".local", "bin", "japa"))).toBe(false);
+});
+
+test("a --dir whose app/ is a git checkout of something else is refused, keeping the launcher", () => {
+  const home = tmp();
+  const dir = join(tmp(), "apps");
+  const app = join(dir, "app");
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, "package.json"), '{ "name": "other" }\n');
+  gitIn(app, "init", "-q");
+  const launcherPath = join(home, ".local", "bin", "japa");
+  mkdirSync(dirname(launcherPath), { recursive: true });
+  const launcher = launcherText("/elsewhere/node/bin/node", "/elsewhere/app");
+  writeFileSync(launcherPath, launcher);
+  chmodSync(launcherPath, 0o755);
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const result = runInstall(["--dir", dir, "--repo", fixtureRepo(), "--non-interactive", "--skip-setup"], env);
+
+  expect(result.status).not.toBe(0);
+  expect(result.output).toContain(`${app} exists and isn't a japa checkout`);
+  expect(readFileSync(launcherPath, "utf8")).toBe(launcher);
+  expect(existsSync(join(dir, "node"))).toBe(false);
 });
 
 test("an unsupported platform is refused", () => {
