@@ -1,4 +1,5 @@
 import { Container, Editor, Input, matchesKey, ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui";
+import { MaskedInput } from "../../src/cli/prompt.ts";
 import { board, type Job, type SecretRequest } from "../../src/sdk.ts";
 import { connect } from "./client.ts";
 import { applyEvents, type Line, type Transcript } from "./transcript.ts";
@@ -9,17 +10,6 @@ const editorTheme = {
   selectList: { selectedPrefix: plain, selectedText: plain, description: plain, scrollInfo: plain, noMatch: plain },
 };
 const prefix: Record<Line["kind"], string> = { user: "› ", assistant: "", tool: "", info: "! " };
-
-/** An `Input` that shows each typed character as `•`. */
-class MaskedInput extends Input {
-  override render(width: number): string[] {
-    const value = this.getValue();
-    this.setValue("•".repeat(value.length)); // same length: the cursor stays put
-    const lines = super.render(width);
-    this.setValue(value);
-    return lines;
-  }
-}
 
 /** Interactive chat with the daemon in `home`; resolves when the user quits with Ctrl+C. */
 export async function runChat(home: string): Promise<void> {
