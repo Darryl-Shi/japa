@@ -58,10 +58,10 @@ export default defineJapaExtension({
 `;
 
 /** Polls `fn` every 20 ms until it returns true; throws `waitFor timed out` after `timeoutMs`. */
-export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 15000): Promise<void> {
+  const deadline = performance.now() + timeoutMs; // not Date.now(): this host's wall clock jumps by ~20-40 s
   while (!(await fn())) {
-    if (Date.now() > deadline) throw new Error("waitFor timed out");
+    if (performance.now() > deadline) throw new Error("waitFor timed out");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }

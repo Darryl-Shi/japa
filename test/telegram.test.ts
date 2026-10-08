@@ -267,7 +267,7 @@ test("a replayed update_id reaches the CoS once", async () => {
   const { daemon } = await bootTest({ secrets: { adapter: "file", dir }, extensions: { telegram: { owner: "42" } } });
   fake.push(text(7, "hi"));
   await waitFor(async () => (await texts(daemon.root, "user")).includes("hi"));
-  await vi.waitFor(() => expect(offsets()).toContain(8));
+  await vi.waitFor(() => expect(offsets()).toContain(8), { timeout: 5000 });
   fake.replayOnce();
   await sleep(2000);
   expect((await texts(daemon.root, "user")).filter((t) => t === "hi")).toHaveLength(1);

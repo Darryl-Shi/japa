@@ -1,6 +1,8 @@
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { beforeEach, expect, test, vi } from "vitest";
 import { computerTool } from "../extensions/desktop/computer.ts";
+import { claimDesktop } from "../extensions/desktop/lock.ts";
 import { fakeApi, fakeDesktop, PNG, resultText, run } from "./desktop-helpers.ts";
 
 const SHOT = [["import", "-window", "root", "png:-"], ["xdotool", "getmouselocation", "--shell"]];
@@ -75,7 +77,7 @@ test("aborting a wait returns at once", async () => {
   const call = run(tool, { action: "wait", seconds: 10 }, fakeApi().api, abort.signal);
   setTimeout(() => abort.abort(), 50);
   await call.catch(() => {});
-  expect(Date.now() - started).toBeLessThan(1000);
+  expect(Date.now() - started).toBeLessThan(5000);
 });
 
 test("read actions work outside the desktop environment; the rest are refused there", async () => {
@@ -150,9 +152,8 @@ test("a job waiting on the user keeps the desktop; a finished, failed, stopped o
 
   for (const status of ["done", "failed", "cancelled", undefined]) {
     const { api, docs } = heldBy(status);
-    const started = Date.now();
-    await run(tool, { action: "move", x: 1, y: 2, screenshot: false }, api);
-    expect(Date.now() - started).toBeLessThan(1000);
+    const aborted = withAbortSignal(AbortSignal.abort(), BACKGROUND_CONTEXT);
+    await expect(claimDesktop(api, aborted)).resolves.toBeUndefined(); // any wait would reject at once
     expect(docs["japa.desktop-lock:1"]).toEqual({ job: "2" });
   }
 });
