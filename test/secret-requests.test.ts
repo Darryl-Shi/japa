@@ -122,6 +122,12 @@ describe("extensions", () => {
     );
   });
 
+  test("an extension stores a declared secret and reads it back", async () => {
+    await kernel().setSecret("svc.token", "v1");
+    expect(await kernel().secret("svc.token")).toBe("v1");
+    await expect(kernel().setSecret("other", "x")).rejects.toThrow('Extension svc did not declare secret "other"');
+  });
+
   test("an undeclared secret can't be requested", async () => {
     await expect(kernel().requestSecret("other", "x")).rejects.toThrow('Extension svc did not declare secret "other"');
   });

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
+import { statusText } from "../src/kernel/status.ts";
 import { bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
 
 test("the CoS answers in the root conversation", async () => {
@@ -74,6 +75,15 @@ test("status lists the model and the extensions", async () => {
   });
   expect(status.extensions.map((e) => e.name)).toContain("providers");
   expect(status.errors).toEqual([]);
+  await daemon.close();
+});
+
+test("an extension's status line is shown under it, read each time", async () => {
+  let line = "starting";
+  const { daemon } = await bootTest({}, [{ name: "lit", summary: "Lit", status: () => line }]);
+  expect(daemon.status().extensions).toContainEqual({ name: "lit", summary: "Lit", provides: [], status: "starting" });
+  line = "ready";
+  expect(statusText(daemon.status())).toContain("  lit — Lit\n    ready");
   await daemon.close();
 });
 

@@ -13,6 +13,7 @@ export type JapaExtension = {
   secrets?: string[];
   settings?: TSchema; // schema for settings.extensions.<name>
   setup?(ctx: KernelContext): void | Dispose | Promise<void | Dispose>; // called before its tools are installed
+  status?: () => string | undefined; // a short line shown under it in `japa status`, read on every status()
 };
 
 /** Identity function that types an extension manifest. */

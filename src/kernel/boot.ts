@@ -121,6 +121,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         name: e.name,
         summary: e.summary,
         provides: Object.keys(e.provides ?? {}),
+        ...(e.status && { status: e.status() }),
       })),
       errors: rt.errors,
     });
@@ -164,6 +165,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       secret: async (name) => {
         declared(extension, name);
         return secrets.get(name);
+      },
+      setSecret: async (name, value) => {
+        declared(extension, name);
+        await secrets.set(name, value);
       },
       secretProvided: async (name) => {
         declared(extension, name);

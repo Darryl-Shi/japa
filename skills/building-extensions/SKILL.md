@@ -44,6 +44,7 @@ export default defineJapaExtension({
 - `secrets`: the secret names it may read, such as `"bank.apiKey"`.
 - `settings`: a `Type.Object(...)` schema for `settings.extensions.<name>`.
 - `setup(ctx)`: called with your `KernelContext` before your tools are installed (below).
+- `status`: optional `() => string | undefined`, a short line shown under the extension in `japa status`.
 
 ## Core contracts
 
@@ -127,6 +128,7 @@ When a secret is missing, reply telling the chief of staff to ask for it with
 `secret_request({ name, why })`. Code that can't work without a key can wait for it:
 `secretProvided(name)` resolves with the value the next time a request for it is fulfilled, and
 `requestSecret(name, why)` asks the user itself, then resolves the same way.
+`setSecret(name, value)` stores a secret named in your manifest (for one you generate yourself).
 
 ## The escape hatch: `durable`
 

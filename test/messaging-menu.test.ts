@@ -49,6 +49,8 @@ test("/status shows what japa status prints", async () => {
   };
   expect(statusText(status)).toBe("model: p/m\nextensions:\n  a — A\nerrors:\n  b: boom");
   expect(statusText({ extensions: [], errors: [] })).toBe("model: none\nextensions:");
+  expect(statusText({ model: { provider: "p", modelId: "m" }, extensions: [{ name: "a", summary: "A", provides: [], status: "up" }], errors: [] }))
+    .toBe("model: p/m\nextensions:\n  a — A\n    up");
 });
 
 test("/jobs lists running and recent jobs as buttons; pressing one shows its report", async () => {

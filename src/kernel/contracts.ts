@@ -37,7 +37,7 @@ export type EnvironmentAdapter = {
 /** What `japa status` shows. */
 export type Status = {
   model?: ModelRef;
-  extensions: { name: string; summary: string; provides: string[] }[];
+  extensions: { name: string; summary: string; provides: string[]; status?: string }[];
   errors: { name: string; error: string }[];
 };
 
@@ -137,6 +137,8 @@ export type KernelContext = {
   settings(): JsonObject;
   /** Reads a secret named in the extension's manifest `secrets`; throws for any other name. */
   secret(name: string): Promise<string | undefined>;
+  /** Stores a secret named in the extension's manifest `secrets`; throws as `secret`. */
+  setSecret(name: string, value: string): Promise<void>;
   /** Resolves with the value the next time a request for `name` is fulfilled; throws as `secret`. */
   secretProvided(name: string): Promise<string>;
   /** Asks the user for `name` (as `secret_request`), then resolves as `secretProvided`. */

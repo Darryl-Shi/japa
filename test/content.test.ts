@@ -48,7 +48,7 @@ test("every tool name the skills and workers mention exists", async () => {
 test("the building-extensions skill covers every core contract", () => {
   const skill = readFileSync(join(packageRoot, "skills/building-extensions/SKILL.md"), "utf8");
   for (const name of CONTRACTS.keys()) expect([name, skill.includes(`**${name}**`)]).toEqual([name, true]);
-  for (const text of ["root.replies", "secretProvided", "requestSecret"]) expect([text, skill.includes(text)]).toEqual([text, true]);
+  for (const text of ["root.replies", "secretProvided", "requestSecret", "setSecret", "japa status"]) expect([text, skill.includes(text)]).toEqual([text, true]);
 });
 
 const PROMISE_RULE =
