@@ -40,14 +40,14 @@ async function demoContext(home: string) {
 const readSettings = (home: string) => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
 const readSetup = (home: string) => JSON.parse(readFileSync(join(home, "setup.json"), "utf8"));
 
-test("configurable lists what needs the user -- telegram, web, demo -- and not the desktop (all defaults) or sqlite", async () => {
+test("configurable lists what needs the user -- parallel, telegram, web, demo -- and not the desktop (all defaults) or sqlite", async () => {
   const ctx = await demoContext(tempHome());
 
   const names = configurable(ctx.extensions)
     .map((e) => e.name)
     .sort();
 
-  expect(names).toEqual(["demo", "telegram", "web"]);
+  expect(names).toEqual(["demo", "parallel", "telegram", "web"]);
 });
 
 test("configuring demo writes its secret and typed settings", async () => {
