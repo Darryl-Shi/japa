@@ -60,6 +60,23 @@ test("a non-array provides entry is rejected", () => {
   expect(validateExtension(e)).toContain("surface: must be an array");
 });
 
+test("an authorize hook with run and connected is valid", () => {
+  const authorize = { run: async () => "ok", connected: async () => true };
+  expect(validateExtension({ name: "x", summary: "s", authorize })).toEqual([]);
+});
+
+test("an authorize hook needs both functions", () => {
+  const noConnected = { name: "x", summary: "s", authorize: { run: async () => "ok" } } as unknown as JapaExtension;
+  expect(validateExtension(noConnected)).toContain("authorize.connected must be a function");
+  const noRun = { name: "x", summary: "s", authorize: { connected: async () => true } } as unknown as JapaExtension;
+  expect(validateExtension(noRun)).toContain("authorize.run must be a function");
+});
+
+test("a non-object authorize is rejected", () => {
+  const e = { name: "x", summary: "s", authorize: "nope" } as unknown as JapaExtension;
+  expect(validateExtension(e)).toContain("authorize must be an object with run and connected functions");
+});
+
 test("defineJapaExtension returns its argument unchanged", () => {
   const e = { name: "x", summary: "s" };
   expect(defineJapaExtension(e)).toBe(e);

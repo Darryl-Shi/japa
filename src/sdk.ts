@@ -11,6 +11,7 @@ export {
   wrapTool,
 } from "@earendil-works/pi-durable";
 export { Type } from "@earendil-works/pi-ai";
+export type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 export { logChange } from "./kernel/changes.ts";
 export type {
   BootContext,
@@ -36,4 +37,4 @@ export { defineJapaExtension } from "./kernel/extension.ts";
 export { board, JobDoc, JobsDoc } from "./kernel/jobs/state.ts";
 export type { Job } from "./kernel/jobs/state.ts";
 export type { SecretRequest } from "./kernel/secret-requests.ts";
-export type { JapaExtension } from "./kernel/extension.ts";
+export type { Authorize, AuthorizeContext, JapaExtension } from "./kernel/extension.ts";

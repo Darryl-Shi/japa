@@ -1,5 +1,5 @@
-import type { TSchema } from "@earendil-works/pi-ai";
-import type { AnyTask, HookRegistration, PromptSection, Wrap } from "@earendil-works/pi-durable";
+import type { AuthInteraction, TSchema } from "@earendil-works/pi-ai";
+import type { AnyTask, HookRegistration, JsonObject, PromptSection, Wrap } from "@earendil-works/pi-durable";
 import { CONTRACTS, type Dispose, type KernelContext } from "./contracts.ts";
 
 /**
@@ -7,6 +7,23 @@ import { CONTRACTS, type Dispose, type KernelContext } from "./contracts.ts";
  * `generated`: the extension makes its own value when none is set, so setup never asks for it.
  */
 export type SecretSpec = string | { name: string; description: string; generated?: boolean };
+
+/** What an authorize hook may use; `KernelContext` satisfies it, and so does setup (no daemon needed). */
+export type AuthorizeContext = {
+  home: string;
+  settings(): JsonObject;
+  secret(name: string): Promise<string | undefined>;
+  setSecret(name: string, value: string): Promise<void>;
+};
+
+/** Signing in to the user's account, from `japa setup` or the chat `connect` tool. */
+export type Authorize = {
+  /** Signs in through `io` and stores what it gets with `setSecret`; a short line for the user, e.g.
+   *  "Connected as you@gmail.com". Throws with a user-facing message on failure. */
+  run(ctx: AuthorizeContext, io: AuthInteraction): Promise<string>;
+  /** Whether it's signed in now. */
+  connected(ctx: AuthorizeContext): Promise<boolean>;
+};
 
 /** An extension's manifest: identity, descriptive fields for routing, and its contributions. */
 export type JapaExtension = {
@@ -20,6 +37,7 @@ export type JapaExtension = {
   settings?: TSchema; // schema for settings.extensions.<name>
   setup?(ctx: KernelContext): void | Dispose | Promise<void | Dispose>; // called before its tools are installed
   status?: () => string | undefined; // a short line shown under it in `japa status`, read on every status()
+  authorize?: Authorize; // signs in to the user's account
 };
 
 /** Identity function that types an extension manifest. */
@@ -36,6 +54,14 @@ export function validateExtension(e: JapaExtension): string[] {
   if (typeof e.name !== "string" || !KEBAB_CASE.test(e.name)) errors.push("name must be kebab-case");
   if (!e.summary) errors.push("summary is required");
   if (e.setup !== undefined && typeof e.setup !== "function") errors.push("setup must be a function");
+  if (e.authorize !== undefined) {
+    if (typeof e.authorize !== "object" || e.authorize === null) {
+      errors.push("authorize must be an object with run and connected functions");
+    } else {
+      if (typeof e.authorize.run !== "function") errors.push("authorize.run must be a function");
+      if (typeof e.authorize.connected !== "function") errors.push("authorize.connected must be a function");
+    }
+  }
 
   (e.secrets ?? []).forEach((s, i) => {
     const described = typeof s === "object" && s !== null && typeof s.name === "string" && typeof s.description === "string";
