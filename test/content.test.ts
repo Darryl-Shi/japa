@@ -43,3 +43,16 @@ test("every tool name the skills and workers mention exists", async () => {
   );
   expect(unknown).toEqual([]);
 });
+
+const PROMISE_RULE =
+  "Never promise anything you have not backed with a mechanism: a job for work now, a schedule for anything later — including following up on something you are waiting for (\"check in about Bob's reply on Thursday\") — or a trigger for \"when X happens\". Your context is cleared after every reply; anything not backed this way is forgotten.";
+
+test("the identity text and the two skills state the promise rule", () => {
+  for (const file of [
+    join(packageRoot, "src/kernel/identity.md"),
+    join(packageRoot, "skills/choosing-a-mechanism/SKILL.md"),
+    join(packageRoot, "skills/writing-job-briefs/SKILL.md"),
+  ]) {
+    expect([file, readFileSync(file, "utf8").includes(PROMISE_RULE)]).toEqual([file, true]);
+  }
+});

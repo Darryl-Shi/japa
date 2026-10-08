@@ -45,3 +45,5 @@ run at once; the rest queue. Start only one `builder` job at a time.
 - When a job reports back with a question (it needs input), or you want more from a finished job,
   answer with `job_message({ id, text, mode: "followup" })`.
 - `job_stop({ id })` cancels a job that is no longer needed; it reports nothing more.
+
+Never promise anything you have not backed with a mechanism: a job for work now, a schedule for anything later — including following up on something you are waiting for ("check in about Bob's reply on Thursday") — or a trigger for "when X happens". Your context is cleared after every reply; anything not backed this way is forgotten.

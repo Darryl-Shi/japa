@@ -423,27 +423,28 @@ Rendered as sections, in this order (static first, for prompt caching):
 1. **Identity** — role, how japa works, mechanism ladder, UX rules (§9.1).
 2. **Capabilities** — generated from manifests and content (§9.2).
 3. **About you** — the user fact list (§7.4).
-4. **Open loops** — commitments and things being waited on.
-5. **Job board** — one line per non-terminal job, plus jobs finished since
-   the last reset.
-6. **Handoff note** — written at the last reset.
-7. **Live window** — messages since the last reset.
+4. **Jobs** — one line per active job, plus jobs finished in the last 24 h.
+5. **Schedules** — the user's active schedules (`schedule` extension).
+6. **Waiting on you** — one line per pending secret request (§9.5).
+7. **Last exchange** — the settled run's inputs and the CoS's final answer,
+   carried over by the reset (§7.3).
 
 ### 7.3 Context lifecycle
 
-- **Trigger:** the CoS is idle **and** either the live window exceeds
-  `settings.context.resetTokens` (default 20k) or the time since the last user
-  message exceeds `settings.context.idleResetHours` (default 2).
-- **Consolidate:** a background durable task on the consolidation model reads
-  the live window and, in one commit to memory files and documents:
-  1. runs **reflection** (§7.4) on the user facts,
-  2. updates **open loops** (add new commitments, close finished ones),
-  3. writes an **episode summary** to `memory/episodes/`,
-  4. writes the **handoff note**.
-- **Reset:** the task then calls `reset(handoffNote)`. If the conversation
-  became busy or got new entries after consolidation started, the result is
-  discarded and consolidation retries at the next trigger.
-- Pi Durable's automatic compaction stays enabled only as a fallback.
+- **Reset:** when a run on the root conversation settles, the kernel commits
+  a reset at once — no model call. The commit re-checks that the root is
+  still idle, that no input is queued, and that nothing new arrived since the
+  settle it saw; if any check fails, it does nothing and the next settle
+  resets instead. The reset carries over only the **last exchange** — the
+  settled run's inputs and the CoS's final answer — capped at 2,000 tokens
+  (the middle of the longest part is cut when over). Proactive turns
+  (triggers, job reports, secret confirmations, rollback and safe-mode
+  notices) reset the same way.
+- **Reflection** (§7.4) runs separately, in the background, and never blocks
+  or triggers a reset.
+- Pi Durable's automatic compaction stays enabled on the root with its
+  model-relative threshold, as a fallback for a single long turn with many
+  tool calls.
 
 ### 7.4 User facts ("About you") — reflection
 
@@ -454,9 +455,12 @@ an exhaustive overview.
   lasting aspect per entry: who the user is, what they're working toward, how
   they like to work, key people and projects, standing preferences.
 - **Cap:** ~30 entries and ~1.5k tokens total.
-- **Reflection** is one consolidation-model pass that sees the live window and
-  the current list and outputs only operations: `add(text)`,
-  `update(id, text)`, `delete(id)`, or `none`. Its rules:
+- **Reflection** (`Reflect`) is a background task, on the consolidation
+  model, that reads the stored entries since the last reflection and the
+  current list and outputs only operations: `add(text)`, `update(id, text)`,
+  `delete(id)`, or `none`. It fires after a reset once 5 turns are
+  unreflected, otherwise 15 minutes after the last reset if any are
+  unreflected, and at boot. Its rules:
   - record patterns and lasting context, not events or task details;
   - fold new details into an existing entry and generalize, rather than
     adding entries;
@@ -483,8 +487,8 @@ When the CoS saves something during a conversation it may add a brief
 
 ### 7.6 Storage
 
-`~/.japa/memory/facts.json`, `loops.json`, `episodes/*.md`, committed to the
-workspace git repo after each consolidation. Memory is fixed kernel logic,
+`~/.japa/memory/facts.json`, `episodes/*.md`, committed to the workspace git
+repo after each reflection. Memory is fixed kernel logic,
 not a contract. Semantic search, if added later, would be a new core `search`
 contract that `memory_search` consults.
 
@@ -564,8 +568,8 @@ reloads). This makes "undo that" and "what did you set up last week?" work.
 
 `~/.japa/settings.json`, read live through Pi Durable settings getters
 (boot-phase keys `storage` and `secrets` apply on restart). Holds the models
-(CoS, consolidation, default worker), job concurrency, context thresholds,
-memory caps, and per-extension settings validated against each extension's
+(CoS, consolidation, default worker), job concurrency, memory caps, and
+per-extension settings validated against each extension's
 schema. CoS tools: `settings_get({ path? })`, `settings_set({ path, value })`
 (validated; logged in `japa.changes`).
 
@@ -738,10 +742,11 @@ vitest with pi-ai's faux provider (scripted model responses; no network):
   environment; profile environment dispatch.
 - Jobs: lifecycle, concurrency queue, `needs_input`, restart mid-job with no
   double reports.
-- Context: consolidate → reset; open loops and facts survive; stale
-  consolidation is discarded.
-- Reflection limits: long entries rejected/shortened, cap triggers merge,
-  duplicates rejected.
+- Reset: happens when a run settles; carries over only the last exchange;
+  proactive turns reset too.
+- Reflection: fires at 5 unreflected turns or 15 quiet minutes, and at boot;
+  a failure leaves the cursor and retries; long entries rejected/shortened,
+  cap triggers merge, duplicates rejected.
 - Skills and workers: discovery, override order, profile resolution,
   `skill_read`.
 - Secrets: request → fulfil → notice; value absent from storage entries.

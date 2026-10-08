@@ -10,7 +10,7 @@ import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
 import { type SecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { bootTest } from "./helpers.ts";
-import { ask, call, idle, script, texts } from "./jobs-helpers.ts";
+import { ask, call, idle, script, system, texts, tool } from "./jobs-helpers.ts";
 
 /** A surface that hands its `SurfaceContext` to the test. */
 function probe() {
@@ -82,5 +82,16 @@ test("a secret request is listed, fulfilled into the store, and announced once w
   ];
   expect(JSON.stringify(events)).toContain("[secret svc.token provided]"); // the listener saw the whole flow
   expect(JSON.stringify([page.items, docs, events])).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("a pending secret request shows in the waiting-on-you section and goes when fulfilled", async () => {
+  const { extension, surface } = probe();
+  const { daemon, faux } = await bootTest({}, [extension]);
+  await tool(daemon, faux, "secret_request", { name: "svc.token", why: "to read your calendar" });
+  expect(await system(daemon, faux)).toMatch(/waiting-on-you[\s\S]*- svc\.token: to read your calendar/);
+  const pending = (await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending;
+  await surface().secrets.fulfil(pending[0]!.id, "s3cr3t");
+  expect(await system(daemon, faux)).not.toMatch(/waiting-on-you/);
   await daemon.close();
 });

@@ -16,7 +16,7 @@ import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { readFileSync } from "node:fs";
 import { MemoryDoc, renderFacts } from "./memory/state.ts";
 import { memoryTools } from "./memory/tools.ts";
-import { secretRequest } from "./secret-requests.ts";
+import { renderPending, secretRequest, SecretRequestsDoc } from "./secret-requests.ts";
 import type { Settings } from "./settings.ts";
 
 const identityText = readFileSync(new URL("./identity.md", import.meta.url), "utf8").trim();
@@ -46,6 +46,10 @@ export function cosExtension(
       section("about-you", async ({ read }, context) => {
         const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
         return memory && renderFacts(memory.facts);
+      }),
+      section("waiting-on-you", async ({ read }, context) => {
+        const pending = await read.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, context);
+        return pending && renderPending(pending.pending);
       }),
     ],
     tools: [createReadTool(), ...memoryTools, secretRequest, ...tools],

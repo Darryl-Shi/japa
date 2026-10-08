@@ -15,6 +15,10 @@ export const SecretRequestsDoc = defineDoc<{ nextId: number; pending: SecretRequ
   initial: () => ({ nextId: 1, pending: [] }),
 });
 
+export function renderPending(pending: SecretRequest[]): string | undefined {
+  return pending.length ? pending.map((r) => `- ${r.name}: ${r.why}`).join("\n") : undefined;
+}
+
 const SECRET_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 

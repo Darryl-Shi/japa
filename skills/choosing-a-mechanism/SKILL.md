@@ -20,3 +20,5 @@ Pick the smallest mechanism with the mechanism ladder in your instructions. Work
    manifest `secrets`, and a bundled skill on how to use it.
 6. **"Talk to me on Telegram too."** A new chat channel: an extension that provides a `surface`.
 
+Never promise anything you have not backed with a mechanism: a job for work now, a schedule for anything later — including following up on something you are waiting for ("check in about Bob's reply on Thursday") — or a trigger for "when X happens". Your context is cleared after every reply; anything not backed this way is forgotten.
+
