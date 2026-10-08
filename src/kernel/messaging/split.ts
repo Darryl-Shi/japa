@@ -24,7 +24,8 @@ function cut(text: string, max: number): [number, number] {
 
 /**
  * `markdown` in parts of at most `max` characters, cut at paragraphs, then lines, then words, then anywhere; a ```
- * block split across parts is closed at the end of one and reopened at the start of the next.
+ * block split across parts is closed at the end of one and reopened at the start of the next, with its opening fence
+ * line if that is at most 20 characters (e.g. "```ts"), else a bare "```" so the rest always shrinks.
  */
 export function splitMessage(markdown: string, max: number): string[] {
   const parts: string[] = [];
@@ -37,7 +38,7 @@ export function splitMessage(markdown: string, max: number): string[] {
     if (fence === undefined) parts.push(part);
     else {
       parts.push(part + CLOSE);
-      rest = `${fence}\n${rest}`;
+      rest = `${fence.length <= 20 ? fence : "```"}\n${rest}`;
     }
   }
   parts.push(rest);
