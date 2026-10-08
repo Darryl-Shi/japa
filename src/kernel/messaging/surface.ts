@@ -34,7 +34,8 @@ export const MessagingDoc = defineDoc<{ cursors: Record<string, string> }>({
  * The kernel's messaging surface for `adapter`: handles its messages one at a time, in arrival order, answering anyone
  * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts and images, merged,
  * to the CoS. Asks the owner for the oldest pending secret request; their next text fulfils it and is deleted at once
- * (a command cancels this). Commands and button presses go to the menu, never to the CoS.
+ * (a command cancels this); delivered again, it is dropped and deleted again. Commands and button presses go to the
+ * menu, never to the CoS.
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
  */
 export async function startMessaging(
@@ -80,11 +81,16 @@ export async function startMessaging(
       return menu.command(m);
     }
     if (m.action !== undefined) return menu.press(m);
+    const by = `${adapter.name}:${m.id}`;
+    if ((await messaging.secretFulfilledBy()) === by) {
+      await adapter.delete(m.chat, m.messageId).catch(() => {}); // a secret delivered again
+      return;
+    }
     if (awaiting !== undefined && m.text !== undefined) {
       const requestId = awaiting;
       awaiting = undefined;
       try {
-        await kernel.surface.secrets.fulfil(requestId, m.text);
+        await kernel.surface.secrets.fulfil(requestId, m.text, by);
       } finally {
         await adapter.delete(m.chat, m.messageId).catch(() =>
           adapter.send(m.chat, { markdown: "Couldn't delete your message — please delete it yourself." }),

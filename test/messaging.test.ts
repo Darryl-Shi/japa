@@ -278,6 +278,20 @@ test("a pending secret request is asked for; the next text fulfils it and is del
   await daemon.close();
 });
 
+test("a secret message delivered again is dropped and deleted again", async () => {
+  const fake = fakeAdapter();
+  const { daemon } = await prompted(fake);
+  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
+  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
+  await sleep(2000);
+  expect(fake.deleted).toEqual([
+    { chat: "42", messageId: "77" },
+    { chat: "42", messageId: "77" },
+  ]);
+  expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
 test("if the message can't be deleted, the secret is still stored and the user is told", async () => {
   const fake = fakeAdapter();
   const { daemon, home } = await prompted(fake);

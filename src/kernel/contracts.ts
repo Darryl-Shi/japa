@@ -70,8 +70,11 @@ export type SurfaceContext = {
   secrets: {
     /** Delivers the pending secret requests first, then every change. */
     pending(listener: (pending: SecretRequest[]) => void): Promise<{ stop(): Promise<void> }>;
-    /** Stores `value` as the requested secret and tells the CoS; throws for an unknown request. */
-    fulfil(requestId: string, value: string): Promise<void>;
+    /**
+     * Stores `value` as the requested secret and tells the CoS; throws for an unknown request. `by` (`<adapter>:<id>`)
+     * records the chat message that carried it.
+     */
+    fulfil(requestId: string, value: string, by?: string): Promise<void>;
   };
   status(): Status;
 };
@@ -117,6 +120,8 @@ export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispos
 export type MessagingContext = {
   cursor(adapter: string): Promise<string | undefined>;
   saveCursor(adapter: string, cursor: string): Promise<void>;
+  /** The `by` of the latest secret fulfilled. */
+  secretFulfilledBy(): Promise<string | undefined>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;
   /** Rolls a workspace extension back to its last known good version, as the `rollback` tool; its reply. */

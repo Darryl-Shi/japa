@@ -139,6 +139,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         root.commit(async (tx) => {
           (await tx.doc(MessagingDoc, root.id)).cursors[adapter] = cursor;
         }, ctx),
+      secretFulfilledBy: async () => (await opened.snapshot(SecretRequestsDoc, root.id, ctx))!.fulfilledBy,
       setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
       rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),
       tool: async (name, args) => {
@@ -226,8 +227,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               },
             };
           },
-          fulfil: async (requestId, value) => {
-            const name = await fulfilSecret(opened, root, secrets, requestId, value, ctx);
+          fulfil: async (requestId, value, by) => {
+            const name = await fulfilSecret(opened, root, secrets, requestId, value, ctx, by);
             for (const resolve of waiters.get(name) ?? []) resolve(value);
             waiters.delete(name);
           },
