@@ -11,8 +11,10 @@ import { enterSafeMode } from "../kernel/safety.ts";
 import { japaHome } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
 import { daemonStatus } from "./daemon.ts";
-import { APP } from "./layout.ts";
-import { serviceCommand } from "./service.ts";
+import { APP, layoutOf } from "./layout.ts";
+import { tuiPrompter } from "./prompt.ts";
+import { serviceCommand, serviceEnv } from "./service.ts";
+import { uninstall } from "./uninstall.ts";
 
 const USAGE = `Usage: japa <command>
 
@@ -27,7 +29,9 @@ Commands:
   safe-mode [--default-adapters]
            Restore the last working setup, and optionally the default storage and secrets adapters
   service <install|uninstall|start|stop|restart|status|logs>
-           Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)`;
+           Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)
+  uninstall [--purge]
+           Remove japa; --purge also deletes the japa home once you type "delete"`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
@@ -64,6 +68,23 @@ async function safeMode(home: string): Promise<void> {
   console.log(restored === undefined ? "Already at the last working setup." : "Restored the last working setup. Start the daemon with: japa daemon");
 }
 
+async function uninstallCommand(home: string): Promise<void> {
+  const layout = layoutOf(APP);
+  await uninstall(layout, home, {
+    purge: process.argv.includes("--purge"),
+    confirm: async () => {
+      const prompter = tuiPrompter();
+      try {
+        return await prompter.text(`Type "delete" to permanently remove ${home}`);
+      } finally {
+        prompter.close();
+      }
+    },
+    serviceEnv: serviceEnv(layout.launcher),
+    log: (s) => console.log(s),
+  });
+}
+
 /** `japa <package.json version> (<short HEAD sha in APP, or "unknown">)`. */
 function versionText(): string {
   const pkg = JSON.parse(readFileSync(join(APP, "package.json"), "utf8")) as { version: string };
@@ -87,6 +108,7 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   rollback,
   "safe-mode": safeMode,
   service: (home) => serviceCommand(home, process.argv.slice(3)),
+  uninstall: uninstallCommand,
 };
 if (process.argv[2] === "--version") {
   console.log(versionText());
