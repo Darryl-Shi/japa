@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
@@ -57,21 +57,24 @@ test("uninstall removes a managed install and keeps home", async () => {
   expect(calls.some((c) => c.cmd === "systemctl" && c.args.includes("disable"))).toBe(true);
 });
 
-test('--purge without "delete" removes nothing', async () => {
+test('--purge without "delete" removes nothing at all', async () => {
   const root = tmp();
   const home = tempHome();
   const layout = layoutOf(join(root, "install", "app"), root);
   mkdirSync(layout.app, { recursive: true });
   writeLauncher(layout, "/opt/node/bin/node");
+  const { exec, calls } = fakeExec();
   const logs: string[] = [];
 
-  await uninstall(layout, home, { purge: true, confirm: async () => "nope", serviceEnv: fakeServiceEnv(), log: (s) => logs.push(s) });
+  await uninstall(layout, home, { purge: true, confirm: async () => "nope", serviceEnv: fakeServiceEnv({ exec }), log: (s) => logs.push(s) });
 
+  // Confirmation happens before anything is touched: an answer other than "delete" leaves everything in place,
+  // including the service, the launcher and the install dir (not just `home`).
   expect(existsSync(home)).toBe(true);
-  expect(logs).toContain(`kept ${home}`);
-  // The launcher and installDir are unaffected by purge: only `home` is gated on confirm().
-  expect(existsSync(layout.launcher)).toBe(false);
-  expect(existsSync(layout.installDir!)).toBe(false);
+  expect(existsSync(layout.launcher)).toBe(true);
+  expect(existsSync(layout.installDir!)).toBe(true);
+  expect(calls).toEqual([]);
+  expect(logs).toContain("purge cancelled; nothing was removed");
 });
 
 test('--purge with "delete" removes home', async () => {
@@ -84,6 +87,7 @@ test('--purge with "delete" removes home', async () => {
   await uninstall(layout, home, { purge: true, confirm: async () => "delete", serviceEnv: fakeServiceEnv(), log: (s) => logs.push(s) });
 
   expect(existsSync(home)).toBe(false);
+  expect(logs).toContain(`removed ${home}`);
   expect(logs).not.toContain(`kept ${home}`);
 });
 
@@ -113,4 +117,25 @@ test("a launcher pointing at a different checkout is left alone", async () => {
   expect(existsSync(layout.launcher)).toBe(true);
   // installDir removal is independent of the launcher check: this is still a managed install.
   expect(existsSync(layout.installDir!)).toBe(false);
+});
+
+test("a sibling checkout outside app/ and node/ survives", async () => {
+  const root = tmp();
+  const home = tempHome();
+  const src = join(root, "src");
+  const layout = layoutOf(join(src, "app"), root);
+  mkdirSync(layout.app, { recursive: true });
+  mkdirSync(layout.nodeDir!, { recursive: true });
+  const sibling = join(src, "other");
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(join(sibling, "marker"), "keep me");
+
+  await uninstall(layout, home, { purge: false, confirm: async () => "delete", serviceEnv: fakeServiceEnv(), log: () => {} });
+
+  expect(existsSync(layout.app)).toBe(false);
+  expect(existsSync(layout.nodeDir!)).toBe(false);
+  expect(existsSync(sibling)).toBe(true);
+  expect(readFileSync(join(sibling, "marker"), "utf8")).toBe("keep me");
+  // installDir isn't empty (the sibling remains), so it's left in place too.
+  expect(existsSync(layout.installDir!)).toBe(true);
 });

@@ -1,7 +1,10 @@
 // install.sh end to end: a local bare repo seeded with the mini-japa fixture stands in for the real japa repo, so
 // these tests exercise the real clone / Node-detection / npm ci / launcher-writing logic without network access.
-import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +45,56 @@ function runInstall(args: string[], env: NodeJS.ProcessEnv) {
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
+/**
+ * Same as runInstall, but non-blocking: spawnSync freezes this process's event loop, so a child that calls back
+ * into an HTTP server hosted in this same process (the download test below) would deadlock against it. Only
+ * needed there; every other test's child talks to git/the filesystem, not back into this process.
+ */
+function runInstallAsync(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: number | null; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("sh", [INSTALL_SH, ...args], { env });
+    let output = "";
+    child.stdout.on("data", (d: Buffer) => (output += d));
+    child.stderr.on("data", (d: Buffer) => (output += d));
+    child.on("close", (status) => resolve({ status, output }));
+  });
+}
+
+/** Builds `node-v<version>-<dist>.tar.gz` in `dir`: bin/node and bin/npm both wrap this test's real Node (and, for
+ * npm, its real npm-cli.js) by absolute path, so a tarball "downloaded" from the local server below can actually
+ * run `npm ci` and the launcher, the same way a real nodejs.org tarball would. */
+function buildFakeNodeTarball(dir: string, version: string, dist: string): { tarball: string; name: string } {
+  const top = `node-v${version}-${dist}`;
+  const name = `${top}.tar.gz`;
+  const binDir = join(dir, top, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const npmCli = execFileSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).trim();
+  const nodePath = join(binDir, "node");
+  writeFileSync(nodePath, `#!/bin/sh\nexec "${process.execPath}" "$@"\n`);
+  chmodSync(nodePath, 0o755);
+  const npmPath = join(binDir, "npm");
+  writeFileSync(npmPath, `#!/bin/sh\nexec "${process.execPath}" "${npmCli}" "$@"\n`);
+  chmodSync(npmPath, 0o755);
+  const tarball = join(dir, name);
+  execFileSync("tar", ["-czf", tarball, "-C", dir, top]);
+  return { tarball, name };
+}
+
+/** A local HTTP server answering fixed routes (`"/path"` -> status/body, else 404). Mirrors test/node.test.ts's helper. */
+async function serve(routes: Record<string, { status: number; body: Buffer | string }>) {
+  const server = createServer((req, res) => {
+    const route = routes[req.url ?? ""];
+    if (route === undefined) {
+      res.writeHead(404).end("not found");
+      return;
+    }
+    res.writeHead(route.status).end(route.body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return { baseUrl, close: () => server.close() };
+}
+
 test("install.sh installs the fixture", () => {
   const bare = fixtureRepo();
   const home = tmp();
@@ -66,14 +119,29 @@ test("a second run takes the update path", () => {
   const home = tmp();
   const dir = join(tmp(), "d");
   const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
-  const args = ["--dir", dir, "--repo", bare, "--branch", "main", "--non-interactive", "--skip-setup"];
 
-  const first = runInstall(args, env);
+  const first = runInstall(["--dir", dir, "--repo", bare, "--branch", "main", "--non-interactive", "--skip-setup"], env);
   expect(first.status, first.output).toBe(0);
 
-  const second = runInstall(args, env);
+  // No --branch given on this run (nor JAPA_BRANCH): update must not be forced onto any particular branch.
+  const second = runInstall(["--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], env);
   expect(second.status, second.output).toBe(0);
   expect(second.output).toContain("update called");
+  expect(second.output).not.toMatch(/--branch/);
+});
+
+test("a second run with --branch forwards it to update", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const first = runInstall(["--dir", dir, "--repo", bare, "--branch", "main", "--non-interactive", "--skip-setup"], env);
+  expect(first.status, first.output).toBe(0);
+
+  const second = runInstall(["--dir", dir, "--repo", bare, "--branch", "dev", "--non-interactive", "--skip-setup"], env);
+  expect(second.status, second.output).toBe(0);
+  expect(second.output).toContain("update called --branch dev");
 });
 
 test("a failed clone removes what it created", () => {
@@ -116,6 +184,83 @@ test("an install dir with a space and a quote still produces a working launcher"
   const launcherPath = join(home, ".local", "bin", "japa");
   expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(node, join(dir, "app")));
   expect(execFileSync(launcherPath, ["--version"], { encoding: "utf8" })).toBe("japa 0.0.0 (fixture)\n");
+});
+
+test("a --dir with a trailing slash still produces the canonical launcher", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const result = runInstall(["--dir", `${dir}/`, "--repo", bare, "--branch", "main", "--non-interactive", "--skip-setup"], env);
+  expect(result.status, result.output).toBe(0);
+
+  const node = execFileSync("sh", ["-c", "command -v node"], { encoding: "utf8", env }).trim();
+  const launcherPath = join(home, ".local", "bin", "japa");
+  // A trailing slash on --dir must not survive into the launcher: join(dir, "app") (no "//") is the canonical form.
+  expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(node, join(dir, "app")));
+});
+
+test("a system node below the minimum triggers a private download the launcher then uses", async () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const version = "24.14.1"; // test/fixtures/mini-japa/.node-version
+  const dist = `${process.platform}-${process.arch}`; // matches install.sh's OS-ARCH naming (linux|darwin, x64|arm64)
+
+  const { tarball, name } = buildFakeNodeTarball(tmp(), version, dist);
+  const bytes = readFileSync(tarball);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+
+  // A fake `node` first on PATH, reporting a version below the minimum, so ensure_node() falls through to a
+  // download instead of using it -- the download itself is served from a local HTTP server, not nodejs.org.
+  const fakeBin = tmp();
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\necho 20.0.0\n");
+  chmodSync(join(fakeBin, "node"), 0o755);
+
+  const { baseUrl, close } = await serve({
+    [`/v${version}/${name}`]: { status: 200, body: bytes },
+    [`/v${version}/SHASUMS256.txt`]: { status: 200, body: `${hash}  ${name}\n` },
+  });
+  try {
+    const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh", JAPA_NODE_DIST: baseUrl };
+    const result = await runInstallAsync(["--dir", dir, "--repo", bare, "--branch", "main", "--non-interactive", "--skip-setup"], env);
+    expect(result.status, result.output).toBe(0);
+
+    const launcherPath = join(home, ".local", "bin", "japa");
+    expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(join(dir, "node", "bin", "node"), join(dir, "app")));
+    expect(execFileSync(launcherPath, ["--version"], { encoding: "utf8" })).toBe("japa 0.0.0 (fixture)\n");
+  } finally {
+    close();
+  }
+});
+
+test("install.sh without a controlling terminal skips setup with the finish message", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  // setsid detaches from any controlling terminal, so install.sh can't open /dev/tty -- the same situation as
+  // `curl | sh` in CI/Docker/cloud-init. Neither --skip-setup nor --non-interactive is given: only the tty probe
+  // decides this.
+  const result = spawnSync("setsid", ["-w", "sh", INSTALL_SH, "--dir", dir, "--repo", bare, "--branch", "main"], { encoding: "utf8", env });
+  const output = `${result.stdout}${result.stderr}`;
+  expect(result.status, output).toBe(0);
+  expect(existsSync(join(dir, "app", ".git"))).toBe(true);
+  expect(output).toContain("run `japa setup` to finish");
+});
+
+test("--non-interactive without --skip-setup still skips setup with the finish message", () => {
+  const bare = fixtureRepo();
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const result = runInstall(["--dir", dir, "--repo", bare, "--branch", "main", "--non-interactive"], env);
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain("run `japa setup` to finish");
 });
 
 test("sh -n accepts install.sh (syntax check)", () => {

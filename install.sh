@@ -4,6 +4,10 @@
 # install (§3.1 step 3); it never touches $JAPA_HOME (~/.japa by default).
 set -eu
 
+# Wrapped in main(), invoked by the last line: under `curl | sh` a stream truncated mid-download then parses to
+# a prefix of function definitions and never reaches the final `main "$@"`, so nothing destructive ever runs.
+main() {
+
 say() {
   printf '==> %s\n' "$1"
 }
@@ -77,11 +81,19 @@ download_node() {
   node_ver=$(cat "$APP_DIR/.node-version")
   dist="${OS}-${ARCH}"
   name="node-v${node_ver}-${dist}.tar.gz"
-  base_url="https://nodejs.org/dist/v${node_ver}"
+  base_url="${NODE_DIST_BASE_URL}/v${node_ver}"
   tmp_tar="$DIR/node-download.tar.gz"
 
-  fetch "$base_url/$name" >"$tmp_tar"
-  shasums=$(fetch "$base_url/SHASUMS256.txt")
+  if ! fetch "$base_url/$name" >"$tmp_tar"; then
+    rm -f "$tmp_tar"
+    say_err "could not download $base_url/$name"
+    exit 1
+  fi
+  if ! shasums=$(fetch "$base_url/SHASUMS256.txt"); then
+    rm -f "$tmp_tar"
+    say_err "could not download $base_url/SHASUMS256.txt"
+    exit 1
+  fi
   expected=$(printf '%s\n' "$shasums" | awk -v n="$name" '{ fn = $2; sub(/^\*/, "", fn); if (fn == n) { print $1; exit } }')
   if [ -z "$expected" ]; then
     rm -f "$tmp_tar"
@@ -106,9 +118,18 @@ download_node() {
 DIR="${JAPA_INSTALL_DIR:-$HOME/.local/share/japa}"
 BRANCH="${JAPA_BRANCH:-main}"
 REPO="${JAPA_REPO:-https://github.com/Darryl-Shi/japa.git}"
+# Undocumented override for test/install-sh.test.ts, mirroring src/cli/node.ts's ensurePrivateNode's baseUrl.
+NODE_DIST_BASE_URL="${JAPA_NODE_DIST:-https://nodejs.org/dist}"
 NON_INTERACTIVE=0
 NO_SERVICE=0
 SKIP_SETUP=0
+# Whether --branch was given explicitly (flag or env): only then is it forwarded to the update path (step 3), so
+# a bare re-run doesn't force a managed checkout back to main (design doc §3.1 step 3; constraints.md's update
+# default is "the checkout's current branch").
+BRANCH_GIVEN=0
+if [ -n "${JAPA_BRANCH:-}" ]; then
+  BRANCH_GIVEN=1
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -118,6 +139,7 @@ while [ $# -gt 0 ]; do
       ;;
     --branch)
       BRANCH=$2
+      BRANCH_GIVEN=1
       shift 2
       ;;
     --repo)
@@ -141,6 +163,16 @@ while [ $# -gt 0 ]; do
       exit 1
       ;;
   esac
+done
+
+# Canonicalize DIR: absolute, no trailing slash, so "$DIR/app" matches src/cli/layout.ts's join(installDir, "app")
+# byte for byte -- launcherPointsAt() and the service unit both depend on that.
+case "$DIR" in
+  /*) ;;
+  *) DIR="$PWD/$DIR" ;;
+esac
+while [ "${DIR%/}" != "$DIR" ]; do
+  DIR=${DIR%/}
 done
 
 # --- Step 1: platform ---
@@ -185,11 +217,15 @@ LAUNCHER="$HOME/.local/bin/japa"
 if [ -e "$APP_DIR/.git" ]; then
   say "Updating existing install"
   status=0
+  set -- update
+  if [ "$BRANCH_GIVEN" -eq 1 ]; then
+    set -- "$@" --branch "$BRANCH"
+  fi
   if [ -x "$LAUNCHER" ]; then
-    "$LAUNCHER" update --branch "$BRANCH" || status=$?
+    "$LAUNCHER" "$@" || status=$?
   else
     ensure_node
-    "$NODE_BIN" "$APP_DIR/src/cli/main.ts" update --branch "$BRANCH" || status=$?
+    "$NODE_BIN" "$APP_DIR/src/cli/main.ts" "$@" || status=$?
   fi
   exit "$status"
 fi
@@ -246,8 +282,8 @@ case ":$PATH:" in
     if [ ! -f "$rcfile" ] || ! grep -qF "$line" "$rcfile"; then
       mkdir -p "$(dirname "$rcfile")"
       printf '%s\n' "$line" >>"$rcfile"
+      say "added PATH line to $rcfile"
     fi
-    say "added PATH line to $rcfile"
     echo 'open a new shell or run: export PATH="$HOME/.local/bin:$PATH"'
     ;;
 esac
@@ -256,7 +292,12 @@ esac
 trap - EXIT
 
 # --- Step 8: setup ---
-if [ "$SKIP_SETUP" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || [ ! -r /dev/tty ]; then
+# `[ -r /dev/tty ]` only checks the device node's permissions (always 0666), not whether this process has a
+# controlling terminal to open -- under `curl | sh` in CI/Docker/cloud-init there is none, so probe the open.
+has_tty() {
+  (exec 3</dev/tty) 2>/dev/null
+}
+if [ "$SKIP_SETUP" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || ! has_tty; then
   say "Skipping setup"
   echo "run \`japa setup\` to finish"
 else
@@ -267,3 +308,7 @@ else
     "$LAUNCHER" setup </dev/tty
   fi
 fi
+
+}
+
+main "$@"
