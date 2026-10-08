@@ -62,9 +62,10 @@ export async function chooseModels(ctx: SetupContext, p: Prompter, env: NodeJS.P
       await apiKey(ctx, p, env, provider);
       asked.add(provider);
     };
-    worker = await chooseRole(ctx, p, "Worker", current.worker);
+    // Unset means the CoS model, so Enter keeps whichever model each role runs on now.
+    worker = await chooseRole(ctx, p, "Worker", current.worker ?? cos);
     await maybeApiKey(worker.provider);
-    consolidation = await chooseRole(ctx, p, "Consolidation", current.consolidation);
+    consolidation = await chooseRole(ctx, p, "Consolidation", current.consolidation ?? cos);
     await maybeApiKey(consolidation.provider);
   }
 

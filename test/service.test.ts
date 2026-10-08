@@ -68,12 +68,13 @@ test("unit quotes ExecStart, escaping \\ and \"; JAPA_HOME only with customHome"
   expect(withHome).toContain('Environment="JAPA_HOME=/home/x/.japa"');
 });
 
-test("unit escapes systemd specifiers (%), and variables ($) in ExecStart, where systemd expands them", () => {
-  const env = makeEnv({ command: ["/opt/100%/$HOME/japa", "daemon"], path: "/a%b:$PATH", customHome: true, japaHome: "/h/50%" });
+test("unit escapes systemd specifiers (%), and variables ($) in ExecStart's arguments, where systemd expands them", () => {
+  const env = makeEnv({ command: ["/opt/100%/$HOME/japa", "/a%b/$HOME", "daemon"], path: "/a%b:$PATH", customHome: true, japaHome: "/h/50%" });
 
   const text = unitText(env);
 
-  expect(text).toContain('ExecStart="/opt/100%%/$$HOME/japa" "daemon"\n');
+  // systemd expands (and unescapes $$) only in the arguments, never in the executable path.
+  expect(text).toContain('ExecStart="/opt/100%%/$HOME/japa" "/a%%b/$$HOME" "daemon"\n');
   expect(text).toContain('Environment="PATH=/a%%b:$PATH"\n'); // Environment= doesn't expand $
   expect(text).toContain('Environment="JAPA_HOME=/h/50%%"\n');
 });
@@ -257,12 +258,32 @@ test("isInstalled and serviceState reflect the unit file and systemctl is-active
   expect(await serviceState(env)).toBe("active");
 });
 
+test("serviceState on Linux: only inactive counts as stopped; activating (auto-restart) and failed are failed", async () => {
+  const stateFor = async (answer: string) => {
+    const { exec } = fakeExec((cmd, args) => (args.includes("is-active") ? { code: 3, stdout: `${answer}\n` } : {}));
+    const env = makeEnv({ exec });
+    mkdirSync(dirname(unitPath(env)), { recursive: true });
+    writeFileSync(unitPath(env), unitText(env));
+    return serviceState(env);
+  };
+
+  expect(await stateFor("inactive")).toBe("inactive");
+  expect(await stateFor("activating")).toBe("failed");
+  expect(await stateFor("failed")).toBe("failed");
+});
+
 test("serviceState on macOS reads launchctl print's state field, not just its exit code", async () => {
   const waiting = fakeExec(() => ({ code: 0, stdout: "\tstate = waiting\n" }));
   const waitingEnv = makeEnv({ platform: "darwin", exec: waiting.exec, uid: 501 });
   mkdirSync(dirname(plistPath(waitingEnv)), { recursive: true });
   writeFileSync(plistPath(waitingEnv), "placeholder");
-  expect(await serviceState(waitingEnv)).toBe("inactive");
+  expect(await serviceState(waitingEnv)).toBe("failed"); // loaded but not running: it exited and wasn't stopped
+
+  const unloaded = fakeExec(() => ({ code: 113, stdout: "" }));
+  const unloadedEnv = makeEnv({ platform: "darwin", exec: unloaded.exec, uid: 501 });
+  mkdirSync(dirname(plistPath(unloadedEnv)), { recursive: true });
+  writeFileSync(plistPath(unloadedEnv), "placeholder");
+  expect(await serviceState(unloadedEnv)).toBe("inactive"); // booted out, as `japa service stop` does
 
   const running = fakeExec(() => ({ code: 0, stdout: "\tstate = running\n" }));
   const runningEnv = makeEnv({ platform: "darwin", exec: running.exec, uid: 501 });

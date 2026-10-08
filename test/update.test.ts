@@ -514,7 +514,7 @@ test("a detached HEAD is refused", async () => {
 
 /** A Linux `ServiceEnv` whose `systemctl --user is-active japa` answers `state`, with the unit installed unless
  * `state` is "not installed"; `calls` records every command. */
-function service(state: "active" | "inactive" | "not installed") {
+function service(state: "active" | "activating" | "failed" | "inactive" | "not installed") {
   const calls: string[] = [];
   const exec: Exec = async (cmd, args) => {
     calls.push([cmd, ...args].join(" "));
@@ -559,16 +559,31 @@ test("a stopped service is left stopped", async () => {
   expect(logs).toEqual(["japa's service is stopped, so it was left stopped; start it with: japa service start"]);
 });
 
+test("a crash-looping or failed service is restarted, not reported as stopped", async () => {
+  for (const state of ["activating", "failed"] as const) {
+    const { env, calls } = service(state);
+    const logs: string[] = [];
+
+    await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+
+    expect(calls, state).toContain("systemctl --user restart japa");
+    expect(logs, state).toEqual(["japa didn't answer within 30 s; see: japa service logs"]); // nothing listens in this test
+  }
+});
+
 test("a foreground daemon is told about, never restarted", async () => {
-  const { env, calls } = service("inactive");
-  const home = tmp();
-  writeFileSync(join(home, "daemon.lock"), String(process.pid));
-  const logs: string[] = [];
+  // A service failing beside it (it holds daemon.lock) isn't restarted either.
+  for (const state of ["inactive", "failed"] as const) {
+    const { env, calls } = service(state);
+    const home = tmp();
+    writeFileSync(join(home, "daemon.lock"), String(process.pid));
+    const logs: string[] = [];
 
-  await restartAfterUpdate(env, home, (s) => logs.push(s), 50);
+    await restartAfterUpdate(env, home, (s) => logs.push(s), 50);
 
-  expect(calls).not.toContain("systemctl --user restart japa");
-  expect(logs).toEqual(["restart `japa daemon` to apply"]);
+    expect(calls, state).not.toContain("systemctl --user restart japa");
+    expect(logs, state).toEqual(["restart `japa daemon` to apply"]);
+  }
 });
 
 test("no service and no daemon: nothing to restart", async () => {

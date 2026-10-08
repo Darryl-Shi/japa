@@ -66,20 +66,21 @@ function systemdQuote(s: string): string {
   return `"${s.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
 }
 
-/** Quotes `s` as an `ExecStart=` argument: also `$` as `$$`, since systemd expands `$VAR` there. */
+/** Quotes `s` as an `ExecStart=` argument: also `$` as `$$`, since systemd expands `$VAR` there (not in the executable). */
 function execArg(s: string): string {
   return systemdQuote(s.replaceAll("$", () => "$$"));
 }
 
 /** The systemd user unit's text (design doc §7.1). */
 export function unitText(env: ServiceEnv): string {
+  const [executable, ...args] = env.command;
   const lines = [
     "[Unit]",
     "Description=japa",
     "After=network-online.target",
     "",
     "[Service]",
-    `ExecStart=${env.command.map(execArg).join(" ")}`,
+    `ExecStart=${[systemdQuote(executable!), ...args.map(execArg)].join(" ")}`,
     "Restart=on-failure",
     "RestartSec=5",
     `Environment=${systemdQuote(`PATH=${env.path}`)}`,
@@ -150,15 +151,20 @@ export function isInstalled(env: ServiceEnv): boolean {
   return false;
 }
 
-export async function serviceState(env: ServiceEnv): Promise<"active" | "inactive" | "not installed"> {
+/**
+ * The service's state: "inactive" only when stopped (systemd's inactive; launchd's job not loaded, as `stop` leaves
+ * it), "failed" when it should run but doesn't (failed, auto-restarting, or loaded but not running).
+ */
+export async function serviceState(env: ServiceEnv): Promise<"active" | "inactive" | "failed" | "not installed"> {
   if (!isInstalled(env)) return "not installed";
   if (env.platform === "linux") {
-    const r = await env.exec("systemctl", ["--user", "is-active", "japa"]);
-    return r.stdout.trim() === "active" ? "active" : "inactive";
+    const state = (await env.exec("systemctl", ["--user", "is-active", "japa"])).stdout.trim();
+    return state === "active" || state === "inactive" ? state : "failed";
   }
   if (env.platform === "darwin") {
     const r = await env.exec("launchctl", ["print", `gui/${env.uid}/${LABEL}`]);
-    return r.code === 0 && /^\s*state = running\s*$/m.test(r.stdout) ? "active" : "inactive";
+    if (r.code !== 0) return "inactive";
+    return /^\s*state = running\s*$/m.test(r.stdout) ? "active" : "failed";
   }
   return "not installed";
 }

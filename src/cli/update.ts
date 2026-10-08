@@ -118,15 +118,16 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
 }
 
 /**
- * Step 8 (design doc §5.1): restarts the service when it's running and waits for it to answer. A service the user
- * stopped stays stopped, and a foreground `japa daemon` is never killed -- both are only told about.
+ * Step 8 (design doc §5.1): restarts the service when it's running or failing and waits for it to answer. A service
+ * the user stopped stays stopped, and a foreground `japa daemon` is never killed -- both are only told about.
  */
 export async function restartAfterUpdate(env: ServiceEnv, home: string, log: (s: string) => void, waitMs?: number): Promise<void> {
   const state = await serviceState(env);
-  if (state === "active") {
+  const foreground = state !== "active" && foregroundPid(home) !== undefined;
+  if (state === "active" || (state === "failed" && !foreground)) {
     await restartService(env);
     if ((await waitForDaemon(home, waitMs)) === undefined) log("japa didn't answer within 30 s; see: japa service logs");
-  } else if (foregroundPid(home) !== undefined) {
+  } else if (foreground) {
     log("restart `japa daemon` to apply");
   } else if (state === "inactive") {
     log("japa's service is stopped, so it was left stopped; start it with: japa service start");

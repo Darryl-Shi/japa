@@ -133,6 +133,30 @@ test("a rerun with Enter everywhere keeps custom worker and consolidation models
   expect(readSettings(home).models).toEqual(models);
 });
 
+test("a rerun with only a custom worker model keeps consolidation on the CoS model on Enter", async () => {
+  const probe = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  const [, b, c] = probe.models.getModels("anthropic");
+  const cos = { provider: "anthropic", modelId: b!.id };
+  const worker = { provider: "anthropic", modelId: c!.id };
+  const home = tempHome({ models: { cos, worker } });
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const p = scripted([
+    ["CoS provider", ENTER],
+    ["CoS model", ENTER],
+    ["API key", ENTER],
+    ["Use the CoS model", ENTER],
+    ["Worker provider", ENTER],
+    ["Worker model", ENTER],
+    ["Consolidation provider", ENTER],
+    ["Consolidation model", ENTER],
+  ]);
+
+  await chooseModels(ctx, p, {});
+
+  p.done();
+  expect(readSettings(home).models).toEqual({ cos, worker, consolidation: cos });
+});
+
 test("Enter on a first run uses the CoS model for every role", async () => {
   const home = tempHome();
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
