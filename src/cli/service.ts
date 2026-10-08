@@ -61,9 +61,14 @@ export function plistPath(env: ServiceEnv): string {
   return join(env.userHome, "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
-/** Quotes `s` as a systemd unit value: wraps it in `"..."`, escaping `\` and `"`. */
+/** Quotes `s` as a systemd unit value: wraps it in `"..."`, escaping `\` and `"`, and `%` (a specifier) as `%%`. */
 function systemdQuote(s: string): string {
-  return `"${s.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  return `"${s.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
+}
+
+/** Quotes `s` as an `ExecStart=` argument: also `$` as `$$`, since systemd expands `$VAR` there. */
+function execArg(s: string): string {
+  return systemdQuote(s.replaceAll("$", () => "$$"));
 }
 
 /** The systemd user unit's text (design doc §7.1). */
@@ -74,7 +79,7 @@ export function unitText(env: ServiceEnv): string {
     "After=network-online.target",
     "",
     "[Service]",
-    `ExecStart=${env.command.map(systemdQuote).join(" ")}`,
+    `ExecStart=${env.command.map(execArg).join(" ")}`,
     "Restart=on-failure",
     "RestartSec=5",
     `Environment=${systemdQuote(`PATH=${env.path}`)}`,

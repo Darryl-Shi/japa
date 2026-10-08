@@ -68,6 +68,16 @@ test("unit quotes ExecStart, escaping \\ and \"; JAPA_HOME only with customHome"
   expect(withHome).toContain('Environment="JAPA_HOME=/home/x/.japa"');
 });
 
+test("unit escapes systemd specifiers (%), and variables ($) in ExecStart, where systemd expands them", () => {
+  const env = makeEnv({ command: ["/opt/100%/$HOME/japa", "daemon"], path: "/a%b:$PATH", customHome: true, japaHome: "/h/50%" });
+
+  const text = unitText(env);
+
+  expect(text).toContain('ExecStart="/opt/100%%/$$HOME/japa" "daemon"\n');
+  expect(text).toContain('Environment="PATH=/a%%b:$PATH"\n'); // Environment= doesn't expand $
+  expect(text).toContain('Environment="JAPA_HOME=/h/50%%"\n');
+});
+
 test("plist escapes values and logs to <home>/logs/daemon.log", () => {
   const env = makeEnv({ platform: "darwin", command: ["/a&b/japa", "daemon"], japaHome: "/home/x/.japa", customHome: true, path: "/usr/bin" });
 
