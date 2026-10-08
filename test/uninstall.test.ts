@@ -142,6 +142,37 @@ test("a sibling checkout outside app/ and node/ survives", async () => {
   expect(existsSync(layout.installDir!)).toBe(true);
 });
 
+test("uninstall names the rc files still holding install.sh's PATH line", async () => {
+  const root = tmp();
+  const home = tempHome();
+  const userHome = tmp();
+  writeFileSync(join(userHome, ".bashrc"), 'alias ll="ls -l"\nexport PATH="$HOME/.local/bin:$PATH"\n');
+  writeFileSync(join(userHome, ".zshrc"), "# nothing of install.sh's\n");
+  mkdirSync(join(userHome, ".config", "fish"), { recursive: true });
+  writeFileSync(join(userHome, ".config", "fish", "config.fish"), "fish_add_path $HOME/.local/bin\n");
+  const layout = layoutOf(join(root, "install", "app"), userHome);
+  mkdirSync(layout.app, { recursive: true });
+  const logs: string[] = [];
+
+  await uninstall(layout, home, { purge: false, confirm: async () => "delete", serviceEnv: fakeServiceEnv({ userHome }), log: (s) => logs.push(s) });
+
+  const files = [join(userHome, ".bashrc"), join(userHome, ".config", "fish", "config.fish")];
+  expect(logs).toContain(`the PATH line install.sh added is still in ${files.join(", ")}`);
+});
+
+test("no rc file holding the PATH line, no mention of it", async () => {
+  const root = tmp();
+  const home = tempHome();
+  const userHome = tmp();
+  const layout = layoutOf(join(root, "install", "app"), userHome);
+  mkdirSync(layout.app, { recursive: true });
+  const logs: string[] = [];
+
+  await uninstall(layout, home, { purge: false, confirm: async () => "delete", serviceEnv: fakeServiceEnv({ userHome }), log: (s) => logs.push(s) });
+
+  expect(logs.some((l) => l.includes("PATH"))).toBe(false);
+});
+
 test("a node/ japa didn't install survives", async () => {
   const root = tmp();
   const home = tempHome();

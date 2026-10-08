@@ -1,8 +1,10 @@
 // `japa uninstall [--purge]` (design doc §8): stops and removes the service, removes a launcher that points at
 // this checkout, and removes the install dir when it's a managed install. The runtime home (`japaHome()`) is kept
-// unless `--purge` is given and the user confirms; PATH lines install.sh added to a shell rc file are never touched.
-// With `--purge`, confirmation happens before anything is touched: an answer other than "delete" removes nothing.
-import { existsSync, readdirSync, rmSync } from "node:fs";
+// unless `--purge` is given and the user confirms; PATH lines install.sh added to a shell rc file are never touched,
+// only named. With `--purge`, confirmation happens before anything is touched: an answer other than "delete" removes
+// nothing.
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { launcherPointsAt, type Layout } from "./layout.ts";
 import { isPrivateNode } from "./node.ts";
 import { type ServiceEnv, uninstallService } from "./service.ts";
@@ -14,6 +16,21 @@ export type UninstallOptions = {
   serviceEnv: ServiceEnv;
   log: (s: string) => void;
 };
+
+/** The line install.sh appends to each shell's rc file (under the user's home) when ~/.local/bin isn't on PATH. */
+const PATH_LINES: [file: string, line: string][] = [
+  [".bashrc", 'export PATH="$HOME/.local/bin:$PATH"'],
+  [".zshrc", 'export PATH="$HOME/.local/bin:$PATH"'],
+  [join(".config", "fish", "config.fish"), "fish_add_path $HOME/.local/bin"],
+];
+
+/** The rc files under `userHome` still holding install.sh's PATH line. */
+function rcFilesWithPathLine(userHome: string): string[] {
+  const holds = (path: string, line: string) => existsSync(path) && readFileSync(path, "utf8").includes(line);
+  return PATH_LINES.map(([file, line]) => [join(userHome, file), line] as const)
+    .filter(([path, line]) => holds(path, line))
+    .map(([path]) => path);
+}
 
 export async function uninstall(layout: Layout, home: string, o: UninstallOptions): Promise<void> {
   if (o.purge && (await o.confirm()) !== "delete") {
@@ -47,5 +64,6 @@ export async function uninstall(layout: Layout, home: string, o: UninstallOption
     o.log(`kept ${home}`);
   }
 
-  o.log("PATH lines added to a shell rc file by install.sh were left in place");
+  const rcFiles = rcFilesWithPathLine(o.serviceEnv.userHome);
+  if (rcFiles.length > 0) o.log(`the PATH line install.sh added is still in ${rcFiles.join(", ")}`);
 }
