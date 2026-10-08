@@ -131,6 +131,20 @@ test("macOS install writes the plist, ignores a failed bootout, and bootstraps",
   ]);
 });
 
+test("macOS install creates <japaHome>/logs before bootstrapping (launchd won't create it)", async () => {
+  const japaHome = join(tmp(), "home");
+  let logsExisted = false;
+  const { exec } = fakeExec((cmd, args) => {
+    if (args[0] === "bootstrap") logsExisted = existsSync(join(japaHome, "logs"));
+    return {};
+  });
+  const env = makeEnv({ platform: "darwin", exec, uid: 501, japaHome });
+
+  await installService(env, () => {});
+
+  expect(logsExisted).toBe(true);
+});
+
 test("a second macOS install with the same plist does not bootout", async () => {
   const { exec, calls } = fakeExec();
   const env = makeEnv({ platform: "darwin", exec, uid: 501 });

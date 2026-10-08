@@ -171,6 +171,8 @@ export async function installService(env: ServiceEnv, log: (s: string) => void):
   }
   if (env.platform === "darwin") {
     const path = plistPath(env);
+    // launchd doesn't create StandardOutPath's directory: without it the job can't open its log and won't start.
+    mkdirSync(join(env.japaHome, "logs"), { recursive: true });
     // A changed plist must take effect even if the job is currently loaded: bootout (ignore failure) before
     // ensuring it's running. An unchanged plist only needs the unconditional "ensure running" step below.
     if (writeIfChanged(path, plistText(env))) await env.exec("launchctl", ["bootout", `gui/${env.uid}`, path]);
