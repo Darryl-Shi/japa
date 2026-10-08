@@ -46,7 +46,8 @@ export async function startMessaging(
   if (adapter.name !== kernel.extension) throw new Error(`name must be "${kernel.extension}"`);
   const log = (error: unknown) => console.error(`${adapter.name}: ${message(error)}`);
   let stopped = false;
-  let handled = Promise.resolve();
+  let ready!: () => void;
+  let handled = new Promise<void>((resolve) => (ready = resolve)); // messages wait until every subscription is in place
   let submitted = Promise.resolve();
   let buffer: Incoming[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -165,6 +166,7 @@ export async function startMessaging(
       typingTimer = setInterval(() => typing(chat), TYPING_MS);
     }
   });
+  ready();
   return async () => {
     stopped = true;
     await stopAdapter();

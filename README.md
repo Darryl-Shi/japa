@@ -87,7 +87,7 @@ japa enters safe mode by itself after three crashes within five minutes. A setup
 1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy its token.
 2. In `japa chat`, ask the CoS to connect Telegram, and paste the token at the masked prompt.
 3. Message your bot; it answers with your Telegram user id. Tell the CoS, which sets
-   `extensions.telegram.owner`. The bot ignores everyone else.
+   `extensions.telegram.owner`. Anyone else just gets their own user id back.
 
 Then chat with the CoS from Telegram: replies to your messages and proactive ones (schedules, job
 reports) come to you there. `/jobs` lists jobs, `/status` shows the model, extensions and errors, and

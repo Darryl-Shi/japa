@@ -120,7 +120,7 @@ export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispos
 export type MessagingContext = {
   cursor(adapter: string): Promise<string | undefined>;
   saveCursor(adapter: string, cursor: string): Promise<void>;
-  /** The `by` of the latest secret fulfilled. */
+  /** The `by` of the latest secret fulfilled from a chat. */
   secretFulfilledBy(): Promise<string | undefined>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;

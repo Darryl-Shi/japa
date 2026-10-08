@@ -5,6 +5,7 @@ import type { Incoming, KernelContext, MessagingAdapter, MessagingContext, Outgo
 import { recent, reportText, type Job } from "../jobs/state.ts";
 import { discoverExtensions, message } from "../loader.ts";
 import { statusText } from "../status.ts";
+import { splitMessage } from "./split.ts";
 
 export const COMMANDS = [
   { name: "jobs", description: "Running and recent jobs" },
@@ -119,16 +120,17 @@ export function createMenu(
     ["status", statusView],
     ["settings", settingsView],
   ]);
+  const fit = (m: OutgoingMessage) => ({ ...m, markdown: splitMessage(m.markdown, adapter.maxMessageChars)[0]! });
   return {
     async command(m: Incoming) {
       const view = commands.get(m.command!);
-      await adapter.send(m.chat, view ? await view() : { markdown: HELP });
+      await adapter.send(m.chat, fit(view ? await view() : { markdown: HELP }));
     },
     async press(m: Incoming) {
       const view = views.get(m.action!);
       const expired = { markdown: "This menu expired — send /settings again." };
       const shown = view ? await view().catch((error) => ({ markdown: `Not changed: ${message(error)}` })) : expired;
-      await adapter.edit(m.chat, m.messageId, shown);
+      await adapter.edit(m.chat, m.messageId, fit(shown));
     },
   };
 }

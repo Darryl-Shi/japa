@@ -6,8 +6,8 @@ import { expect, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { ACTIVATION_ORDER, CONTRACTS, type TriggerContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
-import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
-import { bootTest, carryOver, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { addSecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
+import { bootTest, carryOver, probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, say, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -257,8 +257,8 @@ test("a reply in flight at the stop is sent after the restart, and a sent one is
 const PROMPT = "japa needs `svc.token`: to sync. Send it as your next message; I'll delete it at once.";
 
 /** Boots with `fake`, has the CoS ask for `svc.token` on "connect", and waits for the prompt. */
-async function prompted(fake: ReturnType<typeof fakeAdapter>) {
-  const booted = await bootMessaging(fake);
+async function prompted(fake: ReturnType<typeof fakeAdapter>, extra: JapaExtension[] = []) {
+  const booted = await bootMessaging(fake, {}, extra);
   script(booted.faux, (role, text) =>
     role === "user" && text === "connect" ? call("secret_request", { name: "svc.token", why: "to sync" }) : undefined,
   );
@@ -288,6 +288,22 @@ test("a secret message delivered again is dropped and deleted again", async () =
     { chat: "42", messageId: "77" },
     { chat: "42", messageId: "77" },
   ]);
+  expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("a secret message delivered again is still dropped after japa chat fulfils another request", async () => {
+  const fake = fakeAdapter();
+  const { extension, surface } = probe();
+  const { daemon } = await prompted(fake, [extension]);
+  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
+  await daemon.root.commit((tx) => addSecretRequest(tx, "other.token", "to sync"), ctx);
+  const { pending } = (await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!;
+  await surface().secrets.fulfil(pending[0]!.id, "other");
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret other.token provided]"));
+  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
+  await sleep(2000);
+  expect(fake.deleted).toHaveLength(2);
   expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
   await daemon.close();
 });

@@ -12,7 +12,7 @@ import type { SecretsStore } from "./contracts.ts";
 
 export type SecretRequest = { id: string; name: string; why: string; at: number };
 
-// On the root conversation. `fulfilledBy`: the chat message that carried the latest fulfilled secret.
+// On the root conversation. `fulfilledBy`: the chat message that carried the latest secret fulfilled from a chat.
 export const SecretRequestsDoc = defineDoc<{ nextId: number; pending: SecretRequest[]; fulfilledBy?: string }>({
   kind: "japa.secretRequests",
   version: 1,
@@ -53,8 +53,8 @@ export const secretRequest = defineTool({
 });
 
 /**
- * Stores `value` as the secret pending request `requestId` asked for, removes the request (recording `by`, the chat
- * message that carried it) and tells the CoS; returns the secret's name.
+ * Stores `value` as the secret pending request `requestId` asked for, removes the request (recording `by`, if given: the
+ * chat message that carried it) and tells the CoS; returns the secret's name.
  */
 export async function fulfilSecret(
   harness: Harness,
@@ -72,7 +72,7 @@ export async function fulfilSecret(
   await root.commit(async (tx) => {
     const doc = await tx.doc(SecretRequestsDoc, root.id);
     doc.pending = doc.pending.filter((r) => r.id !== requestId);
-    doc.fulfilledBy = by;
+    if (by !== undefined) doc.fulfilledBy = by;
   }, context);
   const content = `[secret ${request.name} provided]`;
   await root.submit({ type: "input", content, requestId: `secret:${requestId}` }, context);

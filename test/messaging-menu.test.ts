@@ -63,6 +63,17 @@ test("/jobs lists running and recent jobs as buttons; pressing one shows its rep
   expect(fake.edited.at(-1)).toMatchObject({ messageId: list.id, markdown: expect.stringMatching(/^\[job 1 "Sum" /) });
 });
 
+test("a job report longer than a message is cut to fit", async () => {
+  const small = fakeAdapter({ maxMessageChars: 100 });
+  const job = { id: "1", title: "Sum", status: "done", result: "word ".repeat(100), updatedAt: Date.now() } as Job;
+  const menu = createMenu(small.adapter, {} as KernelContext, {} as MessagingContext, () => [job]);
+  const msg = { chat: "42", user: "42", id: "1", messageId: "1" };
+  await menu.command({ ...msg, command: "jobs" });
+  await menu.press({ ...msg, action: small.sent.at(-1)!.buttons![0]![0]!.action });
+  expect(small.edited.at(-1)!.markdown).toMatch(/^\[job 1 "Sum" done\] word/);
+  expect(small.edited.at(-1)!.markdown.length).toBeLessThanOrEqual(100);
+});
+
 test("/jobs without jobs says so", async () => {
   await fake.receive({ command: "jobs" });
   expect(fake.sent.at(-1)!.markdown).toBe("No running or recent jobs.");
