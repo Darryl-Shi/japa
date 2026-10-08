@@ -69,7 +69,7 @@ async function summary(ctx: SetupContext, o: SetupOptions, started: boolean, p?:
 /** `models.cos` unset (design spec §4.2): CoS model and key, extensions, the service, then the summary. */
 async function firstRun(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<void> {
   await chooseModels(ctx, p, { env: o.env, openUrl: o.openUrl });
-  await configureStep(ctx, p);
+  await configureStep(ctx, p, undefined, { openUrl: o.openUrl });
   const started = await serviceStep(o);
   await summary(ctx, o, started, p);
 }
@@ -112,7 +112,7 @@ async function rerun(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<v
     if (choice === "Models") {
       if (await chooseModels(ctx, p, { env: o.env, openUrl: o.openUrl })) saved = true;
     } else if (choice === "Extensions") {
-      if (await configureStep(ctx, p)) saved = true;
+      if (await configureStep(ctx, p, undefined, { openUrl: o.openUrl })) saved = true;
     } else {
       await serviceMenu(ctx, p, o);
     }
@@ -160,7 +160,7 @@ async function runWhatsNew(ctx: SetupContext, p: Prompter | undefined, o: SetupO
   const toConfigure = configurable(extensions); // a new extension with nothing to configure is news, nothing more
   if (toConfigure.length > 0) {
     if (o.interactive && p !== undefined) {
-      await configureStep(ctx, p, toConfigure); // picking none skips
+      await configureStep(ctx, p, toConfigure, { openUrl: o.openUrl }); // picking none skips
     } else {
       o.log("run `japa setup` to configure");
     }

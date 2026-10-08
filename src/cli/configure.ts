@@ -6,12 +6,18 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { askedSecretNames, type JapaExtension, secretDescription } from "../kernel/extension.ts";
+import { askedSecretNames, type AuthorizeContext, type JapaExtension, secretDescription } from "../kernel/extension.ts";
 import { message } from "../kernel/loader.ts";
 import { settingsSchema } from "../kernel/settings-tools.ts";
 import { readUserSettings, saveSettings, setPath, validateExtensionSettings } from "../kernel/settings.ts";
+import { interactionFor, openInBrowser } from "./auth-interaction.ts";
 import type { SetupContext } from "./context.ts";
-import type { Choice, Prompter } from "./prompt.ts";
+import { Cancelled, type Choice, type Prompter } from "./prompt.ts";
+
+export type ConfigureOptions = {
+  /** Opens a sign-in link in the user's browser, when there is one to open it in. */
+  openUrl?: (url: string) => void;
+};
 
 type ObjectSchema = { properties?: Record<string, TSchema>; required?: string[] };
 type PropSchema = {
@@ -38,19 +44,34 @@ function askedProperties(e: JapaExtension): Record<string, TSchema> {
   );
 }
 
-/** The extensions that need the user for something: a secret they don't generate, or a required setting. An
- * extension whose settings all have defaults -- like the desktop -- works without any setup. */
+/** The extensions that need the user for something: a secret they don't generate, a required setting, or signing
+ * in. An extension whose settings all have defaults -- like the desktop -- works without any setup. */
 export function configurable(extensions: JapaExtension[]): JapaExtension[] {
-  return extensions.filter((e) => askedSecretNames(e).length > 0 || Object.keys(askedProperties(e)).length > 0);
+  return extensions.filter(
+    (e) =>
+      e.authorize !== undefined || askedSecretNames(e).length > 0 || Object.keys(askedProperties(e)).length > 0,
+  );
 }
 
-/** Whether `e` is set up: every secret setup asks for is set and every required setting is saved. */
+/** What `e`'s authorize hook sees in setup: its saved settings and the secrets store, no daemon needed. */
+export function authorizeContext(ctx: SetupContext, e: JapaExtension): AuthorizeContext {
+  return {
+    home: ctx.home,
+    settings: () => (readUserSettings(ctx.home).extensions as Record<string, JsonObject> | undefined)?.[e.name] ?? {},
+    secret: (name) => ctx.secrets.get(name),
+    setSecret: (name, value) => ctx.secrets.set(name, value),
+  };
+}
+
+/** Whether `e` is set up: every secret setup asks for is set, every required setting is saved, and it's signed in
+ * when it has an authorize hook. */
 export async function isConfigured(ctx: SetupContext, e: JapaExtension): Promise<boolean> {
   for (const name of askedSecretNames(e)) {
     if ((await ctx.secrets.get(name)) === undefined) return false;
   }
   const extensions = readUserSettings(ctx.home).extensions as Record<string, Record<string, unknown>> | undefined;
-  return Object.keys(askedProperties(e)).every((prop) => extensions?.[e.name]?.[prop] !== undefined);
+  if (!Object.keys(askedProperties(e)).every((prop) => extensions?.[e.name]?.[prop] !== undefined)) return false;
+  return e.authorize === undefined || (await e.authorize.connected(authorizeContext(ctx, e)));
 }
 
 /** "secret:<name>" for each secret setup asks for, then "setting:<prop>" for each setting it asks for: what
@@ -201,14 +222,66 @@ function failingProperty(error: string, extensionName: string): string {
 }
 
 /**
- * Prompts for what `e` needs from the user: each secret it doesn't generate, as masked input under its
- * description (blank leaves it as is), then each required setting by type. The resulting `extensions.<name>` is
- * validated; on failure the wizard shows the error and re-prompts the failing property. If that property can't
- * be prompted for (an object, array, or other non-primitive type), the wizard notes the edit-by-hand hint
- * instead and returns without saving -- it never re-validates the same value without having awaited a new
- * answer. Returns whether anything was actually written.
+ * Offers to sign in to `e` (design spec §3.2): again (default No) when it's connected, else now (default Yes). The
+ * flow runs through the terminal; a failure says why and asks whether to try again. Quitting at one of its
+ * prompts aborts the flow (and its loopback listener) and rethrows `Cancelled`. Returns whether it signed in.
  */
-export async function configureExtension(ctx: SetupContext, p: Prompter, e: JapaExtension): Promise<boolean> {
+async function signIn(
+  ctx: SetupContext,
+  p: Prompter,
+  e: JapaExtension,
+  openUrl: (url: string) => void,
+): Promise<boolean> {
+  const authorize = e.authorize!;
+  const actx = authorizeContext(ctx, e);
+  const yes = (await authorize.connected(actx))
+    ? await p.confirm("Sign in again?", false)
+    : await p.confirm("Sign in now?", true);
+  if (!yes) return false;
+
+  for (;;) {
+    const abort = new AbortController();
+    let quit = false;
+    const onQuit = (error: unknown): never => {
+      if (error instanceof Cancelled) {
+        quit = true;
+        abort.abort(error);
+      }
+      throw error;
+    };
+    const asking: Prompter = {
+      ...p,
+      select: (...args) => p.select(...args).catch(onQuit),
+      text: (...args) => p.text(...args).catch(onQuit),
+      secret: (...args) => p.secret(...args).catch(onQuit),
+    };
+
+    try {
+      p.note(await authorize.run(actx, interactionFor(asking, openUrl, abort.signal)));
+      return true;
+    } catch (error) {
+      if (quit) throw new Cancelled();
+      p.warn(`Couldn't sign in: ${message(error)}`);
+    }
+    if (!(await p.confirm("Try signing in again?", true))) return false;
+  }
+}
+
+/**
+ * Prompts for what `e` needs from the user: each secret it doesn't generate, as masked input under its
+ * description (blank leaves it as is), then signing in when it has an authorize hook, then each required setting
+ * by type. The resulting `extensions.<name>` is validated; on failure the wizard shows the error and re-prompts
+ * the failing property. If that property can't be prompted for (an object, array, or other non-primitive type),
+ * the wizard notes the edit-by-hand hint instead and returns without saving -- it never re-validates the same
+ * value without having awaited a new answer. Returns whether anything was actually written (or signed in).
+ */
+export async function configureExtension(
+  ctx: SetupContext,
+  p: Prompter,
+  e: JapaExtension,
+  opts: ConfigureOptions = {},
+): Promise<boolean> {
+  const { openUrl = openInBrowser } = opts;
   let saved = false;
 
   for (const name of askedSecretNames(e)) {
@@ -220,6 +293,8 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
     await ctx.secrets.set(name, value);
     saved = true;
   }
+
+  if (e.authorize !== undefined && (await signIn(ctx, p, e, openUrl))) saved = true;
 
   const schema = settingsSchema(e);
   if (schema === undefined) return saved;
@@ -269,7 +344,12 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
  * records every extension as offered (design spec §5.2), whether or not the user configured it. Returns whether
  * anything was saved.
  */
-export async function configureStep(ctx: SetupContext, p: Prompter, only?: JapaExtension[]): Promise<boolean> {
+export async function configureStep(
+  ctx: SetupContext,
+  p: Prompter,
+  only?: JapaExtension[],
+  opts: ConfigureOptions = {},
+): Promise<boolean> {
   const extensions = (only ?? configurable(ctx.extensions)).toSorted((a, b) => a.name.localeCompare(b.name));
   let saved = false;
 
@@ -282,7 +362,7 @@ export async function configureStep(ctx: SetupContext, p: Prompter, only?: JapaE
     const chosen = await p.multiselect("Set up any integrations now? You can also do it later, or ask japa", choices, []);
     for (const e of chosen) {
       p.note(`${e.name}: ${e.summary}`);
-      if (await configureExtension(ctx, p, e)) saved = true;
+      if (await configureExtension(ctx, p, e, opts)) saved = true;
     }
   }
 

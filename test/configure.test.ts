@@ -1,9 +1,19 @@
+import type { AuthInteraction } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { openSetupContext } from "../src/cli/context.ts";
-import { configurable, configureExtension, configureStep, markOffered, offerKeys, unseen } from "../src/cli/configure.ts";
-import type { JapaExtension } from "../src/kernel/extension.ts";
+import {
+  configurable,
+  configureExtension,
+  configureStep,
+  isConfigured,
+  markOffered,
+  offerKeys,
+  unseen,
+} from "../src/cli/configure.ts";
+import { Cancelled } from "../src/cli/prompt.ts";
+import type { Authorize, JapaExtension } from "../src/kernel/extension.ts";
 import { ensureWorkspace } from "../src/kernel/workspace.ts";
 import { REPO_EXTENSIONS, tempHome } from "./helpers.ts";
 import { ENTER, scripted } from "./prompt-helpers.ts";
@@ -217,6 +227,133 @@ test("the extensions step records every extension as offered, configurable or no
   await configureStep(ctx, scripted([["Set up any integrations now?", ENTER]]), [demo]);
 
   expect(Object.keys(readSetup(home).offered).sort()).toEqual(ctx.extensions.map((e) => e.name).sort());
+});
+
+/** An inline extension that signs in: it shows a link, takes the pasted address and stores it as `signin.tok`.
+ * The first `failures` runs throw "denied" after the paste; `runs` counts calls, `io` keeps the last. */
+function signinExtension(failures = 0) {
+  const state = { runs: 0, io: undefined as AuthInteraction | undefined };
+  const authorize: Authorize = {
+    async run(ctx, io) {
+      state.runs++;
+      state.io = io;
+      io.notify({ type: "auth_url", url: "https://example.test/auth" });
+      const value = await io.prompt({ type: "manual_code", message: "Paste the address" });
+      if (failures-- > 0) throw new Error("denied");
+      await ctx.setSecret("signin.tok", value);
+      return "Connected as a@b.c";
+    },
+    connected: async (ctx) => !!(await ctx.secret("signin.tok")),
+  };
+  const signin: JapaExtension = {
+    name: "signin",
+    summary: "S",
+    secrets: [{ name: "signin.id", description: "Client id" }],
+    authorize,
+  };
+  return { signin, state };
+}
+
+test("configuring an extension with authorize signs in after its secrets", async () => {
+  const home = tempHome();
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const { signin, state } = signinExtension();
+  const opened: string[] = [];
+  const p = scripted([
+    ["Client id", "id-1"],
+    ["Sign in now?", true],
+    ["Paste the address", "code-1"],
+  ]);
+
+  const saved = await configureExtension(ctx, p, signin, { openUrl: (url) => opened.push(url) });
+
+  expect(saved).toBe(true);
+  p.done();
+  expect(state.runs).toBe(1);
+  expect(p.notes).toContain("https://example.test/auth");
+  expect(p.notes).toContain("Connected as a@b.c");
+  expect(opened).toEqual(["https://example.test/auth"]);
+  expect(readFileSync(join(home, "secrets", "signin.tok"), "utf8")).toBe("code-1");
+});
+
+test("an extension already signed in asks to sign in again, default no", async () => {
+  const ctx = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  await ctx.secrets.set("signin.tok", "old");
+  const { signin, state } = signinExtension();
+  const p = scripted([
+    ["Client id", ENTER],
+    ["Sign in again?", ENTER],
+  ]);
+
+  const saved = await configureExtension(ctx, p, signin, { openUrl: () => {} });
+
+  expect(saved).toBe(false);
+  p.done();
+  expect(state.runs).toBe(0);
+});
+
+test("a failed sign-in says why and offers to try again", async () => {
+  const home = tempHome();
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const { signin, state } = signinExtension(1);
+  const p = scripted([
+    ["Client id", "id-1"],
+    ["Sign in now?", true],
+    ["Paste the address", "x"],
+    ["Try signing in again?", false],
+  ]);
+
+  await configureExtension(ctx, p, signin, { openUrl: () => {} });
+
+  p.done();
+  expect(state.runs).toBe(1);
+  expect(p.notes).toContain("Couldn't sign in: denied");
+  expect(existsSync(join(home, "secrets", "signin.tok"))).toBe(false);
+});
+
+test("trying again after a failed sign-in runs the flow again", async () => {
+  const home = tempHome();
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const { signin, state } = signinExtension(1);
+  const p = scripted([
+    ["Client id", "id-1"],
+    ["Sign in now?", true],
+    ["Paste the address", "x"],
+    ["Try signing in again?", true],
+    ["Paste the address", "code-2"],
+  ]);
+
+  expect(await configureExtension(ctx, p, signin, { openUrl: () => {} })).toBe(true);
+
+  p.done();
+  expect(state.runs).toBe(2);
+  expect(readFileSync(join(home, "secrets", "signin.tok"), "utf8")).toBe("code-2");
+});
+
+test("quitting at a sign-in prompt stops the flow and the wizard", async () => {
+  const ctx = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  const { signin, state } = signinExtension();
+  const p = scripted([
+    ["Client id", "id-1"],
+    ["Sign in now?", true],
+    ["Paste the address", "cancel"],
+  ]);
+
+  await expect(configureExtension(ctx, p, signin, { openUrl: () => {} })).rejects.toBeInstanceOf(Cancelled);
+
+  expect(state.io?.signal?.aborted).toBe(true);
+});
+
+test("an extension with authorize is configurable, and set up only once signed in", async () => {
+  const ctx = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  const { signin } = signinExtension();
+  const bare: JapaExtension = { name: "bare", summary: "B", authorize: signin.authorize };
+
+  expect(configurable([signin, bare])).toEqual([signin, bare]);
+  await ctx.secrets.set("signin.id", "id-1");
+  expect(await isConfigured(ctx, signin)).toBe(false);
+  await ctx.secrets.set("signin.tok", "tok");
+  expect(await isConfigured(ctx, signin)).toBe(true);
 });
 
 test("setup.json is ignored by the workspace git", () => {

@@ -1,15 +1,15 @@
 // The models step of `japa setup`: which provider and model japa (the CoS) runs on, connecting japa to that
 // provider -- signing in (OAuth) or an API key, through pi-ai's own login flows -- and whether background jobs
 // and memory upkeep use the same model.
-import type { AuthEvent, AuthInteraction, AuthPrompt, Credential } from "@earendil-works/pi-ai";
+import type { Credential } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { envKeyName } from "../kernel/boot.ts";
 import { message } from "../kernel/loader.ts";
 import { checkModel, loadSettings, readUserSettings, saveSettings, setPath } from "../kernel/settings.ts";
+import { interactionFor, openInBrowser } from "./auth-interaction.ts";
 import type { SetupContext } from "./context.ts";
 import { Cancelled, type Choice, type Prompter } from "./prompt.ts";
 
@@ -26,23 +26,6 @@ type Role = { provider: string; model: string };
 const COS: Role = { provider: "Which AI provider should japa use?", model: "Which model should japa use?" };
 const WORKER: Role = { provider: "Which provider for background jobs?", model: "Which model for background jobs?" };
 const MEMORY: Role = { provider: "Which provider for memory upkeep?", model: "Which model for memory upkeep?" };
-
-/** Opens `url` with the desktop's opener; does nothing over SSH or without a desktop. */
-export function openInBrowser(url: string): void {
-  if (process.env.SSH_CONNECTION || process.env.SSH_TTY) return;
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "linux" && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
-        ? "xdg-open"
-        : undefined;
-  if (command === undefined) return;
-  try {
-    spawn(command, [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-  } catch {
-    // No opener: the link is on screen.
-  }
-}
 
 /** This install's stable id, for sign-in flows that register the device (`<home>/device-id`). */
 function deviceId(home: string): string {
@@ -77,50 +60,6 @@ async function chooseProvider(ctx: SetupContext, p: Prompter, question: string, 
     hint: stored.has(pr.id) ? "connected" : pr.auth.oauth ? "sign in or API key" : undefined,
   }));
   return p.select(question, choices, initial);
-}
-
-/** pi-ai's login prompts and notices, through `p`. */
-function interactionFor(p: Prompter, openUrl: (url: string) => void, signal: AbortSignal): AuthInteraction {
-  return {
-    signal,
-    prompt: async (q: AuthPrompt) => {
-      switch (q.type) {
-        case "select":
-          return p.select(
-            q.message,
-            q.options.map((o) => ({ label: o.label, value: o.id, hint: o.description })),
-          );
-        case "secret": {
-          const value = await p.secret(q.message, { signal: q.signal });
-          if (value === "") throw new Error("nothing was entered");
-          return value;
-        }
-        case "text":
-        case "manual_code":
-          return p.text(q.message, { placeholder: q.placeholder, signal: q.signal });
-      }
-    },
-    notify: (event: AuthEvent) => {
-      switch (event.type) {
-        case "auth_url":
-          p.box(event.instructions ?? "Open this link to sign in.", "Sign in");
-          p.link(event.url);
-          openUrl(event.url);
-          break;
-        case "device_code":
-          p.box(`Open the link below and enter the code ${event.userCode}`, "Sign in");
-          p.link(event.verificationUri);
-          openUrl(event.verificationUri);
-          break;
-        case "info":
-          p.note([event.message, ...(event.links ?? []).map((l) => `${l.label ?? "Link"}: ${l.url}`)].join("\n"));
-          break;
-        case "progress":
-          p.note(event.message);
-          break;
-      }
-    },
-  };
 }
 
 /** Runs `provider`'s pi-ai login of `type`, which stores the credential; whether it succeeded. */
