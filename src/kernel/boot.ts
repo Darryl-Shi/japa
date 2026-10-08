@@ -280,7 +280,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const afterReset = async () => {
       clearTimeout(quiet);
       const delay = reflectDelay(await unreflectedTurns(opened, root));
-      if (delay === 0) await reflect();
+      if (delay === 0) void reflect().catch(() => {});
       else if (delay !== undefined) quiet = setTimeout(() => void reflect().catch(() => {}), delay).unref();
     };
     const resets = await watchResets(opened, root, afterReset);
