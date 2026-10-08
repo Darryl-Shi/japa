@@ -55,12 +55,17 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
     docs: "./skills/using-the-desktop/SKILL.md",
     provides: { environment: [environment], tool: [computerTool(desktop), browser.tool] },
     durable: { hooks: [keepRecentImages] },
-    secrets: ["desktop.vncPassword"],
+    secrets: [
+      {
+        name: "desktop.vncPassword",
+        description: "Password for watching the desktop in noVNC (generated on first use if unset)",
+      },
+    ],
     settings: Type.Object({
-      cpus: Type.Optional(Type.Number()),
-      memory: Type.Optional(Type.String()),
-      shm: Type.Optional(Type.String()),
-      bind: Type.Optional(Type.String()),
+      cpus: Type.Optional(Type.Number({ description: "CPUs for the desktop container (default 2)" })),
+      memory: Type.Optional(Type.String({ description: 'Memory limit, e.g. "4g" (default "4g")' })),
+      shm: Type.Optional(Type.String({ description: 'Shared memory, e.g. "2g" (default "2g")' })),
+      bind: Type.Optional(Type.String({ description: 'Address noVNC listens on (default "127.0.0.1")' })),
     }),
     status: () => (kernel ? desktop.status() : undefined),
     setup: (ctx) => {

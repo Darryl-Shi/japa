@@ -32,7 +32,7 @@ import {
 import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
-import type { JapaExtension } from "./extension.ts";
+import { type JapaExtension, secretNames } from "./extension.ts";
 import { installTool, rollBackAndLog, rollbackTool } from "./install.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
@@ -152,7 +152,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // Resolved by the surfaces' `fulfil`, by secret name.
     const waiters = new Map<string, ((value: string) => void)[]>();
     const declared = (extension: string, name: string) => {
-      if (!rt.extensions.find((e) => e.name === extension)?.secrets?.includes(name)) {
+      const ext = rt.extensions.find((e) => e.name === extension);
+      if (!ext || !secretNames(ext).includes(name)) {
         throw new Error(`Extension ${extension} did not declare secret "${name}"`);
       }
     };

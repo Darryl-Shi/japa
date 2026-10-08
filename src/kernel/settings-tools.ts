@@ -21,7 +21,8 @@ const reply = (text: string) => ({ content: [{ type: "text" as const, text }] })
 export function settingsSchema(e: JapaExtension): TSchema | undefined {
   if (!e.provides?.messaging) return e.settings;
   const properties = (e.settings as { properties?: Record<string, TSchema> } | undefined)?.properties;
-  return Type.Object({ ...properties, owner: Type.Optional(Type.String()) });
+  const description = `Your ${e.name} user id. Leave blank, message the bot, and it replies with your id.`;
+  return Type.Object({ ...properties, owner: Type.Optional(Type.String({ description })) });
 }
 
 export type SettingsDeps = {

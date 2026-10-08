@@ -57,7 +57,7 @@ export default defineJapaExtension({
     "web_search({ query, count? = 5 }) returns numbered results: title, URL and snippet. " +
     "web_search uses Brave Search and needs the secret web.brave.apiKey.",
   provides: { tool: [webFetch, webSearch] },
-  secrets: ["web.brave.apiKey"],
+  secrets: [{ name: "web.brave.apiKey", description: "Brave Search API key, for web_search" }],
   setup: (ctx) => {
     secret = ctx.secret;
   },

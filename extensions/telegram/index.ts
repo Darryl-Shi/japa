@@ -126,7 +126,7 @@ export default defineJapaExtension({
   summary:
     "Chat with japa on Telegram. To connect, ask the user for the secret telegram.botToken (a bot token from " +
     "@BotFather); the bot then tells them their Telegram user id, which goes in settings extensions.telegram.owner.",
-  secrets: [NAME],
+  secrets: [{ name: NAME, description: "Bot token from @BotFather (/newbot)" }],
   setup: (ctx) => {
     kernel = ctx;
   },

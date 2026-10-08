@@ -41,8 +41,10 @@ export default defineJapaExtension({
   provides tools.
 - `provides`: contributions as lists keyed by contract name: `{ tool: [...], trigger: [...] }`.
 - `durable`: `{ sections, hooks, wraps, tasks }`, Pi Durable parts (the escape hatch, below).
-- `secrets`: the secret names it may read, such as `"bank.apiKey"`.
-- `settings`: a `Type.Object(...)` schema for `settings.extensions.<name>`.
+- `secrets`: the secret names it may read, such as `"bank.apiKey"`, or `{ name, description }` to describe
+  one to the user.
+- `settings`: a `Type.Object(...)` schema for `settings.extensions.<name>`; give its properties
+  `description`s too. Secret and setting descriptions both show in `japa setup`.
 - `setup(ctx)`: called with your `KernelContext` before your tools are installed (below).
 - `status`: optional `() => string | undefined`, a short line shown under the extension in `japa status`.
 
