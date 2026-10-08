@@ -125,8 +125,10 @@ interface Contract<C> {
 resolves with the value the next time a request for `name` is fulfilled, and
 `requestSecret(name, why)`, which raises a secret request (§9.5) and then
 resolves the same way; an extension that can't work without a key waits on
-these. `messaging` is activated with a third, kernel-internal argument (reply
-cursors, the settings menu's changes) that is not part of `KernelContext`.
+these. `setSecret(name, value)` stores a secret the extension generated itself
+(for example a password). `messaging` is activated with a third,
+kernel-internal argument (reply cursors, the settings menu's changes) that is
+not part of `KernelContext`.
 
 ### 4.2 The eight core contracts
 
@@ -316,6 +318,7 @@ defineJapaExtension({
   durable: { sections, hooks, wraps, tasks },   // escape hatch, optional
   secrets: ["gcal.token"],            // secret names it may read
   settings: Type.Object({ ... }),     // TypeBox schema for its settings
+  status: () => string | undefined,  // a line under the extension in japa status
   // skills/ next to index.ts are bundled automatically
 });
 ```
@@ -715,6 +718,7 @@ environment, tools, extensions, and skills must all resolve.
 | `schedule` | trigger, tool, durable | Durable cron and one-shot timers in `japa.schedules`; tools `schedule_add` / `schedule_list` / `schedule_remove` (logged in `japa.changes`); fires via `emit`. |
 | `telegram` | messaging | Telegram over Bot API long polling: text and images in, the `/jobs`, `/status` and `/settings` commands and settings menu. Dormant until the user provides `telegram.botToken`. |
 | `web` | tool | `web_fetch` (no key) and `web_search` (Brave; asks for its key with `secret_request` on first use). |
+| `desktop` | environment, tool, durable | A persistent Docker desktop (Chromium and apps, watched or taken over in noVNC); the `desktop` environment, `computer` and `browser`. Lazy: the first use builds the image and starts the container. See the computer-use spec, `2026-10-08-japa-computer-use-design.md`. |
 
 With these defaults the CoS directly has `web_fetch`, `web_search`, the
 `schedule_*` tools, and built-in `read` (in its read-only environment).
@@ -723,7 +727,8 @@ With these defaults the CoS directly has `web_fetch`, `web_search`, the
 
 Worker profiles: `general` and `builder` (kernel), `coder` (built-in coding
 tools, `local`), `researcher` (`web` tools plus built-in `write` for report
-files; uses the `research` skill).
+files; uses the `research` skill), `operator` (`desktop` extension: `computer`,
+`browser` and the built-in coding tools, in the `desktop` environment).
 
 Agent-facing skills (the self-model, loaded on demand):
 
@@ -764,6 +769,7 @@ extensions/gateway/       surface + TUI client
 extensions/telegram/      messaging
 extensions/schedule/      trigger + tools
 extensions/web/           tools
+extensions/desktop/       environment + tools + Docker image
 workers/                  default worker profiles
 skills/                   default skills
 docs/superpowers/specs/

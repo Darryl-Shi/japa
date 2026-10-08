@@ -95,6 +95,20 @@ reports) come to you there. `/jobs` lists jobs, `/status` shows the model, exten
 saved under `~/.japa/attachments/` and handed to the CoS. When japa needs a secret, it asks in the
 chat: send it as your next message, and the bot deletes the message at once.
 
+## Desktop
+
+japa has its own computer: a Linux desktop with Chromium in a Docker container, which operator jobs use to get
+things done on websites and in programs. It needs Docker, installed and usable by the user running japa. The first
+use builds the image (a few minutes); `japa status` shows the desktop's line under the `desktop` extension.
+
+- **Watch or take over** in noVNC: `ssh -L 6080:localhost:6080 <server>`, then open
+  `http://localhost:6080/vnc.html`; or set `extensions.desktop.bind` to a Tailscale address. The password is in
+  `~/.japa/secrets/desktop.vncPassword`.
+- **Files** are exchanged in `~/.japa/desktop/shared` (`/home/japa/shared` on the desktop).
+- **Settings** (`extensions.desktop`): `cpus` (default `2`), `memory` (`"4g"`), `shm` (`"2g"`) and `bind`
+  (`"127.0.0.1"`). A change recreates the container on the next use and keeps its home (`/home/japa`, with the
+  browser's logins).
+
 ## Where state lives
 
 Everything lives in `~/.japa`, or in `$JAPA_HOME` when set. It is a git repository:
@@ -107,6 +121,7 @@ workers/             worker profiles the CoS installed (git-tracked)
 .staging/            git worktree (branch `staging`) where the CoS builds things before installing them
 secrets/             secrets, one file per secret      (ignored by git)
 attachments/         images received over Telegram     (ignored by git)
+desktop/shared/      files shared with japa's desktop  (ignored by git)
 state.db             conversations, jobs, memory, change log (SQLite; ignored by git)
 japa.sock            the socket `japa chat` and `japa status` connect to
 boots.json, daemon.lock, .cache/, node_modules/   runtime files
@@ -127,6 +142,7 @@ Extensions import only from `japa/sdk` (`src/sdk.ts`); the packaged ones in `ext
 ```sh
 npm test            # vitest
 npm run typecheck   # tsc --noEmit
+JAPA_DOCKER_TESTS=1 npx vitest --run test/desktop-docker.test.ts   # the desktop on Docker (builds its image)
 ```
 
 Set `JAPA_HOME` to a scratch directory to run a throwaway daemon.

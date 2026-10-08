@@ -141,6 +141,7 @@ export function browserTool(desktop: Desktop, connect: () => Promise<Browser>): 
           switch (action) {
             case "navigate":
               await page.goto(args.url!);
+              await page.bringToFront(); // the keyboard, for the computer tool: from a new tab page it stays in the address bar
               return;
             case "back":
               await page.goBack();
