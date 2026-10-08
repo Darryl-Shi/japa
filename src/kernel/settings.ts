@@ -85,6 +85,15 @@ export function validateSettings(settings: Settings, schemas: Record<string, TSc
   return valid;
 }
 
+/**
+ * A validated copy of `value` against `schema` alone, for `extensions.<name>` (unlike `validateSettings`, this
+ * does not require the kernel settings to be complete, e.g. `models.cos` set); throws listing the invalid paths,
+ * each prefixed `extensions.<name>.`.
+ */
+export function validateExtensionSettings(name: string, schema: TSchema, value: JsonObject): JsonObject {
+  return check(schema, value, `extensions.${name}.`);
+}
+
 function check(schema: TSchema, value: object, prefix: string) {
   try {
     const tool = { name: "settings", description: "", parameters: schema };
