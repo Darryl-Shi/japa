@@ -13,6 +13,7 @@ import { statusText } from "../kernel/status.ts";
 import { daemonStatus } from "./daemon.ts";
 import { APP } from "./layout.ts";
 import { serviceCommand } from "./service.ts";
+import { updateCommand } from "./update.ts";
 
 const USAGE = `Usage: japa <command>
 
@@ -27,7 +28,8 @@ Commands:
   safe-mode [--default-adapters]
            Restore the last working setup, and optionally the default storage and secrets adapters
   service <install|uninstall|start|stop|restart|status|logs>
-           Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)`;
+           Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)
+  update   Update japa to origin's latest commit and restart it [--check] [--branch <b>] [--to <sha>] [--no-restart]`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
@@ -87,6 +89,7 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   rollback,
   "safe-mode": safeMode,
   service: (home) => serviceCommand(home, process.argv.slice(3)),
+  update: (home) => updateCommand(home, process.argv.slice(3)),
 };
 if (process.argv[2] === "--version") {
   console.log(versionText());
