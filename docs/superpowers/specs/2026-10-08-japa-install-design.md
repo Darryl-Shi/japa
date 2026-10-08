@@ -32,7 +32,7 @@ data and tells the user about new extensions that need configuring.
 
 - The manifest field `secrets` accepts `string | { name, description }` (§6).
 - Extension settings schemas carry TypeBox `description`s (§6).
-- `telegram` declares a settings schema `{ owner?: string }` (§6).
+- The kernel-added messaging `owner` setting gets a description (§6).
 - The workspace `IGNORED` list gains `setup.json` and `logs/` (§4.4, §7.2).
 - New CLI commands: `setup`, `update`, `service`, `uninstall`, `--version`.
 
@@ -92,7 +92,8 @@ POSIX `sh`, at the repo root, served from
      `SHASUMS256.txt` from `https://nodejs.org/dist/v<ver>/` (ver from
      `.node-version`), verify the tarball's SHA-256 (`sha256sum` or
      `shasum -a 256`), and unpack it into `<dir>/node`.
-6. **Dependencies.** `npm ci --omit=dev` in `<dir>/app` with that Node.
+6. **Dependencies.** `npm ci` in `<dir>/app` with that Node. (Dev dependencies
+   are needed: `japa check` runs japa's own `tsc` and `vitest`.)
 7. **Launcher.** Write `~/.local/bin/japa` (mode 755). If `~/.local/bin` is
    not on PATH, append the right line to `~/.bashrc`, `~/.zshrc` or
    `~/.config/fish/config.fish` (from `$SHELL`) and print "open a new shell
@@ -238,25 +239,29 @@ It works on the checkout containing the running `main.ts`.
    `node.new/` (the same procedure as §3.1 step 5, in TypeScript with `fetch`
    and `node:crypto`), then rename it over `node/`, keeping the old one as
    `node.old/` until step 6 passes. Rewrite the launcher.
-5. **Dependencies.** If `package-lock.json` changed: `npm ci --omit=dev`.
+5. **Dependencies.** If `package-lock.json` changed: `npm ci`.
 6. **Validate.** Run `<node> app/src/cli/main.ts --version`. `--version` is a
    new command that imports the kernel's boot module and prints
    `package.json`'s version and the git sha, which catches syntax and import
    breakage.
    - If step 4, 5 or 6 fails: `git reset --hard <old sha>`, restore
-     `node.old/` and the launcher, `npm ci --omit=dev` if the lockfile had
+     `node.old/` and the launcher, `npm ci` if the lockfile had
      changed, and print "update failed at <step>: <error>; still on <old
      sha>". Exit 1.
-7. **Restart.** Unless `--no-restart`: if the service is installed, restart
+7. **What's new.** §5.2, run by the new code (`<node> <app>/src/cli/main.ts
+   setup --whats-new`; the updating process can't re-import changed modules),
+   before the restart so one restart applies code and configuration.
+8. **Restart.** Unless `--no-restart`: if the service is installed, restart
    it through the service manager and wait up to 30 s for the socket.
    Otherwise, if `daemon.lock` names a live pid, print "restart `japa daemon`
    to apply". A foreground daemon is never killed.
-8. **What's new.** §5.2.
 9. **Report.** `<old short sha> → <new short sha>` and `git log --oneline
    old..new` (first 20 lines).
 
 `~/.japa` (settings, secrets, `state.db`, workspace extensions) is not touched
-except `setup.json`.
+except `setup.json`. If `setup.json` is missing when update starts, the
+pre-update manifests are recorded as offered first, so the first update does
+not present every extension as new.
 
 ### 5.2 What's new
 
@@ -268,8 +273,7 @@ settings in existing extensions.
 - Interactive (a tty): list them, e.g.
   "New: `calendar` — needs `calendar.oauthToken`" and
   "`web` has a new setting `region`", then "Configure now? [Y/n]". Yes runs
-  §4.4 for just those extensions; then restart the service again if anything
-  was saved.
+  §4.4 for just those extensions.
 - Otherwise: print the list and "run `japa setup` to configure".
 - Either way, mark them offered.
 - New extensions with nothing to configure are listed in the report with
@@ -291,11 +295,11 @@ the same validate-and-roll-back steps.
   `declared` check (its only consumer today) uses it.
 - Settings schema properties carry TypeBox `description`s, used as the
   wizard's help text.
-- `telegram`: `secrets: [{ name: "telegram.botToken", description: "Bot token from @BotFather (/newbot)" }]`
-  and `settings: Type.Object({ owner: Type.Optional(Type.String({ description:
-  "Your Telegram user id. Leave blank, message the bot, and it replies with your id." })) })`.
-  The surface already reads `owner` from these settings, so behaviour is
-  unchanged.
+- `telegram`: `secrets: [{ name: "telegram.botToken", description: "Bot token from @BotFather (/newbot)" }]`.
+  The kernel already adds `owner` to every messaging extension's settings
+  schema (`settingsSchema` in `settings-tools.ts`); it gains the description
+  "Your <extension> user id. Leave blank, message the bot, and it replies with
+  your id."
 - `web`: a description for `web.brave.apiKey` ("Brave Search API key, for
   web_search").
 - `desktop`: descriptions for `desktop.vncPassword` and for `cpus`, `memory`,
@@ -390,8 +394,8 @@ Vitest, in `test/`:
   local edits (stashed and reapplied); lockfile changed (runs `npm ci`);
   validation failure (back to the old sha); `--to`; `--check` changes
   nothing; what's-new lists a new extension and a new secret once.
-- **Setup** driven by scripted keystrokes on pi-tui's virtual terminal: a
-  first run writes the expected `settings.json` and secret files; a rerun
+- **Setup** through a `Prompter` interface driven by a scripted fake (the
+  pi-tui prompter is thin and checked manually): a first run writes the expected `settings.json` and secret files; a rerun
   with Enter everywhere changes nothing; an invalid property re-prompts.
 - **install.sh:** `--dir <tmp> --repo <local bare> --non-interactive
   --no-service --skip-setup` produces the layout and a launcher for which
