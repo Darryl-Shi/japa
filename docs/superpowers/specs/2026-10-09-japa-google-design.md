@@ -89,7 +89,8 @@ Ctrl-C aborts the flow (its `signal`), as for provider sign-ins.
 
 ### 3.3 In chat: the `connect` tool
 
-A kernel tool, installed when at least one loaded extension has `authorize`:
+A kernel tool, always installed (the extension set changes at runtime); for an extension without `authorize` it
+replies "<name> has no sign-in.":
 
 ```
 connect({ extension }) — Sign in to an extension that needs the user's account (e.g. "google").

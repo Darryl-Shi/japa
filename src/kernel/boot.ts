@@ -29,6 +29,7 @@ import {
   type Status,
   type StorageAdapter,
 } from "./contracts.ts";
+import { AUTHORIZE_SUFFIX, connectTool } from "./authorize.ts";
 import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
@@ -44,7 +45,7 @@ import { MessagingDoc } from "./messaging/surface.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
-import { addSecretRequest, fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
+import { addSecretRequest, fulfilSecret, removeSecretRequest, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
@@ -270,6 +271,23 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         safety.scheduleGood,
       ),
       rollbackTool(home, reconcile),
+      // Its `<extension>.authorize` requests need no `secrets` declaration.
+      connectTool({
+        extensions: () => rt.extensions,
+        context: kernel,
+        ask: async (name, why) => {
+          const value = provided(name);
+          await root.commit((tx) => addSecretRequest(tx, name, why), ctx);
+          return value;
+        },
+        withdraw: async (name) => {
+          await root.commit((tx) => removeSecretRequest(tx, name), ctx);
+        },
+        forget: (name) => secrets.delete(name),
+        report: async (content, requestId) => {
+          await root.submit({ type: "input", content, requestId }, ctx);
+        },
+      }),
     ];
     const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
     const rt = createRuntime({
@@ -313,7 +331,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await tx.doc(JobsDoc, root.id);
       await tx.doc(MemoryDoc, root.id);
       await tx.doc(ChangesDoc, root.id);
-      await tx.doc(SecretRequestsDoc, root.id);
+      // A chat sign-in doesn't survive a restart: its request goes too.
+      const requests = await tx.doc(SecretRequestsDoc, root.id);
+      requests.pending = requests.pending.filter((r) => !r.name.endsWith(AUTHORIZE_SUFFIX));
     }, ctx);
     const droppedLoops = await upgradeMemory(root);
     if (droppedLoops.length > 0) {

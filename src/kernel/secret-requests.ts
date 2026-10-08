@@ -34,6 +34,15 @@ export async function addSecretRequest(tx: Tx, name: string, why: string): Promi
   return true;
 }
 
+/** Withdraws the pending request for `name`; false when none is pending. */
+export async function removeSecretRequest(tx: Tx, name: string): Promise<boolean> {
+  const doc = await tx.doc(SecretRequestsDoc, ROOT_CONVERSATION_ID);
+  const kept = doc.pending.filter((r) => r.name !== name);
+  if (kept.length === doc.pending.length) return false;
+  doc.pending = kept;
+  return true;
+}
+
 const SECRET_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
