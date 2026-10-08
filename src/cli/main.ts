@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runChat } from "../../extensions/gateway/chat.ts";
-import { connect } from "../../extensions/gateway/client.ts";
 import { socketPath } from "../../extensions/gateway/protocol.ts";
 import { boot } from "../kernel/boot.ts";
 import { check, CHECK_KINDS } from "../kernel/check.ts";
@@ -11,8 +10,9 @@ import { rollBack } from "../kernel/install.ts";
 import { enterSafeMode } from "../kernel/safety.ts";
 import { japaHome } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
+import { daemonStatus } from "./daemon.ts";
 import { APP } from "./layout.ts";
-import type { Status } from "../kernel/contracts.ts";
+import { serviceCommand } from "./service.ts";
 
 const USAGE = `Usage: japa <command>
 
@@ -25,7 +25,9 @@ Commands:
   rollback <skill|worker|extension> <name> [to]
            Roll it back to its last known good version, or to the git ref to
   safe-mode [--default-adapters]
-           Restore the last working setup, and optionally the default storage and secrets adapters`;
+           Restore the last working setup, and optionally the default storage and secrets adapters
+  service <install|uninstall|start|stop|restart|status|logs>
+           Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)`;
 
 async function daemon(home: string): Promise<void> {
   const d = await boot({ home });
@@ -37,13 +39,7 @@ async function daemon(home: string): Promise<void> {
 }
 
 async function status(home: string): Promise<void> {
-  const client = await connect(home);
-  const s = await new Promise<Status>((resolve) => {
-    client.onMessage((m) => m.type === "status" && resolve(m.status));
-    client.send({ type: "status" });
-  });
-  client.close();
-  console.log(statusText(s));
+  console.log(statusText(await daemonStatus(home)));
 }
 
 async function checkCommand(home: string): Promise<void> {
@@ -90,6 +86,7 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   check: checkCommand,
   rollback,
   "safe-mode": safeMode,
+  service: (home) => serviceCommand(home, process.argv.slice(3)),
 };
 if (process.argv[2] === "--version") {
   console.log(versionText());
