@@ -7,7 +7,7 @@ import { findAdapter } from "../kernel/boot.ts";
 import type { SecretsAdapter, SecretsStore } from "../kernel/contracts.ts";
 import { secretsCredentialStore } from "../kernel/credentials.ts";
 import type { JapaExtension } from "../kernel/extension.ts";
-import { discoverExtensions, loadExtensions } from "../kernel/loader.ts";
+import { discoverExtensions, linkSdk, loadExtensions } from "../kernel/loader.ts";
 import { loadSettings } from "../kernel/settings.ts";
 import { ensureWorkspace } from "../kernel/workspace.ts";
 import { APP } from "./layout.ts";
@@ -15,12 +15,14 @@ import { APP } from "./layout.ts";
 export type SetupContext = { home: string; extensions: JapaExtension[]; secrets: SecretsStore; models: Models };
 
 /**
- * Opens `home` for `japa setup`: creates it and the workspace if missing, loads the extension manifests (packaged
- * and workspace, `extensionDirs` default `[<APP>/extensions, <home>/extensions]`), opens the configured secrets
- * adapter, and registers every discovered `provider` contribution.
+ * Opens `home` for `japa setup`: creates it and the workspace if missing, links `japa/sdk` so workspace
+ * extensions can import it, loads the extension manifests (packaged and workspace, `extensionDirs` default
+ * `[<APP>/extensions, <home>/extensions]`), opens the configured secrets adapter, and registers every discovered
+ * `provider` contribution.
  */
 export async function openSetupContext(home: string, extensionDirs?: string[]): Promise<SetupContext> {
   mkdirSync(home, { recursive: true });
+  linkSdk(home, APP);
   ensureWorkspace(home);
 
   const dirs = extensionDirs ?? [join(APP, "extensions"), join(home, "extensions")];

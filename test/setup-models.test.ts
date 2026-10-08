@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import { openSetupContext } from "../src/cli/context.ts";
 import { chooseModels } from "../src/cli/models-step.ts";
 import type { Choice } from "../src/cli/prompt.ts";
-import { REPO_EXTENSIONS, tempHome } from "./helpers.ts";
+import { echo, REPO_EXTENSIONS, tempHome } from "./helpers.ts";
 import { scripted } from "./prompt-helpers.ts";
 
 const readSettings = (home: string) => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
@@ -42,6 +42,7 @@ test("a pasted key is stored trimmed", async () => {
 
   await chooseModels(ctx, p, {});
 
+  p.done();
   expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-1");
 });
 
@@ -59,6 +60,7 @@ test("Enter keeps an existing key", async () => {
 
   await chooseModels(ctx, p, {});
 
+  p.done();
   expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-existing");
 });
 
@@ -74,6 +76,7 @@ test("an env key is noted", async () => {
 
   await chooseModels(ctx, p, { ANTHROPIC_API_KEY: "x" });
 
+  p.done();
   expect(p.notes[0]).toContain("ANTHROPIC_API_KEY is set in this shell");
 });
 
@@ -115,6 +118,7 @@ test("other user settings are kept", async () => {
 
   await chooseModels(ctx, p, {});
 
+  p.done();
   const settings = readSettings(home);
   expect(settings.jobs).toEqual({ maxConcurrent: 2 });
   expect(settings.models.cos).toEqual({ provider: "anthropic", modelId: ctx.models.getModels("anthropic")[0]!.id });
@@ -127,4 +131,14 @@ test("setup creates a missing home", async () => {
 
   expect(existsSync(join(home, ".git"))).toBe(true);
   expect(ctx.extensions.map((e) => e.name)).toContain("providers");
+});
+
+test("a workspace extension importing japa/sdk is loaded", async () => {
+  const home = tempHome();
+  mkdirSync(join(home, "extensions", "echo"), { recursive: true });
+  writeFileSync(join(home, "extensions", "echo", "index.ts"), echo("hi"));
+
+  const ctx = await openSetupContext(home);
+
+  expect(ctx.extensions.map((e) => e.name)).toContain("echo");
 });
