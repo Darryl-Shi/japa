@@ -1,5 +1,6 @@
 import {
   type Component,
+  decodeKittyPrintable,
   Input,
   matchesKey,
   ProcessTerminal,
@@ -49,7 +50,7 @@ const selectTheme: SelectListTheme = {
  * A `SelectList` with its question rendered above it. `SelectList` itself only handles
  * up/down/enter; any other character narrows the choices by prefix, backspace undoes that.
  */
-class FilterableSelectList implements Component {
+export class FilterableSelectList implements Component {
   private readonly question: string;
   private readonly list: SelectList;
   private filter = "";
@@ -79,9 +80,18 @@ class FilterableSelectList implements Component {
       this.list.handleInput(data);
       return;
     }
-    if (matchesKey(data, "backspace")) this.filter = this.filter.slice(0, -1);
-    else if (data.length === 1 && data >= " ") this.filter += data;
-    else return;
+    if (matchesKey(data, "backspace")) {
+      this.filter = this.filter.slice(0, -1);
+    } else {
+      // The Kitty keyboard protocol (active in kitty, WezTerm, Ghostty, foot, etc. -- pi-tui's
+      // ProcessTerminal queries for and enables it on startup) reports every key, including plain
+      // printable characters, as a CSI-u escape sequence (e.g. "\x1b[97u" for "a"), so a bare
+      // `data.length === 1` check silently drops all typed filter characters under it. Decode the
+      // same way pi-tui's own `Input`/`Editor` do before falling back to the plain, non-Kitty case.
+      const printable = decodeKittyPrintable(data) ?? (data.length === 1 && data >= " " ? data : undefined);
+      if (printable === undefined) return;
+      this.filter += printable;
+    }
     this.list.setFilter(this.filter);
   }
 }
