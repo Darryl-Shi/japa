@@ -14,11 +14,12 @@ const WORKER_TEXT =
   "You are working on a job for the chief of staff. Report notable progress with job_progress. " +
   "When finished, call job_complete with a short summary. If you need input, end your turn with one clear question.";
 
-/** Changes the caller's job in one commit. */
+/** Changes the caller's job in one commit; a job already cleared stays gone. */
 async function updateJob(api: ToolExecutionApi, context: Context, change: (job: Job) => void): Promise<void> {
   await api.commit(async (tx) => {
     const { jobId } = await tx.doc(JobDoc, api.conversationId);
-    change((await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[jobId]!);
+    const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[jobId];
+    if (job !== undefined) change(job);
   }, context);
 }
 

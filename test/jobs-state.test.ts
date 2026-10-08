@@ -86,3 +86,9 @@ test("prune deletes finished jobs updated before `before`, never active ones, an
   expect(prune(jobs, Infinity)).toBe(1);
   expect(Object.keys(jobs)).toEqual(["5", "6", "7"]);
 });
+
+test("prune keeps a finished job whose completion is not yet reported", () => {
+  const jobs = jobsOf(job(1, "done", { completed: true }), job(2, "done", { completed: false }));
+  expect(prune(jobs, Infinity)).toBe(1);
+  expect(Object.keys(jobs)).toEqual(["1"]);
+});

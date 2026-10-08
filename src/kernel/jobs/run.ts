@@ -47,10 +47,11 @@ export function jobRun(settings: Settings) {
         // One commit decides the report and records the answer as reported, so a restart does not decide again.
         await runtime.commit(async (tx) => {
           const doc = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
-          const job = doc.jobs[jobId]!;
-          const content = await decide(tx, job, settled);
+          // A job cleared after it was stopped has nothing to report.
+          const job = doc.jobs[jobId];
+          const content = job === undefined ? undefined : await decide(tx, job, settled);
           await start(tx, doc.jobs);
-          if (content === undefined) return { status: "running", checkpoint: { phase: "report" } };
+          if (job === undefined || content === undefined) return { status: "running", checkpoint: { phase: "report" } };
           job.seq++;
           job.updatedAt = Date.now();
           return { status: "running", checkpoint: { phase: "report", report: { seq: job.seq, content } } };

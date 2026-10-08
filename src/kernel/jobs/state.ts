@@ -65,9 +65,12 @@ export function recent(jobs: Job[], now = Date.now()): Job[] {
   return jobs.filter((j) => active(j) || j.updatedAt > now - DAY);
 }
 
-/** Deletes the done, failed and cancelled jobs updated before `before`; returns how many. */
+/**
+ * Deletes the done, failed and cancelled jobs updated before `before`, except one whose completion is not yet reported;
+ * returns how many.
+ */
 export function prune(jobs: Record<string, Job>, before: number): number {
-  const old = Object.values(jobs).filter((j) => !active(j) && j.updatedAt < before);
+  const old = Object.values(jobs).filter((j) => !active(j) && !j.completed && j.updatedAt < before);
   for (const job of old) delete jobs[job.id];
   return old.length;
 }
