@@ -11,6 +11,7 @@ import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Job } from "./jobs/state.ts";
 import { startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
+import { schemaProblems } from "./tool-schema.ts";
 
 /** Releases what an `activate()` set up. */
 export type Dispose = () => void | Promise<void>;
@@ -231,7 +232,8 @@ const CORE_CONTRACTS: Contract[] = [
     phase: "runtime",
     cardinality: "many",
     validate: (c) =>
-      requireFields(c, { name: "string", description: "string", parameters: "object", execute: "function" }),
+      requireFields(c, { name: "string", description: "string", parameters: "object", execute: "function" }) ??
+      (schemaProblems((c as { parameters: unknown }).parameters).join("; ") || undefined),
   },
   {
     name: "environment",

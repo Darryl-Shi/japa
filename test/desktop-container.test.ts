@@ -102,7 +102,9 @@ test("without Docker every call says so, and so does the status line", async () 
   const { fake, desktop } = setup();
   fake.reply(() => true, new Error("the docker command was not found"));
   await expect(desktop.ready(false)).rejects.toThrow("The desktop needs Docker: the docker command was not found");
-  expect(desktop.status()).toBe("The desktop needs Docker: the docker command was not found");
+  expect(desktop.status()).toBe(
+    "The desktop needs Docker: the docker command was not found (install it: https://docs.docker.com/engine/install/)",
+  );
 
   const denied = setup();
   denied.fake.reply((a) => a[0] === "container", {
@@ -112,6 +114,7 @@ test("without Docker every call says so, and so does the status line", async () 
   await expect(denied.desktop.ready(false)).rejects.toThrow(
     "The desktop needs Docker: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
   );
+  expect(denied.desktop.status()).toMatch(/sudo usermod -aG docker \$USER, then restart japa from a new login\)$/);
 });
 
 test("a failed build is reported once, then built again", async () => {

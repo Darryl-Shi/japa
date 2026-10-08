@@ -123,7 +123,10 @@ async function run(bin: string, args: string[], cwd: string): Promise<string | u
 async function smokeLoad(name: string, dir: string, extension: JapaExtension): Promise<string[]> {
   const kit = fauxKit();
   const home = mkdtempSync(join(tmpdir(), "japa-check-"));
-  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage: { adapter: "memory" }, models: { cos: kit.model } }));
+  // A throwaway daemon mustn't bring up the real desktop: it shares the container's name, and would recreate it
+  // against this temp home.
+  const settings = { storage: { adapter: "memory" }, models: { cos: kit.model }, extensions: { desktop: { autostart: false } } };
+  writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
   const problems: string[] = [];
   try {
     const daemon = await boot({ home, extensionDirs: [packaged, join(dir, "extensions")], extensions: [kit.extension, extension] });

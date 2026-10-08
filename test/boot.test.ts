@@ -133,7 +133,12 @@ test("a CoS model whose provider has no key is reported, naming the env var and 
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [extension] });
   const file = join(home, "secrets", `${kit.model.provider}.apiKey`);
   expect(daemon.status().errors).toEqual([
-    { name: "models", error: `No API key for ${kit.model.provider}. Set JAPA_TEST_API_KEY or write it to ${file}, then restart.` },
+    {
+      name: "models",
+      error:
+        `No credentials for ${kit.model.provider}. Run japa setup to sign in or add an API key, ` +
+        `or set JAPA_TEST_API_KEY or write the key to ${file}, then restart.`,
+    },
   ]);
   await daemon.close();
 });

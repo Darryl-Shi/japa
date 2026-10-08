@@ -1,6 +1,6 @@
 // Opens what `japa setup` needs without a running daemon: manifests, the configured secrets store and a `Models`
 // with every discovered provider registered (see docs/superpowers/specs/2026-10-08-japa-install-design.md §4.1).
-import { createModels, type Models, type Provider } from "@earendil-works/pi-ai";
+import { createModels, type CredentialStore, type Models, type Provider } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { findAdapter } from "../kernel/boot.ts";
@@ -12,7 +12,14 @@ import { loadSettings } from "../kernel/settings.ts";
 import { ensureWorkspace } from "../kernel/workspace.ts";
 import { APP } from "./layout.ts";
 
-export type SetupContext = { home: string; extensions: JapaExtension[]; secrets: SecretsStore; models: Models };
+export type SetupContext = {
+  home: string;
+  extensions: JapaExtension[];
+  secrets: SecretsStore;
+  /** Model provider logins (API keys and OAuth), kept in `secrets` the way the daemon reads them. */
+  credentials: CredentialStore;
+  models: Models;
+};
 
 /**
  * Opens `home` for `japa setup`: creates it and the workspace if missing, links `japa/sdk` so workspace
@@ -34,8 +41,9 @@ export async function openSetupContext(home: string, extensionDirs?: string[]): 
     { home },
   );
 
-  const models = createModels({ credentials: secretsCredentialStore(secrets) });
+  const credentials = secretsCredentialStore(secrets);
+  const models = createModels({ credentials });
   for (const e of extensions) for (const p of (e.provides?.provider ?? []) as Provider[]) models.setProvider(p);
 
-  return { home, extensions, secrets, models };
+  return { home, extensions, secrets, credentials, models };
 }

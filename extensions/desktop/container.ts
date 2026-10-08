@@ -25,7 +25,13 @@ export const BUILDING = "Building the desktop's image (first use or an upgrade; 
 export const UPGRADED =
   "The desktop was recreated with a new image or settings: software installed with apt is gone; everything under /home/japa is kept.";
 const NOT_STARTED = "The desktop did not start within 60 s.";
-const needsDocker = (reason: string) => `The desktop needs Docker: ${reason}`;
+const needsDocker = (reason: string) =>
+  `The desktop needs Docker: ${reason}` +
+  (/permission denied/i.test(reason)
+    ? " (let japa's user use Docker: sudo usermod -aG docker $USER, then restart japa from a new login)"
+    : /not found/i.test(reason)
+      ? " (install it: https://docs.docker.com/engine/install/)"
+      : "");
 const couldNotStart = (line: string) => `The desktop could not start: ${line}`;
 const buildFailed = (line: string) => `The desktop image failed to build: ${line}`;
 

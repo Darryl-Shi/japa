@@ -50,6 +50,29 @@ test("a default install loads the desktop without touching Docker", async () => 
   await daemon.close();
 });
 
+test("the desktop builds and starts in the background when japa starts, unless autostart is off", async () => {
+  const saved = process.env.JAPA_DESKTOP_AUTOSTART;
+  delete process.env.JAPA_DESKTOP_AUTOSTART;
+  try {
+    const fake = fakeDocker();
+    fake.state.image = false;
+    const { daemon } = await bootTest({}, [desktopExtension(testConfig(fake.docker))]);
+    await waitFor(() => fake.state.container?.running === true);
+    expect(fake.calls.map((c) => c[0])).toEqual(expect.arrayContaining(["build", "run"]));
+    await daemon.close();
+
+    const off = fakeDocker();
+    const { daemon: d2 } = await bootTest({ extensions: { desktop: { autostart: false } } }, [
+      desktopExtension(testConfig(off.docker)),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(off.calls).toEqual([]);
+    await d2.close();
+  } finally {
+    process.env.JAPA_DESKTOP_AUTOSTART = saved;
+  }
+});
+
 test("an operator job acts in the container and holds the desktop", async () => {
   const fake = fakeDocker();
   const { daemon, faux } = await bootTest({}, [desktopExtension(testConfig(fake.docker))]);

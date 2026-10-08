@@ -6,14 +6,14 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type JapaExtension, secretDescription, secretNames } from "../kernel/extension.ts";
+import { askedSecretNames, type JapaExtension, secretDescription } from "../kernel/extension.ts";
 import { message } from "../kernel/loader.ts";
 import { settingsSchema } from "../kernel/settings-tools.ts";
 import { readUserSettings, saveSettings, setPath, validateExtensionSettings } from "../kernel/settings.ts";
 import type { SetupContext } from "./context.ts";
 import type { Choice, Prompter } from "./prompt.ts";
 
-type ObjectSchema = { properties?: Record<string, TSchema> };
+type ObjectSchema = { properties?: Record<string, TSchema>; required?: string[] };
 type PropSchema = {
   type?: string;
   description?: string;
@@ -25,29 +25,39 @@ type PropSchema = {
 const propertiesOf = (schema: TSchema | undefined): Record<string, TSchema> =>
   (schema as ObjectSchema | undefined)?.properties ?? {};
 
-/** The extensions with something to configure: a declared secret, or a settings schema -- `settingsSchema`, so a
- * messaging extension with no schema of its own still counts, for its added `owner` property. */
-export function configurable(extensions: JapaExtension[]): JapaExtension[] {
-  return extensions.filter((e) => secretNames(e).length > 0 || settingsSchema(e) !== undefined);
+/**
+ * The settings properties `japa setup` asks for: the required ones without a default. Everything optional has a
+ * default (or works unset), so it needs no setup; the user can still change it by asking japa.
+ */
+function askedProperties(e: JapaExtension): Record<string, TSchema> {
+  const schema = settingsSchema(e) as ObjectSchema | undefined;
+  const required = new Set(schema?.required ?? []);
+  const properties = propertiesOf(schema);
+  return Object.fromEntries(
+    Object.entries(properties).filter(([prop, s]) => required.has(prop) && (s as PropSchema).default === undefined),
+  );
 }
 
-/** Whether `e`'s header should show "(configured)" (design spec §4.4): every declared secret is set and, if it
- * has a settings schema, `extensions.<name>` has been saved (to anything, not necessarily every property). */
+/** The extensions that need the user for something: a secret they don't generate, or a required setting. An
+ * extension whose settings all have defaults -- like the desktop -- works without any setup. */
+export function configurable(extensions: JapaExtension[]): JapaExtension[] {
+  return extensions.filter((e) => askedSecretNames(e).length > 0 || Object.keys(askedProperties(e)).length > 0);
+}
+
+/** Whether `e` is set up: every secret setup asks for is set and every required setting is saved. */
 export async function isConfigured(ctx: SetupContext, e: JapaExtension): Promise<boolean> {
-  for (const name of secretNames(e)) {
+  for (const name of askedSecretNames(e)) {
     if ((await ctx.secrets.get(name)) === undefined) return false;
   }
-  const schema = settingsSchema(e);
-  if (schema === undefined) return true;
-  const extensions = readUserSettings(ctx.home).extensions as Record<string, unknown> | undefined;
-  return extensions?.[e.name] !== undefined;
+  const extensions = readUserSettings(ctx.home).extensions as Record<string, Record<string, unknown>> | undefined;
+  return Object.keys(askedProperties(e)).every((prop) => extensions?.[e.name]?.[prop] !== undefined);
 }
 
-/** "secret:<name>" for each declared secret, then "setting:<prop>" for each top-level settings property: what
- * `markOffered` records and `unseen` compares against. */
+/** "secret:<name>" for each secret setup asks for, then "setting:<prop>" for each setting it asks for: what
+ * `markOffered` records and `unseen` compares against, so `japa update` only announces things needing the user. */
 export function offerKeys(e: JapaExtension): string[] {
-  const props = Object.keys(propertiesOf(settingsSchema(e)));
-  return [...secretNames(e).map((name) => `secret:${name}`), ...props.map((prop) => `setting:${prop}`)];
+  const props = Object.keys(askedProperties(e));
+  return [...askedSecretNames(e).map((name) => `secret:${name}`), ...props.map((prop) => `setting:${prop}`)];
 }
 
 type SetupFile = { offered: Record<string, string[]> };
@@ -128,7 +138,8 @@ async function promptProperty(
   raw: TSchema,
 ): Promise<boolean> {
   const schema = raw as PropSchema;
-  const help = schema.description;
+  // The description says what it is in words; the property name is for settings.json.
+  const question = schema.description ?? prop;
   const before = next[prop];
   const initial = before ?? (schema.default as JsonValue | undefined);
   const prefill = initial === undefined ? undefined : String(initial);
@@ -136,14 +147,15 @@ async function promptProperty(
   const values = enumValues(schema);
   if (values !== undefined) {
     const choices: Choice<JsonValue>[] = values.map((value) => ({ label: String(value), value: value as JsonValue }));
-    const value = await p.select(prop, choices, initial);
+    const value = await p.select(question, choices, initial);
     next[prop] = value;
     return value !== before;
   }
+  const help = before === undefined ? "Enter skips" : "clear it to unset";
 
   switch (schema.type) {
     case "string": {
-      const text = await p.text(prop, { initial: prefill, help });
+      const text = await p.text(question, { initial: prefill, help });
       if (text === "") {
         if (before === undefined) return false;
         delete next[prop];
@@ -155,7 +167,7 @@ async function promptProperty(
     case "number":
     case "integer":
       for (;;) {
-        const text = await p.text(prop, { initial: prefill, help });
+        const text = await p.text(question, { initial: prefill, help });
         if (text === "") {
           if (before === undefined) return false;
           delete next[prop];
@@ -163,19 +175,19 @@ async function promptProperty(
         }
         const n = Number(text);
         if (Number.isNaN(n)) {
-          p.note(`${prop} must be a number`);
+          p.warn(`${question}: enter a number`);
           continue;
         }
         next[prop] = n;
         return n !== before;
       }
     case "boolean": {
-      const value = await p.select(prop, YES_NO, initial as boolean | undefined);
+      const value = await p.select(question, YES_NO, initial as boolean | undefined);
       next[prop] = value;
       return value !== before;
     }
     default:
-      p.note(`edit extensions.${extensionName}.${prop} in settings.json or ask the CoS`);
+      p.note(`To change "${question}", ask japa, or edit extensions.${extensionName}.${prop} in settings.json.`);
       return false;
   }
 }
@@ -189,8 +201,8 @@ function failingProperty(error: string, extensionName: string): string {
 }
 
 /**
- * Prompts for `e`'s secrets and settings (design spec §4.4): each secret as masked input with its description as
- * help (blank leaves it unset), then each settings property by type. The resulting `extensions.<name>` is
+ * Prompts for what `e` needs from the user: each secret it doesn't generate, as masked input under its
+ * description (blank leaves it as is), then each required setting by type. The resulting `extensions.<name>` is
  * validated; on failure the wizard shows the error and re-prompts the failing property. If that property can't
  * be prompted for (an object, array, or other non-primitive type), the wizard notes the edit-by-hand hint
  * instead and returns without saving -- it never re-validates the same value without having awaited a new
@@ -199,8 +211,11 @@ function failingProperty(error: string, extensionName: string): string {
 export async function configureExtension(ctx: SetupContext, p: Prompter, e: JapaExtension): Promise<boolean> {
   let saved = false;
 
-  for (const name of secretNames(e)) {
-    const value = await p.secret(name, secretDescription(e, name));
+  for (const name of askedSecretNames(e)) {
+    const stored = (await ctx.secrets.get(name)) !== undefined;
+    const value = await p.secret(secretDescription(e, name) ?? name, {
+      help: stored ? "Enter keeps the current one" : "Enter skips",
+    });
     if (value === "") continue;
     await ctx.secrets.set(name, value);
     saved = true;
@@ -210,13 +225,15 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
   if (schema === undefined) return saved;
 
   const properties = propertiesOf(schema);
+  const asked = askedProperties(e);
+  if (Object.keys(asked).length === 0) return saved;
   const user = readUserSettings(ctx.home);
   const extensions = (user.extensions as Record<string, JsonObject> | undefined) ?? {};
   const next: JsonObject = { ...(extensions[e.name] ?? {}) };
 
   let changed = false;
-  for (const prop of Object.keys(properties)) {
-    if (await promptProperty(p, e.name, next, prop, properties[prop]!)) changed = true;
+  for (const prop of Object.keys(asked)) {
+    if (await promptProperty(p, e.name, next, prop, asked[prop]!)) changed = true;
   }
 
   let valid: JsonObject;
@@ -226,7 +243,7 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
       break;
     } catch (error) {
       const text = message(error);
-      p.note(text);
+      p.warn(text);
       const prop = failingProperty(text, e.name);
       const propSchema = properties[prop]!;
       if (!promptable(propSchema)) {
@@ -247,17 +264,24 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
 }
 
 /**
- * The extensions step (design spec §4.4): for each of `only` (default every configurable extension), in name
- * order, shows its header and asks whether to configure it. Afterwards records every extension as offered (§5.2),
- * whether or not the user configured it. Returns whether anything was saved.
+ * The integrations step: offers every configurable extension (default) or just `only`, in name order, as one
+ * multi-select -- nothing preselected, so Enter skips them all -- and configures each one picked. Afterwards
+ * records every extension as offered (design spec §5.2), whether or not the user configured it. Returns whether
+ * anything was saved.
  */
 export async function configureStep(ctx: SetupContext, p: Prompter, only?: JapaExtension[]): Promise<boolean> {
+  const extensions = (only ?? configurable(ctx.extensions)).toSorted((a, b) => a.name.localeCompare(b.name));
   let saved = false;
 
-  for (const e of (only ?? configurable(ctx.extensions)).toSorted((a, b) => a.name.localeCompare(b.name))) {
-    const configured = await isConfigured(ctx, e);
-    p.note(`${e.name}: ${e.summary}${configured ? " (configured)" : ""}`);
-    if (await p.confirm(`Configure ${e.name}?`, false)) {
+  if (extensions.length > 0) {
+    const choices: Choice<JapaExtension>[] = [];
+    for (const e of extensions) {
+      const configured = await isConfigured(ctx, e);
+      choices.push({ label: e.name, value: e, hint: `${e.summary}${configured ? " (set up)" : ""}` });
+    }
+    const chosen = await p.multiselect("Set up any integrations now? You can also do it later, or ask japa", choices, []);
+    for (const e of chosen) {
+      p.note(`${e.name}: ${e.summary}`);
       if (await configureExtension(ctx, p, e)) saved = true;
     }
   }

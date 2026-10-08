@@ -1,112 +1,215 @@
+import { fauxProvider, type MutableModels, type OAuthCredential, type ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { openSetupContext } from "../src/cli/context.ts";
+import { openSetupContext, type SetupContext } from "../src/cli/context.ts";
 import { chooseModels } from "../src/cli/models-step.ts";
-import type { Choice } from "../src/cli/prompt.ts";
+import { Cancelled, type Choice } from "../src/cli/prompt.ts";
 import { echo, REPO_EXTENSIONS, tempHome } from "./helpers.ts";
 import { ENTER, scripted } from "./prompt-helpers.ts";
 
 const readSettings = (home: string) => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
 const keyFile = (home: string, provider: string) => join(home, "secrets", `${provider}.apiKey`);
+const credentialFile = (home: string, provider: string) => join(home, "secrets", `${provider}.credential`);
 const first = (choices: Choice<unknown>[]) => choices[0]!.value;
+const pick = (label: string) => (choices: Choice<unknown>[]) => {
+  const choice = choices.find((c) => c.label.startsWith(label));
+  if (choice === undefined) throw new Error(`no "${label}" among ${choices.map((c) => c.label).join(", ")}`);
+  return choice.value;
+};
+const noBrowser = { openUrl: () => {} };
 
-test("first run writes models.cos and the key", async () => {
+function storeKey(home: string, provider: string, key: string) {
+  mkdirSync(join(home, "secrets"), { recursive: true });
+  writeFileSync(keyFile(home, provider), key);
+}
+
+test("first run: provider, an API key through pi-ai's login, model; saves models.cos and the key", async () => {
   const home = tempHome();
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const firstModel = ctx.models.getModels("anthropic")[0]!.id;
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", "sk-1"],
-    ["Use the CoS model", true],
+    ["Which AI provider should japa use?", "anthropic"],
+    ["How should japa connect to Anthropic?", pick("Enter Anthropic API key")],
+    ["Anthropic API key", "  sk-1\n"],
+    ["Which model should japa use?", first],
+    ["for background jobs and memory upkeep too?", true],
   ]);
 
-  const saved = await chooseModels(ctx, p, {});
+  const saved = await chooseModels(ctx, p, { env: {}, ...noBrowser });
 
   expect(saved).toBe(true);
   p.done();
   expect(readSettings(home).models).toEqual({ cos: { provider: "anthropic", modelId: firstModel } });
-  expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-1");
+  expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-1"); // trimmed
 });
 
-test("a pasted key is stored trimmed", async () => {
-  const home = tempHome();
-  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+test("providers are listed by name, the common ones first, with sign-in shown where it's offered", async () => {
+  const ctx = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  let offered: Choice<unknown>[] = [];
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", "  sk-1\n"],
-    ["Use the CoS model", true],
+    ["Which AI provider", (choices: Choice<unknown>[]) => ((offered = choices), "cancel")],
   ]);
 
-  await chooseModels(ctx, p, {});
+  await expect(chooseModels(ctx, p, { env: {}, ...noBrowser })).rejects.toThrow();
 
-  p.done();
-  expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-1");
+  expect(offered.slice(0, 2).map((c) => c.label)).toEqual(["Anthropic", "OpenAI"]);
+  expect(offered[0]!.hint).toBe("sign in or API key");
 });
 
-test("Enter keeps an existing key", async () => {
+test("an existing key is kept on Enter", async () => {
   const home = tempHome();
-  mkdirSync(join(home, "secrets"), { recursive: true });
-  writeFileSync(keyFile(home, "anthropic"), "sk-existing");
+  storeKey(home, "anthropic", "sk-existing");
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", ""],
-    ["Use the CoS model", true],
+    ["Which AI provider", "anthropic"],
+    ["How should japa connect", ENTER],
+    ["Which model", first],
+    ["too?", true],
   ]);
 
-  await chooseModels(ctx, p, {});
+  await chooseModels(ctx, p, { env: {}, ...noBrowser });
 
   p.done();
   expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-existing");
 });
 
-test("an env key is noted", async () => {
+test("a key in the shell's environment can be saved for the background service", async () => {
   const home = tempHome();
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", "sk-1"],
-    ["Use the CoS model", true],
+    ["Which AI provider", "anthropic"],
+    ["How should japa connect", pick("Use ANTHROPIC_API_KEY from this shell")],
+    ["Which model", first],
+    ["too?", true],
   ]);
 
-  await chooseModels(ctx, p, { ANTHROPIC_API_KEY: "x" });
+  await chooseModels(ctx, p, { env: { ANTHROPIC_API_KEY: " sk-env " }, ...noBrowser });
 
   p.done();
-  expect(p.notes[0]).toContain("ANTHROPIC_API_KEY is set in this shell");
+  expect(readFileSync(keyFile(home, "anthropic"), "utf8")).toBe("sk-env");
 });
 
-test("a worker on the same provider asks for no second key", async () => {
+/** A setup context with a `sub` provider whose only login is OAuth, running `login`. */
+async function oauthContext(
+  home: string,
+  login: (interaction: ProviderAuthInteraction) => Promise<OAuthCredential>,
+): Promise<SetupContext> {
+  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const faux = fauxProvider({ provider: "sub", models: [{ id: "sub-large", name: "Sub Large" }] });
+  (ctx.models as MutableModels).setProvider({
+    ...faux.provider,
+    name: "Sub",
+    auth: {
+      oauth: {
+        name: "Sub (subscription)",
+        isSubscription: true,
+        login,
+        refresh: async (c) => c,
+        toAuth: async (c) => ({ apiKey: c.access }),
+      },
+    },
+  });
+  return ctx;
+}
+
+test("signing in runs the provider's OAuth flow: the link is shown and opened, the pasted code completes it", async () => {
+  const home = tempHome();
+  const ctx = await oauthContext(home, async (interaction) => {
+    interaction.notify({ type: "auth_url", url: "https://sub.example/authorize?x=1", instructions: "Sign in to Sub." });
+    const code = await interaction.prompt({ type: "manual_code", message: "Paste the code" });
+    interaction.notify({ type: "progress", message: "Exchanging code" });
+    return { type: "oauth", access: `access-for-${code}`, refresh: "r", expires: Date.now() + 3_600_000 };
+  });
+  const opened: string[] = [];
+  const p = scripted([
+    ["Which AI provider", "sub"],
+    ["How should japa connect to Sub?", pick("Sign in with Sub (subscription)")],
+    ["Paste the code", "abc"],
+    ["Which model", "sub-large"],
+    ["too?", true],
+  ]);
+
+  await chooseModels(ctx, p, { env: {}, openUrl: (url) => opened.push(url) });
+
+  p.done();
+  expect(opened).toEqual(["https://sub.example/authorize?x=1"]);
+  expect(p.notes).toEqual(
+    expect.arrayContaining(["Sign in to Sub.", "https://sub.example/authorize?x=1", "Connected to Sub."]),
+  );
+  expect(JSON.parse(readFileSync(credentialFile(home, "sub"), "utf8"))).toMatchObject({
+    type: "oauth",
+    access: "access-for-abc",
+  });
+  expect((await ctx.models.getAuth("sub"))?.auth.apiKey).toBe("access-for-abc");
+  expect(readSettings(home).models.cos).toEqual({ provider: "sub", modelId: "sub-large" });
+});
+
+test("a failed sign-in says why and asks again; Skip leaves japa unconnected", async () => {
+  const home = tempHome();
+  const ctx = await oauthContext(home, async () => {
+    throw new Error("token exchange failed", { cause: new Error("invalid_grant") });
+  });
+  const p = scripted([
+    ["Which AI provider", "sub"],
+    ["How should japa connect", pick("Sign in")],
+    ["How should japa connect", pick("Skip for now")],
+    ["Which model", "sub-large"],
+    ["too?", true],
+  ]);
+
+  await chooseModels(ctx, p, { env: {}, ...noBrowser });
+
+  p.done();
+  expect(p.notes).toContain("Couldn't connect to Sub: token exchange failed: invalid_grant");
+  expect(existsSync(credentialFile(home, "sub"))).toBe(false);
+});
+
+test("quitting in the middle of a sign-in stops the flow and quits setup", async () => {
+  let aborted = false;
+  const ctx = await oauthContext(tempHome(), async (interaction) => {
+    interaction.signal.addEventListener("abort", () => (aborted = true));
+    await interaction.prompt({ type: "manual_code", message: "Paste the code" });
+    throw new Error("unreachable");
+  });
+  const p = scripted([
+    ["Which AI provider", "sub"],
+    ["How should japa connect", pick("Sign in")],
+    ["Paste the code", "cancel"],
+  ]);
+
+  await expect(chooseModels(ctx, p, { env: {}, ...noBrowser })).rejects.toBeInstanceOf(Cancelled);
+  expect(aborted).toBe(true);
+  expect(existsSync(join(ctx.home, "settings.json"))).toBe(false);
+});
+
+test("jobs and memory on the same provider don't ask to connect again", async () => {
   const home = tempHome();
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const firstModel = ctx.models.getModels("anthropic")[0]!.id;
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", "sk-1"],
-    ["Use the CoS model", false],
-    ["Worker provider", "anthropic"],
-    ["Worker model", first],
-    ["Consolidation provider", "anthropic"],
-    ["Consolidation model", first],
+    ["Which AI provider should japa use?", "anthropic"],
+    ["How should japa connect", pick("Enter Anthropic API key")],
+    ["Anthropic API key", "sk-1"],
+    ["Which model should japa use?", first],
+    ["too?", false],
+    ["Which provider for background jobs?", "anthropic"],
+    ["Which model for background jobs?", first],
+    ["Which provider for memory upkeep?", "anthropic"],
+    ["Which model for memory upkeep?", first],
   ]);
 
-  await chooseModels(ctx, p, {});
+  await chooseModels(ctx, p, { env: {}, ...noBrowser });
 
-  p.done(); // no leftover "API key" step: a second and third prompt would have failed to match
+  p.done();
   expect(readSettings(home).models).toEqual({
     cos: { provider: "anthropic", modelId: firstModel },
     worker: { provider: "anthropic", modelId: firstModel },
     consolidation: { provider: "anthropic", modelId: firstModel },
   });
-  expect(existsSync(keyFile(home, "anthropic"))).toBe(true);
 });
 
-test("a rerun with Enter everywhere keeps custom worker and consolidation models", async () => {
+test("a rerun with Enter everywhere keeps custom job and memory models", async () => {
   const probe = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
   const [a, b] = probe.models.getModels("anthropic");
   const models = {
@@ -115,80 +218,67 @@ test("a rerun with Enter everywhere keeps custom worker and consolidation models
     consolidation: { provider: "anthropic", modelId: b!.id },
   };
   const home = tempHome({ models });
+  storeKey(home, "anthropic", "sk-1");
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const p = scripted([
-    ["CoS provider", ENTER],
-    ["CoS model", ENTER],
-    ["API key", ENTER],
-    ["Use the CoS model", ENTER],
-    ["Worker provider", ENTER],
-    ["Worker model", ENTER],
-    ["Consolidation provider", ENTER],
-    ["Consolidation model", ENTER],
+    ["Which AI provider should japa use?", ENTER],
+    ["How should japa connect", ENTER],
+    ["Which model should japa use?", ENTER],
+    ["too?", ENTER],
+    ["Which provider for background jobs?", ENTER],
+    ["Which model for background jobs?", ENTER],
+    ["Which provider for memory upkeep?", ENTER],
+    ["Which model for memory upkeep?", ENTER],
   ]);
 
-  await chooseModels(ctx, p, {});
+  await chooseModels(ctx, p, { env: {}, ...noBrowser });
 
   p.done();
   expect(readSettings(home).models).toEqual(models);
 });
 
-test("a rerun with only a custom worker model keeps consolidation on the CoS model on Enter", async () => {
+test("a rerun with only a custom job model keeps memory on the CoS model on Enter", async () => {
   const probe = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
   const [, b, c] = probe.models.getModels("anthropic");
   const cos = { provider: "anthropic", modelId: b!.id };
   const worker = { provider: "anthropic", modelId: c!.id };
   const home = tempHome({ models: { cos, worker } });
+  storeKey(home, "anthropic", "sk-1");
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const p = scripted([
-    ["CoS provider", ENTER],
-    ["CoS model", ENTER],
-    ["API key", ENTER],
-    ["Use the CoS model", ENTER],
-    ["Worker provider", ENTER],
-    ["Worker model", ENTER],
-    ["Consolidation provider", ENTER],
-    ["Consolidation model", ENTER],
+    ["Which AI provider should japa use?", ENTER],
+    ["How should japa connect", ENTER],
+    ["Which model should japa use?", ENTER],
+    ["too?", ENTER],
+    ["Which provider for background jobs?", ENTER],
+    ["Which model for background jobs?", ENTER],
+    ["Which provider for memory upkeep?", ENTER],
+    ["Which model for memory upkeep?", ENTER],
   ]);
 
-  await chooseModels(ctx, p, {});
+  await chooseModels(ctx, p, { env: {}, ...noBrowser });
 
   p.done();
   expect(readSettings(home).models).toEqual({ cos, worker, consolidation: cos });
 });
 
-test("Enter on a first run uses the CoS model for every role", async () => {
-  const home = tempHome();
-  const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
-  const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", "sk-1"],
-    ["Use the CoS model", ENTER],
-  ]);
-
-  await chooseModels(ctx, p, {});
-
-  p.done();
-  expect(Object.keys(readSettings(home).models)).toEqual(["cos"]);
-});
-
-test("other user settings are kept", async () => {
+test("Enter on a first run uses the CoS model for every role, and keeps other settings", async () => {
   const home = tempHome({ jobs: { maxConcurrent: 2 } });
+  storeKey(home, "anthropic", "sk-1");
   const ctx = await openSetupContext(home, [REPO_EXTENSIONS]);
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first],
-    ["API key", "sk-1"],
-    ["Use the CoS model", true],
+    ["Which AI provider", "anthropic"],
+    ["How should japa connect", ENTER],
+    ["Which model", first],
+    ["too?", ENTER],
   ]);
 
-  await chooseModels(ctx, p, {});
+  await chooseModels(ctx, p, { env: {}, ...noBrowser });
 
   p.done();
   const settings = readSettings(home);
+  expect(Object.keys(settings.models)).toEqual(["cos"]);
   expect(settings.jobs).toEqual({ maxConcurrent: 2 });
-  expect(settings.models.cos).toEqual({ provider: "anthropic", modelId: ctx.models.getModels("anthropic")[0]!.id });
 });
 
 test("setup creates a missing home", async () => {

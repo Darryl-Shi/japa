@@ -42,9 +42,11 @@ export default defineJapaExtension({
 - `provides`: contributions as lists keyed by contract name: `{ tool: [...], trigger: [...] }`.
 - `durable`: `{ sections, hooks, wraps, tasks }`, Pi Durable parts (the escape hatch, below).
 - `secrets`: the secret names it may read, such as `"bank.apiKey"`, or `{ name, description }` to describe
-  one to the user.
+  one to the user. Add `generated: true` when the extension makes its own value if none is set (a
+  password, say): `japa setup` then never asks for it.
 - `settings`: a `Type.Object(...)` schema for `settings.extensions.<name>`; give its properties
-  `description`s too. Secret and setting descriptions both show in `japa setup`.
+  `description`s too. Make every setting optional with a sensible default where you can: `japa setup`
+  asks only for secrets and required settings, so an extension with defaults works with no setup.
 - `setup(ctx)`: called with your `KernelContext` before your tools are installed (below).
 - `status`: optional `() => string | undefined`, a short line shown under the extension in `japa status`.
 
@@ -52,7 +54,9 @@ export default defineJapaExtension({
 
 - **tool**: a `defineTool({ name, description, parameters, execute })`. `parameters` is a `Type`
   schema; `execute(args, api, context)` returns `{ content: [{ type: "text", text }] }`. Keep the
-  description under 1024 characters; prefix tool names with the extension name.
+  description under 1024 characters; prefix tool names with the extension name. Don't use
+  `Type.Tuple` (or `prefixItems`/`additionalItems`): some model providers reject the whole request
+  when any tool has a tuple, so the extension won't load. Use `Type.Array(item, { minItems, maxItems })`.
 - **trigger**: `{ name, start(ctx) }` returning a dispose function. `ctx` is `{ home, emit }`;
   `emit({ key, text })` posts `[<extension>] <text>` to the chief of staff. The same `key` is delivered
   once, so make it unique per event.

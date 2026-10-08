@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, type Credential } from "@earendil-works/pi-ai";
+import { createModels, type Credential, fauxProvider } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,17 +23,65 @@ function memorySecrets(initial: Record<string, string> = {}): SecretsStore {
 }
 
 test("the credential store reads, lists, writes and deletes API keys as <provider>.apiKey secrets", async () => {
-  const secrets = memorySecrets({ "faux.apiKey": "sk-1", "other.token": "t" });
+  const secrets = memorySecrets({ "faux.apiKey": "sk-1\n", "other.token": "t" });
   const store = secretsCredentialStore(secrets);
   expect(await store.read("faux")).toEqual({ type: "api_key", key: "sk-1" });
   expect(await store.read("nope")).toBeUndefined();
   expect(await store.list()).toEqual([{ providerId: "faux", type: "api_key" }]);
   await store.modify("x", async () => ({ type: "api_key", key: "sk-2" }));
   expect(await secrets.get("x.apiKey")).toBe("sk-2");
-  const oauth = { type: "oauth", refresh: "r", access: "a", expires: 0 } as Credential;
-  await expect(store.modify("x", async () => oauth)).rejects.toThrow("Only API keys are supported");
   await store.delete("x");
   expect(await secrets.get("x.apiKey")).toBeUndefined();
+});
+
+test("an OAuth login, or a key with provider settings, is kept as <provider>.credential and replaces the key", async () => {
+  const secrets = memorySecrets({ "x.apiKey": "sk-old" });
+  const store = secretsCredentialStore(secrets);
+  const oauth = { type: "oauth", refresh: "r", access: "a", expires: 1 } as Credential;
+  await store.modify("x", async () => oauth);
+  expect(await secrets.get("x.apiKey")).toBeUndefined();
+  expect(JSON.parse((await secrets.get("x.credential"))!)).toEqual(oauth);
+  expect(await store.read("x")).toEqual(oauth);
+  expect(await store.list()).toEqual([{ providerId: "x", type: "oauth" }]);
+
+  const withEnv = { type: "api_key", key: "k", env: { ACCOUNT: "acc" } } as Credential;
+  await store.modify("cf", async () => withEnv);
+  expect(await store.read("cf")).toEqual(withEnv);
+
+  await store.modify("x", async () => ({ type: "api_key", key: "sk-new" })); // back to a plain key
+  expect(await secrets.get("x.credential")).toBeUndefined();
+  expect(await store.read("x")).toEqual({ type: "api_key", key: "sk-new" });
+  await store.delete("cf");
+  expect(await secrets.list()).toEqual(["x.apiKey"]);
+});
+
+test("models refresh an expired OAuth login once, even when asked concurrently, and keep the new tokens", async () => {
+  const secrets = memorySecrets();
+  let refreshes = 0;
+  const provider = {
+    ...fauxProvider().provider,
+    id: "sub",
+    auth: {
+      oauth: {
+        name: "Sub",
+        login: async () => ({ type: "oauth" as const, refresh: "r1", access: "a1", expires: 0 }),
+        refresh: async (c: { refresh: string }) => {
+          refreshes++;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { type: "oauth" as const, refresh: `${c.refresh}+`, access: `a${refreshes + 1}`, expires: Date.now() + 3_600_000 };
+        },
+        toAuth: async (c: { access: string }) => ({ apiKey: c.access }),
+      },
+    },
+  };
+  const models = createModels({ credentials: secretsCredentialStore(secrets) });
+  models.setProvider(provider);
+  await models.login("sub", "oauth", { prompt: async () => "", notify: () => {} });
+  const [first, second] = await Promise.all([models.getAuth("sub"), models.getAuth("sub")]);
+  expect(refreshes).toBe(1);
+  expect(first?.auth.apiKey).toBe("a2");
+  expect(second?.auth.apiKey).toBe("a2");
+  expect(JSON.parse((await secrets.get("sub.credential"))!)).toMatchObject({ refresh: "r1+", access: "a2" });
 });
 
 test("models resolve a provider's API key from the secrets store", async () => {

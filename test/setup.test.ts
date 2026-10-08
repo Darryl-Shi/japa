@@ -88,18 +88,26 @@ const first =
     return value;
   };
 
-/** Runs a first run that writes `models.cos` and an anthropic key, declining telegram/web/desktop, with the
- * service skipped (`--no-service`); used to seed a home whose rerun menu doesn't need to ask about models. */
+/** Picks the offered choice whose label starts with `label`. */
+const pick = (label: string) => (choices: Choice<unknown>[]) => choices.find((c) => c.label.startsWith(label))!.value;
+
+/** Picks the offered choices labelled `labels` in a multi-select. */
+const picks = (...labels: string[]) => (choices: Choice<unknown>[]) =>
+  choices.filter((c) => labels.includes(c.label)).map((c) => c.value);
+
+/** The models step's questions on a first run: anthropic, a pasted key `sk-1`, its first model, shared by all. */
+const MODELS_FIRST_RUN = (capture?: (value: string) => void): [string, unknown][] => [
+  ["Which AI provider", "anthropic"],
+  ["How should japa connect", pick("Enter Anthropic API key")],
+  ["Anthropic API key", "sk-1"],
+  ["Which model", first(capture)],
+  ["too?", true],
+];
+
+/** Runs a first run that writes `models.cos` and an anthropic key, setting up no integrations, with the service
+ * skipped (`--no-service`); used to seed a home whose rerun menu doesn't need to ask about models. */
 async function seedModels(home: string): Promise<void> {
-  const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first()],
-    ["API key", "sk-1"],
-    ["Use the CoS model", true],
-    ["Configure desktop?", false],
-    ["Configure telegram?", false],
-    ["Configure web?", false],
-  ]);
+  const p = scripted([...MODELS_FIRST_RUN(), ["Set up any integrations now?", []]]);
   await runSetup(home, p, makeOptions());
   p.done();
 }
@@ -112,15 +120,9 @@ test("first run writes models, key and extension choices, and reports no service
   const { exec } = fakeExec(() => ({ code: 1 })); // systemctl --user show-environment fails: no service manager
 
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first((m) => (chosenModel = m))],
-    ["API key", "sk-1"],
-    ["Use the CoS model", true],
-    ["Configure desktop?", false],
-    ["Configure fixture?", true],
-    ["fixture.token", "tok-xyz"],
-    ["Configure telegram?", false],
-    ["Configure web?", false],
+    ...MODELS_FIRST_RUN((m) => (chosenModel = m)),
+    ["Set up any integrations now?", picks("fixture")],
+    ["Fixture token", "tok-xyz"],
   ]);
 
   const code = await runSetup(
@@ -145,19 +147,13 @@ test("first run writes models, key and extension choices, and reports no service
   expect(joined).toContain("start japa with: japa daemon");
 });
 
-test("first run with an available service logs the timeout message when it doesn't answer", async () => {
+test("first run installs and starts the service without asking, and says so when it doesn't answer", async () => {
   const home = tempHome();
   const logs: string[] = [];
 
   const p = scripted([
-    ["CoS provider", "anthropic"],
-    ["CoS model", first()],
-    ["API key", "sk-1"],
-    ["Use the CoS model", true],
-    ["Configure desktop?", false],
-    ["Configure telegram?", false],
-    ["Configure web?", false],
-    ["Run japa in the background?", true],
+    ...MODELS_FIRST_RUN(),
+    ["Set up any integrations now?", []],
   ]);
 
   const code = await runSetup(
@@ -177,7 +173,7 @@ test("a rerun with Done changes nothing", async () => {
   const beforeSettings = readFileSync(join(home, "settings.json"), "utf8");
   const beforeKey = readFileSync(secretFile(home, "anthropic.apiKey"), "utf8");
 
-  const p = scripted([["japa setup", "Done"]]);
+  const p = scripted([["What would you like to change?", "Done"]]);
   const code = await runSetup(home, p, makeOptions());
 
   expect(code).toBe(0);
@@ -186,7 +182,7 @@ test("a rerun with Done changes nothing", async () => {
   expect(readFileSync(secretFile(home, "anthropic.apiKey"), "utf8")).toBe(beforeKey);
 });
 
-test("a rerun that saved asks to restart an active service, and calls systemctl --user restart japa", async () => {
+test("a rerun that saved restarts an active service: systemctl --user restart japa", async () => {
   const home = tempHome();
   await seedModels(home);
 
@@ -196,13 +192,12 @@ test("a rerun that saved asks to restart an active service, and calls systemctl 
   writeFileSync(unitPath(env), "placeholder");
 
   const p = scripted([
-    ["japa setup", "Models"],
-    ["CoS provider", "anthropic"],
-    ["CoS model", first()],
-    ["API key", ""],
-    ["Use the CoS model", true],
-    ["japa setup", "Done"],
-    ["Restart japa to apply?", true],
+    ["What would you like to change?", "Models"],
+    ["Which AI provider", "anthropic"],
+    ["How should japa connect", pick("Keep the current API key")],
+    ["Which model", first()],
+    ["too?", true],
+    ["What would you like to change?", "Done"],
   ]);
 
   const code = await runSetup(home, p, makeOptions({ serviceEnv: env }));
@@ -246,7 +241,7 @@ test("non-interactive without env vars returns 1 and logs what is missing", asyn
   expect(readSetupJson(home).offered).toHaveProperty("telegram");
 });
 
-test("--whats-new lists a new fixture extension, configures it on yes, and stays quiet the second time", async () => {
+test("--whats-new lists a new fixture extension, configures it when picked, and stays quiet the second time", async () => {
   const home = tempHome();
   const baseline = await openSetupContext(home, [REPO_EXTENSIONS]);
   markOffered(home, baseline.extensions); // the packaged extensions already offered: only fixture is new
@@ -254,9 +249,8 @@ test("--whats-new lists a new fixture extension, configures it on yes, and stays
 
   const logs: string[] = [];
   const p = scripted([
-    ["Configure now?", true],
-    ["Configure fixture?", true],
-    ["fixture.token", "tok-1"],
+    ["Set up any integrations now?", picks("fixture")],
+    ["Fixture token", "tok-1"],
   ]);
 
   const code = await runSetup(
@@ -306,7 +300,7 @@ test("--whats-new doesn't offer to configure an extension with nothing to config
   markOffered(home, (await openSetupContext(home, [REPO_EXTENSIONS])).extensions);
   writePlain(home);
 
-  const p = scripted([]); // no "Configure now?"
+  const p = scripted([]); // no "Set up any integrations now?"
   const code = await runSetup(home, p, makeOptions({ whatsNew: true, extensionDirs: [REPO_EXTENSIONS, join(home, "extensions")] }));
 
   expect(code).toBe(0);
@@ -318,7 +312,7 @@ test("--whats-new works when models.cos is unset and does not prompt for models"
   writeFixture(home);
 
   const p = scripted([
-    ["Configure now?", false], // if this ever became "CoS provider" instead, the test would fail on the mismatch
+    ["Set up any integrations now?", []], // had this been a model question, the test would fail on the mismatch
   ]);
 
   const code = await runSetup(
@@ -328,7 +322,7 @@ test("--whats-new works when models.cos is unset and does not prompt for models"
   );
 
   expect(code).toBe(0);
-  p.done(); // the script has no "CoS provider"/"CoS model" steps: a model prompt would have failed to match
+  p.done(); // the script has no model steps: a model prompt would have failed to match
   expect(readSetupJson(home).offered).toHaveProperty("fixture");
   expect(existsSync(join(home, "settings.json"))).toBe(false); // declined, and nothing else writes it
 });

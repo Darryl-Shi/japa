@@ -59,6 +59,7 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
       {
         name: "desktop.vncPassword",
         description: "Password for watching the desktop in noVNC (generated on first use if unset)",
+        generated: true,
       },
     ],
     settings: Type.Object({
@@ -66,10 +67,19 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
       memory: Type.Optional(Type.String({ description: 'Memory limit, e.g. "4g" (default "4g")' })),
       shm: Type.Optional(Type.String({ description: 'Shared memory, e.g. "2g" (default "2g")' })),
       bind: Type.Optional(Type.String({ description: 'Address noVNC listens on (default "127.0.0.1")' })),
+      autostart: Type.Optional(
+        Type.Boolean({ description: "Build and start the desktop when japa starts, rather than on first use (default true)" }),
+      ),
     }),
     status: () => (kernel ? desktop.status() : undefined),
     setup: (ctx) => {
       kernel = ctx;
+      // Ready before it's first needed: the image builds (minutes, once) and the container starts in the
+      // background. A failure -- no Docker, say -- shows in `japa status`, and the next use tries again.
+      // JAPA_DESKTOP_AUTOSTART=0 turns it off for a process (the test suite).
+      if (ctx.settings().autostart !== false && process.env.JAPA_DESKTOP_AUTOSTART !== "0") {
+        desktop.ready(true).catch(() => {});
+      }
       return async () => {
         desktop.dispose();
         live?.close();

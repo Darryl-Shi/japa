@@ -1,5 +1,5 @@
 import { Container, Editor, Input, matchesKey, ProcessTerminal, Text, TuiMainScreen } from "@earendil-works/pi-tui";
-import { MaskedInput } from "../../src/cli/prompt.ts";
+import { MaskedInput } from "./masked-input.ts";
 import { board, type Job, type SecretRequest } from "../../src/sdk.ts";
 import { connect } from "./client.ts";
 import { applyEvents, type Line, type Transcript } from "./transcript.ts";

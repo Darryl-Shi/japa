@@ -423,14 +423,17 @@ export async function envKeyName(models: Models, provider: string): Promise<stri
 }
 
 /**
- * The error for a `provider` without credentials, naming its API key env var (the first `*_API_KEY` its auth
+ * The error for a `provider` without credentials: run `japa setup`, or use its API key env var (the first `*_API_KEY` its auth
  * looks up) and its file in `secretsDir`; undefined when it has credentials.
  */
 export async function missingKey(models: Models, provider: string, secretsDir: string): Promise<string | undefined> {
   if ((await models.checkAuth(provider)) !== undefined) return undefined;
   const envVar = await envKeyName(models, provider);
   const file = join(secretsDir, `${provider}.apiKey`);
-  return `No API key for ${provider}. ${envVar === undefined ? "Write it" : `Set ${envVar} or write it`} to ${file}, then restart.`;
+  return (
+    `No credentials for ${provider}. Run japa setup to sign in or add an API key` +
+    `${envVar === undefined ? ", or write the key" : `, or set ${envVar} or write the key`} to ${file}, then restart.`
+  );
 }
 
 function resolveCosModel(settings: Settings, models: Models, home: string): ModelRef {

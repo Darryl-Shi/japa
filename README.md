@@ -8,7 +8,8 @@ when they break.
 ## Requirements
 
 - git, tar, and curl or wget (the installer uses them; Node.js 24 is installed for you if your system doesn't have it)
-- An API key for a model provider supported by pi-ai (Anthropic, OpenAI, Google, OpenRouter, ...)
+- An account with a model provider supported by pi-ai (Anthropic, OpenAI, Google, OpenRouter, ...): a subscription
+  you can sign in with (Claude Pro/Max, ChatGPT, GitHub Copilot, ...) or an API key
 
 ## Install
 
@@ -70,26 +71,32 @@ japa setup
 
 The first run walks through, in order:
 
-1. **Model.** Pick a provider and model for the CoS (the main agent). Workers and memory consolidation default to
-   the same model; say no to pick different ones for them.
-2. **API key.** Pasted into a masked prompt and stored, trimmed, in `~/.japa/secrets/<provider>.apiKey` (mode 600)
-   — or set it yourself, as an environment variable (e.g. `ANTHROPIC_API_KEY`) in the service's environment, or by
-   writing that file directly (just the key, no trailing newline). If the environment variable is already set in
-   your shell, japa still offers to store it: a background service doesn't see your shell's environment.
-3. **Extensions.** Anything that declares secrets or settings — Telegram, web search, the desktop, extensions the
-   CoS built for you — can be configured here, or later by asking the CoS.
-4. **Service.** Optionally installs and starts `japa service` (see Running), so japa keeps running after you log
-   out. Setup then waits for japa to answer and prints `japa status`; otherwise it tells you to run `japa daemon`.
+1. **Provider.** Pick the AI provider japa runs on; type to search the list.
+2. **Connect.** Sign in with your subscription where the provider offers it (Claude Pro/Max, ChatGPT, GitHub
+   Copilot, ...), or enter an API key — the same login flows pi uses. Sign-in shows a link (and opens it when this
+   machine has a browser); over SSH, open it on your own machine and paste the final redirect URL or code back
+   into the prompt. If the provider's key is already set in your shell (e.g. `ANTHROPIC_API_KEY`), setup offers
+   to save it, since a background service doesn't see your shell's environment. Credentials are stored in
+   `~/.japa/secrets` (mode 600): an API key as `<provider>.apiKey` (just the key — you can also write this file
+   yourself), a sign-in as `<provider>.credential`, which japa refreshes as needed.
+3. **Model.** Pick the model; background jobs and memory upkeep use it too unless you say no and pick others.
+4. **Integrations.** Only those that need something from you — a Telegram bot token, a Brave Search key — are
+   listed: pick any to set up now (none by default), or do it later, or ask the CoS. Anything with a default isn't
+   asked about at all (the desktop just works, see Desktop); change it later by asking the CoS.
+5. **Background service.** Installs and starts `japa service` (see Running), so japa keeps running after you log
+   out — no question asked; pass `--no-service` to skip it. Setup then waits for japa to answer and prints
+   `japa status`; without a service manager it tells you to run `japa daemon`.
 
-A rerun shows a menu (Models, Extensions, Service, Done) instead, with every current value preselected; Enter keeps
-it. When you're done, if the Models or Extensions step saved anything and the service is running, it offers to
-restart it.
+A rerun shows a menu (Model and sign-in, Integrations, Background service, Done) instead, with every current
+value preselected; Enter keeps it. When you're done, if anything was saved and the service is running, it restarts
+it.
 
-The wizard covers models, keys, extensions and the service. Other settings — `jobs.maxConcurrent`,
+The wizard covers models, sign-in, integrations and the service. Other settings — `jobs.maxConcurrent`,
 `context.toolResultTokens`, `memory.*`, `safety.*`, `storage.adapter`, `secrets.adapter` — aren't in it; edit
 `~/.japa/settings.json` directly, or ask the CoS.
 
-Esc or Ctrl-C cancels the current step without saving; steps already completed stay saved.
+You can switch to a browser or another window at any point; setup waits. Ctrl-C asks whether to quit (Enter keeps
+going, a second Ctrl-C quits); steps already completed stay saved.
 
 ### Non-interactive setup
 
@@ -120,7 +127,7 @@ If the background service is running (the default after `japa setup`), japa is a
 japa chat
 ```
 
-Otherwise — you skipped or declined the service step, used `--no-service`, or are on Linux without a systemd
+Otherwise — you used `--no-service`, or are on Linux without a systemd
 user session (common on WSL) — run the daemon yourself:
 
 ```sh
@@ -225,15 +232,17 @@ chat: send it as your next message, and the bot deletes the message at once.
 ## Desktop
 
 japa has its own computer: a Linux desktop with Chromium in a Docker container, which operator jobs use to get
-things done on websites and in programs. It needs Docker, installed and usable by the user running japa. The first
-use builds the image (a few minutes); `japa status` shows the desktop's line under the `desktop` extension.
+things done on websites and in programs. There's nothing to set up: when japa starts, it builds the desktop's image
+(a few minutes, the first time) and starts it in the background, so it's ready when first needed. It needs Docker,
+installed and usable by the user running japa (on Linux: `sudo usermod -aG docker $USER`, then log in again);
+`japa status` shows the desktop's line under the `desktop` extension, including what's wrong if it can't start.
 
 - **Watch or take over** in noVNC: `ssh -L 6080:localhost:6080 <server>`, then open
   `http://localhost:6080/vnc.html`; or set `extensions.desktop.bind` to a Tailscale address. The password is in
   `~/.japa/secrets/desktop.vncPassword`.
 - **Files** are exchanged in `~/.japa/desktop/shared` (`/home/japa/shared` on the desktop).
-- **Settings** (`extensions.desktop`): `cpus` (default `2`), `memory` (`"4g"`), `shm` (`"2g"`) and `bind`
-  (`"127.0.0.1"`). A change recreates the container on the next use and keeps its home (`/home/japa`, with the
+- **Settings** (`extensions.desktop`), all optional: `cpus` (default `2`), `memory` (`"4g"`), `shm` (`"2g"`),
+  `bind` (`"127.0.0.1"`) and `autostart` (`true`; `false` builds and starts it on first use instead). A change recreates the container on the next use and keeps its home (`/home/japa`, with the
   browser's logins; those from the last ~30 s before a stop, recreate or reboot may be lost, as Chromium commits
   cookies every ~30 s).
 

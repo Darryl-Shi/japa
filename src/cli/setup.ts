@@ -1,7 +1,7 @@
 // `japa setup`: the interactive wizard (first run, the rerun menu, and `--whats-new` after an update) and its
 // `--non-interactive`, env-var-driven mode (design spec §4, §5.2).
 import type { ModelRef } from "@earendil-works/pi-durable";
-import { secretNames } from "../kernel/extension.ts";
+import { askedSecretNames } from "../kernel/extension.ts";
 import { checkModel, loadSettings, readUserSettings, saveSettings, setPath } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
 import { configurable, configureStep, markOffered, unseen, type Unseen } from "./configure.ts";
@@ -9,7 +9,7 @@ import { openSetupContext, type SetupContext } from "./context.ts";
 import { waitForDaemon } from "./daemon.ts";
 import { APP, layoutOf } from "./layout.ts";
 import { chooseModels } from "./models-step.ts";
-import { Cancelled, type Prompter, tuiPrompter } from "./prompt.ts";
+import { Cancelled, clackPrompter, type Prompter } from "./prompt.ts";
 import {
   installAction,
   installService,
@@ -34,28 +34,31 @@ export type SetupOptions = {
   log: (s: string) => void;
   /** How long the summary waits for the daemon's socket (design spec §4.2 step 6: 30s); shortened in tests. */
   waitMs?: number;
+  /** Opens a sign-in link in a browser; default: the desktop's opener, when there is one. */
+  openUrl?: (url: string) => void;
 };
 
-/** Offers to install the service when available; confirms first if `p` is given. Returns whether it started. */
-async function serviceStep(o: SetupOptions, p?: Prompter): Promise<boolean> {
+/** Installs and starts the background service, unless `--no-service` or there is no service manager. Returns
+ * whether it started. japa is meant to keep running, so there's nothing to ask. */
+async function serviceStep(o: SetupOptions): Promise<boolean> {
   if (!o.service) return false;
   const reason = await unavailable(o.serviceEnv);
   if (reason !== undefined) {
     o.log(reason);
     return false;
   }
-  if (p !== undefined && !(await p.confirm("Run japa in the background?", true))) return false;
   await installService(o.serviceEnv, o.log);
   return true;
 }
 
 /** First run's final step (design spec §4.2 step 6): what the service start achieved, or how to start it by hand. */
-async function summary(ctx: SetupContext, o: SetupOptions, started: boolean): Promise<void> {
+async function summary(ctx: SetupContext, o: SetupOptions, started: boolean, p?: Prompter): Promise<void> {
   if (!started) {
     o.log("start japa with: japa daemon");
     return;
   }
-  const status = await waitForDaemon(ctx.home, o.waitMs);
+  const waiting = waitForDaemon(ctx.home, o.waitMs);
+  const status = await (p ? p.wait("Starting japa", waiting) : waiting);
   if (status === undefined) {
     o.log("japa didn't answer within 30 s; see: japa service logs");
     return;
@@ -65,20 +68,20 @@ async function summary(ctx: SetupContext, o: SetupOptions, started: boolean): Pr
 
 /** `models.cos` unset (design spec §4.2): CoS model and key, extensions, the service, then the summary. */
 async function firstRun(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<void> {
-  await chooseModels(ctx, p, o.env);
+  await chooseModels(ctx, p, { env: o.env, openUrl: o.openUrl });
   await configureStep(ctx, p);
-  const started = await serviceStep(o, p);
-  await summary(ctx, o, started);
+  const started = await serviceStep(o);
+  await summary(ctx, o, started, p);
 }
 
 /** The rerun's "Service" menu item (design spec §4.3): the same actions as `japa service <...>`. */
 async function serviceMenu(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<void> {
-  const action = await p.select<"install" | "start" | "stop" | "uninstall" | "status">("Service", [
-    { label: "install", value: "install" },
-    { label: "start", value: "start" },
-    { label: "stop", value: "stop" },
-    { label: "uninstall", value: "uninstall" },
-    { label: "status", value: "status" },
+  const action = await p.select<"install" | "start" | "stop" | "uninstall" | "status">("Background service", [
+    { label: "Install", value: "install", hint: "run japa in the background and start it when you log in" },
+    { label: "Start", value: "start" },
+    { label: "Stop", value: "stop" },
+    { label: "Uninstall", value: "uninstall" },
+    { label: "Status", value: "status" },
   ]);
 
   switch (action) {
@@ -99,15 +102,15 @@ async function serviceMenu(ctx: SetupContext, p: Prompter, o: SetupOptions): Pro
 async function rerun(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<void> {
   let saved = false;
   for (;;) {
-    const choice = await p.select<"Models" | "Extensions" | "Service" | "Done">("japa setup", [
-      { label: "Models", value: "Models" },
-      { label: "Extensions", value: "Extensions" },
-      { label: "Service", value: "Service" },
+    const choice = await p.select<"Models" | "Extensions" | "Service" | "Done">("What would you like to change?", [
+      { label: "Model and sign-in", value: "Models", hint: "the AI provider and model japa runs on" },
+      { label: "Integrations", value: "Extensions", hint: "Telegram, web search, the desktop, ..." },
+      { label: "Background service", value: "Service" },
       { label: "Done", value: "Done" },
     ]);
     if (choice === "Done") break;
     if (choice === "Models") {
-      if (await chooseModels(ctx, p, o.env)) saved = true;
+      if (await chooseModels(ctx, p, { env: o.env, openUrl: o.openUrl })) saved = true;
     } else if (choice === "Extensions") {
       if (await configureStep(ctx, p)) saved = true;
     } else {
@@ -116,7 +119,8 @@ async function rerun(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<v
   }
 
   if (saved && (await serviceState(o.serviceEnv)) === "active") {
-    if (await p.confirm("Restart japa to apply?", true)) await restartService(o.serviceEnv);
+    o.log("Restarting japa to apply the changes.");
+    await restartService(o.serviceEnv);
   }
 }
 
@@ -126,7 +130,7 @@ function unseenLines(items: Unseen[]): string[] {
   const lines: string[] = [];
   for (const { extension, keys, isNew } of items) {
     if (isNew) {
-      const secrets = secretNames(extension);
+      const secrets = askedSecretNames(extension);
       lines.push(
         secrets.length > 0
           ? `New: ${extension.name} — needs ${secrets.join(", ")}`
@@ -156,7 +160,7 @@ async function runWhatsNew(ctx: SetupContext, p: Prompter | undefined, o: SetupO
   const toConfigure = configurable(extensions); // a new extension with nothing to configure is news, nothing more
   if (toConfigure.length > 0) {
     if (o.interactive && p !== undefined) {
-      if (await p.confirm("Configure now?", true)) await configureStep(ctx, p, toConfigure);
+      await configureStep(ctx, p, toConfigure); // picking none skips
     } else {
       o.log("run `japa setup` to configure");
     }
@@ -206,23 +210,25 @@ export async function runSetup(home: string, p: Prompter | undefined, o: SetupOp
 /** The `japa setup` CLI entry point: parses flags, drives `runSetup` with a real terminal prompter when
  * interactive, and turns a cancelled prompt into the documented message and exit code. */
 export async function setupCommand(home: string, args: string[]): Promise<void> {
+  const interactive = !args.includes("--non-interactive") && process.stdin.isTTY === true;
+  const prompter = interactive ? clackPrompter() : undefined;
   const o: SetupOptions = {
-    interactive: !args.includes("--non-interactive") && process.stdin.isTTY === true,
+    interactive,
     service: !args.includes("--no-service"),
     whatsNew: args.includes("--whats-new"),
     env: process.env,
     serviceEnv: serviceEnv(layoutOf(APP)),
-    log: (s) => console.log(s),
+    log: prompter ? (s) => prompter.note(s) : (s) => console.log(s),
   };
 
-  const prompter = o.interactive ? tuiPrompter() : undefined;
+  // `--whats-new` runs inside `japa update`, often with nothing to say: no frame around it.
+  if (!o.whatsNew) prompter?.intro("japa setup");
   try {
     process.exitCode = await runSetup(home, prompter, o);
+    if (!o.whatsNew) prompter?.close("All set. Chat with japa: japa chat");
   } catch (error) {
     if (!(error instanceof Cancelled)) throw error;
-    console.log("Cancelled; finished steps are saved.");
+    prompter?.close("Setup stopped. Steps you finished are saved; run japa setup to continue.");
     process.exitCode = 130;
-  } finally {
-    prompter?.close();
   }
 }

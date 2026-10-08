@@ -12,7 +12,7 @@ import { japaHome } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
 import { daemonStatus } from "./daemon.ts";
 import { APP, layoutOf } from "./layout.ts";
-import { tuiPrompter } from "./prompt.ts";
+import { Cancelled, clackPrompter } from "./prompt.ts";
 import { serviceCommand, serviceEnv } from "./service.ts";
 import { setupCommand } from "./setup.ts";
 import { uninstall } from "./uninstall.ts";
@@ -80,11 +80,11 @@ async function uninstallCommand(home: string): Promise<void> {
   await uninstall(layout, home, {
     purge: process.argv.includes("--purge"),
     confirm: async () => {
-      const prompter = tuiPrompter();
       try {
-        return await prompter.text(`Type "delete" to permanently remove ${home}`);
-      } finally {
-        prompter.close();
+        return await clackPrompter().text(`Type "delete" to permanently remove ${home}`);
+      } catch (error) {
+        if (error instanceof Cancelled) return "";
+        throw error;
       }
     },
     serviceEnv: serviceEnv(layout),
