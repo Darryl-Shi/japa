@@ -10,7 +10,7 @@ import { askedSecretNames, type AuthorizeContext, type JapaExtension, secretDesc
 import { message } from "../kernel/loader.ts";
 import { settingsSchema } from "../kernel/settings-tools.ts";
 import { readUserSettings, saveSettings, setPath, validateExtensionSettings } from "../kernel/settings.ts";
-import { interactionFor, openInBrowser } from "./auth-interaction.ts";
+import { interactionFor, openInBrowser, quittable } from "./auth-interaction.ts";
 import type { SetupContext } from "./context.ts";
 import { Cancelled, type Choice, type Prompter } from "./prompt.ts";
 
@@ -240,27 +240,12 @@ async function signIn(
   if (!yes) return false;
 
   for (;;) {
-    const abort = new AbortController();
-    let quit = false;
-    const onQuit = (error: unknown): never => {
-      if (error instanceof Cancelled) {
-        quit = true;
-        abort.abort(error);
-      }
-      throw error;
-    };
-    const asking: Prompter = {
-      ...p,
-      select: (...args) => p.select(...args).catch(onQuit),
-      text: (...args) => p.text(...args).catch(onQuit),
-      secret: (...args) => p.secret(...args).catch(onQuit),
-    };
-
+    const { asking, signal, quit } = quittable(p);
     try {
-      p.note(await authorize.run(actx, interactionFor(asking, openUrl, abort.signal)));
+      p.note(await authorize.run(actx, interactionFor(asking, openUrl, signal)));
       return true;
     } catch (error) {
-      if (quit) throw new Cancelled();
+      if (quit()) throw new Cancelled();
       p.warn(`Couldn't sign in: ${message(error)}`);
     }
     if (!(await p.confirm("Try signing in again?", true))) return false;

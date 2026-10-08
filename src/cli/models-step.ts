@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { envKeyName } from "../kernel/boot.ts";
 import { message } from "../kernel/loader.ts";
 import { checkModel, loadSettings, readUserSettings, saveSettings, setPath } from "../kernel/settings.ts";
-import { interactionFor, openInBrowser } from "./auth-interaction.ts";
+import { interactionFor, openInBrowser, quittable } from "./auth-interaction.ts";
 import type { SetupContext } from "./context.ts";
 import { Cancelled, type Choice, type Prompter } from "./prompt.ts";
 
@@ -71,29 +71,15 @@ async function login(
   openUrl: (url: string) => void,
 ): Promise<boolean> {
   const name = ctx.models.getProvider(provider)!.name;
-  const abort = new AbortController();
-  let quit = false;
   // Quitting during a sign-in also stops the flow (and its local callback server).
-  const asking: Prompter = {
-    ...p,
-    select: (...args) => p.select(...args).catch(onQuit),
-    text: (...args) => p.text(...args).catch(onQuit),
-    secret: (...args) => p.secret(...args).catch(onQuit),
-  };
-  function onQuit(error: unknown): never {
-    if (error instanceof Cancelled) {
-      quit = true;
-      abort.abort(error);
-    }
-    throw error;
-  }
+  const { asking, signal, quit } = quittable(p);
 
   try {
-    await ctx.models.login(provider, type, interactionFor(asking, openUrl, abort.signal), {
+    await ctx.models.login(provider, type, interactionFor(asking, openUrl, signal), {
       getDeviceId: () => deviceId(ctx.home),
     });
   } catch (error) {
-    if (quit) throw new Cancelled();
+    if (quit()) throw new Cancelled();
     p.warn(`Couldn't connect to ${name}: ${describe(error)}`);
     return false;
   }

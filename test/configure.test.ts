@@ -261,7 +261,7 @@ test("configuring an extension with authorize signs in after its secrets", async
   const opened: string[] = [];
   const p = scripted([
     ["Client id", "id-1"],
-    ["Sign in now?", true],
+    ["Sign in now?", ENTER],
     ["Paste the address", "code-1"],
   ]);
 
@@ -342,6 +342,7 @@ test("quitting at a sign-in prompt stops the flow and the wizard", async () => {
   await expect(configureExtension(ctx, p, signin, { openUrl: () => {} })).rejects.toBeInstanceOf(Cancelled);
 
   expect(state.io?.signal?.aborted).toBe(true);
+  expect(p.notes.filter((n) => n.startsWith("Couldn't sign in"))).toEqual([]);
 });
 
 test("an extension with authorize is configurable, and set up only once signed in", async () => {

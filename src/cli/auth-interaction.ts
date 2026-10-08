@@ -2,7 +2,7 @@
 // links shown and opened in the browser, prompts asked in the terminal.
 import type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
 import { spawn } from "node:child_process";
-import type { Prompter } from "./prompt.ts";
+import { Cancelled, type Prompter } from "./prompt.ts";
 
 /** Opens `url` with the desktop's opener; does nothing over SSH or without a desktop. */
 export function openInBrowser(url: string): void {
@@ -19,6 +19,27 @@ export function openInBrowser(url: string): void {
   } catch {
     // No opener: the link is on screen.
   }
+}
+
+/**
+ * One sign-in attempt's prompts: `asking` is `p`, except that quitting (`Cancelled`) at one of its questions also
+ * aborts `signal` -- stopping the flow and its local callback server -- before rethrowing. `quit()` tells whether
+ * that happened, so the caller can rethrow `Cancelled` rather than report the flow's own abort error. Make one per
+ * attempt: once aborted, a signal stays aborted.
+ */
+export function quittable(p: Prompter): { asking: Prompter; signal: AbortSignal; quit: () => boolean } {
+  const abort = new AbortController();
+  const onQuit = (error: unknown): never => {
+    if (error instanceof Cancelled) abort.abort(error);
+    throw error;
+  };
+  const asking: Prompter = {
+    ...p,
+    select: (...args) => p.select(...args).catch(onQuit),
+    text: (...args) => p.text(...args).catch(onQuit),
+    secret: (...args) => p.secret(...args).catch(onQuit),
+  };
+  return { asking, signal: abort.signal, quit: () => abort.signal.aborted };
 }
 
 /** pi-ai's login prompts and notices, through `p`. */
