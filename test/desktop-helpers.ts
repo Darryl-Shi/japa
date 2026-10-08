@@ -1,6 +1,8 @@
-import type { JsonObject } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { JsonObject, ToolExecutionApi, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import type { KernelContext } from "../src/kernel/contracts.ts";
-import type { DesktopConfig, Docker, ExecResult } from "../extensions/desktop/container.ts";
+import type { Desktop, DesktopConfig, Docker, ExecResult } from "../extensions/desktop/container.ts";
+import { remoteEnv } from "../extensions/desktop/env.ts";
 import { tempHome } from "./helpers.ts";
 
 export const PNG = Buffer.from("fake png");
@@ -79,4 +81,57 @@ export function fakeDocker() {
       replies.unshift({ match, result });
     },
   };
+}
+
+/** A `Desktop` that records `ready`'s `wait` and each exec, answering a screenshot, the cursor at 1,2 and "copied". */
+export function fakeDesktop() {
+  const calls: { argv: string[]; input?: string }[] = [];
+  const waits: boolean[] = [];
+  const replies: { match: (argv: string[]) => boolean; result: Partial<ExecResult> }[] = [];
+  const answer = (argv: string[]): Partial<ExecResult> => {
+    if (argv[0] === "import") return { stdout: PNG };
+    if (argv[1] === "getmouselocation") return { stdout: Buffer.from("X=1\nY=2\nSCREEN=0\nWINDOW=3\n") };
+    if (argv[0] === "xclip" && argv.at(-1) === "-o") return { stdout: Buffer.from("copied") };
+    return {};
+  };
+  const desktop = {
+    ready: async (wait: boolean) => void waits.push(wait),
+    exec: async (argv: string[], input?: string) => {
+      calls.push({ argv, input });
+      const result = replies.find((r) => r.match(argv))?.result ?? answer(argv);
+      return { code: 0, stdout: Buffer.alloc(0), stderr: "", ...result };
+    },
+  } as Desktop;
+  return {
+    desktop,
+    calls,
+    waits,
+    reply(match: (argv: string[]) => boolean, result: Partial<ExecResult>) {
+      replies.unshift({ match, result });
+    },
+  };
+}
+
+/**
+ * A tool api for job `job` in conversation `conversationId`, whose commits run on `docs`, keyed `<kind>:<conversation>`;
+ * its env is the desktop's when `desktop`.
+ */
+export function fakeApi({ desktop = true, conversationId = 7, job = "1", docs = {} as Record<string, any> } = {}) {
+  docs[`japa.job:${conversationId}`] = { jobId: job, environment: "desktop" };
+  docs["japa.jobs:1"] ??= { nextId: 2, jobs: { [job]: { id: job, status: "running" } } };
+  const tx = {
+    doc: async (token: { definition: { kind: string; initial(): unknown } }, id: number) =>
+      (docs[`${token.definition.kind}:${id}`] ??= token.definition.initial()),
+  };
+  const env = desktop ? remoteEnv(() => Promise.reject(new Error("not called")), "/home/japa", "desktop") : undefined;
+  const api = { conversationId, env, commit: async (change: (t: typeof tx) => unknown) => change(tx) };
+  return { api: api as unknown as ToolExecutionApi, docs };
+}
+
+export function run(tool: ToolRegistration, args: object, api: ToolExecutionApi, signal?: AbortSignal) {
+  return tool.execute(args, api, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
+}
+
+export function resultText(result: ToolExecutionResult) {
+  return result.content!.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
 }
