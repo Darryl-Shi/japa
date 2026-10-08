@@ -14,6 +14,7 @@ import { daemonStatus } from "./daemon.ts";
 import { APP, layoutOf } from "./layout.ts";
 import { tuiPrompter } from "./prompt.ts";
 import { serviceCommand, serviceEnv } from "./service.ts";
+import { setupCommand } from "./setup.ts";
 import { uninstall } from "./uninstall.ts";
 import { updateCommand } from "./update.ts";
 
@@ -31,6 +32,8 @@ Commands:
            Restore the last working setup, and optionally the default storage and secrets adapters
   service <install|uninstall|start|stop|restart|status|logs>
            Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)
+  setup [--non-interactive] [--no-service]
+           Configure models, extensions and the background service
   update [--check] [--branch <b>] [--to <sha>] [--no-restart]
            Update japa to origin's latest commit and restart it
   uninstall [--purge]
@@ -111,6 +114,7 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   rollback,
   "safe-mode": safeMode,
   service: (home) => serviceCommand(home, process.argv.slice(3)),
+  setup: (home) => setupCommand(home, process.argv.slice(3)),
   update: (home) => updateCommand(home, process.argv.slice(3)),
   uninstall: uninstallCommand,
 };
