@@ -22,19 +22,9 @@ export function discoverExtensions(dirs: string[]): FoundExtension[] {
 /** The message of a thrown value. */
 export const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-/** Validates `e` against the core contracts; never throws. */
-function check(e: JapaExtension): string | undefined {
-  try {
-    const problems = validateExtension(e);
-    return problems.length > 0 ? problems.join("; ") : undefined;
-  } catch (err) {
-    return message(err);
-  }
-}
-
 /** Imports and validates extensions independently; never throws. Failures go to `errors`. */
 export async function loadExtensions(found: FoundExtension[]): Promise<{ extensions: JapaExtension[]; errors: LoadError[] }> {
-  const imported: JapaExtension[] = [];
+  const extensions: JapaExtension[] = [];
   const errors: LoadError[] = [];
 
   for (const { name, file } of found) {
@@ -43,17 +33,12 @@ export async function loadExtensions(found: FoundExtension[]): Promise<{ extensi
       const e = mod.default;
       if (e === undefined) throw new Error("missing default export");
       if (e?.name !== name) throw new Error("manifest name must match directory");
-      imported.push(e);
+      const problems = validateExtension(e);
+      if (problems.length > 0) throw new Error(problems.join("; "));
+      extensions.push(e);
     } catch (err) {
       errors.push({ name, error: message(err) });
     }
-  }
-
-  const extensions: JapaExtension[] = [];
-  for (const e of imported) {
-    const error = check(e);
-    if (error) errors.push({ name: e.name, error });
-    else extensions.push(e);
   }
   return { extensions, errors };
 }

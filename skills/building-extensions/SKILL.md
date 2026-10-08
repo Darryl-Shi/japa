@@ -122,7 +122,7 @@ From the staging directory, run
 ```
 
 (the same as `japa check extension <name>` run there). It stops at the first failure of: a valid
-manifest (known contracts, valid contributions); tool descriptions of at most 1024 characters; a
+manifest (core contracts, valid contributions); tool descriptions of at most 1024 characters; a
 typecheck (tests excluded); its `*.test.ts` files; and a smoke load (loads without errors, appears in
 the capabilities, no tool name shared with another extension or the kernel). It prints `ok` when
 all pass; fix each problem and rerun.

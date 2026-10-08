@@ -93,7 +93,7 @@ function requireFields(c: unknown, fields: Record<string, "string" | "function" 
   return undefined;
 }
 
-export const CORE_CONTRACTS: Contract[] = [
+const CORE_CONTRACTS: Contract[] = [
   {
     name: "provider",
     docs: "Registers a pi-ai model provider, making its models selectable in settings and worker profiles.",

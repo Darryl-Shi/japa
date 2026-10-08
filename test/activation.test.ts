@@ -113,7 +113,7 @@ test("a throwing setup is reported and its extension's tools are not installed",
   await daemon.close();
 });
 
-test("tools are installed before triggers start, and triggers before surfaces", async () => {
+test("setup runs before triggers start, and triggers before surfaces", async () => {
   const order: string[] = [];
   const echo = defineTool({
     name: "probe_echo",

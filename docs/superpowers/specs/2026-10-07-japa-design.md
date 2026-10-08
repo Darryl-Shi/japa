@@ -485,7 +485,7 @@ When the CoS saves something during a conversation it may add a brief
 
 `~/.japa/memory/facts.json`, `loops.json`, `episodes/*.md`, committed to the
 workspace git repo after each consolidation. Memory is fixed kernel logic,
-not a contract. Semantic search, if added later, would be a `search`
+not a contract. Semantic search, if added later, would be a new core `search`
 contract that `memory_search` consults.
 
 ## 8. Skills (core loader, content)

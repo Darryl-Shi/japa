@@ -2,9 +2,7 @@ import { defineJapaExtension, defineTool, type KernelContext, Type } from "../..
 import { brave, MissingKey } from "./brave.ts";
 import { htmlToText } from "./html.ts";
 
-let secret: KernelContext["secret"] = () => {
-  throw new Error("web is not set up");
-};
+let secret!: KernelContext["secret"];
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const MAX = 50_000;
