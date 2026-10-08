@@ -159,9 +159,8 @@ Fetches the branch you're on (`main` by default) and fast-forwards your checkout
 checkout are stashed first and restored after; a history that has diverged (local commits that aren't upstream)
 is refused rather than guessed at, leaving your checkout unchanged. It reinstalls dependencies if they changed,
 downloads a newer private Node.js if one is needed, and validates the result before doing anything else; on
-failure it rolls back to the commit you were on and says why. It then restarts the service (or tells you to
-restart `japa daemon` yourself) and lists any new extension secrets or settings since your last update, the same
-step `japa setup` runs.
+failure it rolls back to the commit you were on and says why. It then lists any new extension secrets or settings since your last update (the same
+step `japa setup` runs), then restarts the service (or tells you to restart `japa daemon` yourself).
 
 | Flag | What it does |
 | --- | --- |
