@@ -170,7 +170,7 @@ test("unseen reports a new extension, then a new secret on an existing one, then
   expect(demoFirst.isNew).toBe(true);
   expect(demoFirst.keys.sort()).toEqual(offerKeys(demo).sort());
 
-  markOffered(home, configurable(ctx.extensions));
+  markOffered(home, ctx.extensions);
 
   const withExtra: JapaExtension = {
     ...demo,
@@ -181,9 +181,33 @@ test("unseen reports a new extension, then a new secret on an existing one, then
   const second = await unseen(ctx2);
   expect(second).toEqual([{ extension: withExtra, keys: ["secret:demo.extra"], isNew: false }]);
 
-  markOffered(home, configurable(ctx2.extensions));
+  markOffered(home, ctx2.extensions);
 
   expect(await unseen(ctx2)).toEqual([]);
+});
+
+test("unseen reports a new extension with nothing to configure, with no keys, once", async () => {
+  const home = tempHome();
+  const ctx = await demoContext(home);
+  const sqlite = ctx.extensions.find((e) => e.name === "sqlite")!;
+  markOffered(home, ctx.extensions.filter((e) => e !== sqlite));
+
+  expect(await unseen(ctx)).toEqual([{ extension: sqlite, keys: [], isNew: true }]);
+
+  markOffered(home, [sqlite]);
+
+  expect(readSetup(home).offered.sqlite).toEqual([]);
+  expect(await unseen(ctx)).toEqual([]);
+});
+
+test("the extensions step records every extension as offered, configurable or not", async () => {
+  const home = tempHome();
+  const ctx = await demoContext(home);
+  const demo = ctx.extensions.find((e) => e.name === "demo")!;
+
+  await configureStep(ctx, scripted([["Configure demo?", false]]), [demo]);
+
+  expect(Object.keys(readSetup(home).offered).sort()).toEqual(ctx.extensions.map((e) => e.name).sort());
 });
 
 test("setup.json is ignored by the workspace git", () => {

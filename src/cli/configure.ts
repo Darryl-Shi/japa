@@ -1,6 +1,6 @@
 // The extensions step of `japa setup` (design spec §4.4): per-extension secrets and settings, prompted from the
 // manifest's declared `secrets` and settings schema, and the `setup.json` bookkeeping (§5.2) that lets
-// `japa update` announce secrets and settings a later manifest adds.
+// `japa update` announce new extensions, and secrets and settings a later manifest adds.
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { JsonObject } from "@earendil-works/pi-durable";
@@ -64,8 +64,9 @@ function writeSetupFile(home: string, data: SetupFile): void {
   writeFileSync(join(home, "setup.json"), `${JSON.stringify(data, null, 2)}\n`);
 }
 
-/** Records every one of `extensions`' `offerKeys` as offered in `<home>/setup.json`, merging with (never
- * dropping) what was already there, for other extensions or more keys of the same one. */
+/** Records `extensions` and every one of their `offerKeys` as offered in `<home>/setup.json` -- an extension with
+ * nothing to configure under no keys, so it's still known as seen -- merging with (never dropping) what was
+ * already there, for other extensions or more keys of the same one. */
 export function markOffered(home: string, extensions: JapaExtension[]): void {
   const data = readSetupFile(home);
   for (const e of extensions) {
@@ -79,17 +80,16 @@ export function markOffered(home: string, extensions: JapaExtension[]): void {
 export type Unseen = { extension: JapaExtension; keys: string[]; isNew: boolean };
 
 /**
- * Each configurable extension with secrets or settings `setup.json` hasn't recorded as offered (design spec
- * §5.2): a brand new extension, or new secrets/settings on one already offered. `isNew` is true only for the
- * former (no entry for it at all).
+ * What `setup.json` hasn't recorded as offered (design spec §5.2): a brand new extension (`isNew`: no entry for it
+ * at all), even one with nothing to configure, or new secrets/settings on one already offered.
  */
 export async function unseen(ctx: SetupContext): Promise<Unseen[]> {
   const { offered } = readSetupFile(ctx.home);
   const result: Unseen[] = [];
-  for (const e of configurable(ctx.extensions)) {
+  for (const e of ctx.extensions) {
     const already = offered[e.name];
     const keys = offerKeys(e).filter((key) => !already?.includes(key));
-    if (keys.length > 0) result.push({ extension: e, keys, isNew: already === undefined });
+    if (already === undefined || keys.length > 0) result.push({ extension: e, keys, isNew: already === undefined });
   }
   return result;
 }
@@ -248,14 +248,13 @@ export async function configureExtension(ctx: SetupContext, p: Prompter, e: Japa
 
 /**
  * The extensions step (design spec §4.4): for each of `only` (default every configurable extension), in name
- * order, shows its header and asks whether to configure it. Afterwards records every configurable extension as
- * offered (§5.2), whether or not the user configured it. Returns whether anything was saved.
+ * order, shows its header and asks whether to configure it. Afterwards records every extension as offered (§5.2),
+ * whether or not the user configured it. Returns whether anything was saved.
  */
 export async function configureStep(ctx: SetupContext, p: Prompter, only?: JapaExtension[]): Promise<boolean> {
-  const all = configurable(ctx.extensions);
   let saved = false;
 
-  for (const e of (only ?? all).toSorted((a, b) => a.name.localeCompare(b.name))) {
+  for (const e of (only ?? configurable(ctx.extensions)).toSorted((a, b) => a.name.localeCompare(b.name))) {
     const configured = await isConfigured(ctx, e);
     p.note(`${e.name}: ${e.summary}${configured ? " (configured)" : ""}`);
     if (await p.confirm(`Configure ${e.name}?`, false)) {
@@ -263,6 +262,6 @@ export async function configureStep(ctx: SetupContext, p: Prompter, only?: JapaE
     }
   }
 
-  markOffered(ctx.home, all);
+  markOffered(ctx.home, ctx.extensions);
   return saved;
 }

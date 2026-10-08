@@ -153,10 +153,13 @@ async function runWhatsNew(ctx: SetupContext, p: Prompter | undefined, o: SetupO
   for (const line of unseenLines(items)) o.log(line);
 
   const extensions = items.map((i) => i.extension);
-  if (o.interactive && p !== undefined) {
-    if (await p.confirm("Configure now?", true)) await configureStep(ctx, p, extensions);
-  } else {
-    o.log("run `japa setup` to configure");
+  const toConfigure = configurable(extensions); // a new extension with nothing to configure is news, nothing more
+  if (toConfigure.length > 0) {
+    if (o.interactive && p !== undefined) {
+      if (await p.confirm("Configure now?", true)) await configureStep(ctx, p, toConfigure);
+    } else {
+      o.log("run `japa setup` to configure");
+    }
   }
 
   markOffered(ctx.home, extensions);
@@ -177,7 +180,7 @@ async function runNonInteractive(ctx: SetupContext, o: SetupOptions): Promise<nu
 
   await serviceStep(o);
 
-  markOffered(ctx.home, configurable(ctx.extensions));
+  markOffered(ctx.home, ctx.extensions);
 
   if (loadSettings(ctx.home).models.cos === undefined) {
     o.log("missing: models.cos (set JAPA_PROVIDER and JAPA_MODEL, or run japa setup in a terminal)");

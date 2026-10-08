@@ -2,7 +2,7 @@
 // and restarts japa -- rolling all of it back when the new code doesn't run (design doc §5).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, sep } from "node:path";
-import { configurable, markOffered } from "./configure.ts";
+import { markOffered } from "./configure.ts";
 import { openSetupContext } from "./context.ts";
 import { foregroundPid, waitForDaemon } from "./daemon.ts";
 import { exec, type ExecResult } from "./exec.ts";
@@ -107,7 +107,7 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
       const r = await exec(node, args);
       if (r.code !== 0) throw commandFailed(node, args, r);
     },
-    baseline: async (home) => markOffered(home, configurable((await openSetupContext(home)).extensions)),
+    baseline: async (home) => markOffered(home, (await openSetupContext(home)).extensions),
     whatsNew: async (app, node, interactive) => {
       const args = [NO_WARNINGS, join(app, "src/cli/main.ts"), "setup", "--whats-new"];
       if (!interactive) args.push("--non-interactive");

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
-import { configurable, markOffered } from "../src/cli/configure.ts";
+import { markOffered } from "../src/cli/configure.ts";
 import { openSetupContext } from "../src/cli/context.ts";
 import type { Exec, ExecResult } from "../src/cli/exec.ts";
 import type { Choice } from "../src/cli/prompt.ts";
@@ -23,6 +23,15 @@ export default defineJapaExtension({
 function writeFixture(home: string): void {
   mkdirSync(join(home, "extensions", "fixture"), { recursive: true });
   writeFileSync(join(home, "extensions", "fixture", "index.ts"), FIXTURE_SOURCE);
+}
+
+/** An extension with nothing to configure: no secrets, no settings. */
+function writePlain(home: string): void {
+  mkdirSync(join(home, "extensions", "plain"), { recursive: true });
+  writeFileSync(
+    join(home, "extensions", "plain", "index.ts"),
+    `import { defineJapaExtension } from "japa/sdk";\n\nexport default defineJapaExtension({ name: "plain", summary: "Plain extension for setup tests" });\n`,
+  );
 }
 
 /** A fake `Exec` that records every call and answers via `answer(cmd, args)` (default: success, no output);
@@ -240,7 +249,7 @@ test("non-interactive without env vars returns 1 and logs what is missing", asyn
 test("--whats-new lists a new fixture extension, configures it on yes, and stays quiet the second time", async () => {
   const home = tempHome();
   const baseline = await openSetupContext(home, [REPO_EXTENSIONS]);
-  markOffered(home, configurable(baseline.extensions)); // telegram/web/desktop already offered: only fixture is new
+  markOffered(home, baseline.extensions); // the packaged extensions already offered: only fixture is new
   writeFixture(home);
 
   const logs: string[] = [];
@@ -272,6 +281,36 @@ test("--whats-new lists a new fixture extension, configures it on yes, and stays
   expect(code2).toBe(0);
   p2.done();
   expect(logs2).toEqual([]);
+});
+
+test("--whats-new lists a new extension with nothing to configure by its summary, once", async () => {
+  const home = tempHome();
+  markOffered(home, (await openSetupContext(home, [REPO_EXTENSIONS])).extensions);
+  writePlain(home);
+  const extensionDirs = [REPO_EXTENSIONS, join(home, "extensions")];
+
+  const logs: string[] = [];
+  const code = await runSetup(home, undefined, makeOptions({ interactive: false, whatsNew: true, extensionDirs, log: (s) => logs.push(s) }));
+
+  expect(code).toBe(0);
+  expect(logs).toEqual(["New extension: plain — Plain extension for setup tests"]); // nothing to run `japa setup` for
+  expect(readSetupJson(home).offered.plain).toEqual([]);
+
+  const again: string[] = [];
+  await runSetup(home, undefined, makeOptions({ interactive: false, whatsNew: true, extensionDirs, log: (s) => again.push(s) }));
+  expect(again).toEqual([]);
+});
+
+test("--whats-new doesn't offer to configure an extension with nothing to configure", async () => {
+  const home = tempHome();
+  markOffered(home, (await openSetupContext(home, [REPO_EXTENSIONS])).extensions);
+  writePlain(home);
+
+  const p = scripted([]); // no "Configure now?"
+  const code = await runSetup(home, p, makeOptions({ whatsNew: true, extensionDirs: [REPO_EXTENSIONS, join(home, "extensions")] }));
+
+  expect(code).toBe(0);
+  p.done();
 });
 
 test("--whats-new works when models.cos is unset and does not prompt for models", async () => {
