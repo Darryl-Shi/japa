@@ -8,9 +8,10 @@ description: Use when researching a question on the web and writing a sourced re
 1. **Plan.** Restate the question in one sentence. Split it into 3 to 6 sub-questions whose answers
    together answer it. Note what would count as a primary source (official docs, the original paper,
    the company's own page, the law or dataset itself).
-2. **Search.** For each sub-question, call `web_search` with a short keyword query (`count` up to 20).
-   Try two or three phrasings when results are thin. Results come as title, URL and snippet; a
-   snippet is not a source.
+2. **Search.** For each sub-question, search with `parallel_search` (an `objective` sentence plus
+   short keyword `queries`) or, if it has no key, `brave_search` (a short keyword `query`); `count` up
+   to 20 for either. Try two or three phrasings when results are thin. Results come as title, URL and
+   excerpts or a snippet; an excerpt is not a source.
 3. **Read.** Open the most promising results with `web_fetch` and read them. Prefer primary sources
    over summaries, and recent pages over old ones when the answer can change. If a page fails or is
    not text, move on to another.
@@ -42,6 +43,6 @@ listed URL must be one you actually read. Never invent a URL or a quote.
 
 ## Search keys
 
-If `web_search` replies that it needs a Brave Search API key: the chief of staff asks the user with
-`secret_request` as the reply says; a worker ends its turn with that message as its question, so the
-chief of staff can do that.
+If a search tool replies that it needs an API key, try the other one. If both need one: the chief of
+staff asks the user for either key with `secret_request` as the reply says; a worker ends its turn with
+that message as its question, so the chief of staff can do that.

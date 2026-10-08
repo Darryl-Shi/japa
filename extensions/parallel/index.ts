@@ -64,7 +64,7 @@ export default defineJapaExtension({
   docs:
     "parallel_search({ objective, queries?, count? = 5 }) returns numbered results: title, publish date if known, URL, " +
     "then excerpts of the page as markdown. objective is the question in plain language; queries are optional keyword " +
-    "searches (the objective is used when omitted). Needs the secret parallel.apiKey.",
+    "searches (the objective is used when omitted). Read a page in full with web_fetch. Needs the secret parallel.apiKey.",
   provides: { tool: [parallelSearch] },
   secrets: [{ name: KEY, description: "Parallel API key (platform.parallel.ai), for parallel_search" }],
   setup: (ctx) => {

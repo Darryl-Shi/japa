@@ -1,8 +1,5 @@
-import { defineJapaExtension, defineTool, type KernelContext, Type } from "../../src/sdk.ts";
-import { brave, MissingKey } from "./brave.ts";
+import { defineJapaExtension, defineTool, Type } from "../../src/sdk.ts";
 import { htmlToText } from "./html.ts";
-
-let secret!: KernelContext["secret"];
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const MAX = 50_000;
@@ -29,36 +26,12 @@ const webFetch = defineTool({
   },
 });
 
-const webSearch = defineTool({
-  name: "web_search",
-  description: "Search the web; returns the title, URL and snippet of each result.",
-  parameters: Type.Object({ query: Type.String(), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })) }),
-  execute: async ({ query, count = 5 }) => {
-    try {
-      const results = await brave.search(query, count, secret);
-      return reply(results.map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.snippet}`).join("\n\n"));
-    } catch (error) {
-      if (error instanceof MissingKey) {
-        return reply(
-          'web_search needs a Brave Search API key. Ask the user for it with secret_request({ name: "web.brave.apiKey", why: "..." }), then try again.',
-        );
-      }
-      return reply(`Search failed: ${reason(error)}`);
-    }
-  },
-});
-
 export default defineJapaExtension({
   name: "web",
-  summary: "Fetches web pages and searches the web",
-  examples: ["what's the latest release of Node.js?", "summarize https://example.com/article"],
+  summary: "Fetches web pages",
+  examples: ["summarize https://example.com/article", "what does this page say? https://nodejs.org/en/blog"],
   docs:
-    "web_fetch({ url }) returns a page's text (HTML is converted; other text, JSON and XML as is; binary is refused; truncated at 50,000 characters). " +
-    "web_search({ query, count? = 5 }) returns numbered results: title, URL and snippet. " +
-    "web_search uses Brave Search and needs the secret web.brave.apiKey.",
-  provides: { tool: [webFetch, webSearch] },
-  secrets: [{ name: "web.brave.apiKey", description: "Brave Search API key, for web_search" }],
-  setup: (ctx) => {
-    secret = ctx.secret;
-  },
+    "web_fetch({ url }) returns a page's text (HTML is converted; other text, JSON and XML as is; binary is refused; " +
+    "truncated at 50,000 characters). It needs no key. To search the web, use a search extension's tool.",
+  provides: { tool: [webFetch] },
 });
