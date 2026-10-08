@@ -49,7 +49,7 @@ export function computerTool(desktop: Desktop): ToolRegistration {
       amount: Type.Optional(Type.Integer({ minimum: 1 })),
       text: Type.Optional(Type.String()),
       combo: Type.Optional(Type.String()),
-      hold: Type.Optional(Type.Number({ minimum: 0 })),
+      hold: Type.Optional(Type.Number({ minimum: 0, maximum: 30 })),
       seconds: Type.Optional(Type.Number({ minimum: 0, maximum: 30 })),
       screenshot: Type.Optional(Type.Boolean()),
     }),
@@ -103,7 +103,7 @@ export function computerTool(desktop: Desktop): ToolRegistration {
           case "clipboard_get":
             return text((await run(["xclip", "-selection", "clipboard", "-o"])).toString());
           case "wait":
-            await sleep(args.seconds! * 1000);
+            await sleep(args.seconds! * 1000, undefined, { signal: context.abortSignal });
             return text(`waited ${args.seconds} s`);
           case "click": {
             const modifiers = args.modifiers?.join("+");
@@ -142,7 +142,7 @@ export function computerTool(desktop: Desktop): ToolRegistration {
             if (args.hold === undefined) await xdo("key", "--", args.combo);
             else {
               await xdo("keydown", "--", args.combo);
-              await sleep(args.hold * 1000);
+              await sleep(args.hold * 1000, undefined, { signal: context.abortSignal });
               await xdo("keyup", "--", args.combo);
             }
             break;
@@ -150,7 +150,7 @@ export function computerTool(desktop: Desktop): ToolRegistration {
             await run(["sh", "-c", "xclip -selection clipboard -i >/dev/null 2>&1"], args.text);
             break;
         }
-        await sleep(500);
+        await sleep(500, undefined, { signal: context.abortSignal });
         return args.screenshot === false ? text(`${action} — ${await cursor()}`) : await picture(SCREEN);
       } catch (error) {
         return text((error as Error).message);

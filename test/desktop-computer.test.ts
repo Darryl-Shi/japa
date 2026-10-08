@@ -69,6 +69,15 @@ test("wait sleeps on the host", async () => {
   expect(fake.calls).toEqual([]);
 });
 
+test("aborting a wait returns at once", async () => {
+  const abort = new AbortController();
+  const started = Date.now();
+  const call = run(tool, { action: "wait", seconds: 10 }, fakeApi().api, abort.signal);
+  setTimeout(() => abort.abort(), 50);
+  await call.catch(() => {});
+  expect(Date.now() - started).toBeLessThan(1000);
+});
+
 test("read actions work outside the desktop environment; the rest are refused there", async () => {
   const { api } = fakeApi({ desktop: false });
   expect((await run(tool, { action: "screenshot" }, api)).content![1]).toMatchObject({ type: "image" });
@@ -114,6 +123,7 @@ test("another job waits, reporting progress, until the holder finishes", async (
   jobs["1"].status = "done";
   await moving;
   expect(first.docs["japa.desktop-lock:1"]).toEqual({ job: "2" });
+  expect(jobs["2"].progress).toBeUndefined();
 });
 
 /** Job 2's docs, with job 1 holding the lock in `status` (or gone). */

@@ -35,6 +35,7 @@ export async function claimDesktop(api: ToolExecutionApi, context: Context): Pro
         return h;
       }
       lock.job = me;
+      if (!first) delete jobs[me]!.progress;
       return undefined;
     }, context);
     if (holder === undefined) return undefined;
