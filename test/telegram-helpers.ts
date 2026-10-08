@@ -29,7 +29,7 @@ export async function fakeBotApi() {
       replay = false;
       return last;
     }
-    if (queue.length > 0) return (last = queue);
+    if (queue.length > 0) return (last = [...queue]);
     await new Promise((resolve) => setTimeout(resolve, 200));
     return [];
   };

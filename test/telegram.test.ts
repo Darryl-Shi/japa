@@ -31,6 +31,7 @@ test.each([
   ["use `x<y`", "use <code>x&lt;y</code>"],
   ["```ts\nif (a < b) {}\n```", '<pre><code class="language-ts">if (a &lt; b) {}</code></pre>'],
   ["[site](https://e.com/?a=1&b=2)", '<a href="https://e.com/?a=1&amp;b=2">site</a>'],
+  ['[x](https://a"b)', '<a href="https://a&quot;b">x</a>'],
   ["> quoted\n> more", "<blockquote>quoted\nmore</blockquote>"],
   ["# Title", "<b>Title</b>"],
   ["snake_case_name stays", "snake_case_name stays"],
