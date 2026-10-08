@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { ACTIVATION_ORDER, CONTRACTS } from "../src/kernel/contracts.ts";
-import { REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootTest, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -17,6 +17,15 @@ test("the messaging contract validates adapters and activates after surfaces", (
   expect(contract.validate({ ...fakeAdapter().adapter, maxMessageChars: "4096" })).toBe(
     "maxMessageChars must be a number",
   );
+});
+
+test("an adapter not named after its extension is an activation error", async () => {
+  let started = false;
+  const adapter = { ...fakeAdapter({ name: "other" }).adapter, start: async () => ((started = true), () => {}) };
+  const { daemon } = await bootTest({}, [{ name: "chat", summary: "Chat", provides: { messaging: [adapter] } }]);
+  expect(daemon.status().errors).toContainEqual({ name: "chat", error: 'messaging: name must be "chat"' });
+  expect(started).toBe(false);
+  await daemon.close();
 });
 
 test("anyone but the owner gets their user id and goes no further", async () => {

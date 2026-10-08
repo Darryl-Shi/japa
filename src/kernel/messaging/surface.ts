@@ -9,6 +9,7 @@ export const MERGE_MS = 1500;
  * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts, merged, to the CoS.
  */
 export async function startMessaging(adapter: MessagingAdapter, kernel: KernelContext): Promise<Dispose> {
+  if (adapter.name !== kernel.extension) throw new Error(`name must be "${kernel.extension}"`);
   const log = (error: unknown) => console.error(`${adapter.name}: ${message(error)}`);
   let stopped = false;
   let handled = Promise.resolve();
@@ -42,7 +43,8 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
 
   const stopAdapter = await adapter.start({
     receive: (m) => {
-      handled = handled.then(() => (stopped ? undefined : handle(m))).catch(log);
+      if (stopped) return handled;
+      handled = handled.then(() => handle(m)).catch(log);
       return handled;
     },
   });
