@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Incoming, KernelContext, MessagingAdapter, OutgoingMessage } from "../contracts.ts";
 import { recent, reportText, type Job } from "../jobs/state.ts";
 import { statusText } from "../status.ts";
@@ -14,13 +15,14 @@ type View = () => Promise<OutgoingMessage>;
 
 /**
  * Answers the owner's commands, and their presses of the buttons it sends: each button's action is a short id mapped,
- * in memory, to the view it edits its message to.
+ * in memory, to the view it edits its message to. Ids carry a per-run token so buttons from before a restart expire.
  */
 export function createMenu(adapter: MessagingAdapter, kernel: KernelContext, jobs: () => Job[]) {
+  const run = randomUUID().slice(0, 8);
   let next = 0;
   const views = new Map<string, View>();
   const button = (label: string, view: View) => {
-    const action = String(++next);
+    const action = `${run}:${++next}`;
     views.set(action, view);
     return { label, action };
   };

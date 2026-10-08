@@ -1,7 +1,9 @@
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
-import { COMMANDS } from "../src/kernel/messaging/menu.ts";
+import type { KernelContext } from "../src/kernel/contracts.ts";
+import type { Job } from "../src/kernel/jobs/state.ts";
+import { COMMANDS, createMenu } from "../src/kernel/messaging/menu.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { waitFor } from "./helpers.ts";
 import { ask, call, idle, reported, script, texts } from "./jobs-helpers.ts";
@@ -56,6 +58,15 @@ test("an unknown command gets the help list and never reaches the CoS", async ()
   );
   await sleep(2000);
   expect(await texts(daemon.root, "user")).toEqual([]);
+});
+
+test("a button from before a restart says the menu expired", async () => {
+  const job = { id: "1", title: "Sum", status: "running", updatedAt: Date.now() } as Job;
+  const msg = { chat: "42", user: "42", id: "1", messageId: "1" };
+  const menus = [1, 2].map(() => createMenu(fake.adapter, {} as KernelContext, () => [job]));
+  for (const menu of menus) await menu.command({ ...msg, command: "jobs" });
+  await menus[1]!.press({ ...msg, action: fake.sent.at(-2)!.buttons![0]![0]!.action });
+  expect(fake.edited.at(-1)!.markdown).toBe("This menu expired — send /settings again.");
 });
 
 test("a stale button says the menu expired", async () => {
