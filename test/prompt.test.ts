@@ -1,5 +1,24 @@
 import { expect, test } from "vitest";
-import { FilterableSelectList } from "../src/cli/prompt.ts";
+import { FilterableSelectList, prefilledInput } from "../src/cli/prompt.ts";
+
+test("a prefilled input edits from the end of its value", () => {
+  const input = prefilledInput("memory: ", "4g");
+
+  input.handleInput("\x7f"); // Backspace
+  input.handleInput("\x7f");
+  input.handleInput("8");
+  input.handleInput("g");
+
+  expect(input.getValue()).toBe("8g");
+});
+
+test("typing into a prefilled input appends", () => {
+  const input = prefilledInput("cpus: ", "2");
+
+  input.handleInput("4");
+
+  expect(input.getValue()).toBe("24");
+});
 
 test("typing under the Kitty keyboard protocol (CSI-u) still filters", () => {
   const list = new FilterableSelectList("pick one", [

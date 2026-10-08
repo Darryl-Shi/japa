@@ -37,6 +37,15 @@ export class MaskedInput extends Input {
   }
 }
 
+/** An `Input` showing `prompt`, holding `value` with the cursor after it, so typing appends and Backspace deletes
+ * (`setValue` alone leaves the cursor at 0, and pi-tui has no cursor setter: press End instead). */
+export function prefilledInput(prompt: string, value: string): Input {
+  const input = new Input({ prompt });
+  input.setValue(value);
+  input.handleInput("\x1b[F"); // End
+  return input;
+}
+
 const plain = (s: string) => s;
 const selectTheme: SelectListTheme = {
   selectedPrefix: plain,
@@ -156,8 +165,7 @@ export function tuiPrompter(): Prompter & { close(): void } {
 
   async function text(question: string, opts?: { initial?: string; help?: string }): Promise<string> {
     const prompt = opts?.help ? `${question} (${opts.help}): ` : `${question}: `;
-    const input = new Input({ prompt });
-    input.setValue(opts?.initial ?? "");
+    const input = prefilledInput(prompt, opts?.initial ?? "");
     const value = (
       await run<string>(input, (resolve) => {
         input.onSubmit = resolve;
