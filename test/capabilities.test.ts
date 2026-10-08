@@ -16,6 +16,7 @@ test("capabilities lists extensions, workers, models and surfaces", () => {
     extensions: [
       { name: "gateway", summary: "Lets you chat from the terminal", provides: { surface: [{ name: "gateway" }] } },
       { name: "notes", summary: "Keeps notes" },
+      { name: "fake", summary: "Fake chat", provides: { messaging: [{ name: "fake" }] } },
     ],
     profiles: new Map([["general", { name: "general", description: "Does general work" }]]),
     models: { cos: { provider: "anthropic", modelId: "big" }, consolidation: { provider: "openai", modelId: "small" } },
@@ -25,10 +26,11 @@ test("capabilities lists extensions, workers, models and surfaces", () => {
       "Extensions:",
       "- gateway: Lets you chat from the terminal",
       "- notes: Keeps notes",
+      "- fake: Fake chat",
       "Workers:",
       "- general: Does general work",
       "Models: cos anthropic/big, worker same as cos, consolidation openai/small",
-      "Surfaces: gateway",
+      "Surfaces: gateway, fake",
     ].join("\n"),
   );
 });

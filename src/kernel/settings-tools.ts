@@ -1,4 +1,4 @@
-import { type Models, Type } from "@earendil-works/pi-ai";
+import { type Models, type TSchema, Type } from "@earendil-works/pi-ai";
 import { configure, defineTool, type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { ChangesDoc, type ConfigOp, logChange } from "./changes.ts";
 import type { JapaExtension } from "./extension.ts";
@@ -17,6 +17,13 @@ import {
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
+/** The schema for `settings.extensions.<e.name>`: `e.settings`, plus a string `owner` when `e` provides messaging. */
+export function settingsSchema(e: JapaExtension): TSchema | undefined {
+  if (!e.provides?.messaging) return e.settings;
+  const properties = (e.settings as { properties?: Record<string, TSchema> } | undefined)?.properties;
+  return Type.Object({ ...properties, owner: Type.Optional(Type.String()) });
+}
+
 /**
  * The CoS's tools to read and change settings (live, in place) and to list and undo changes; `changed` runs after
  * each settings change, `reconcile` after undoing commits.
@@ -30,7 +37,12 @@ export function settingsTools(
   reconcile: () => Promise<unknown>,
 ) {
   const validate = (user: JsonObject) => {
-    const schemas = Object.fromEntries(extensions().flatMap((e) => (e.settings ? [[e.name, e.settings]] : [])));
+    const schemas = Object.fromEntries(
+      extensions().flatMap((e) => {
+        const schema = settingsSchema(e);
+        return schema ? [[e.name, schema]] : [];
+      }),
+    );
     const next = validateSettings(mergeSettings(user), schemas);
     for (const ref of Object.values(next.models)) if (ref !== undefined) checkModel(models, ref);
     return next;

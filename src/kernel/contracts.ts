@@ -2,6 +2,7 @@ import type { AgentEvent, JsonObject, ModelRef, Storage, UserInput } from "@eare
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Job } from "./jobs/state.ts";
+import { startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
 
 /** Releases what an `activate()` set up. */
@@ -70,6 +71,34 @@ export type SurfaceContext = {
 
 export type Surface = { name: string; start(ctx: SurfaceContext): Promise<Dispose> };
 
+export interface MessagingAdapter {
+  name: string; // "telegram"; also the surface name in origins
+  maxMessageChars: number; // outgoing limit per message (Telegram: 4096); inputs are not capped
+  start(ctx: MessagingAdapterContext): Promise<Dispose>;
+  send(chat: string, m: OutgoingMessage): Promise<string>; // returns the message id
+  edit(chat: string, messageId: string, m: OutgoingMessage): Promise<void>;
+  delete(chat: string, messageId: string): Promise<void>;
+  typing(chat: string): Promise<void>; // shows "typing…" for a few seconds
+  commands(list: { name: string; description: string }[]): Promise<void>; // registers slash commands
+}
+
+export interface MessagingAdapterContext {
+  receive(m: Incoming): Promise<void>; // the adapter calls this for each incoming message or button press
+}
+
+export type Incoming = {
+  chat: string;
+  user: string;
+  messageId: string;
+  id: string; // platform-unique, used for dedup
+  text?: string;
+  images?: { data: Uint8Array; mimeType: string }[];
+  command?: string; // "jobs" for "/jobs"
+  action?: string; // a pressed button's action
+};
+
+export type OutgoingMessage = { markdown: string; buttons?: { label: string; action: string }[][] };
+
 export type TriggerContext = { home: string; emit(event: { key: string; text: string }): Promise<void> };
 
 export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispose> };
@@ -98,7 +127,10 @@ export type Contract<C = unknown> = {
 };
 
 /** Checks that `c` is an object whose named fields have the given `typeof`. */
-function requireFields(c: unknown, fields: Record<string, "string" | "function" | "object">): string | undefined {
+function requireFields(
+  c: unknown,
+  fields: Record<string, "string" | "number" | "function" | "object">,
+): string | undefined {
   if (typeof c !== "object" || c === null) return "must be an object";
   const o = c as Record<string, unknown>;
   for (const [field, type] of Object.entries(fields)) {
@@ -131,6 +163,26 @@ const CORE_CONTRACTS: Contract[] = [
     cardinality: "many",
     validate: (c) => requireFields(c, { name: "string", start: "function" }),
     activate: async (c, ctx) => (c as Surface).start(ctx.surface),
+  },
+  {
+    name: "messaging",
+    docs:
+      "A chat platform the user talks to the CoS through. Implement only transport; japa provides commands, " +
+      "settings, secrets, routing and images.",
+    phase: "runtime",
+    cardinality: "many",
+    validate: (c) =>
+      requireFields(c, {
+        name: "string",
+        maxMessageChars: "number",
+        start: "function",
+        send: "function",
+        edit: "function",
+        delete: "function",
+        typing: "function",
+        commands: "function",
+      }),
+    activate: (c, ctx) => startMessaging(c as MessagingAdapter, ctx),
   },
   {
     name: "trigger",
@@ -181,4 +233,4 @@ const CORE_CONTRACTS: Contract[] = [
 export const CONTRACTS: ReadonlyMap<string, Contract> = new Map(CORE_CONTRACTS.map((c) => [c.name, c]));
 
 /** Contract activation order at boot. */
-export const ACTIVATION_ORDER = ["provider", "environment", "tool", "trigger", "surface"];
+export const ACTIVATION_ORDER = ["provider", "environment", "tool", "trigger", "surface", "messaging"];

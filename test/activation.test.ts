@@ -3,6 +3,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import { expect, test } from "vitest";
 import { defineJapaExtension, defineTool, type TriggerContext, Type } from "../src/sdk.ts";
 import { bootTest } from "./helpers.ts";
+import { fakeAdapter } from "./messaging-helpers.ts";
 
 test("an extension tool is offered to the CoS", async () => {
   const echo = defineTool({
@@ -113,7 +114,7 @@ test("a throwing setup is reported and its extension's tools are not installed",
   await daemon.close();
 });
 
-test("setup runs before triggers start, and triggers before surfaces", async () => {
+test("setup runs before triggers start, triggers before surfaces, and surfaces before messaging", async () => {
   const order: string[] = [];
   const echo = defineTool({
     name: "probe_echo",
@@ -149,9 +150,18 @@ test("setup runs before triggers start, and triggers before surfaces", async () 
           },
         },
       ],
+      messaging: [
+        {
+          ...fakeAdapter({ name: "order-probe" }).adapter,
+          start: async () => {
+            order.push("messaging");
+            return () => {};
+          },
+        },
+      ],
     },
   });
   const { daemon } = await bootTest({}, [ext]);
-  expect(order).toEqual(["setup", "trigger", "surface"]);
+  expect(order).toEqual(["setup", "trigger", "surface", "messaging"]);
   await daemon.close();
 });

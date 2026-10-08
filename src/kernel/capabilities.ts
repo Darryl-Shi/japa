@@ -1,5 +1,4 @@
 import type { ModelRef } from "@earendil-works/pi-durable";
-import type { Surface } from "./contracts.ts";
 import type { JapaExtension } from "./extension.ts";
 import type { Settings } from "./settings.ts";
 import type { WorkerProfile } from "./workers.ts";
@@ -13,13 +12,14 @@ export function capabilities(input: {
   models: Settings["models"];
 }): string {
   const { extensions, profiles, models } = input;
-  const surfaces = extensions.flatMap((e) => ((e.provides?.surface ?? []) as Surface[]).map((s) => s.name));
+  const names = (contract: string) =>
+    extensions.flatMap((e) => ((e.provides?.[contract] ?? []) as { name: string }[]).map((c) => c.name));
   return [
     "Extensions:",
     ...extensions.map((e) => `- ${e.name}: ${e.summary}`),
     "Workers:",
     ...[...profiles.values()].map((p) => `- ${p.name}: ${p.description}`),
     `Models: cos ${ref(models.cos)}, worker ${ref(models.worker)}, consolidation ${ref(models.consolidation)}`,
-    `Surfaces: ${surfaces.join(", ")}`,
+    `Surfaces: ${[...names("surface"), ...names("messaging")].join(", ")}`,
   ].join("\n");
 }

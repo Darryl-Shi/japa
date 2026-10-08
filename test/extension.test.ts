@@ -33,9 +33,10 @@ test("invalid contribution reports contract and index", () => {
   );
 });
 
-test("all seven core contracts exist", () => {
+test("all eight core contracts exist", () => {
   expect([...CONTRACTS.keys()].sort()).toEqual([
     "environment",
+    "messaging",
     "provider",
     "secrets",
     "storage",
