@@ -94,6 +94,7 @@ test("the shipped coder and researcher profiles pass at boot", async () => {
   expect(daemon.status().errors.filter((e) => e.name.startsWith("worker:"))).toEqual([]);
   expect(daemon.capabilities()).toContain("- coder: Writes and changes code and files on this computer, and runs commands.");
   expect(daemon.capabilities()).toContain("- researcher: Researches a question on the web and writes a sourced report.");
+  expect(daemon.capabilities()).toContain("- operator: Operates japa's own desktop computer — browser and apps — to get things done on websites and in programs.");
   await daemon.close();
 });
 

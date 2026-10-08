@@ -57,7 +57,7 @@ test("the capabilities section sits between identity and about-you and names ext
   expect(at("chief of staff")).toBeLessThan(at("Extensions:"));
   expect(at("Extensions:")).toBeLessThan(at("Dana likes tea"));
   expect(prompt).toContain("- notes: Keeps the user's notes");
-  expect(prompt).toMatch(/Workers:\n- builder: .*\n- coder: .*\n- general: .*\n- researcher: /);
+  expect(prompt).toMatch(/Workers:\n- builder: .*\n- coder: .*\n- general: .*\n- operator: .*\n- researcher: /);
   await daemon.close();
 });
 
