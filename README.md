@@ -91,7 +91,7 @@ A rerun shows a menu (Model and sign-in, Integrations, Background service, Done)
 value preselected; Enter keeps it. When you're done, if anything was saved and the service is running, it restarts
 it.
 
-The wizard covers models, sign-in, integrations and the service. Other settings — `jobs.maxConcurrent`,
+The wizard covers models, sign-in, integrations and the service. Other settings — `jobs.*`,
 `context.toolResultTokens`, `memory.*`, `safety.*`, `storage.adapter`, `secrets.adapter` — aren't in it; edit
 `~/.japa/settings.json` directly, or ask the CoS.
 

@@ -130,6 +130,8 @@ export type MessagingContext = {
   rollback(extension: string): Promise<string>;
   /** Runs the registered tool `name`, which may use only `api.commit` and `api.snapshot`; undefined without one. */
   tool(name: string, args: JsonObject): Promise<ToolExecutionResult | undefined>;
+  /** Removes every done, failed and cancelled job from the jobs list; returns how many. */
+  clearFinishedJobs(): Promise<number>;
 };
 
 export type KernelContext = {

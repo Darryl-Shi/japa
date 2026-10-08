@@ -56,12 +56,20 @@ function cut(text: string): string {
   return text.length > 120 ? `${text.slice(0, 119)}…` : text;
 }
 
-const DAY = 86_400_000;
+export const DAY = 86_400_000;
+
+const active = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
 
 /** Active jobs, and finished ones updated in the last 24 hours. */
 export function recent(jobs: Job[], now = Date.now()): Job[] {
-  const active = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
   return jobs.filter((j) => active(j) || j.updatedAt > now - DAY);
+}
+
+/** Deletes the done, failed and cancelled jobs updated before `before`; returns how many. */
+export function prune(jobs: Record<string, Job>, before: number): number {
+  const old = Object.values(jobs).filter((j) => !active(j) && j.updatedAt < before);
+  for (const job of old) delete jobs[job.id];
+  return old.length;
 }
 
 /** The `recent` jobs, a line each. */

@@ -1,6 +1,6 @@
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
-import { board, promote, recent, reportText, type Job, type JobStatus } from "../src/kernel/jobs/state.ts";
+import { board, promote, prune, recent, reportText, type Job, type JobStatus } from "../src/kernel/jobs/state.ts";
 
 function job(id: number, status: JobStatus, extra: Partial<Job> = {}): Job {
   return {
@@ -68,4 +68,21 @@ test("recent keeps active jobs and those updated in the last 24 hours", () => {
   const old = { updatedAt: now - 25 * HOUR };
   const list = [job(1, "done", old), job(2, "running", old), job(3, "failed", { updatedAt: now - HOUR })];
   expect(recent(list, now).map((j) => j.id)).toEqual(["2", "3"]);
+});
+
+test("prune deletes finished jobs updated before `before`, never active ones, and counts them", () => {
+  const jobs = jobsOf(
+    job(1, "done", { updatedAt: 10 }),
+    job(2, "failed", { updatedAt: 10 }),
+    job(3, "cancelled", { updatedAt: 10 }),
+    job(4, "done", { updatedAt: 20 }),
+    job(5, "queued", { updatedAt: 0 }),
+    job(6, "running", { updatedAt: 0 }),
+    job(7, "needs_input", { updatedAt: 0 }),
+  );
+  expect(prune(jobs, 20)).toBe(3);
+  expect(Object.keys(jobs)).toEqual(["4", "5", "6", "7"]);
+  expect(prune(jobs, 20)).toBe(0);
+  expect(prune(jobs, Infinity)).toBe(1);
+  expect(Object.keys(jobs)).toEqual(["5", "6", "7"]);
 });

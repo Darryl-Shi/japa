@@ -14,7 +14,7 @@ export type Settings = {
   models: { cos?: ModelRef; worker?: ModelRef; consolidation?: ModelRef };
   storage: { adapter: string } & JsonObject;
   secrets: { adapter: string } & JsonObject;
-  jobs: { maxConcurrent: number };
+  jobs: { maxConcurrent: number; keepFinishedDays: number };
   context: { toolResultTokens: number };
   memory: { maxFacts: number; maxTokens: number };
   safety: { toolErrorThreshold: number; goodAfterMinutes: number };
@@ -25,7 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
   models: {},
   storage: { adapter: "sqlite" },
   secrets: { adapter: "file" },
-  jobs: { maxConcurrent: 4 },
+  jobs: { maxConcurrent: 4, keepFinishedDays: 7 },
   context: { toolResultTokens: 2000 },
   memory: { maxFacts: 30, maxTokens: 1500 },
   safety: { toolErrorThreshold: 5, goodAfterMinutes: 10 },
@@ -38,7 +38,7 @@ const settingsSchema = Type.Object({
   models: Type.Object({ cos: Ref, worker: Type.Optional(Ref), consolidation: Type.Optional(Ref) }),
   storage: Type.Object({ adapter: Type.String() }),
   secrets: Type.Object({ adapter: Type.String() }),
-  jobs: Type.Object({ maxConcurrent: Type.Integer({ minimum: 1 }) }),
+  jobs: Type.Object({ maxConcurrent: Type.Integer({ minimum: 1 }), keepFinishedDays: Type.Integer({ minimum: 1 }) }),
   context: Type.Record(Type.String(), Type.Number({ exclusiveMinimum: 0 })),
   memory: Type.Record(Type.String(), Type.Integer({ minimum: 1 })),
   safety: Type.Object({

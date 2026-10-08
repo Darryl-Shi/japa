@@ -35,7 +35,7 @@ import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { type JapaExtension, secretNames } from "./extension.ts";
 import { installTool, rollBackAndLog, rollbackTool } from "./install.ts";
-import { byId, JobsDoc } from "./jobs/state.ts";
+import { byId, DAY, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
 import { MemoryDoc } from "./memory/state.ts";
@@ -142,6 +142,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const refreshAvailability = () => (rootReady ? rt.refreshAvailability(root) : Promise.resolve());
     // `root` and `opened` are set before any surface or trigger starts.
     const commit: Commit = (change) => root.commit(change, ctx);
+    // Finished jobs updated before `before` leave the jobs list; their conversations stay in storage.
+    const pruneJobs = (before: number) =>
+      root.commit(async (tx) => prune((await tx.doc(JobsDoc, root.id)).jobs, before), ctx);
+    const pruneOld = () => pruneJobs(Date.now() - settings.jobs.keepFinishedDays * DAY);
     const messaging: MessagingContext = {
       cursor: async (adapter) => (await opened.snapshot(MessagingDoc, root.id, ctx))?.cursors[adapter],
       saveCursor: (adapter, cursor) =>
@@ -156,6 +160,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         const found = registry.snapshot().tools().find((t) => t.tool.name === name);
         return found?.tool.execute(args, api as unknown as ToolExecutionApi, ctx);
       },
+      clearFinishedJobs: () => pruneJobs(Infinity),
     };
     // Resolved by the surfaces' `fulfil`, by secret name.
     const waiters = new Map<string, ((value: string) => void)[]>();
@@ -353,6 +358,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       const requests = await tx.doc(SecretRequestsDoc, root.id);
       requests.pending = requests.pending.filter((r) => !r.name.endsWith(AUTHORIZE_SUFFIX));
     }, ctx);
+    await pruneOld();
     const droppedLoops = await upgradeMemory(root);
     if (droppedLoops.length > 0) {
       const content =
@@ -384,6 +390,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // At boot, reflect at once on whatever the last run left unreflected.
     if ((await unreflectedTurns(opened, root)) > 0) void reflect().catch(() => {});
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
+    const pruning = setInterval(() => void pruneOld().catch(() => {}), 3_600_000).unref();
     safety.scheduleGood(); // a pending tag doesn't survive a restart
 
     return {
@@ -398,6 +405,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       close: async () => {
         closing.abort();
         clearTimeout(stayedUp);
+        clearInterval(pruning);
         clearTimeout(quiet);
         await resets.stop();
         safety.close();

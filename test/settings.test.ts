@@ -22,7 +22,8 @@ test("storage and secrets merge over their defaults", () => {
 });
 
 test("jobs merges over its default", () => {
-  expect(loadSettings(tempHome({ jobs: {} })).jobs).toEqual({ maxConcurrent: 4 });
+  expect(loadSettings(tempHome({ jobs: {} })).jobs).toEqual({ maxConcurrent: 4, keepFinishedDays: 7 });
+  expect(loadSettings(tempHome({ jobs: { maxConcurrent: 2 } })).jobs).toEqual({ maxConcurrent: 2, keepFinishedDays: 7 });
 });
 
 test("context and memory defaults; partial context merges over its default", () => {

@@ -49,6 +49,19 @@ test("an invalid settings_set changes nothing", async () => {
   await daemon.close();
 });
 
+test("jobs.keepFinishedDays defaults to 7 and must be at least 1", async () => {
+  const { daemon, faux } = await bootTest();
+  expect(await tool(daemon, faux, "settings_get", { path: "jobs.keepFinishedDays" })).toBe("7");
+  expect(await tool(daemon, faux, "settings_set", { path: "jobs.keepFinishedDays", value: 0 })).toMatch(
+    /^Not changed: jobs\.keepFinishedDays: /,
+  );
+  expect(await tool(daemon, faux, "settings_set", { path: "jobs.keepFinishedDays", value: 3 })).toMatch(
+    /^Set jobs\.keepFinishedDays\./,
+  );
+  expect(await tool(daemon, faux, "settings_get", { path: "jobs.keepFinishedDays" })).toBe("3");
+  await daemon.close();
+});
+
 test("undoing a set of an absent key removes it, and the default applies again", async () => {
   const { daemon, faux, home } = await bootTest();
   await tool(daemon, faux, "settings_set", { path: "jobs.maxConcurrent", value: 2 });
