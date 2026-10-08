@@ -90,7 +90,7 @@ export function browserTool(desktop: Desktop, connect: () => Promise<Browser>): 
       key: Type.Optional(Type.String()),
       paths: Type.Optional(Type.Array(Type.String())),
       gone: Type.Optional(Type.Boolean()),
-      timeout: Type.Optional(Type.Number({ minimum: 0, maximum: 30 })),
+      timeout: Type.Optional(Type.Number({ minimum: 1, maximum: 30 })),
       accept: Type.Optional(Type.Boolean()),
       js: Type.Optional(Type.String()),
       fullPage: Type.Optional(Type.Boolean()),
@@ -197,7 +197,7 @@ export function browserTool(desktop: Desktop, connect: () => Promise<Browser>): 
             }
             case "wait_for":
               if (!args.text && !args.ref) return "wait_for needs text or ref";
-              await (args.text ? page.getByText(args.text).first() : page.getByRef(args.ref!))
+              await (args.text ? page.getByText(args.text).first() : args.gone ? page.getByRef(args.ref!) : await byRef(page, args.ref!))
                 .waitFor({ state: args.gone ? "hidden" : "visible", timeout: (args.timeout ?? 10) * 1000 });
               return;
             case "dialog": {
@@ -239,9 +239,11 @@ export function browserTool(desktop: Desktop, connect: () => Promise<Browser>): 
           if (typeof raced === "object") return isOpen(raced);
           if (raced !== undefined) return raced;
 
+          // A dialog open on the resulting tab would stall the snapshot until Playwright's timeout.
           const after = currentPage();
-          const snapshot = await snapshotText(after);
           const kept = tabs.get(after)!;
+          if (kept.dialog) return isOpen(kept.dialog);
+          const snapshot = await snapshotText(after);
           const previous = kept.snapshot;
           kept.snapshot = snapshot;
           const [url, ...lines] = snapshot.split("\n");

@@ -1,3 +1,4 @@
+import { type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Browser, Page } from "playwright-core";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -61,6 +62,23 @@ test("a dialog opened by an action is reported, and answered with dialog", async
   expect(dialog.accept).toHaveBeenCalled();
   expect(resultText(await run(tool, { action: "snapshot" }, api))).toMatch(/^URL: https:\/\/example\.com\//);
   expect(resultText(await run(tool, { action: "dialog", accept: true }, api))).toMatch(/^No dialog is open\./);
+});
+
+test("a dialog already open on the tab an action lands on is reported instead of a snapshot", async () => {
+  const dialog = { type: () => "alert", message: () => "Hi", accept: vi.fn(async () => {}), dismiss: vi.fn() };
+  const first = fakePage();
+  const { tool } = browse(first, fakePage());
+  await run(tool, { action: "tabs" }, api);
+  first.emit("dialog", dialog);
+  expect(resultText(await run(tool, { action: "tab_select", id: "1" }, api))).toBe('A alert dialog is open: "Hi" — answer it with the dialog action.');
+});
+
+test("wait_for never waits without a timeout, and a stale ref answers at once", async () => {
+  const { tool } = browse(fakePage());
+  const call = (args: object) => ({ type: "toolCall" as const, id: "", name: "browser", arguments: { action: "wait_for", text: "x", ...args } });
+  expect(() => validateToolArguments(tool as unknown as Tool, call({ timeout: 0 }))).toThrow(/timeout/);
+  expect(validateToolArguments(tool as unknown as Tool, call({ timeout: 1 })).timeout).toBe(1);
+  expect(resultText(await run(tool, { action: "wait_for", ref: "e12" }, api))).toBe("Element e12 is gone — take a new snapshot.");
 });
 
 test("an unreachable browser answers with the reason", async () => {
