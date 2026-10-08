@@ -72,11 +72,17 @@ function pushTo(c: Checkout, branch: string, message: string, files: Record<stri
   return sha;
 }
 
-/** A local `dev` behind `origin/dev`; the sha it sits at and the sha origin moved on to. */
-function localDevBehind(c: Checkout): { at: string; origin: string } {
+/** A local `dev` at `origin/dev`, one commit ahead of the checked-out branch; its sha. */
+function localDev(c: Checkout): string {
   const at = pushTo(c, "dev", "dev one", { README: "dev one\n" });
   git(c.app, "fetch", "-q", "origin", "dev");
   git(c.app, "branch", "dev", "origin/dev");
+  return at;
+}
+
+/** A local `dev` behind `origin/dev`; the sha it sits at and the sha origin moved on to. */
+function localDevBehind(c: Checkout): { at: string; origin: string } {
+  const at = localDev(c);
   return { at, origin: pushTo(c, "dev", "dev two", { README: "dev two\n" }) };
 }
 
@@ -309,6 +315,40 @@ test("--branch fast-forwards a local branch that is behind", async () => {
   expect(head(c.app)).toBe(dev.origin);
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("dev two\n");
   expect(git(c.app, "rev-parse", "main")).toBe(old);
+});
+
+test("--branch switches to a branch whose code is already current", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  const dev = localDev(c);
+  const h = harness(c, { options: { branch: "dev" } });
+
+  const result = await update(h.o, h.deps);
+
+  expect(result).toBe("updated");
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("dev");
+  expect(head(c.app)).toBe(dev);
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("dev one\n");
+  expect(git(c.app, "rev-parse", "main")).toBe(old);
+  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+});
+
+test("--check --branch reports the switch and changes nothing", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  const dev = localDev(c);
+  const h = harness(c, { options: { branch: "dev", check: true } });
+
+  const result = await update(h.o, h.deps);
+
+  expect(result).toBe("checked");
+  expect(h.logs[0]).toBe(`would switch to dev (${short(dev)})`);
+  expect(h.logs[1]).toBe("1 new commits");
+  expect(h.logs[2]).toContain("dev one");
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
+  expect(head(c.app)).toBe(old);
+  expect(git(c.app, "rev-parse", "dev")).toBe(dev);
+  expect(h.calls).toEqual([]);
 });
 
 test("a failing validate after switching branches comes back to the original branch", async () => {

@@ -134,6 +134,8 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
   if (branchRef.code !== 0) throw new UpdateFailed("not on a branch");
   const original = branchRef.stdout.trim();
   const branch = o.branch ?? original;
+  /** `--branch` naming another branch asks to stand on it, which an update always does -- even if its code is current. */
+  const switched = branch !== original;
   const old = await out("rev-parse", "HEAD");
 
   // 2. Fetch and pick the target commit.
@@ -143,18 +145,16 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
   const resolved = await git("rev-parse", "--verify", `${wanted}^{commit}`);
   if (resolved.code !== 0) throw new UpdateFailed(`no such commit: ${wanted}`);
   const target = resolved.stdout.trim();
-  /** Where the branch we are updating stands now; undefined when `--branch` names one we don't have yet. */
-  const localBranch = await git("rev-parse", "--verify", `refs/heads/${branch}`);
-  const tip = localBranch.code === 0 ? localBranch.stdout.trim() : undefined;
 
-  if (tip === target) {
-    o.log(`japa is up to date (${short(target)})`);
+  // Up to date means standing on the target branch at the target commit: a `--branch` elsewhere is still a move.
+  if (!switched && target === old) {
+    o.log(`japa is up to date (${short(old)})`);
     return "up to date";
   }
   if (o.check) {
-    const base = tip ?? old;
-    const count = await out("rev-list", "--count", `${base}..${target}`);
-    const incoming = await out("log", "--oneline", `${base}..${target}`);
+    if (switched) o.log(`would switch to ${branch} (${short(target)})`);
+    const count = await out("rev-list", "--count", `${old}..${target}`);
+    const incoming = await out("log", "--oneline", `${old}..${target}`);
     o.log(`${count} new commits`);
     if (incoming !== "") o.log(incoming);
     return "checked";
@@ -177,9 +177,12 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
     }
   };
 
-  // `--branch` means standing on that branch; one we don't have yet is created tracking origin, and an existing one
-  // is only ever fast-forwarded by the apply below -- never force-moved to where we came from.
-  const switched = branch !== original;
+  /** Where the branch we are updating stands now; undefined when `--branch` names one we don't have yet. */
+  const localBranch = await git("rev-parse", "--verify", `refs/heads/${branch}`);
+  const tip = localBranch.code === 0 ? localBranch.stdout.trim() : undefined;
+
+  // One we don't have yet is created tracking origin; an existing one is only ever fast-forwarded by the apply
+  // below -- never force-moved to where we came from.
   if (switched) {
     const stand = tip === undefined ? ["checkout", "-b", branch, "--track", `origin/${branch}`] : ["checkout", branch];
     const moved = await git(...stand);
