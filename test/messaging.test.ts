@@ -6,8 +6,9 @@ import { expect, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { ACTIVATION_ORDER, CONTRACTS, type TriggerContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
+import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { bootTest, carryOver, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
-import { ask, held, say, script, texts, tool } from "./jobs-helpers.ts";
+import { ask, call, held, say, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
 test("the messaging contract validates adapters and activates after surfaces", () => {
@@ -251,4 +252,51 @@ test("a reply in flight at the stop is sent after the restart, and a sent one is
   await sleep(500);
   expect(fake2.sent.map((s) => s.markdown)).toEqual(["re: two"]);
   await again.close();
+});
+
+const PROMPT = "japa needs `svc.token`: to sync. Send it as your next message; I'll delete it at once.";
+
+/** Boots with `fake`, has the CoS ask for `svc.token` on "connect", and waits for the prompt. */
+async function prompted(fake: ReturnType<typeof fakeAdapter>) {
+  const booted = await bootMessaging(fake);
+  script(booted.faux, (role, text) =>
+    role === "user" && text === "connect" ? call("secret_request", { name: "svc.token", why: "to sync" }) : undefined,
+  );
+  await fake.receive({ text: "connect" });
+  await waitFor(() => fake.sent.some((s) => s.markdown === PROMPT));
+  return booted;
+}
+
+test("a pending secret request is asked for; the next text fulfils it and is deleted", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home } = await prompted(fake);
+  await fake.receive({ text: "s3cr3t", messageId: "77" });
+  expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret svc.token provided]"));
+  expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("if the message can't be deleted, the secret is still stored and the user is told", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home } = await prompted(fake);
+  fake.failDelete = true;
+  await fake.receive({ text: "s3cr3t" });
+  expect(fake.sent.at(-1)!.markdown).toBe("Couldn't delete your message — please delete it yourself.");
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  await daemon.close();
+});
+
+test("a command cancels the prompt; the request stays pending", async () => {
+  const fake = fakeAdapter();
+  const { daemon } = await prompted(fake);
+  await fake.receive({ command: "status" });
+  await fake.receive({ text: "hello" });
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
+  expect(fake.deleted).toEqual([]);
+  expect((await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending).toMatchObject([
+    { name: "svc.token" },
+  ]);
+  await daemon.close();
 });
