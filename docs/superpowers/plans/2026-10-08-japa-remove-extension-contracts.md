@@ -132,7 +132,7 @@ test("an extension providing a non-core contract fails alone; a contracts field 
 });
 ```
 
-- `test/activation.test.ts`: delete `extension-defined contracts activate between tools and triggers`; add `core contracts activate in order: environment, tool, trigger, surface` — one extension whose `environment` adapter's `create` is never needed but whose contributions record activation by wrapping: use a `setup` that pushes `"setup"`, a tool, a trigger `start` pushing `"trigger"` and a surface `start` pushing `"surface"`, and assert `order` equals `["setup", "trigger", "surface"]` and that the tool is in `daemon.registry.snapshot().tools()` before the trigger started (check inside the trigger's `start`). Drop the `Contract` import.
+- `test/activation.test.ts`: delete `extension-defined contracts activate between tools and triggers`; add `tools are installed before triggers start, and triggers before surfaces` — one extension with `setup` pushing `"setup"`, a tool `probe_echo`, a trigger whose `start` pushes `"trigger"`, and a surface whose `start` pushes `"surface"`. Assert `order` equals `["setup", "trigger", "surface"]`. Drop the `Contract` import.
 - `test/capabilities.test.ts`: rename to `capabilities lists extensions, workers, models and surfaces`; remove the `contracts` input and the `"Contracts:"`, `"- surface: …"`, `"- calendar: …"` expected lines.
 - `test/extension.test.ts`: call `validateExtension(e)` with one argument; `all seven core contracts exist` checks `[...CONTRACTS.keys()].sort()` (import `CONTRACTS` from `../src/kernel/contracts.ts`).
 - `test/settings-tools.test.ts` (`extension settings are validated against its schema…`): replace the `probe` contract with `setup: (k) => { kernel = k; }` and remove `contracts`/`provides`; drop the `Contract` import.
@@ -167,7 +167,7 @@ git commit -m "refactor(kernel): core contracts only; remove extension-defined c
 - Modify: `src/kernel/identity.md:15`
 - Modify: `skills/building-extensions/SKILL.md` (manifest bullets ~line 43; "Defining a contract" ~lines 86–94; escape-hatch intro ~line 97)
 - Modify: `docs/superpowers/specs/2026-10-07-japa-design.md` (§4 intro, §4.3, §4.4, §5.1, §5.2, §9.4 capabilities text ~line 555, §10.3, §11.1, §11.2 skill list ~line 690, file map ~line 722, testing ~line 742)
-- Test: `test/content.test.ts` if it exists for skills/identity; otherwise the grep in Step 2
+- Test: `test/content.test.ts` (existing; must still pass) and the grep in Step 2
 
 **Interfaces:** none (text only).
 
