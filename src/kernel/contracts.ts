@@ -1,4 +1,4 @@
-import type { AgentEvent, JsonObject, ModelRef, Storage } from "@earendil-works/pi-durable";
+import type { AgentEvent, JsonObject, ModelRef, Storage, UserInput } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Job } from "./jobs/state.ts";
@@ -33,10 +33,18 @@ export type Status = {
   errors: { name: string; error: string }[];
 };
 
+/** Where an input came from: a surface and chat, or the kernel on its own (`"proactive"`). */
+export type Origin = { surface: string; chat?: string } | "proactive";
+
 export type SurfaceContext = {
   home: string;
   root: {
-    submit(text: string, mode?: "steer" | "followUp"): Promise<void>;
+    /** With an `origin`, the input's requestId encodes it; an `id` makes a resubmission a no-op. */
+    submit(
+      input: UserInput,
+      mode?: "steer" | "followUp",
+      origin?: { surface: string; chat?: string; id?: string },
+    ): Promise<void>;
     abort(): Promise<void>;
     /** Delivers the current snapshot as the first event, then live events. */
     events(listener: (events: readonly AgentEvent[]) => void): Promise<{ stop(): Promise<void> }>;

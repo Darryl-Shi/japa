@@ -7,7 +7,7 @@ import { type ServerMessage, socketPath } from "../extensions/gateway/protocol.t
 import { boot } from "../src/kernel/boot.ts";
 import type { Status } from "../src/kernel/contracts.ts";
 import type { SecretRequest } from "../src/kernel/secret-requests.ts";
-import { bootTest, tempHome, testKit } from "./helpers.ts";
+import { bootTest, probe, tempHome, testKit } from "./helpers.ts";
 import { call, script } from "./jobs-helpers.ts";
 
 test("attach, submit, and receive the answer", async () => {
@@ -20,6 +20,21 @@ test("attach, submit, and receive the answer", async () => {
   client.send({ type: "submit", text: "hello" });
   await vi.waitFor(() => expect(JSON.stringify(seen)).toContain("Hi there"));
   expect(seen[0].type === "events" && seen[0].events[0].type).toBe("snapshot");
+  client.close();
+  await daemon.close();
+});
+
+test("the gateway submits with its origin and still shows input from other surfaces", async () => {
+  const { extension, surface } = probe();
+  const { daemon, home } = await bootTest({}, [extension]);
+  const client = await connect(home);
+  const seen: ServerMessage[] = [];
+  client.onMessage((m) => seen.push(m));
+  client.send({ type: "attach" });
+  client.send({ type: "submit", text: "hello" });
+  await surface().root.submit("from the phone", undefined, { surface: "fake", chat: "9" });
+  await vi.waitFor(() => expect(JSON.stringify(seen)).toMatch(/"requestId":"surface:gateway::[0-9a-f-]{36}"/));
+  await vi.waitFor(() => expect(JSON.stringify(seen)).toContain("from the phone"));
   client.close();
   await daemon.close();
 });

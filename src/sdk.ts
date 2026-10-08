@@ -17,6 +17,7 @@ export type {
   Dispose,
   EnvironmentAdapter,
   KernelContext,
+  Origin,
   SecretsAdapter,
   SecretsStore,
   StorageAdapter,

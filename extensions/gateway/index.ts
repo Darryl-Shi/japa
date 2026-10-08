@@ -27,7 +27,7 @@ async function start(ctx: SurfaceContext) {
         case "status":
           return writeMessage(socket, { type: "status", status: ctx.status() });
         case "submit":
-          if (typeof m.text === "string") return ctx.root.submit(m.text, m.mode);
+          if (typeof m.text === "string") return ctx.root.submit(m.text, m.mode, { surface: "gateway" });
         // falls through: a submit without text is invalid
         default:
           return writeMessage(socket, { type: "error", message: "Invalid message" });

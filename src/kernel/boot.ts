@@ -38,6 +38,7 @@ import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./mem
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { requestIdFor } from "./origin.ts";
 import { watchResets } from "./reset.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
@@ -134,8 +135,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       surface: {
         home,
         root: {
-          submit: async (text, mode) => {
-            await root.submit({ type: "input", content: text, whenBusy: mode ?? "followUp" }, ctx);
+          submit: async (input, mode, origin) => {
+            const requestId = origin && { requestId: requestIdFor(origin) };
+            await root.submit({ type: "input", content: input, whenBusy: mode ?? "followUp", ...requestId }, ctx);
           },
           abort: () => root.abort(ctx),
           events: async (listener) => {

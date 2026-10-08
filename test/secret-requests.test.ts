@@ -4,34 +4,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { ChangesDoc } from "../src/kernel/changes.ts";
-import type { SurfaceContext } from "../src/kernel/contracts.ts";
-import type { JapaExtension } from "../src/kernel/extension.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
 import { type SecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
-import { bootTest } from "./helpers.ts";
+import { bootTest, probe } from "./helpers.ts";
 import { ask, call, idle, script, system, texts, tool } from "./jobs-helpers.ts";
-
-/** A surface that hands its `SurfaceContext` to the test. */
-function probe() {
-  let surface: SurfaceContext | undefined;
-  const extension: JapaExtension = {
-    name: "probe",
-    summary: "Test",
-    provides: {
-      surface: [
-        {
-          name: "probe",
-          start: async (c: SurfaceContext) => {
-            surface = c;
-            return () => {};
-          },
-        },
-      ],
-    },
-  };
-  return { extension, surface: () => surface! };
-}
 
 test("a secret request is listed, fulfilled into the store, and announced once without the value", async () => {
   const { extension, surface } = probe();

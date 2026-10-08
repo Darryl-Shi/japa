@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
+import type { SurfaceContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { fauxKit } from "../src/kernel/kit.ts";
 
@@ -57,4 +58,25 @@ export async function bootTest(
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, ...extra] });
   return { daemon, faux: kit.faux, home };
+}
+
+/** A surface that hands its `SurfaceContext` to the test. */
+export function probe() {
+  let surface: SurfaceContext | undefined;
+  const extension: JapaExtension = {
+    name: "probe",
+    summary: "Test",
+    provides: {
+      surface: [
+        {
+          name: "probe",
+          start: async (c: SurfaceContext) => {
+            surface = c;
+            return () => {};
+          },
+        },
+      ],
+    },
+  };
+  return { extension, surface: () => surface! };
 }
