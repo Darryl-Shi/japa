@@ -108,16 +108,64 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
   const git = (...args: string[]) => exec("git", ["-C", o.app, ...GIT_CONFIG, ...args]);
   const out = async (...args: string[]) => (await git(...args)).stdout.trim();
 
-  // 1. Preflight: a branch, the baseline for a home that has never been set up, and the local changes out of the way.
+  /** A step that must not fail the thing it is trying to repair: its failure is logged and swallowed. */
+  const attempt = async (what: string, run: () => unknown): Promise<void> => {
+    try {
+      await run();
+    } catch (error) {
+      o.log(`could not ${what}: ${(error as Error).message}`);
+    }
+  };
+  /** `git`, but a non-zero exit throws, so `attempt` can report it. */
+  const mustGit = async (...args: string[]) => {
+    const r = await git(...args);
+    if (r.code !== 0) throw new Error(reason(r));
+  };
+  /** Where the checkout stands, for a message that must not claim more than is known. */
+  const describe = async () => {
+    const sha = await out("rev-parse", "--short", "HEAD");
+    const on = await out("symbolic-ref", "--short", "HEAD");
+    if (sha === "") return "in an unknown state";
+    return on === "" ? `on a detached HEAD at ${sha}` : `on ${on} at ${sha}`;
+  };
+
+  // 1. Preflight: a branch to stand on and the sha to come back to.
   const branchRef = await git("symbolic-ref", "--short", "HEAD");
   if (branchRef.code !== 0) throw new UpdateFailed("not on a branch");
-  const branch = o.branch ?? branchRef.stdout.trim();
+  const original = branchRef.stdout.trim();
+  const branch = o.branch ?? original;
   const old = await out("rev-parse", "HEAD");
+
+  // 2. Fetch and pick the target commit.
+  const fetched = await git("fetch", "origin", branch);
+  if (fetched.code !== 0) throw new UpdateFailed(`could not fetch origin ${branch}: ${reason(fetched)}`);
+  const wanted = o.to ?? `origin/${branch}`;
+  const resolved = await git("rev-parse", "--verify", `${wanted}^{commit}`);
+  if (resolved.code !== 0) throw new UpdateFailed(`no such commit: ${wanted}`);
+  const target = resolved.stdout.trim();
+  /** Where the branch we are updating stands now; undefined when `--branch` names one we don't have yet. */
+  const localBranch = await git("rev-parse", "--verify", `refs/heads/${branch}`);
+  const tip = localBranch.code === 0 ? localBranch.stdout.trim() : undefined;
+
+  if (tip === target) {
+    o.log(`japa is up to date (${short(target)})`);
+    return "up to date";
+  }
+  if (o.check) {
+    const base = tip ?? old;
+    const count = await out("rev-list", "--count", `${base}..${target}`);
+    const incoming = await out("log", "--oneline", `${base}..${target}`);
+    o.log(`${count} new commits`);
+    if (incoming !== "") o.log(incoming);
+    return "checked";
+  }
+
+  // 3. Apply. Nothing above this line touches anything, so the baseline and the stash wait until a change is certain.
   if (!existsSync(join(o.home, "setup.json"))) await deps.baseline(o.home);
 
   let stashed = false;
   if ((await out("status", "--porcelain")) !== "") {
-    const pushed = await git("stash", "push", "-u", "-m", "japa update");
+    const pushed = await git("stash", "push", "-u", "-m", `japa update ${new Date().toISOString()}`);
     if (pushed.code !== 0) throw new UpdateFailed(`could not stash your local changes: ${reason(pushed)}`);
     stashed = true;
   }
@@ -129,37 +177,28 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
     }
   };
 
-  // 2. Fetch and pick the target commit.
-  const fetched = await git("fetch", "origin", branch);
-  if (fetched.code !== 0) {
-    await popStash();
-    throw new UpdateFailed(`could not fetch origin ${branch}: ${reason(fetched)}`);
+  // `--branch` means standing on that branch; one we don't have yet is created tracking origin, and an existing one
+  // is only ever fast-forwarded by the apply below -- never force-moved to where we came from.
+  const switched = branch !== original;
+  if (switched) {
+    const stand = tip === undefined ? ["checkout", "-b", branch, "--track", `origin/${branch}`] : ["checkout", branch];
+    const moved = await git(...stand);
+    if (moved.code !== 0) {
+      await popStash();
+      throw new UpdateFailed(`could not check out ${branch}: ${reason(moved)}`);
+    }
   }
-  const wanted = o.to ?? `origin/${branch}`;
-  const resolved = await git("rev-parse", "--verify", `${wanted}^{commit}`);
-  if (resolved.code !== 0) {
-    await popStash();
-    throw new UpdateFailed(`no such commit: ${wanted}`);
-  }
-  const target = resolved.stdout.trim();
+  /** Undoes the branch switch: `branch` back where it stood (or gone, if we made it) and HEAD on the original. */
+  const returnToOriginal = async () => {
+    if (!switched) return;
+    if (tip !== undefined) await attempt(`put ${branch} back`, () => mustGit("reset", "--hard", tip));
+    await attempt(`check out ${original}`, () => mustGit("checkout", "--force", original));
+    if (tip === undefined) await attempt(`delete ${branch}`, () => mustGit("branch", "-D", branch));
+  };
 
-  if (target === old) {
-    await popStash();
-    o.log(`japa is up to date (${short(old)})`);
-    return "up to date";
-  }
-  if (o.check) {
-    const count = await out("rev-list", "--count", `${old}..${target}`);
-    const incoming = await out("log", "--oneline", `${old}..${target}`);
-    await popStash();
-    o.log(`${count} new commits`);
-    if (incoming !== "") o.log(incoming);
-    return "checked";
-  }
-
-  // 3. Apply.
   const apply = o.to === undefined ? await git("merge", "--ff-only", target) : await git("checkout", "-B", branch, target);
   if (apply.code !== 0) {
+    await returnToOriginal();
     await popStash();
     const why =
       o.to === undefined
@@ -174,6 +213,20 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
   let node = deps.node;
   let replacedNode: string | undefined;
   let launcherBefore: string | undefined;
+
+  /** Puts everything back. No step may throw: the failure that caused the rollback is the one the user needs. */
+  const rollback = async (): Promise<string> => {
+    await returnToOriginal();
+    await attempt(`reset ${original} to ${short(old)}`, () => mustGit("reset", "--hard", old));
+    const nodeDir = replacedNode;
+    if (nodeDir !== undefined) await attempt("restore the previous node", () => restoreNode(nodeDir));
+    const launcher = launcherBefore;
+    if (launcher !== undefined) await attempt("restore the launcher", () => writeFileSync(layout.launcher, launcher));
+    if (lockChanged) await attempt("reinstall the dependencies", () => deps.npmCi(o.app, deps.node));
+    const back = (await out("rev-parse", "HEAD")) === old && (await out("symbolic-ref", "--short", "HEAD")) === original;
+    return back ? `still on ${short(old)}` : `rollback failed, the checkout is ${await describe()}`;
+  };
+
   try {
     const version = nodeVersion(o.app);
     if (layout.nodeDir !== undefined && version !== undefined && needsNode(version, deps.node, layout.nodeDir)) {
@@ -189,19 +242,23 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
     step = "validation";
     await deps.validate(o.app, node);
   } catch (error) {
-    await git("reset", "--hard", old);
-    if (replacedNode !== undefined) restoreNode(replacedNode);
-    if (launcherBefore !== undefined) writeFileSync(layout.launcher, launcherBefore);
-    if (lockChanged) await deps.npmCi(o.app, deps.node);
-    await popStash();
-    throw new UpdateFailed(`update failed at ${step}: ${(error as Error).message}; still on ${short(old)}`);
+    let where = "the checkout may be half-updated";
+    try {
+      where = await rollback();
+    } finally {
+      await popStash();
+    }
+    throw new UpdateFailed(`update failed at ${step}: ${(error as Error).message}; ${where}`);
   }
   if (replacedNode !== undefined) dropOldNode(replacedNode);
 
   // 7-9. What's new in the new code, one restart for code and configuration, then the report.
-  await deps.whatsNew(o.app, node, o.interactive);
-  if (o.restart) await deps.restart(o.log);
-  await popStash();
+  try {
+    await deps.whatsNew(o.app, node, o.interactive);
+    if (o.restart) await deps.restart(o.log);
+  } finally {
+    await popStash();
+  }
   o.log(`${short(old)} → ${short(target)}`);
   const summary = await out("log", "--oneline", "-20", `${old}..${target}`);
   if (summary !== "") o.log(summary);

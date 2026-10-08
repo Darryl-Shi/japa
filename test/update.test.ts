@@ -62,6 +62,24 @@ function push(c: Checkout, message: string, files: Record<string, string>): stri
   return sha;
 }
 
+/** Commits `files` on `branch` (created the first time) and pushes it, leaving the seed back on its own branch. */
+function pushTo(c: Checkout, branch: string, message: string, files: Record<string, string>): string {
+  const known = git(c.seed, "branch", "--list", branch) !== "";
+  git(c.seed, "checkout", "-q", ...(known ? [branch] : ["-b", branch]));
+  const sha = commitFiles(c.seed, message, files);
+  git(c.seed, "push", "-q", "origin", branch);
+  git(c.seed, "checkout", "-q", c.branch);
+  return sha;
+}
+
+/** A local `dev` behind `origin/dev`; the sha it sits at and the sha origin moved on to. */
+function localDevBehind(c: Checkout): { at: string; origin: string } {
+  const at = pushTo(c, "dev", "dev one", { README: "dev one\n" });
+  git(c.app, "fetch", "-q", "origin", "dev");
+  git(c.app, "branch", "dev", "origin/dev");
+  return { at, origin: pushTo(c, "dev", "dev two", { README: "dev two\n" }) };
+}
+
 type Call = { name: string; args: unknown[]; head: string };
 
 /** A private Node dir whose `bin/node` holds `text`, as `ensurePrivateNode` leaves it; the binary's path. */
@@ -204,7 +222,21 @@ test("local edits that conflict stay in the stash", async () => {
   await update(h.o, h.deps);
 
   expect(h.logs).toContain(`your local changes are kept in git stash; run: git -C ${c.app} stash pop`);
-  expect(git(c.app, "stash", "list")).toContain("japa update");
+  expect(git(c.app, "stash", "list")).toMatch(/japa update \d{4}-\d{2}-\d{2}T[\d:.]+Z/); // dated, per design doc §5.1
+});
+
+test("--check leaves a dirty tree alone", async () => {
+  const c = checkout();
+  writeFileSync(join(c.app, "README"), "mine\n");
+  writeFileSync(join(c.app, "scratch.txt"), "scratch\n");
+  push(c, "two", { README: "two\n" });
+  const h = harness(c, { options: { check: true } });
+
+  await update(h.o, h.deps);
+
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("mine\n");
+  expect(readFileSync(join(c.app, "scratch.txt"), "utf8")).toBe("scratch\n");
+  expect(git(c.app, "stash", "list")).toBe("");
 });
 
 test("a failing validate rolls back to the old sha and re-runs npm ci when the lockfile changed", async () => {
@@ -221,6 +253,76 @@ test("a failing validate rolls back to the old sha and re-runs npm ci when the l
   expect(readFileSync(join(c.app, "package-lock.json"), "utf8")).toBe(FIRST["package-lock.json"]);
   expect(readFileSync(join(c.app, "scratch.txt"), "utf8")).toBe("scratch\n");
   expect(git(c.app, "stash", "list")).toBe("");
+});
+
+test("a rollback that fails itself keeps the original error and the local edits", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  writeFileSync(join(c.app, "scratch.txt"), "scratch\n");
+  push(c, "two", { "package-lock.json": '{ "lockfileVersion": 2 }\n' });
+  const h = harness(c, { fail: "npmCi" }); // the rollback's own `npm ci` throws too
+
+  await expect(update(h.o, h.deps)).rejects.toThrow(`update failed at dependencies: boom; still on ${short(old)}`);
+
+  expect(h.names()).toEqual(["npmCi", "npmCi"]);
+  expect(head(c.app)).toBe(old);
+  expect(readFileSync(join(c.app, "scratch.txt"), "utf8")).toBe("scratch\n");
+  expect(git(c.app, "stash", "list")).toBe("");
+});
+
+test("--no-restart updates and runs whatsNew without restarting", async () => {
+  const c = checkout();
+  const target = push(c, "two", { README: "two\n" });
+  const h = harness(c, { options: { restart: false } });
+
+  await update(h.o, h.deps);
+
+  expect(h.names()).toEqual(["validate", "whatsNew"]);
+  expect(head(c.app)).toBe(target);
+});
+
+test("--branch checks out a branch we don't have yet and leaves the current one alone", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  const target = pushTo(c, "dev", "dev one", { README: "dev\n" });
+  const h = harness(c, { options: { branch: "dev" } });
+
+  const result = await update(h.o, h.deps);
+
+  expect(result).toBe("updated");
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("dev");
+  expect(head(c.app)).toBe(target);
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("dev\n");
+  expect(git(c.app, "rev-parse", "main")).toBe(old);
+  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+});
+
+test("--branch fast-forwards a local branch that is behind", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  const dev = localDevBehind(c);
+  const h = harness(c, { options: { branch: "dev" } });
+
+  await update(h.o, h.deps);
+
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("dev");
+  expect(head(c.app)).toBe(dev.origin);
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("dev two\n");
+  expect(git(c.app, "rev-parse", "main")).toBe(old);
+});
+
+test("a failing validate after switching branches comes back to the original branch", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  const dev = localDevBehind(c);
+  const h = harness(c, { options: { branch: "dev" }, fail: "validate" });
+
+  await expect(update(h.o, h.deps)).rejects.toThrow(`update failed at validation: boom; still on ${short(old)}`);
+
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
+  expect(head(c.app)).toBe(old);
+  expect(git(c.app, "rev-parse", "dev")).toBe(dev.at); // never force-moved, never left at main's sha
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("one\n");
 });
 
 test("--to checks out an older commit", async () => {
@@ -303,6 +405,21 @@ test("a home without setup.json gets the old manifests as baseline", async () =>
   expect(h.calls[0].args).toEqual([c.home]);
   expect(h.calls[0].head).toBe(old); // the pre-update manifests are what gets recorded
   expect(head(c.app)).toBe(target);
+});
+
+test("a no-op update writes no baseline", async () => {
+  const c = checkout({ setupJson: false });
+  const uptodate = harness(c);
+
+  expect(await update(uptodate.o, uptodate.deps)).toBe("up to date");
+  expect(uptodate.names()).toEqual([]);
+
+  push(c, "two", { README: "two\n" });
+  const checked = harness(c, { options: { check: true } });
+
+  expect(await update(checked.o, checked.deps)).toBe("checked");
+  expect(checked.names()).toEqual([]);
+  expect(existsSync(join(c.home, "setup.json"))).toBe(false);
 });
 
 test("a detached HEAD is refused", async () => {
