@@ -423,9 +423,9 @@ Rendered as sections, in this order (static first, for prompt caching):
 1. **Identity** — role, how japa works, mechanism ladder, UX rules (§9.1).
 2. **Capabilities** — generated from manifests and content (§9.2).
 3. **About you** — the user fact list (§7.4).
-4. **Jobs** — one line per active job, plus jobs finished in the last 24 h.
-5. **Schedules** — the user's active schedules (`schedule` extension).
-6. **Waiting on you** — one line per pending secret request (§9.5).
+4. **Waiting on you** — one line per pending secret request (§9.5).
+5. **Jobs** — one line per active job, plus jobs finished in the last 24 h.
+6. **Schedules** — the user's active schedules (`schedule` extension).
 7. **Last exchange** — the settled run's inputs and the CoS's final answer,
    carried over by the reset (§7.3).
 
@@ -726,8 +726,8 @@ docs/superpowers/specs/
 - Jobs: failures become `failed` and are reported; `needs_input` is a normal
   state, not an error.
 - Triggers, job reports, secret notices: idempotent via `requestId`.
-- Consolidation: a durable task; a crash resumes it; a stale result is
-  discarded (§7.3).
+- Reflection: a durable background task over the stored transcript; a failed
+  run leaves its cursor and the same turns are retried (§7.4).
 - Extensions and boot adapters: §10.4.
 
 ## 15. Testing
