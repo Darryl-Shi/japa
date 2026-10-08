@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { bootTest, stage } from "./helpers.ts";
@@ -6,8 +6,12 @@ import { tool } from "./jobs-helpers.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
-test("brave_search asks for its key when it is missing", async () => {
-  const { daemon, faux } = await bootTest();
+/** Boots with brave's key stored, so brave is available. */
+const bootKeyed = () => bootTest({}, [], undefined, { "brave.apiKey": "bk-1" });
+
+test("brave_search asks for its key when it goes missing", async () => {
+  const { daemon, faux, home } = await bootKeyed();
+  rmSync(join(home, "secrets/brave.apiKey"));
   expect(await tool(daemon, faux, "brave_search", { query: "cats" })).toBe(
     'brave_search needs a Brave Search API key. Ask the user for it with secret_request({ name: "brave.apiKey", why: "..." }), then try again.',
   );
@@ -15,17 +19,18 @@ test("brave_search asks for its key when it is missing", async () => {
 });
 
 test("brave_search still works after an extension install reloads the registry", { timeout: 60_000 }, async () => {
-  const { daemon, faux, home } = await bootTest();
+  const { daemon, faux, home } = await bootKeyed();
+  const results = [{ title: "Cats", url: "https://c.example", description: "C" }];
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ web: { results } })));
   stage(home, "extensions/dice/index.ts",
     `import { defineJapaExtension } from "japa/sdk";\nexport default defineJapaExtension({ name: "dice", summary: "Dice", examples: ["roll"], docs: "Dice." });\n`);
   expect(await tool(daemon, faux, "install", { kind: "extension", name: "dice" })).toBe("Installed extension dice. (change 1)");
-  expect(await tool(daemon, faux, "brave_search", { query: "cats" })).toMatch(/^brave_search needs a Brave Search API key/);
+  expect(await tool(daemon, faux, "brave_search", { query: "cats" })).toBe("1. Cats\nhttps://c.example\nC");
   await daemon.close();
 });
 
 test("brave_search sends the key and parses the results", async () => {
-  const { daemon, faux, home } = await bootTest();
-  writeFileSync(join(home, "secrets/brave.apiKey"), "bk-1");
+  const { daemon, faux } = await bootKeyed();
   const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
     Response.json({ web: { results: [{ title: "Cats", url: "https://cats.example", description: "All about cats" }] } }),
   );
@@ -40,8 +45,7 @@ test("brave_search sends the key and parses the results", async () => {
 });
 
 test("brave_search reports HTTP errors and no results", async () => {
-  const { daemon, faux, home } = await bootTest();
-  writeFileSync(join(home, "secrets/brave.apiKey"), "bk-1");
+  const { daemon, faux } = await bootKeyed();
   vi.stubGlobal("fetch", vi.fn(async () => new Response("no", { status: 429 })));
   expect(await tool(daemon, faux, "brave_search", { query: "cats" })).toBe("Search failed: Brave Search replied HTTP 429");
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({})));

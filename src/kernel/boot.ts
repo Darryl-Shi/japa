@@ -123,6 +123,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         summary: e.summary,
         provides: Object.keys(e.provides ?? {}),
         ...(e.status && { status: statusLine(e.status) }),
+        ...(rt.states.has(e.name) && { state: rt.states.get(e.name) }),
       })),
       errors: rt.errors,
     });
@@ -131,8 +132,14 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       settings,
       models,
       extensions: () => rt.extensions,
-      changed: () => rt.refreshCapabilities(),
+      changed: async () => {
+        rt.refreshCapabilities();
+        await refreshAvailability();
+      },
     };
+    // Which extensions are available changes as secrets and settings do; the tool phase's `start` computes it too.
+    let rootReady = false;
+    const refreshAvailability = () => (rootReady ? rt.refreshAvailability(root) : Promise.resolve());
     // `root` and `opened` are set before any surface or trigger starts.
     const commit: Commit = (change) => root.commit(change, ctx);
     const messaging: MessagingContext = {
@@ -171,6 +178,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       setSecret: async (name, value) => {
         declared(extension, name);
         await secrets.set(name, value);
+        await refreshAvailability();
       },
       secretProvided: async (name) => {
         declared(extension, name);
@@ -238,6 +246,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
             const name = await fulfilSecret(opened, root, secrets, requestId, value, ctx, by);
             for (const resolve of waiters.get(name) ?? []) resolve(value);
             waiters.delete(name);
+            await refreshAvailability();
           },
         },
         status,
@@ -254,7 +263,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
     const { Reflect, startReflect } = reflection({ models, settings });
-    const reconcile = () => rt.reconcile(root);
+    const reconcile = async () => {
+      const result = await rt.reconcile(root);
+      await refreshAvailability();
+      return result;
+    };
     const report = (error: string) => rt.errors.push({ name: "japa-safety", error });
     const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root, report });
     // After an undo's commits are reverted.
@@ -298,6 +311,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       packageRoot,
       packaged: dirs.filter((d) => d !== workspace),
       settings,
+      secrets,
       extensions,
       errors: [...loaded.errors],
       sources,
@@ -330,6 +344,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     registry.install(WorkerExtension);
     registry.install(CodingTools);
     const root = await ensureRoot(harness, model, ctx);
+    rootReady = true;
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
       await tx.doc(MemoryDoc, root.id);

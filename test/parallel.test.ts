@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { bootTest } from "./helpers.ts";
@@ -6,8 +6,12 @@ import { tool } from "./jobs-helpers.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
-test("parallel_search asks for its key when it is missing", async () => {
-  const { daemon, faux } = await bootTest();
+/** Boots with parallel's key stored, so parallel is available. */
+const bootKeyed = () => bootTest({}, [], undefined, { "parallel.apiKey": "pk-1" });
+
+test("parallel_search asks for its key when it goes missing", async () => {
+  const { daemon, faux, home } = await bootKeyed();
+  rmSync(join(home, "secrets/parallel.apiKey"));
   expect(await tool(daemon, faux, "parallel_search", { objective: "cats" })).toBe(
     'parallel_search needs a Parallel API key. Ask the user for it with secret_request({ name: "parallel.apiKey", why: "..." }), then try again.',
   );
@@ -15,8 +19,7 @@ test("parallel_search asks for its key when it is missing", async () => {
 });
 
 test("parallel_search sends the key and request, and formats the results", async () => {
-  const { daemon, faux, home } = await bootTest();
-  writeFileSync(join(home, "secrets/parallel.apiKey"), "pk-1");
+  const { daemon, faux } = await bootKeyed();
   const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
     Response.json({
       search_id: "s",
@@ -44,8 +47,7 @@ test("parallel_search sends the key and request, and formats the results", async
 });
 
 test("parallel_search uses the objective as the query when none are given, and reports HTTP errors", async () => {
-  const { daemon, faux, home } = await bootTest();
-  writeFileSync(join(home, "secrets/parallel.apiKey"), "pk-1");
+  const { daemon, faux } = await bootKeyed();
   const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response("no", { status: 401 }));
   vi.stubGlobal("fetch", fetch);
   expect(await tool(daemon, faux, "parallel_search", { objective: "cats" })).toBe("Search failed: Parallel replied HTTP 401");

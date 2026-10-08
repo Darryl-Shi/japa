@@ -39,8 +39,8 @@ export type SettingsDeps = {
   settings: Settings;
   models: Models;
   extensions: () => JapaExtension[];
-  /** Runs after each settings change. */
-  changed: () => void;
+  /** Runs after each settings change, and is awaited. */
+  changed: () => Promise<void>;
 };
 
 /** The settings `user` gives, validated against the extensions' schemas and the registered models. */
@@ -76,7 +76,7 @@ export async function setSetting(
   if (typeof valid !== "object") setPath(user, path, valid); // as validated, e.g. "2" converted to 2
   saveSettings(home, user);
   Object.assign(settings, next);
-  deps.changed();
+  await deps.changed();
   const configOps = [before === undefined ? { path } : { path, before }];
   const { title = `Set ${path}`, howToUse = "" } = label;
   const change = { title, howToUse, undo: { commits: [], configOps } };
@@ -155,7 +155,7 @@ export function settingsTools(deps: SettingsDeps, reconcile: () => Promise<unkno
         }
         saveSettings(home, user);
         Object.assign(settings, next);
-        changed();
+        await changed();
       }
       await api.commit(async (tx) => {
         if (next) await configure(tx, ROOT_CONVERSATION_ID, { model: next.models.cos! });

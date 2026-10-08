@@ -72,6 +72,7 @@ test("status lists the model and the extensions", async () => {
     name: "test-kit",
     summary: "Faux models and in-memory storage for tests",
     provides: ["storage", "provider"],
+    state: "on",
   });
   expect(status.extensions.map((e) => e.name)).toContain("providers");
   expect(status.errors).toEqual([]);
@@ -81,7 +82,7 @@ test("status lists the model and the extensions", async () => {
 test("an extension's status line is shown under it, read each time", async () => {
   let line = "starting";
   const { daemon } = await bootTest({}, [{ name: "lit", summary: "Lit", status: () => line }]);
-  expect(daemon.status().extensions).toContainEqual({ name: "lit", summary: "Lit", provides: [], status: "starting" });
+  expect(daemon.status().extensions).toContainEqual({ name: "lit", summary: "Lit", provides: [], status: "starting", state: "on" });
   line = "ready";
   expect(statusText(daemon.status())).toContain("  lit — Lit\n    ready");
   await daemon.close();
@@ -89,7 +90,7 @@ test("an extension's status line is shown under it, read each time", async () =>
 
 test("a throwing status line is reported, not thrown", async () => {
   const { daemon } = await bootTest({}, [{ name: "bad", summary: "Bad", status: () => { throw new Error("boom"); } }]);
-  expect(daemon.status().extensions).toContainEqual({ name: "bad", summary: "Bad", provides: [], status: "status: boom" });
+  expect(daemon.status().extensions).toContainEqual({ name: "bad", summary: "Bad", provides: [], status: "status: boom", state: "on" });
   await daemon.close();
 });
 

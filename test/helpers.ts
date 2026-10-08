@@ -77,13 +77,21 @@ export async function carryOver(daemon: Daemon): Promise<string | undefined> {
   return typeof content === "string" ? content : undefined;
 }
 
-/** Boots a daemon in a temp home on in-memory storage, with the faux model as `models.cos`. */
+/**
+ * Boots a daemon in a temp home on in-memory storage, with the faux model as `models.cos` and `secrets` stored in
+ * `<home>/secrets` beforehand.
+ */
 export async function bootTest(
   settings: object = {},
   extra: JapaExtension[] = [],
   kit = testKit(),
+  secrets: Record<string, string> = {},
 ): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string }> {
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
+  for (const [name, value] of Object.entries(secrets)) {
+    mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, "secrets", name), value, { mode: 0o600 });
+  }
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, ...extra] });
   return { daemon, faux: kit.faux, home };
 }

@@ -8,6 +8,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
+import type { ExtensionState } from "./availability.ts";
 import type { Job } from "./jobs/state.ts";
 import { startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
@@ -38,7 +39,7 @@ export type EnvironmentAdapter = {
 /** What `japa status` shows. */
 export type Status = {
   model?: ModelRef;
-  extensions: { name: string; summary: string; provides: string[]; status?: string }[];
+  extensions: { name: string; summary: string; provides: string[]; status?: string; state?: ExtensionState }[];
   errors: { name: string; error: string }[];
 };
 

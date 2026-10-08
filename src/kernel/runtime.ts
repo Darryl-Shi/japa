@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
 import { dirname, join } from "node:path";
+import { type ExtensionState, extensionState, type SecretReader } from "./availability.ts";
 import { capabilities } from "./capabilities.ts";
 import {
   ACTIVATION_ORDER,
@@ -31,12 +32,15 @@ export type Runtime = ReturnType<typeof createRuntime>;
  * The daemon's live extension state: the loaded extensions, their activations and built Pi Durable extensions, the
  * skills, worker profiles, root selection and capabilities text; `start` activates extensions, `reconcile` reloads
  * the workspace extensions in `<home>/extensions` that changed on disk, and the skills and worker profiles.
+ * Only the available extensions (see `availability.ts`) reach the root selection, the jobs' agents and the
+ * capabilities; `refreshAvailability` recomputes which those are.
  */
 export function createRuntime(input: {
   home: string;
   packageRoot: string;
   packaged: string[]; // the packaged extension dirs, whose extensions a workspace one can override
   settings: Settings;
+  secrets: SecretReader; // to tell which extensions are set up
   extensions: JapaExtension[];
   errors: LoadError[];
   sources: Map<string, string>; // the directory of each extension loaded from disk, by name
@@ -54,25 +58,39 @@ export function createRuntime(input: {
   const activations: { extension: string; contract: string; dispose: Dispose }[] = []; // in activation order
   const built = new Map<string, Extension>();
   let jobsOptions: JobsOptions | undefined;
+  let content: { jobs: Extension; skills: Extension } | undefined; // installed by `reloadContent`
   let reconciling: Promise<unknown> = Promise.resolve();
+  let refreshing: Promise<unknown> = Promise.resolve();
 
   const runtime = {
     extensions: input.extensions,
     errors: input.errors,
     /** The extension-built Pi Durable extensions, by japa extension name. */
     built: built as ReadonlyMap<string, Extension>,
+    /** The names of the extensions agents may use now, and each loaded extension's state, by name. */
+    available: new Set<string>() as ReadonlySet<string>,
+    states: new Map<string, ExtensionState>() as ReadonlyMap<string, ExtensionState>,
     capabilities: "",
     /** The loaded skills and worker profiles, by name. */
     skills: new Map<string, Skill>() as ReadonlyMap<string, Skill>,
     profiles: new Map<string, WorkerProfile>() as ReadonlyMap<string, WorkerProfile>,
     refreshCapabilities: () => {
       runtime.capabilities = capabilities({
-        extensions: runtime.extensions,
+        extensions: runtime.extensions.filter((e) => runtime.available.has(e.name)),
         profiles: jobsOptions!.profiles,
         models: settings.models,
       });
     },
     start,
+    /**
+     * Recomputes the extensions' states, one call at a time; when the available ones changed, resets the root
+     * selection and capabilities and, given `root`, reconfigures the unfinished jobs.
+     */
+    refreshAvailability: (root?: Conversation) => {
+      const run = refreshing.then(() => refreshAvailability(root));
+      refreshing = run.catch(() => {});
+      return run;
+    },
     /** `reconcile`, one at a time. */
     reconcile: (root: Conversation) => {
       const run = reconciling.then(() => reconcile(root));
@@ -89,7 +107,7 @@ export function createRuntime(input: {
    */
   async function start(extensions: JapaExtension[], names: string[]): Promise<LoadError[]> {
     const errors: LoadError[] = [];
-    let content: LoadError[] = [];
+    let contentErrors: LoadError[] = [];
     for (const name of names) {
       for (const e of extensions) {
         if (name === "tool") {
@@ -124,10 +142,38 @@ export function createRuntime(input: {
           }
         }
       }
-      if (name === "tool") content = reloadContent();
+      if (name === "tool") {
+        await computeStates();
+        contentErrors = reloadContent();
+      }
     }
     runtime.errors.push(...errors);
-    return [...errors, ...content];
+    return [...errors, ...contentErrors];
+  }
+
+  /** Recomputes `runtime.states` and `runtime.available` from the stored secrets and `settings.extensions`. */
+  async function computeStates() {
+    const states = new Map<string, ExtensionState>();
+    for (const e of runtime.extensions) states.set(e.name, await extensionState(e, input.secrets, settings.extensions));
+    runtime.states = states;
+    runtime.available = new Set([...states].flatMap(([name, state]) => (state === "on" ? [name] : [])));
+  }
+
+  async function refreshAvailability(root?: Conversation) {
+    const before = runtime.available;
+    await computeStates();
+    const after = runtime.available;
+    if (content === undefined) return; // before the tool phase, whose `reloadContent` uses the new states
+    if (before.size === after.size && [...before].every((name) => after.has(name))) return;
+    select();
+    runtime.refreshCapabilities();
+    if (root) await root.commit((tx) => reconfigureJobs(tx, jobsOptions!), ctx);
+  }
+
+  /** Resets the root selection: the CoS, safety, jobs and skills extensions, then the available built ones. */
+  function select() {
+    const available = [...built].flatMap(([name, extension]) => (runtime.available.has(name) ? [extension] : []));
+    selection.splice(0, selection.length, input.cos, input.safety, content!.jobs, content!.skills, ...available);
   }
 
   /**
@@ -152,11 +198,19 @@ export function createRuntime(input: {
     runtime.skills = skills.skills;
     runtime.profiles = workers.profiles;
     const skillsExt = skillsExtension(skills.skills);
-    jobsOptions = { profiles: workers.profiles, settings, extensions: built, skills: skillsExt, safety: input.safety };
+    jobsOptions = {
+      profiles: workers.profiles,
+      settings,
+      extensions: built,
+      available: () => runtime.available,
+      skills: skillsExt,
+      safety: input.safety,
+    };
     const jobs = jobsExtension(jobsOptions);
     registry.install(skillsExt);
     registry.install(jobs);
-    selection.splice(0, selection.length, input.cos, input.safety, jobs, skillsExt, ...built.values());
+    content = { jobs, skills: skillsExt };
+    select();
     runtime.refreshCapabilities();
     return errors;
   }

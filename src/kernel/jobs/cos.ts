@@ -27,12 +27,14 @@ export type JobsOptions = {
   profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
   extensions: ReadonlyMap<string, Extension>; // extension-built Pi Durable extensions, by japa extension name
+  available: () => ReadonlySet<string>; // the names of the extensions agents may use now
   skills: Extension;
   safety: Extension;
 };
 
-/** The agent of a job run by `profile`. */
-function agentOf({ settings, extensions, skills, safety }: JobsOptions, profile: WorkerProfile) {
+/** The agent of a job run by `profile`, with the available extensions it names (all available ones when unnamed). */
+function agentOf({ settings, extensions, available, skills, safety }: JobsOptions, profile: WorkerProfile) {
+  const names = (profile.extensions ?? [...extensions.keys()]).filter((name) => available().has(name));
   return {
     model: profile.model ?? settings.models.worker ?? settings.models.cos,
     thinkingLevel: profile.thinking,
@@ -43,7 +45,7 @@ function agentOf({ settings, extensions, skills, safety }: JobsOptions, profile:
       CodingTools,
       skills,
       safety,
-      ...(profile.extensions?.map((name) => extensions.get(name)!) ?? extensions.values()),
+      ...names.flatMap((name) => extensions.get(name) ?? []),
     ],
     tools: { remove: CodingTools.tools!.filter((t) => !profile.tools.includes(t.name)) },
   };
