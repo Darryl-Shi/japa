@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
+import { settingsSchema } from "../src/kernel/settings-tools.ts";
 import { defineJapaExtension, type KernelContext, Type } from "../src/sdk.ts";
 import { bootTest, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, jobs, say, script, texts } from "./jobs-helpers.ts";
@@ -85,6 +86,32 @@ test("extension settings are validated against its schema and visible to it imme
   );
   await tool(daemon, faux, "settings_set", { path: "extensions.limited.limit", value: 5 });
   expect(kernel!.settings()).toEqual({ limit: 5 });
+  await daemon.close();
+});
+
+test("every extension's settings schema has an optional enabled", () => {
+  const schema = settingsSchema({ name: "plain", summary: "No settings" }) as any;
+  expect(schema.properties.enabled.type).toBe("boolean");
+  expect(schema.properties.enabled.description).toBe("Set false to hide this extension from japa");
+  expect(schema.required ?? []).toEqual([]);
+});
+
+test("an extension's own settings keep their required list next to enabled", () => {
+  const settings = Type.Object({ region: Type.String(), note: Type.Optional(Type.String()) });
+  const schema = settingsSchema({ name: "own", summary: "Own", settings }) as any;
+  expect(Object.keys(schema.properties).sort()).toEqual(["enabled", "note", "region"]);
+  expect(schema.required).toEqual(["region"]);
+});
+
+test("settings_set accepts extensions.<name>.enabled as a boolean only", async () => {
+  const { daemon, faux, home } = await bootTest();
+  expect(await tool(daemon, faux, "settings_set", { path: "extensions.brave.enabled", value: "no" })).toMatch(
+    /^Not changed: extensions\.brave\.enabled: /,
+  );
+  expect(await tool(daemon, faux, "settings_set", { path: "extensions.brave.enabled", value: false })).toBe(
+    "Set extensions.brave.enabled. (change 1)",
+  );
+  expect(userFile(home).extensions.brave).toEqual({ enabled: false });
   await daemon.close();
 });
 

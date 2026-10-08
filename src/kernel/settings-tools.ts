@@ -17,12 +17,21 @@ import {
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-/** The schema for `settings.extensions.<e.name>`: `e.settings`, plus a string `owner` when `e` provides messaging. */
-export function settingsSchema(e: JapaExtension): TSchema | undefined {
-  if (!e.provides?.messaging) return e.settings;
-  const properties = (e.settings as { properties?: Record<string, TSchema> } | undefined)?.properties;
+/**
+ * The schema for `settings.extensions.<e.name>`: `e.settings`'s properties (keeping its `required`), plus an
+ * optional boolean `enabled` for every extension, plus a string `owner` when `e` provides messaging.
+ */
+export function settingsSchema(e: JapaExtension): TSchema {
+  const own = e.settings as { properties?: Record<string, TSchema>; required?: string[] } | undefined;
+  const enabled = Type.Optional(Type.Boolean({ description: "Set false to hide this extension from japa" }));
   const description = `Your ${e.name} user id. Leave blank, message the bot, and it replies with your id.`;
-  return Type.Object({ ...properties, owner: Type.Optional(Type.String({ description })) });
+  const properties: Record<string, TSchema> = { ...own?.properties, enabled };
+  if (e.provides?.messaging) properties.owner = Type.Optional(Type.String({ description }));
+  const schema: TSchema & { required?: string[] } = Type.Object(properties);
+  // As the extension declared it, not as TypeBox infers it from Optional markers a plain JSON schema lacks.
+  if (own?.required?.length) schema.required = [...own.required];
+  else delete schema.required;
+  return schema;
 }
 
 export type SettingsDeps = {
@@ -36,12 +45,7 @@ export type SettingsDeps = {
 
 /** The settings `user` gives, validated against the extensions' schemas and the registered models. */
 function validate({ models, extensions }: SettingsDeps, user: JsonObject): Settings {
-  const schemas = Object.fromEntries(
-    extensions().flatMap((e) => {
-      const schema = settingsSchema(e);
-      return schema ? [[e.name, schema]] : [];
-    }),
-  );
+  const schemas = Object.fromEntries(extensions().map((e) => [e.name, settingsSchema(e)]));
   const next = validateSettings(mergeSettings(user), schemas);
   for (const ref of Object.values(next.models)) if (ref !== undefined) checkModel(models, ref);
   return next;

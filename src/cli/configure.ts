@@ -6,6 +6,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import type { JsonObject } from "@earendil-works/pi-durable";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { askedProperties, isConfigured as configured } from "../kernel/availability.ts";
 import { askedSecretNames, type AuthorizeContext, type JapaExtension, secretDescription } from "../kernel/extension.ts";
 import { message } from "../kernel/loader.ts";
 import { settingsSchema } from "../kernel/settings-tools.ts";
@@ -31,19 +32,6 @@ type PropSchema = {
 const propertiesOf = (schema: TSchema | undefined): Record<string, TSchema> =>
   (schema as ObjectSchema | undefined)?.properties ?? {};
 
-/**
- * The settings properties `japa setup` asks for: the required ones without a default. Everything optional has a
- * default (or works unset), so it needs no setup; the user can still change it by asking japa.
- */
-function askedProperties(e: JapaExtension): Record<string, TSchema> {
-  const schema = settingsSchema(e) as ObjectSchema | undefined;
-  const required = new Set(schema?.required ?? []);
-  const properties = propertiesOf(schema);
-  return Object.fromEntries(
-    Object.entries(properties).filter(([prop, s]) => required.has(prop) && (s as PropSchema).default === undefined),
-  );
-}
-
 /** The extensions that need the user for something: a secret they don't generate, a required setting, or signing
  * in. An extension whose settings all have defaults -- like the desktop -- works without any setup. */
 export function configurable(extensions: JapaExtension[]): JapaExtension[] {
@@ -63,14 +51,11 @@ export function authorizeContext(ctx: SetupContext, e: JapaExtension): Authorize
   };
 }
 
-/** Whether `e` is set up: every secret setup asks for is set, every required setting is saved, and it's signed in
- * when it has an authorize hook. */
+/** Whether `e` is set up (the kernel's `isConfigured`, against `ctx`'s secrets and the user's saved settings) and,
+ * when it has an authorize hook, signed in. */
 export async function isConfigured(ctx: SetupContext, e: JapaExtension): Promise<boolean> {
-  for (const name of askedSecretNames(e)) {
-    if ((await ctx.secrets.get(name)) === undefined) return false;
-  }
-  const extensions = readUserSettings(ctx.home).extensions as Record<string, Record<string, unknown>> | undefined;
-  if (!Object.keys(askedProperties(e)).every((prop) => extensions?.[e.name]?.[prop] !== undefined)) return false;
+  const extensions = readUserSettings(ctx.home).extensions as Record<string, JsonObject | undefined> | undefined;
+  if (!(await configured(e, ctx.secrets, extensions ?? {}))) return false;
   return e.authorize === undefined || (await e.authorize.connected(authorizeContext(ctx, e)));
 }
 
@@ -289,8 +274,6 @@ export async function configureExtension(
   if (e.authorize !== undefined && (await signIn(ctx, p, e, openUrl))) saved = true;
 
   const schema = settingsSchema(e);
-  if (schema === undefined) return saved;
-
   const properties = propertiesOf(schema);
   const asked = askedProperties(e);
   if (Object.keys(asked).length === 0) return saved;
