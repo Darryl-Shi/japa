@@ -3,7 +3,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { execFile } from "node:child_process";
 import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boot } from "./boot.ts";
@@ -104,10 +104,14 @@ async function checkExtension(name: string, dir: string, home: string): Promise<
   return smokeLoad(name, dir, extension);
 }
 
-/** Runs japa's own `bin` with `args`; its output when it fails. */
+/**
+ * Runs japa's own `bin` with `args`; its output when it fails. The bins' `#!/usr/bin/env node` must find the Node
+ * japa runs on, which a private-Node install doesn't put on PATH (or puts behind an older one).
+ */
 async function run(bin: string, args: string[], cwd: string): Promise<string | undefined> {
+  const env = { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` };
   try {
-    await promisify(execFile)(join(packageRoot, "node_modules", ".bin", bin), args, { cwd });
+    await promisify(execFile)(join(packageRoot, "node_modules", ".bin", bin), args, { cwd, env });
     return undefined;
   } catch (error) {
     const { stdout, stderr } = error as { stdout: string; stderr: string };
