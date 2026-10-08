@@ -262,6 +262,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await reconcile();
       safety.scheduleGood();
     };
+    // Aborted by `close`: cancels the pending chat sign-ins.
+    const closing = new AbortController();
     const tools = [
       ...settingsTools(settingsDeps, undone),
       installTool(
@@ -287,6 +289,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         report: async (content, requestId) => {
           await root.submit({ type: "input", content, requestId }, ctx);
         },
+        signal: closing.signal,
       }),
     ];
     const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
@@ -378,6 +381,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       reconcile,
       markGood: safety.markGood,
       close: async () => {
+        closing.abort();
         clearTimeout(stayedUp);
         clearTimeout(quiet);
         await resets.stop();

@@ -135,6 +135,17 @@ describe("connect", () => {
     expect(await users()).not.toContain("[fake: Connected as x]"); // the reply carried it
   });
 
+  test("closing the daemon aborts a pending sign-in", async () => {
+    await tool(daemon, faux, "connect", { extension: "fake" });
+    await vi.waitFor(async () => expect(await pending()).toHaveLength(1));
+    await daemon.close();
+    expect(state.io!.signal!.aborted).toBe(true);
+    // The flow ends against the closed daemon without reporting to it.
+    state.loopback.resolve("late");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    ({ daemon, faux } = await bootTest());
+  });
+
   test("an extension without a sign-in", async () => {
     expect(await tool(daemon, faux, "connect", { extension: "web" })).toBe("web has no sign-in.");
     expect(await tool(daemon, faux, "connect", { extension: "nope" })).toBe("nope has no sign-in.");

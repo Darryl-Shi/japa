@@ -17,6 +17,8 @@ export type ConnectDeps = {
   forget: (name: string) => Promise<void>;
   /** Submits `text` to the root as input `requestId`. */
   report: (text: string, requestId: string) => Promise<void>;
+  /** Aborts when the daemon closes: every pending flow is cancelled, without touching the root again. */
+  signal: AbortSignal;
 };
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -46,7 +48,8 @@ export function connectTool(deps: ConnectDeps): ToolRegistration {
       const signal = AbortSignal.any(signals);
       if (signal.aborted) return reject(new Error("The sign-in was cancelled"));
       const onAbort = () => {
-        void deps.withdraw(name).catch(() => {});
+        // On close the request is left for the next boot to drop.
+        if (!deps.signal.aborted) void deps.withdraw(name).catch(() => {});
         reject(new Error("The sign-in was cancelled"));
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -79,6 +82,9 @@ export function connectTool(deps: ConnectDeps): ToolRegistration {
       const flow = { lines: [] as string[] };
       flows.set(extension, flow);
       const controller = new AbortController();
+      const cancel = () => controller.abort();
+      if (deps.signal.aborted) cancel();
+      else deps.signal.addEventListener("abort", cancel, { once: true });
       const name = `${extension}${AUTHORIZE_SUFFIX}`;
       let asked!: () => void;
       const waiting = new Promise<void>((resolve) => (asked = resolve));
@@ -100,10 +106,11 @@ export function connectTool(deps: ConnectDeps): ToolRegistration {
         } catch (error) {
           outcome = `couldn't connect: ${message(error)}`;
         }
+        deps.signal.removeEventListener("abort", cancel);
         controller.abort(); // withdraws a prompt the flow left open
         flows.delete(extension);
-        // Once the tool has replied, the outcome reaches the CoS only this way.
-        if (returned) {
+        // Once the tool has replied, the outcome reaches the CoS only this way; not once the daemon has closed.
+        if (returned && !deps.signal.aborted) {
           void deps.report(`[${extension}: ${outcome}]`, `authorize:${extension}:${nextId()}`).catch(() => {});
         }
       })();
