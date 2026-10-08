@@ -1,4 +1,11 @@
-import type { AgentEvent, JsonObject, ModelRef, Storage, UserInput } from "@earendil-works/pi-durable";
+import type {
+  AgentEvent,
+  JsonObject,
+  ModelRef,
+  Storage,
+  ToolExecutionResult,
+  UserInput,
+} from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { Job } from "./jobs/state.ts";
@@ -103,10 +110,19 @@ export type TriggerContext = { home: string; emit(event: { key: string; text: st
 
 export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispose> };
 
-/** The kernel's messaging state: each adapter's reply cursor. */
+/**
+ * Kernel-internal, given only to the messaging surface: each adapter's reply cursor, and the settings menu's changes,
+ * made through the same code paths as the CoS's tools.
+ */
 export type MessagingContext = {
   cursor(adapter: string): Promise<string | undefined>;
   saveCursor(adapter: string, cursor: string): Promise<void>;
+  /** As `settings_set`; its reply. */
+  setSetting(path: string, value: unknown): Promise<string>;
+  /** Rolls a workspace extension back to its last known good version, as the `rollback` tool; its reply. */
+  rollback(extension: string): Promise<string>;
+  /** Runs the registered tool `name`, which may use only `api.commit` and `api.snapshot`; undefined without one. */
+  tool(name: string, args: JsonObject): Promise<ToolExecutionResult | undefined>;
 };
 
 export type KernelContext = {
@@ -120,7 +136,6 @@ export type KernelContext = {
   environments: Map<string, EnvironmentAdapter>;
   surface: SurfaceContext;
   trigger: TriggerContext;
-  messaging: MessagingContext;
 };
 
 /** A named seam with a contribution type, agent-facing docs, a validator, and an activation lifecycle. */
@@ -130,7 +145,7 @@ export type Contract<C = unknown> = {
   phase: "boot" | "runtime";
   cardinality: "one" | "many";
   validate(c: unknown): string | undefined; // error message, or undefined if valid
-  activate?(c: C, ctx: KernelContext): Promise<Dispose>;
+  activate?(c: C, ctx: KernelContext, messaging: MessagingContext): Promise<Dispose>;
 };
 
 /** Checks that `c` is an object whose named fields have the given `typeof`. */
@@ -189,7 +204,7 @@ const CORE_CONTRACTS: Contract[] = [
         typing: "function",
         commands: "function",
       }),
-    activate: (c, ctx) => startMessaging(c as MessagingAdapter, ctx),
+    activate: (c, ctx, messaging) => startMessaging(c as MessagingAdapter, ctx, messaging),
   },
   {
     name: "trigger",

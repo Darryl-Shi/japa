@@ -29,6 +29,34 @@ export function stage(home: string, path: string, text: string) {
   writeFileSync(join(home, ".staging", path), text);
 }
 
+/** Extension `echo`: tool `echo` replies `reply`; its trigger fails to start while `<home>/<reply>.busy` exists. */
+export const echo = (reply: string) => `import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { defineJapaExtension, defineTool, type TriggerContext, Type } from "japa/sdk";
+
+export default defineJapaExtension({
+  name: "echo",
+  summary: "Echoes",
+  examples: ["echo"],
+  docs: "Echo.",
+  provides: {
+    tool: [defineTool({
+      name: "echo",
+      description: "Echo",
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [{ type: "text", text: "${reply}" }] }),
+    })],
+    trigger: [{
+      name: "tick",
+      start: async ({ home }: TriggerContext) => {
+        if (existsSync(join(home, "${reply}.busy"))) throw new Error("busy");
+        return () => {};
+      },
+    }],
+  },
+});
+`;
+
 /** Polls `fn` every 20 ms until it returns true; throws `waitFor timed out` after `timeoutMs`. */
 export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

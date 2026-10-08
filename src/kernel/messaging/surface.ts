@@ -1,5 +1,13 @@
 import { defineDoc } from "@earendil-works/pi-durable";
-import type { Dispose, Incoming, KernelContext, MessagingAdapter, Origin, Reply } from "../contracts.ts";
+import type {
+  Dispose,
+  Incoming,
+  KernelContext,
+  MessagingAdapter,
+  MessagingContext,
+  Origin,
+  Reply,
+} from "../contracts.ts";
 import type { Job } from "../jobs/state.ts";
 import { message } from "../loader.ts";
 import { originOf } from "../origin.ts";
@@ -29,7 +37,11 @@ export const MessagingDoc = defineDoc<{ cursors: Record<string, string> }>({
  * (a command cancels this). Commands and button presses go to the menu, never to the CoS.
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
  */
-export async function startMessaging(adapter: MessagingAdapter, kernel: KernelContext): Promise<Dispose> {
+export async function startMessaging(
+  adapter: MessagingAdapter,
+  kernel: KernelContext,
+  messaging: MessagingContext,
+): Promise<Dispose> {
   if (adapter.name !== kernel.extension) throw new Error(`name must be "${kernel.extension}"`);
   const log = (error: unknown) => console.error(`${adapter.name}: ${message(error)}`);
   let stopped = false;
@@ -39,7 +51,7 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
   let timer: ReturnType<typeof setTimeout> | undefined;
   let awaiting: string | undefined; // the secret request the owner's next text fulfils
   let jobs: Job[] = [];
-  const menu = createMenu(adapter, kernel, () => jobs);
+  const menu = createMenu(adapter, kernel, messaging, () => jobs);
 
   /** Submits the buffer, if any, after the submissions before it; resolves once they are all done. */
   const flush = () => {
@@ -102,7 +114,7 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
         }
       }
     }
-    if (!stopped) await kernel.messaging.saveCursor(adapter.name, r.cursor);
+    if (!stopped) await messaging.saveCursor(adapter.name, r.cursor);
   };
 
   let busy = false;
@@ -130,7 +142,7 @@ export async function startMessaging(adapter: MessagingAdapter, kernel: KernelCo
       adapter.send(owner, { markdown }).catch(log);
     }
   });
-  const replies = await kernel.surface.root.replies(deliver, await kernel.messaging.cursor(adapter.name));
+  const replies = await kernel.surface.root.replies(deliver, await messaging.cursor(adapter.name));
   const events = await kernel.surface.root.events((batch) => {
     for (const e of batch) {
       if (e.type === "snapshot") busy = e.run !== undefined;

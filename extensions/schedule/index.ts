@@ -123,8 +123,10 @@ const scheduleList = defineTool({
   description: "List the schedules.",
   parameters: Type.Object({}),
   execute: async (_args, api, context) => {
-    const doc = await api.snapshot(ScheduleDoc, ROOT_CONVERSATION_ID, context);
-    return reply(lines(doc?.schedules ?? {}) || "No schedules.");
+    const schedules = (await api.snapshot(ScheduleDoc, ROOT_CONVERSATION_ID, context))?.schedules ?? {};
+    const label = (s: Schedule) => `${s.text} (${s.cron ?? local(s.next)})`;
+    const details = Object.values(schedules).map((s) => ({ id: s.id, label: label(s) }));
+    return { ...reply(lines(schedules) || "No schedules."), details };
   },
 });
 

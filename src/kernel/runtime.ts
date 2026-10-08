@@ -9,7 +9,14 @@ import {
 import type { Models } from "@earendil-works/pi-ai";
 import { dirname, join } from "node:path";
 import { capabilities } from "./capabilities.ts";
-import { ACTIVATION_ORDER, CONTRACTS, type Dispose, type EnvironmentAdapter, type KernelContext } from "./contracts.ts";
+import {
+  ACTIVATION_ORDER,
+  CONTRACTS,
+  type Dispose,
+  type EnvironmentAdapter,
+  type KernelContext,
+  type MessagingContext,
+} from "./contracts.ts";
 import type { JapaExtension } from "./extension.ts";
 import { jobsExtension, type JobsOptions, reconfigureJobs } from "./jobs/cos.ts";
 import { discoverExtensions, type LoadError, loadExtensions, message } from "./loader.ts";
@@ -41,6 +48,7 @@ export function createRuntime(input: {
   cos: Extension;
   safety: Extension; // selected by the root and every job
   kernel: (extension: string) => KernelContext;
+  messaging: MessagingContext; // kernel-internal, given to contract activations only
 }) {
   const { home, packageRoot, packaged, settings, sources, hashes, models, environments, registry, selection } = input;
   const activations: { extension: string; contract: string; dispose: Dispose }[] = []; // in activation order
@@ -109,7 +117,7 @@ export function createRuntime(input: {
         }
         for (const c of e.provides?.[name] ?? []) {
           try {
-            const dispose = await CONTRACTS.get(name)!.activate?.(c, input.kernel(e.name));
+            const dispose = await CONTRACTS.get(name)!.activate?.(c, input.kernel(e.name), input.messaging);
             if (dispose) activations.push({ extension: e.name, contract: name, dispose });
           } catch (err) {
             errors.push({ name: e.name, error: `${name}: ${message(err)}` });

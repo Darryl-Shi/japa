@@ -10,6 +10,7 @@ import {
   type RegistryReader,
   ROOT_CONVERSATION_ID,
   type Storage,
+  type ToolExecutionApi,
   watchEvents,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -18,7 +19,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ChangesDoc } from "./changes.ts";
+import { ChangesDoc, type Commit } from "./changes.ts";
 import {
   ACTIVATION_ORDER,
   type EnvironmentAdapter,
@@ -32,7 +33,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import type { JapaExtension } from "./extension.ts";
-import { installTool, rollbackTool } from "./install.ts";
+import { installTool, rollBackAndLog, rollbackTool } from "./install.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
@@ -45,7 +46,7 @@ import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
-import { settingsTools } from "./settings-tools.ts";
+import { setSetting, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import { dirHash, ensureWorkspace } from "./workspace.ts";
@@ -123,13 +124,28 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       })),
       errors: rt.errors,
     });
+    const settingsDeps = {
+      home,
+      settings,
+      models,
+      extensions: () => rt.extensions,
+      changed: () => rt.refreshCapabilities(),
+    };
     // `root` and `opened` are set before any surface or trigger starts.
+    const commit: Commit = (change) => root.commit(change, ctx);
     const messaging: MessagingContext = {
       cursor: async (adapter) => (await opened.snapshot(MessagingDoc, root.id, ctx))?.cursors[adapter],
       saveCursor: (adapter, cursor) =>
         root.commit(async (tx) => {
           (await tx.doc(MessagingDoc, root.id)).cursors[adapter] = cursor;
         }, ctx),
+      setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
+      rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),
+      tool: async (name, args) => {
+        const api = { commit: root.commit.bind(root), snapshot: opened.snapshot.bind(opened) };
+        const found = registry.snapshot().tools().find((t) => t.tool.name === name);
+        return found?.tool.execute(args, api as unknown as ToolExecutionApi, ctx);
+      },
     };
     const kernel = (extension: string): KernelContext => ({
       home,
@@ -204,7 +220,6 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           await root.submit({ type: "input", content: `[${extension}] ${text}`, requestId }, ctx);
         },
       },
-      messaging,
     });
     const registry = createRegistry();
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
@@ -219,7 +234,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       safety.scheduleGood();
     };
     const tools = [
-      ...settingsTools(home, settings, models, () => rt.extensions, () => rt.refreshCapabilities(), undone),
+      ...settingsTools(settingsDeps, undone),
       installTool(
         home,
         reconcile,
@@ -245,6 +260,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       cos,
       safety: safety.extension,
       kernel,
+      messaging,
     });
     runtime = rt;
 

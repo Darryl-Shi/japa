@@ -4,39 +4,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
-import { bootTest, stage } from "./helpers.ts";
+import { bootTest, echo, stage } from "./helpers.ts";
 import { ask, say, system, tool } from "./jobs-helpers.ts";
 
 const subjects = (home: string) => execFileSync("git", ["-C", home, "log", "--format=%s"], { encoding: "utf8" }).trim().split("\n");
 const toolNames = async (daemon: Daemon) => (await daemon.root.agent(ctx)).tools.map((t) => t.name);
-
-/** Extension `echo`: tool `echo` replies `reply`; its trigger fails to start while `<home>/<reply>.busy` exists. */
-const echo = (reply: string) => `import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { defineJapaExtension, defineTool, type TriggerContext, Type } from "japa/sdk";
-
-export default defineJapaExtension({
-  name: "echo",
-  summary: "Echoes",
-  examples: ["echo"],
-  docs: "Echo.",
-  provides: {
-    tool: [defineTool({
-      name: "echo",
-      description: "Echo",
-      parameters: Type.Object({}),
-      execute: async () => ({ content: [{ type: "text", text: "${reply}" }] }),
-    })],
-    trigger: [{
-      name: "tick",
-      start: async ({ home }: TriggerContext) => {
-        if (existsSync(join(home, "${reply}.busy"))) throw new Error("busy");
-        return () => {};
-      },
-    }],
-  },
-});
-`;
 
 test("a staged skill installs, and undo removes it", async () => {
   const { daemon, faux, home } = await bootTest();

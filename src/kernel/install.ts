@@ -5,13 +5,14 @@ import { cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { logChange } from "./changes.ts";
+import { type Commit, logChange } from "./changes.ts";
 import { CHECK_KINDS } from "./check.ts";
 import { KEBAB_CASE } from "./extension.ts";
 import type { LoadError } from "./loader.ts";
 import { commit, LKG, restorePath, revert } from "./workspace.ts";
 
 type Kind = (typeof CHECK_KINDS)[number];
+type Reconcile = () => Promise<{ errors: LoadError[]; notices: string[] }>;
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const main = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
@@ -43,7 +44,7 @@ export function rollBack(home: string, kind: Kind, name: string, to = LKG): stri
  */
 export function installTool(
   home: string,
-  reconcile: () => Promise<{ errors: LoadError[]; notices: string[] }>,
+  reconcile: Reconcile,
   loaded: (kind: "skill" | "worker", name: string) => boolean,
   installed: (name: string) => void,
 ) {
@@ -77,8 +78,25 @@ export function installTool(
   });
 }
 
-/** The CoS's `rollback` tool: restores a skill, worker profile or extension as it is at `to`, commits and reconciles. */
-export function rollbackTool(home: string, reconcile: () => Promise<unknown>) {
+/** `rollBack`, then reconciles and logs the change; the reply for the user, with the reconcile's notices. */
+export async function rollBackAndLog(
+  home: string,
+  kind: Kind,
+  name: string,
+  to: string | undefined,
+  reconcile: Reconcile,
+  commit: Commit,
+): Promise<string> {
+  const sha = rollBack(home, kind, name, to);
+  if (sha === undefined) return `${kind} ${name} is already at that version.`;
+  const { notices } = await reconcile();
+  const change = { title: `Rolled back ${kind} ${name}`, howToUse: "", undo: { commits: [sha] } };
+  await commit((tx) => logChange(tx, change));
+  return [`Rolled back ${kind} ${name}.`, ...notices].join(" ");
+}
+
+/** The CoS's `rollback` tool: `rollBackAndLog`. */
+export function rollbackTool(home: string, reconcile: Reconcile) {
   return defineTool({
     name: "rollback",
     description:
@@ -88,13 +106,7 @@ export function rollbackTool(home: string, reconcile: () => Promise<unknown>) {
       name: Type.String({ pattern: KEBAB_CASE.source }),
       to: Type.Optional(Type.String()),
     }),
-    execute: async ({ kind, name, to }, api, context) => {
-      const sha = rollBack(home, kind, name, to);
-      if (sha === undefined) return reply(`${kind} ${name} is already at that version.`);
-      await reconcile();
-      const change = { title: `Rolled back ${kind} ${name}`, howToUse: "", undo: { commits: [sha] } };
-      await api.commit((tx) => logChange(tx, change), context);
-      return reply(`Rolled back ${kind} ${name}.`);
-    },
+    execute: async ({ kind, name, to }, api, context) =>
+      reply(await rollBackAndLog(home, kind, name, to, reconcile, (change) => api.commit(change, context))),
   });
 }

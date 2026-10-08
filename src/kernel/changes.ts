@@ -23,6 +23,9 @@ export const ChangesDoc = defineDoc<{ nextId: number; changes: Change[] }>({
   initial: () => ({ nextId: 1, changes: [] }),
 });
 
+/** Commits `change` on the root conversation, as a tool's `api.commit` does. */
+export type Commit = <T>(change: (tx: Tx) => T | Promise<T>) => Promise<T>;
+
 /** Appends a change to the log; returns its id. */
 export async function logChange(tx: Tx, change: Omit<Change, "id" | "at">): Promise<string> {
   const doc = await tx.doc(ChangesDoc, ROOT_CONVERSATION_ID);
