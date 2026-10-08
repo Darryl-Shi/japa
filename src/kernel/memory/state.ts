@@ -1,31 +1,34 @@
-import { defineDoc, type TaskId } from "@earendil-works/pi-durable";
+import { defineDoc, type EntryId, type TaskId } from "@earendil-works/pi-durable";
 import type { Job } from "../jobs/state.ts";
 
 export type Fact = { id: string; text: string; updatedAt: number };
-export type Loop = { id: string; text: string; createdAt: number };
 export type Episode = { id: string; at: number; text: string };
 export type Memory = {
   nextId: number;
   facts: Fact[];
-  loops: Loop[];
   episodes: Episode[];
-  lastResetAt?: number;
-  previousResetAt?: number; // the board lists jobs finished since then: their reports left the window at the last reset
-  consolidating?: TaskId; // the latest `Consolidate` task, live unless terminal
+  reflectedThrough?: EntryId;
+  reflecting?: TaskId; // the latest `Reflect` task, live unless terminal
+  upgraded?: { loops: string[] }; // dropped version 1 loops, delivered to the CoS as a one-time notice
 };
 export type Limits = { maxFacts: number; maxTokens: number };
 
 export type FactOp = { op: "add"; text: string } | { op: "update"; id: string; text: string } | { op: "delete"; id: string };
-export type LoopOp = { op: "add"; text: string } | { op: "close"; id: string };
+
+type MemoryV1 = { nextId: number; facts: Fact[]; loops: { text: string }[]; episodes: Episode[] };
 
 // On the root conversation.
 export const MemoryDoc = defineDoc<Memory>({
   kind: "japa.memory",
-  version: 1,
+  version: 2,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ nextId: 1, facts: [], loops: [], episodes: [] }),
+  initial: () => ({ nextId: 1, facts: [], episodes: [] }),
+  migrate: (value) => {
+    const v1 = value as unknown as MemoryV1;
+    return { nextId: v1.nextId, facts: v1.facts, episodes: v1.episodes, upgraded: { loops: v1.loops.map((l) => l.text) } };
+  },
 });
 
 const MAX_WORDS = 50;
@@ -86,19 +89,9 @@ export function truncateToCap(facts: Fact[], limits: Limits): Fact[] {
   return kept;
 }
 
-export function applyLoopOps(memory: Memory, ops: LoopOp[], now: number): void {
-  for (const op of ops) {
-    if (op.op === "add") memory.loops.push({ id: String(memory.nextId++), text: op.text, createdAt: now });
-    else memory.loops = memory.loops.filter((l) => l.id !== op.id);
-  }
+export function renderFacts(facts: Fact[]): string | undefined {
+  return facts.length ? facts.map((f) => `- ${f.text}`).join("\n") : undefined;
 }
-
-function render(items: { text: string }[]): string | undefined {
-  return items.length ? items.map((i) => `- ${i.text}`).join("\n") : undefined;
-}
-
-export const renderFacts = (facts: Fact[]) => render(facts);
-export const renderLoops = (loops: Loop[]) => render(loops);
 
 /** Episodes and job results ranked by distinct query words matched, newest first on ties. */
 export function search(memory: Memory, jobs: Record<string, Job>, query: string, limit = 5): string[] {

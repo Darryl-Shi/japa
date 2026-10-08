@@ -9,7 +9,6 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { MemoryDoc } from "../memory/state.ts";
 import type { Settings } from "../settings.ts";
 import type { WorkerProfile } from "../workers.ts";
 import { Anchor, BACKGROUND, jobRun } from "./run.ts";
@@ -193,8 +192,7 @@ export function jobsExtension(options: JobsOptions): Extension {
     sections: [
       section("jobs", async ({ read }, context) => {
         const doc = await read.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context);
-        const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
-        return doc && board(doc.jobs, memory?.previousResetAt ?? 0);
+        return doc && board(doc.jobs);
       }),
     ],
   });

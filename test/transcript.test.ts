@@ -1,4 +1,4 @@
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type AgentEvent, CompactionEntry } from "@earendil-works/pi-durable";
 import { expect, test, vi } from "vitest";
@@ -26,44 +26,6 @@ test("transcript shows the exchange from real gateway events", async () => {
   );
   expect(t.busy).toBe(false);
   client.close();
-  await daemon.close();
-});
-
-test("surfaces keep the history from before a reset and hide the handoff", async () => {
-  const { daemon, faux, home } = await bootTest();
-  script(faux, (_role, text) => {
-    if (text.startsWith("Conversation since")) {
-      const args = { facts: [], loops: [], episode: "e", handoff: "HANDOFF" };
-      return fauxAssistantMessage([fauxToolCall("save", args)], { stopReason: "toolUse" });
-    }
-  });
-  const attach = async () => {
-    const client = await connect(home);
-    const view = { t: { lines: [], streaming: "", busy: false } as Transcript, client, attached: false };
-    client.onMessage((m) => {
-      if (m.type === "events") view.t = applyEvents(view.t, m.events);
-      view.attached = true;
-    });
-    client.send({ type: "attach" });
-    return view;
-  };
-  const live = await attach();
-  await vi.waitFor(() => expect(live.attached).toBe(true));
-  await ask(daemon, "before");
-  await daemon.consolidate();
-  await ask(daemon, "after");
-  const later = await attach();
-
-  const expected = [
-    { kind: "user", text: "before" },
-    { kind: "assistant", text: "ok" },
-    { kind: "user", text: "after" },
-    { kind: "assistant", text: "ok" },
-  ];
-  await vi.waitFor(() => expect(live.t.lines).toEqual(expected));
-  await vi.waitFor(() => expect(later.t.lines).toEqual(expected));
-  live.client.close();
-  later.client.close();
   await daemon.close();
 });
 

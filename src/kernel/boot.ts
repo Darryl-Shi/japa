@@ -6,7 +6,6 @@ import {
   type EntryId,
   type Extension,
   Harness,
-  LiveDoc,
   type ModelRef,
   type RegistryReader,
   ROOT_CONVERSATION_ID,
@@ -35,9 +34,8 @@ import type { JapaExtension } from "./extension.ts";
 import { installTool, rollbackTool } from "./install.ts";
 import { byId, JobsDoc } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
-import { consolidation } from "./memory/consolidate.ts";
-import { estimateTokens, MemoryDoc } from "./memory/state.ts";
-import { shouldConsolidate } from "./memory/trigger.ts";
+import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
+import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { fulfilSecret, SecretRequestsDoc } from "./secret-requests.ts";
@@ -65,10 +63,8 @@ export type Daemon = {
   status(): Status;
   /** The CoS's current capabilities text. */
   capabilities(): string;
-  /** Consolidates the CoS's context and waits for it. */
-  consolidate(): Promise<void>;
-  /** Consolidates when the CoS is idle and its live window is full or stale. */
-  checkConsolidation(now?: number): Promise<void>;
+  /** Runs `Reflect` on the stored transcript and waits for it. */
+  reflect(): Promise<void>;
   /** Reloads the changed workspace extensions, skills and worker profiles; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
   /** Tags the workspace's HEAD as last known good. */
@@ -197,7 +193,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const registry = createRegistry();
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
-    const { Consolidate, startConsolidation } = consolidation({ models, settings });
+    const { Reflect, startReflect } = reflection({ models, settings });
     const reconcile = () => rt.reconcile(root);
     const report = (error: string) => rt.errors.push({ name: "japa-safety", error });
     const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root, report });
@@ -216,7 +212,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       ),
       rollbackTool(home, reconcile),
     ];
-    const cos = cosExtension(settings, [Consolidate], tools, () => rt.capabilities);
+    const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
     const rt = createRuntime({
       home,
       packageRoot,
@@ -259,6 +255,13 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await tx.doc(ChangesDoc, root.id);
       await tx.doc(SecretRequestsDoc, root.id);
     }, ctx);
+    const droppedLoops = await upgradeMemory(root);
+    if (droppedLoops.length > 0) {
+      const content =
+        "[japa] Open loops are no longer kept for you; your context is cleared after every reply. If any of " +
+        `these still matter, back it with a schedule or a job:\n${droppedLoops.map((l) => `- ${l}`).join("\n")}`;
+      await root.submit({ type: "input", content, requestId: "memory:v2-loops" }, ctx);
+    }
     // The rest of the contracts; `japa-jobs` is installed after tools, so pending job tasks resume with it.
     await rt.start(extensions, ACTIVATION_ORDER.slice(1));
     harness.resume();
@@ -268,20 +271,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await root.submit({ type: "input", content, requestId: `safe-mode:${safeMode}` }, ctx);
     }
 
-    const consolidate = async () => {
-      await opened.waitForTask(await startConsolidation(root), ctx);
+    const reflect = async () => {
+      await opened.waitForTask(await startReflect(root), ctx);
     };
-    const checkConsolidation = async (now = Date.now()) => {
-      const busy = (await opened.snapshot(LiveDoc, root.id, ctx))?.run !== undefined;
-      const { messages } = await root.context(ctx);
-      const window = messages.filter((m) => m.role !== "system");
-      const windowTokens = estimateTokens(window.map((m) => JSON.stringify(m.content)).join("\n"));
-      // The reset's handoff is not the user speaking.
-      const resetAt = (await opened.snapshot(MemoryDoc, root.id, ctx))?.lastResetAt ?? -1;
-      const lastUserAt = window.findLast((m) => m.role === "user" && m.timestamp > resetAt)?.timestamp;
-      if (shouldConsolidate({ busy, windowTokens, lastUserAt, now }, settings.context)) await consolidate();
-    };
-    const timer = setInterval(() => checkConsolidation().catch(() => {}), 60_000).unref();
+    if (reflectDelay(await unreflectedTurns(opened, root)) === 0) void reflect().catch(() => {});
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
     safety.scheduleGood(); // a pending tag doesn't survive a restart
 
@@ -291,12 +284,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       registry,
       status,
       capabilities: () => rt.capabilities,
-      consolidate,
-      checkConsolidation,
+      reflect,
       reconcile,
       markGood: safety.markGood,
       close: async () => {
-        clearInterval(timer);
         clearTimeout(stayedUp);
         safety.close();
         try {

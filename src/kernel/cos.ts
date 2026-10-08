@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { readFileSync } from "node:fs";
-import { MemoryDoc, renderFacts, renderLoops } from "./memory/state.ts";
+import { MemoryDoc, renderFacts } from "./memory/state.ts";
 import { memoryTools } from "./memory/tools.ts";
 import { secretRequest } from "./secret-requests.ts";
 import type { Settings } from "./settings.ts";
@@ -46,10 +46,6 @@ export function cosExtension(
       section("about-you", async ({ read }, context) => {
         const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
         return memory && renderFacts(memory.facts);
-      }),
-      section("open-loops", async ({ read }, context) => {
-        const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
-        return memory && renderLoops(memory.loops);
       }),
     ],
     tools: [createReadTool(), ...memoryTools, secretRequest, ...tools],

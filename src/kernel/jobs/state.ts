@@ -56,14 +56,17 @@ function cut(text: string): string {
   return text.length > 120 ? `${text.slice(0, 119)}…` : text;
 }
 
-/** Active jobs, and finished ones updated after `since`. */
-export function board(jobs: Record<string, Job>, since = Infinity): string | undefined {
+const DAY = 86_400_000;
+
+/** Active jobs, and finished ones updated in the last 24 hours. */
+export function board(jobs: Record<string, Job>, now = Date.now()): string | undefined {
   const active = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
   const lines = byId(jobs)
-    .filter((j) => active(j) || j.updatedAt > since)
+    .filter((j) => active(j) || j.updatedAt > now - DAY)
     .map((j) => {
       const detail = j.status === "running" ? j.progress : j.status === "queued" ? undefined : j.result;
-      return `- ${j.id} "${j.title}" ${j.status}${detail ? `: ${cut(detail)}` : ""}`;
+      const first = detail?.split("\n")[0];
+      return `- ${j.id} "${j.title}" ${j.status}${first ? `: ${cut(first)}` : ""}`;
     });
   return lines.length ? lines.join("\n") : undefined;
 }

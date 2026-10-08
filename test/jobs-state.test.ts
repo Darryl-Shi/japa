@@ -52,7 +52,13 @@ test("board lists active jobs and truncates their text", () => {
   );
 });
 
-test("board also lists jobs finished since the given time", () => {
-  const jobs = jobsOf(job(1, "done", { result: "ok" }), job(5, "failed", { result: "boom" }), job(6, "cancelled"));
-  expect(board(jobs, 4)).toBe(['- 5 "t5" failed: boom', '- 6 "t6" cancelled'].join("\n"));
+const HOUR = 3_600_000;
+
+test("board lists jobs finished in the last 24 hours and the first line of their detail", () => {
+  const now = 100 * HOUR;
+  const jobs = jobsOf(
+    job(1, "done", { result: "old", updatedAt: now - 25 * HOUR }),
+    job(5, "failed", { result: "boom\nstack trace", updatedAt: now - 23 * HOUR }),
+  );
+  expect(board(jobs, now)).toBe('- 5 "t5" failed: boom');
 });

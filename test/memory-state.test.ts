@@ -3,7 +3,6 @@ import { expect, test } from "vitest";
 import type { Job } from "../src/kernel/jobs/state.ts";
 import {
   applyFactOps,
-  applyLoopOps,
   overCap,
   renderFacts,
   search,
@@ -13,7 +12,7 @@ import {
 } from "../src/kernel/memory/state.ts";
 
 function memory(...texts: string[]): Memory {
-  const m: Memory = { nextId: 1, facts: [], loops: [], episodes: [] };
+  const m: Memory = { nextId: 1, facts: [], episodes: [] };
   applyFactOps(m, texts.map((text) => ({ op: "add", text })), 0);
   return m;
 }
@@ -60,13 +59,6 @@ test("overCap and truncateToCap by tokens", () => {
   const limits = { maxFacts: 30, maxTokens: 15 };
   expect(overCap(facts, limits)).toBe(true);
   expect(truncateToCap(facts, limits).map((f) => f.id)).toEqual(["2"]);
-});
-
-test("loops add and close", () => {
-  const m = memory();
-  applyLoopOps(m, [{ op: "add", text: "call the bank" }, { op: "add", text: "book dentist" }], 4);
-  applyLoopOps(m, [{ op: "close", id: "1" }], 5);
-  expect(m.loops).toEqual([{ id: "2", text: "book dentist", createdAt: 4 }]);
 });
 
 test("search ranks by distinct matches, newest first on ties, skips non-matches", () => {

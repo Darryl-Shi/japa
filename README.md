@@ -39,7 +39,7 @@ npm link        # puts `japa` on your PATH
      "storage": { "adapter": "sqlite" },
      "secrets": { "adapter": "file" },
      "jobs": { "maxConcurrent": 4 },
-     "context": { "resetTokens": 20000, "idleResetHours": 2, "toolResultTokens": 2000 },
+     "context": { "toolResultTokens": 2000 },
      "memory": { "maxFacts": 30, "maxTokens": 1500 },
      "safety": { "toolErrorThreshold": 5, "goodAfterMinutes": 10 },
      "extensions": {}
