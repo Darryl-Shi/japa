@@ -111,7 +111,7 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
       await exec(node, args, { stdio: "inherit" });
     },
     restart: async (log) => {
-      const env = serviceEnv(layoutOf(o.app, o.userHome).launcher);
+      const env = serviceEnv(layoutOf(o.app, o.userHome));
       if (isInstalled(env)) {
         await restartService(env);
         if ((await waitForDaemon(o.home)) === undefined) log("japa didn't answer within 30 s; see: japa service logs");

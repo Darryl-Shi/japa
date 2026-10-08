@@ -26,7 +26,7 @@ function fakeServiceEnv(overrides: Partial<ServiceEnv> = {}): ServiceEnv {
     platform: "linux",
     userHome: tmp(),
     configHome: tmp(),
-    launcher: "/unused",
+    command: ["/unused"],
     japaHome: tmp(),
     customHome: false,
     path: "",

@@ -8,13 +8,14 @@ import { japaHome } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
 import { daemonStatus, foregroundPid } from "./daemon.ts";
 import { exec, type Exec } from "./exec.ts";
-import { APP, layoutOf } from "./layout.ts";
+import { APP, launcherPointsAt, type Layout, layoutOf } from "./layout.ts";
 
 export type ServiceEnv = {
   platform: NodeJS.Platform;
   userHome: string;
   configHome: string;
-  launcher: string;
+  /** The daemon's command line (`daemonCommand`). */
+  command: string[];
   japaHome: string;
   customHome: boolean;
   path: string;
@@ -27,13 +28,22 @@ export type ServiceEnv = {
 /** The launchd label and the systemd unit's description name. */
 const LABEL = "dev.japa.daemon";
 
-/** `ServiceEnv` from the current process and OS, for `launcher` (e.g. `layoutOf(APP).launcher`). */
-export function serviceEnv(launcher: string): ServiceEnv {
+/**
+ * The command line that runs `layout.app`'s daemon: the launcher when it points at that checkout, else `node` on its
+ * main.ts directly -- a checkout without a launcher (`npm link`) or beside another install's must run its own code.
+ */
+export function daemonCommand(layout: Layout, node = process.execPath): string[] {
+  if (launcherPointsAt(layout)) return [layout.launcher, "daemon"];
+  return [node, "--disable-warning=ExperimentalWarning", join(layout.app, "src/cli/main.ts"), "daemon"];
+}
+
+/** `ServiceEnv` from the current process and OS, for the checkout at `layout` (e.g. `layoutOf(APP)`). */
+export function serviceEnv(layout: Layout): ServiceEnv {
   return {
     platform: process.platform,
     userHome: homedir(),
     configHome: process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
-    launcher,
+    command: daemonCommand(layout),
     japaHome: japaHome(),
     customHome: process.env.JAPA_HOME !== undefined,
     path: process.env.PATH ?? "",
@@ -64,7 +74,7 @@ export function unitText(env: ServiceEnv): string {
     "After=network-online.target",
     "",
     "[Service]",
-    `ExecStart=${systemdQuote(env.launcher)} daemon`,
+    `ExecStart=${env.command.map(systemdQuote).join(" ")}`,
     "Restart=on-failure",
     "RestartSec=5",
     `Environment=${systemdQuote(`PATH=${env.path}`)}`,
@@ -84,6 +94,7 @@ export function plistText(env: ServiceEnv): string {
   const envVars: [string, string][] = [["PATH", env.path]];
   if (env.customHome) envVars.push(["JAPA_HOME", env.japaHome]);
   const envXml = envVars.map(([k, v]) => `\t\t<key>${xmlEscape(k)}</key>\n\t\t<string>${xmlEscape(v)}</string>`).join("\n");
+  const argsXml = env.command.map((arg) => `\t\t<string>${xmlEscape(arg)}</string>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -92,8 +103,7 @@ export function plistText(env: ServiceEnv): string {
 \t<string>${LABEL}</string>
 \t<key>ProgramArguments</key>
 \t<array>
-\t\t<string>${xmlEscape(env.launcher)}</string>
-\t\t<string>daemon</string>
+${argsXml}
 \t</array>
 \t<key>RunAtLoad</key>
 \t<true/>
@@ -255,7 +265,7 @@ const SERVICE_USAGE = "Usage: japa service <install|uninstall|start|stop|restart
 
 /** The `japa service <...>` CLI dispatcher. Setup, update and uninstall call the functions above directly instead. */
 export async function serviceCommand(home: string, args: string[]): Promise<void> {
-  const env = serviceEnv(layoutOf(APP).launcher);
+  const env = serviceEnv(layoutOf(APP));
   const log = (s: string) => console.log(s);
   switch (args[0]) {
     case "install":

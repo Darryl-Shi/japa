@@ -42,7 +42,7 @@ function makeServiceEnv(overrides: Partial<ServiceEnv> = {}): ServiceEnv {
     platform: "linux",
     userHome: tempHome(),
     configHome: tempHome(),
-    launcher: "/home/x/.local/bin/japa",
+    command: ["/home/x/.local/bin/japa", "daemon"],
     japaHome: tempHome(),
     customHome: false,
     path: "/usr/bin:/bin",

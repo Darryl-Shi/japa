@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import type { Exec, ExecResult } from "../src/cli/exec.ts";
+import { layoutOf, writeLauncher } from "../src/cli/layout.ts";
 import {
+  daemonCommand,
   installService,
   isInstalled,
   logsCommand,
@@ -40,7 +42,7 @@ function makeEnv(overrides: Partial<ServiceEnv> = {}): ServiceEnv {
     platform: "linux",
     userHome: tmp(),
     configHome: tmp(),
-    launcher: "/home/x/.local/bin/japa",
+    command: ["/home/x/.local/bin/japa", "daemon"],
     japaHome: tmp(),
     customHome: false,
     path: "/usr/bin:/bin",
@@ -52,28 +54,61 @@ function makeEnv(overrides: Partial<ServiceEnv> = {}): ServiceEnv {
 }
 
 test("unit quotes ExecStart, escaping \\ and \"; JAPA_HOME only with customHome", () => {
-  const env = makeEnv({ launcher: "/a b/japa" });
+  const env = makeEnv({ command: ["/a b/japa", "daemon"] });
 
   const text = unitText(env);
-  expect(text).toContain('ExecStart="/a b/japa" daemon');
+  expect(text).toContain('ExecStart="/a b/japa" "daemon"');
   expect(text).toContain('Environment="PATH=/usr/bin:/bin"');
   expect(text).not.toContain("JAPA_HOME");
 
-  expect(unitText({ ...env, launcher: '/a"b/japa' })).toContain('ExecStart="/a\\"b/japa" daemon');
-  expect(unitText({ ...env, launcher: "/a\\b/japa" })).toContain('ExecStart="/a\\\\b/japa" daemon');
+  expect(unitText({ ...env, command: ['/a"b/japa', "daemon"] })).toContain('ExecStart="/a\\"b/japa" "daemon"');
+  expect(unitText({ ...env, command: ["/a\\b/japa", "daemon"] })).toContain('ExecStart="/a\\\\b/japa" "daemon"');
 
   const withHome = unitText({ ...env, customHome: true, japaHome: "/home/x/.japa" });
   expect(withHome).toContain('Environment="JAPA_HOME=/home/x/.japa"');
 });
 
 test("plist escapes values and logs to <home>/logs/daemon.log", () => {
-  const env = makeEnv({ platform: "darwin", launcher: "/a&b/japa", japaHome: "/home/x/.japa", customHome: true, path: "/usr/bin" });
+  const env = makeEnv({ platform: "darwin", command: ["/a&b/japa", "daemon"], japaHome: "/home/x/.japa", customHome: true, path: "/usr/bin" });
 
   const text = plistText(env);
   expect(text).toContain("<string>/a&amp;b/japa</string>");
   expect(text).toContain(`<string>${join("/home/x/.japa", "logs", "daemon.log")}</string>`);
   expect(text).toContain("<key>PATH</key>\n\t\t<string>/usr/bin</string>");
   expect(text).toContain("<key>JAPA_HOME</key>\n\t\t<string>/home/x/.japa</string>");
+});
+
+test("the service runs the launcher only when it points at this checkout", () => {
+  const root = tmp();
+  const layout = layoutOf(join(root, "share", "japa", "app"), root);
+  const direct = ["/opt/node/bin/node", "--disable-warning=ExperimentalWarning", join(layout.app, "src/cli/main.ts"), "daemon"];
+
+  expect(daemonCommand(layout, "/opt/node/bin/node")).toEqual(direct); // no launcher (e.g. npm link)
+
+  writeLauncher({ ...layout, app: join(root, "elsewhere", "app") }, "/opt/node/bin/node");
+  expect(daemonCommand(layout, "/opt/node/bin/node")).toEqual(direct); // another install's launcher
+
+  writeLauncher(layout, "/opt/node/bin/node");
+  expect(daemonCommand(layout, "/opt/node/bin/node")).toEqual([layout.launcher, "daemon"]);
+});
+
+test("unit and plist run a checkout directly on its Node", () => {
+  const command = ["/opt/my node/bin/node", "--disable-warning=ExperimentalWarning", "/src/ja&pa/src/cli/main.ts", "daemon"];
+
+  expect(unitText(makeEnv({ command }))).toContain(
+    'ExecStart="/opt/my node/bin/node" "--disable-warning=ExperimentalWarning" "/src/ja&pa/src/cli/main.ts" "daemon"\n',
+  );
+  expect(plistText(makeEnv({ platform: "darwin", command }))).toContain(
+    [
+      "\t<key>ProgramArguments</key>",
+      "\t<array>",
+      "\t\t<string>/opt/my node/bin/node</string>",
+      "\t\t<string>--disable-warning=ExperimentalWarning</string>",
+      "\t\t<string>/src/ja&amp;pa/src/cli/main.ts</string>",
+      "\t\t<string>daemon</string>",
+      "\t</array>",
+    ].join("\n"),
+  );
 });
 
 test("install writes, reloads, enables, starts and lingers", async () => {

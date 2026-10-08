@@ -86,7 +86,7 @@ async function uninstallCommand(home: string): Promise<void> {
         prompter.close();
       }
     },
-    serviceEnv: serviceEnv(layout.launcher),
+    serviceEnv: serviceEnv(layout),
     log: (s) => console.log(s),
   });
 }

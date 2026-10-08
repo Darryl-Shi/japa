@@ -208,7 +208,7 @@ export async function setupCommand(home: string, args: string[]): Promise<void> 
     service: !args.includes("--no-service"),
     whatsNew: args.includes("--whats-new"),
     env: process.env,
-    serviceEnv: serviceEnv(layoutOf(APP).launcher),
+    serviceEnv: serviceEnv(layoutOf(APP)),
     log: (s) => console.log(s),
   };
 
