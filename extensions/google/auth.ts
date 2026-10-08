@@ -165,6 +165,8 @@ function pastedCode(input: string, state: string): string {
   return code!;
 }
 
+const NOT_WAITING = "This isn't the sign-in japa is waiting for.";
+
 const page = (res: ServerResponse, status: number, text: string) => {
   const escaped = text.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
   res
@@ -181,18 +183,25 @@ async function listen(state: string) {
   const code = new Promise<string>((resolve, reject) => (settle = { resolve, reject }));
   code.catch(() => {}); // raced by the caller; never an unhandled rejection
   const server = createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    const params = url.searchParams;
-    const [value, error] = [params.get("code"), params.get("error")];
-    if (url.pathname !== "/" || params.get("state") !== state || !(value || error)) {
-      return page(res, 400, "This isn't the sign-in japa is waiting for.");
-    }
-    if (error) {
-      page(res, 400, `Google sign-in failed: ${error}`);
-      settle.reject(new Error(`Google sign-in failed: ${error}`));
-    } else {
-      page(res, 200, CONNECTED);
-      settle.resolve(value!);
+    // A throw here would be an uncaught exception in the daemon or setup, so nothing in this listener may throw.
+    try {
+      // Node's parser accepts targets such as `http://[` that the URL parser rejects: those get null here.
+      const url = URL.parse(req.url ?? "/", "http://127.0.0.1");
+      const params = url?.searchParams;
+      const [value, error] = [params?.get("code"), params?.get("error")];
+      if (url?.pathname !== "/" || params?.get("state") !== state || !(value || error)) {
+        return page(res, 400, NOT_WAITING);
+      }
+      if (error) {
+        page(res, 400, `Google sign-in failed: ${error}`);
+        settle.reject(new Error(`Google sign-in failed: ${error}`));
+      } else {
+        page(res, 200, CONNECTED);
+        settle.resolve(value!);
+      }
+    } catch {
+      if (res.headersSent) res.destroy();
+      else page(res, 400, NOT_WAITING);
     }
   });
   await new Promise<void>((resolve, reject) => {

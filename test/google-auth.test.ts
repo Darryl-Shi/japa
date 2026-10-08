@@ -217,6 +217,35 @@ test("a redirect with the wrong state gets 400 and the flow keeps waiting, then 
   expect(google.forms.map((f) => f.get("code"))).toEqual(["c2"]);
 });
 
+/** Writes `request` to 127.0.0.1:`port` over a raw socket and resolves with everything the server answers. */
+const rawRequest = (port: number, request: string) =>
+  new Promise<string>((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () => socket.end(request));
+    let answer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => (answer += chunk));
+    socket.once("end", () => resolve(answer));
+    socket.once("error", reject);
+  });
+
+test("a request with a malformed target gets 400 and the flow keeps waiting, then a pasted address wins", async () => {
+  const google = await fakeGoogle();
+  const flow = await start(memoryStore(CLIENT), google.endpoints);
+  for (const target of ["http://[", "http://a:b:c"]) {
+    const answer = await rawRequest(flow.port, `GET ${target} HTTP/1.1\r\nHost: x\r\n\r\n`);
+    expect(answer).toMatch(/^HTTP\/1\.1 400 /);
+    expect(answer).toContain("This isn't the sign-in japa is waiting for.");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(flow.settled()).toBe(false);
+  expect(flow.prompt.signal?.aborted).toBe(false);
+  expect(google.forms).toEqual([]);
+
+  await flow.paste(`${flow.redirectUri}?code=c3&state=${flow.state}`);
+  expect(await flow.result).toBe("Connected as me@example.com");
+  expect(google.forms.map((f) => f.get("code"))).toEqual(["c3"]);
+});
+
 test("a pasted address, with spaces around it, signs in and closes the listener", async () => {
   const google = await fakeGoogle();
   const flow = await start(memoryStore(CLIENT), google.endpoints);
