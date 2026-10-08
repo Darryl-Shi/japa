@@ -20,7 +20,8 @@
     "@earendil-works/chord": "^1.0.4",
     "@earendil-works/pi-ai": "^1.0.4",
     "@earendil-works/pi-durable": "^1.0.4",
-    "@earendil-works/pi-tui": "^1.0.4"
+    "@earendil-works/pi-tui": "^1.0.4",
+    "playwright-core": "^1.64.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

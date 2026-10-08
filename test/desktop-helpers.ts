@@ -3,6 +3,7 @@ import type { JsonObject, ToolExecutionApi, ToolExecutionResult, ToolRegistratio
 import type { KernelContext } from "../src/kernel/contracts.ts";
 import type { Desktop, DesktopConfig, Docker, ExecResult } from "../extensions/desktop/container.ts";
 import { remoteEnv } from "../extensions/desktop/env.ts";
+import { vi } from "vitest";
 import { tempHome } from "./helpers.ts";
 
 export const PNG = Buffer.from("fake png");
@@ -134,4 +135,53 @@ export function run(tool: ToolRegistration, args: object, api: ToolExecutionApi,
 
 export function resultText(result: ToolExecutionResult) {
   return result.content!.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
+}
+
+/** A duck-typed playwright `Locator` matching `count` elements; its actions are spies. */
+export function fakeLocator({ count = 1, click = async (): Promise<unknown> => undefined } = {}) {
+  return {
+    count: async () => count,
+    click: vi.fn(click),
+    hover: vi.fn(async () => {}),
+    fill: vi.fn(async () => {}),
+    press: vi.fn(async () => {}),
+    selectOption: vi.fn(async () => {}),
+    innerText: async () => "Example",
+    screenshot: async () => PNG,
+    waitFor: vi.fn(async () => {}),
+  };
+}
+
+/** A duck-typed playwright `Page` whose `ariaSnapshot` returns `snapshots` in turn, repeating the last; `emit` fires its listeners. */
+export function fakePage({
+  url = "https://example.com/",
+  title = "Example",
+  snapshots = ['- heading "Example" [ref=e1]'],
+  refs = {} as Record<string, ReturnType<typeof fakeLocator>>,
+} = {}) {
+  const listeners: Record<string, ((value: unknown) => void)[]> = {};
+  let shots = 0;
+  return {
+    url: () => url,
+    title: async () => title,
+    goto: async (to: string) => void (url = to),
+    ariaSnapshot: async () => snapshots[Math.min(shots++, snapshots.length - 1)],
+    getByRef: (ref: string) => refs[ref] ?? fakeLocator({ count: 0 }),
+    on: (event: string, listener: (value: unknown) => void) => void (listeners[event] ??= []).push(listener),
+    emit: (event: string, value: unknown) => listeners[event]?.forEach((listener) => listener(value)),
+    keyboard: { press: vi.fn(async () => {}) },
+    bringToFront: vi.fn(async () => {}),
+    screenshot: async () => PNG,
+    evaluate: async (js: string) => ({ ran: js }),
+  };
+}
+
+/** A duck-typed playwright `Browser` with one context holding `pages`; `newPage` adds a fake page. */
+export function fakeBrowser(pages: ReturnType<typeof fakePage>[]) {
+  const newPage = async () => {
+    const page = fakePage();
+    pages.push(page);
+    return page;
+  };
+  return { isConnected: () => true, contexts: () => [{ pages: () => pages, on() {}, newPage }], close: vi.fn(async () => {}) };
 }
