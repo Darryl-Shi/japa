@@ -19,6 +19,15 @@ export function outcomeLine(reply: string): string {
   return reply.startsWith(NOT_CHANGED) ? `✗ ${reply.slice(NOT_CHANGED.length)}` : `✓ ${reply}`;
 }
 
+/** An age of `ms`: `<1m`, then whole minutes `Nm`, hours `Nh` under 48 hours, then days `Nd`. */
+export function ago(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
 /**
  * Screens with buttons for one command's menu (`scope` "s" for /settings, "j" for /jobs). Each button's action,
  * `<run>:<scope>:<n>`, maps in memory to what pressing it shows; the newest `KEEP` are kept. A button remembers the

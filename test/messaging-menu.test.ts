@@ -1,13 +1,15 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import type { FauxProviderHandle } from "@earendil-works/pi-ai";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { envApiKeyAuth, type FauxProviderHandle } from "@earendil-works/pi-ai";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
+import { ChangesDoc, logChange } from "../src/kernel/changes.ts";
 import type { Incoming, KernelContext, MessagingContext } from "../src/kernel/contracts.ts";
 import type { Job } from "../src/kernel/jobs/state.ts";
 import { COMMANDS, createMenu } from "../src/kernel/messaging/menu/index.ts";
-import type { Nav, Page } from "../src/kernel/messaging/menu/nav.ts";
+import { ago, type Nav, type Page } from "../src/kernel/messaging/menu/nav.ts";
 import { addSecretRequest } from "../src/kernel/secret-requests.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { echo, stage, testKit, waitFor } from "./helpers.ts";
@@ -48,11 +50,11 @@ afterEach(async () => {
   await daemon.close();
 });
 
-/** Boots again with `kit`'s models and a fresh fake adapter. */
-async function reboot(kit: ReturnType<typeof testKit>) {
+/** Boots again with `kit`'s models, `extra` extensions and a fresh fake adapter. */
+async function reboot(kit: ReturnType<typeof testKit>, extra: Parameters<typeof bootMessaging>[2] = []) {
   await daemon.close();
   fake = fakeAdapter();
-  ({ daemon, faux, home } = await bootMessaging(fake, {}, [], kit));
+  ({ daemon, faux, home } = await bootMessaging(fake, {}, extra, kit));
 }
 
 /** The button labels of the newest edited message. */
@@ -88,8 +90,14 @@ const transcript = async () => JSON.stringify((await daemon.root.entries({}, 500
 // A menu driven directly, with a kernel offering provider "p" with model "a".
 const msg = { chat: "42", user: "42", id: "1", messageId: "1" };
 const fakeKernel = {
-  models: { getProviders: () => [{ id: "p" }], getModels: () => [{ id: "a" }] },
+  models: { getProviders: () => [{ id: "p" }], getModels: () => [{ id: "a" }], checkAuth: async () => ({}) },
 } as unknown as KernelContext;
+/** A tool result with `text`. */
+const result = (text: string) => ({ content: [{ type: "text", text }] });
+/** `settings_get` for the fake menus: no models set. */
+const settingsGet = async (name: string) => (name === "settings_get" ? result('{"models":{}}') : undefined);
+const HOME = ["Models", "Extensions", "Schedules", "General", "Recent changes"];
+const MODELS = "**Models**\n\nCoS: faux/a\nWorker: same as CoS\nConsolidation: same as CoS";
 
 /** Presses the button labelled `label` in the newest message `f` got (edited, else sent), through `menu`. */
 function presser(menu: ReturnType<typeof createMenu>, f: ReturnType<typeof fakeAdapter>) {
@@ -170,13 +178,14 @@ test("a stale button says the menu expired", async () => {
 
 test("the 501st-oldest action expires", async () => {
   const f = fakeAdapter();
-  const menu = createMenu(f.adapter, fakeKernel, { tool: async () => undefined } as unknown as MessagingContext, () => []);
-  for (let i = 0; i < 167; i++) await menu.command({ ...msg, command: "settings" }); // 3 actions each: 501
-  const [oldest, kept] = f.sent[0]!.buttons!.flat();
-  await menu.press({ ...msg, action: oldest!.action });
+  const menu = createMenu(f.adapter, fakeKernel, { tool: settingsGet } as unknown as MessagingContext, () => []);
+  for (let i = 0; i < 101; i++) await menu.command({ ...msg, command: "settings" }); // 5 actions each: 505
+  const oldest = f.sent[0]!.buttons!.flat().at(-1)!; // the 5th
+  const kept = f.sent[1]!.buttons!.flat()[0]!; // the 6th: Models
+  await menu.press({ ...msg, action: oldest.action });
   expect(f.edited.at(-1)!.markdown).toBe("This menu expired — send /settings again.");
-  await menu.press({ ...msg, action: kept!.action });
-  expect(f.edited.at(-1)!.markdown).toBe("**Schedules**\n\nNo schedules.");
+  await menu.press({ ...msg, action: kept.action });
+  expect(f.edited.at(-1)!.markdown).toBe("**Models**\n\nCoS: not set\nWorker: same as CoS\nConsolidation: same as CoS");
 });
 
 test("a stale /jobs button says send /jobs again", async () => {
@@ -193,9 +202,9 @@ test("a stale /jobs button says send /jobs again", async () => {
 test("every screen but a home has ‹ Back and ⌂ Home; Back returns to the previous screen", async () => {
   await fake.receive({ command: "settings" });
   expect(fake.sent.at(-1)!.markdown).toBe("**Settings**");
-  expect(fake.sent.at(-1)!.buttons!.flat().map((b) => b.label)).toEqual(["Models", "Schedules", "Extensions"]);
+  expect(fake.sent.at(-1)!.buttons!.flat().map((b) => b.label)).toEqual(HOME);
   await fake.press("Models");
-  expect(fake.edited.at(-1)!.markdown).toBe("**Models**\n\nWhich model?");
+  expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*Models\*\*\n\nCoS: faux\//);
   expect(labels()).toEqual(["CoS", "Worker", "Consolidation", "‹ Back", "⌂ Home"]);
   await fake.press("CoS");
   expect(fake.edited.at(-1)!.markdown).toBe("**Choose a provider**");
@@ -205,10 +214,10 @@ test("every screen but a home has ‹ Back and ⌂ Home; Back returns to the pre
   await fake.press("‹ Back");
   expect(fake.edited.at(-1)!.markdown).toBe("**Choose a provider**");
   await fake.press("‹ Back");
-  expect(fake.edited.at(-1)!.markdown).toBe("**Models**\n\nWhich model?");
+  expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*Models\*\*/);
   await fake.press("⌂ Home");
   expect(fake.edited.at(-1)!.markdown).toBe("**Settings**");
-  for (const screen of ["Schedules", "Extensions"]) {
+  for (const screen of ["Schedules", "Extensions", "General", "Recent changes"]) {
     await fake.press(screen);
     expect(labels().slice(-2)).toEqual(["‹ Back", "⌂ Home"]);
     await fake.press("‹ Back");
@@ -221,20 +230,21 @@ test("a rejected or failed action shows ✗ on the screen it came from", async (
   const replies = [async () => "Not changed: no such model", async () => Promise.reject(new Error("boom"))];
   const messaging = {
     setSetting: () => replies.shift()!(),
-    tool: async () => Promise.reject(new Error("down")),
+    tool: async (name: string) => (name === "settings_get" ? settingsGet(name) : Promise.reject(new Error("down"))),
   } as unknown as MessagingContext;
   const menu = createMenu(f.adapter, fakeKernel, messaging, () => []);
   const press = presser(menu, f);
   await menu.command({ ...msg, command: "settings" });
   await press("Models");
+  const models = "**Models**\n\nCoS: not set\nWorker: same as CoS\nConsolidation: same as CoS";
   for (const label of ["CoS", "p", "a"]) await press(label);
-  expect(f.edited.at(-1)!.markdown).toBe("✗ no such model\n\n**Models**\n\nWhich model?");
+  expect(f.edited.at(-1)!.markdown).toBe(`✗ no such model\n\n${models}`);
   for (const label of ["CoS", "p", "a"]) await press(label);
-  expect(f.edited.at(-1)!.markdown).toBe("✗ boom\n\n**Models**\n\nWhich model?");
+  expect(f.edited.at(-1)!.markdown).toBe(`✗ boom\n\n${models}`);
   await press("⌂ Home");
   await press("Schedules");
   expect(f.edited.at(-1)!.markdown).toBe("✗ down\n\n**Settings**");
-  expect(f.edited.at(-1)!.buttons!.flat().map((b) => b.label)).toEqual(["Models", "Schedules", "Extensions"]);
+  expect(f.edited.at(-1)!.buttons!.flat().map((b) => b.label)).toEqual(HOME);
 });
 
 test("a model is set from the menu, logged, and undoable", async () => {
@@ -243,7 +253,7 @@ test("a model is set from the menu, logged, and undoable", async () => {
   expect(fake.sent.at(-1)!.markdown).toBe("**Settings**");
   await fake.press("Models");
   for (const label of ["CoS", "faux", "b"]) await choose(label);
-  expect(fake.edited.at(-1)!.markdown).toBe("✓ Set models.cos. (change 1)\n\n**Models**\n\nWhich model?");
+  expect(fake.edited.at(-1)!.markdown).toBe(`✓ Set models.cos. (change 1)\n\n${MODELS.replace("faux/a", "faux/b")}`);
   expect(daemon.status().model).toEqual({ provider: "faux", modelId: "b" });
   expect(await tool(daemon, faux, "change_undo", { id: "1" })).toBe("Undid: Set models.cos");
   const buttons = [...fake.sent, ...fake.edited].flatMap((m) => (m.buttons ?? []).flat());
@@ -255,7 +265,7 @@ test("long lists are paged 8 at a time", async () => {
   await fake.receive({ command: "settings" });
   await fake.press("Models");
   for (const label of ["CoS", "faux"]) await choose(label);
-  const first = ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "1/2", "›", "‹ Back", "⌂ Home"];
+  const first = ["✓ m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "1/2", "›", "‹ Back", "⌂ Home"];
   expect(labels()).toEqual(first);
   await fake.press("1/2");
   expect(labels()).toEqual(first);
@@ -276,6 +286,130 @@ test("a schedule is removed from the menu after confirmation", async () => {
   expect(fake.edited.at(-1)!.markdown).toBe("✓ Removed schedule 1.\n\n**Schedules**\n\nNo schedules.");
   expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
   expect(await tool(daemon, faux, "changes_list")).toMatch(/Removed schedule "water plants"/);
+});
+
+test("ago gives an age in minutes, hours under 48, then days", () => {
+  const [m, h] = [60_000, 3_600_000];
+  expect([0, m - 1, m, 60 * m - 1, h, 48 * h - 1, 48 * h, 100 * h].map(ago)).toEqual(
+    ["<1m", "<1m", "1m", "59m", "1h", "47h", "2d", "4d"],
+  );
+});
+
+describe("models", { timeout: 30_000 }, () => {
+  test("Models shows current values and ticks the current model; providers without credentials aren't listed", async () => {
+    const nokey = testKit({ provider: "nokey", models: [{ id: "x" }] });
+    const provider = { ...nokey.faux.provider, auth: { apiKey: envApiKeyAuth("Nokey", ["JAPA_NOKEY_API_KEY"]) } };
+    await reboot(testKit({ models: [{ id: "a" }, { id: "b" }] }), [
+      { name: "nokey", summary: "No key", provides: { provider: [provider] } },
+    ]);
+    await fake.receive({ command: "settings" });
+    await fake.press("Models");
+    expect(fake.edited.at(-1)!.markdown).toBe(MODELS);
+    await fake.press("CoS");
+    expect(labels()).toEqual(["faux", "‹ Back", "⌂ Home"]);
+    await fake.press("faux");
+    expect(labels()).toEqual(["✓ a", "b", "‹ Back", "⌂ Home"]);
+    await fake.press("⌂ Home");
+    await fake.press("Models");
+    await fake.press("Worker");
+    expect(labels()).toEqual(["Use CoS model", "faux", "‹ Back", "⌂ Home"]);
+    await fake.press("faux");
+    expect(labels()).toEqual(["a", "b", "‹ Back", "⌂ Home"]);
+    await fake.press("b");
+    const worker = MODELS.replace("Worker: same as CoS", "Worker: faux/b");
+    expect(fake.edited.at(-1)!.markdown).toBe(`✓ Set models.worker. (change 1)\n\n${worker}`);
+    await fake.press("Worker");
+    await fake.press("faux");
+    expect(labels()).toEqual(["a", "✓ b", "‹ Back", "⌂ Home"]);
+  });
+
+  test("Use CoS model clears the role's model, logged", async () => {
+    await reboot(testKit({ models: [{ id: "a" }, { id: "b" }] }));
+    await fake.receive({ command: "settings" });
+    await fake.press("Models");
+    for (const label of ["Consolidation", "faux", "b"]) await fake.press(label);
+    expect(fake.edited.at(-1)!.markdown).toContain("Consolidation: faux/b");
+    await fake.press("Consolidation");
+    await fake.press("Use CoS model");
+    expect(fake.edited.at(-1)!.markdown).toBe(`✓ Set models.consolidation. (change 2)\n\n${MODELS}`);
+    expect(await tool(daemon, faux, "settings_get", { path: "models.consolidation" })).toBe("Not set.");
+    expect(await tool(daemon, faux, "changes_list")).toMatch(/^2 \S+ Set models\.consolidation$/m);
+  });
+});
+
+describe("general", { timeout: 30_000 }, () => {
+  test("General lists the settings with their values; a typed value is set, an invalid one rejected", async () => {
+    await fake.receive({ command: "settings" });
+    await fake.press("General");
+    expect(fake.edited.at(-1)!.markdown).toBe("**General**");
+    expect(labels()).toEqual([
+      "Max concurrent jobs: 4",
+      "Keep finished jobs (days): 7",
+      "Memory: max facts: 30",
+      "Memory: max tokens: 1500",
+      "Tool errors before rollback: 5",
+      "Minutes until marked good: 10",
+      "Tool result tokens: 2000",
+      "‹ Back",
+      "⌂ Home",
+    ]);
+    await fake.press("Max concurrent jobs: 4");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Max concurrent jobs**\n\nSend the new value as your next message.");
+    await fake.receive({ text: "2" });
+    expect(fake.edited.at(-1)!.markdown).toBe("✓ Set jobs.maxConcurrent. (change 1)\n\n**General**");
+    expect(labels()[0]).toBe("Max concurrent jobs: 2");
+    expect(await tool(daemon, faux, "settings_get", { path: "jobs.maxConcurrent" })).toBe("2");
+    await fake.press("Max concurrent jobs: 2");
+    await fake.receive({ text: "0" });
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^✗ .+\n\n\*\*General\*\*$/);
+    expect(labels()[0]).toBe("Max concurrent jobs: 2");
+    expect(await tool(daemon, faux, "settings_get", { path: "jobs.maxConcurrent" })).toBe("2");
+  });
+});
+
+describe("recent changes", { timeout: 30_000 }, () => {
+  test("a change made by settings_set is listed and undone after confirmation", async () => {
+    await tool(daemon, faux, "settings_set", { path: "jobs.maxConcurrent", value: 2, howToUse: "Fewer jobs at once." });
+    await fake.receive({ command: "settings" });
+    await fake.press("Recent changes");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Recent changes**");
+    expect(labels()).toEqual(["1 Set jobs.maxConcurrent · <1m", "‹ Back", "⌂ Home"]);
+    await fake.press("1 Set jobs.maxConcurrent · <1m");
+    const { changes } = (await daemon.harness.snapshot(ChangesDoc, ROOT_CONVERSATION_ID, ctx))!;
+    const time = new Date(changes[0]!.at).toLocaleString();
+    expect(fake.edited.at(-1)!.markdown).toBe(`**Change 1**\n\nSet jobs.maxConcurrent\n${time}\n\nFewer jobs at once.`);
+    expect(labels()).toEqual(["Undo", "‹ Back", "⌂ Home"]);
+    await fake.press("Undo");
+    expect(fake.edited.at(-1)!.markdown).toBe('**Undo "Set jobs.maxConcurrent"?**');
+    expect(labels()).toEqual(["Undo", "Cancel"]);
+    await fake.press("Undo");
+    const undone = "✓ Undid: Set jobs.maxConcurrent\n\n**Recent changes**\n\nNo changes yet.";
+    expect(fake.edited.at(-1)!.markdown).toBe(undone);
+    expect(await tool(daemon, faux, "settings_get", { path: "jobs.maxConcurrent" })).toBe("4");
+  });
+
+  test("undoing a schedule-add removes the schedule", async () => {
+    await tool(daemon, faux, "schedule_add", { text: "water plants", cron: "0 9 * * *" });
+    await fake.receive({ command: "settings" });
+    await fake.press("Recent changes");
+    await fake.press('1 Scheduled "water plants" (0 9 * * *) · <1m');
+    await fake.press("Undo");
+    await fake.press("Undo");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^✓ Removed schedule 1\.\n\n\*\*Recent changes\*\*$/);
+    expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
+  });
+
+  test("only the 10 newest changes are listed, newest first", async () => {
+    await daemon.root.commit(async (tx) => {
+      for (let i = 1; i <= 11; i++) await logChange(tx, { title: `Change ${i}`, howToUse: "", undo: { commits: [] } });
+    }, ctx);
+    await fake.receive({ command: "settings" });
+    await fake.press("Recent changes");
+    const shown = labels().slice(0, -2).flatMap((l) => (l.match(/^\d+ /) ? [l.split(" ")[0]] : []));
+    expect(shown).toEqual(["11", "10", "9", "8", "7", "6", "5", "4"]);
+    await fake.press("›");
+    expect(labels().slice(0, 2).map((l) => l.split(" ")[0])).toEqual(["3", "2"]);
+  });
 });
 
 describe("typed input", { timeout: 30_000 }, () => {

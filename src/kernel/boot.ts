@@ -165,6 +165,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         return found?.tool.execute(args, api as unknown as ToolExecutionApi, ctx);
       },
       clearFinishedJobs: () => pruneJobs(Infinity),
+      changes: async () => ((await opened.snapshot(ChangesDoc, root.id, ctx))?.changes ?? []).toReversed(),
     };
     // Resolved by the surfaces' `fulfil`, by secret name.
     const waiters = new Map<string, ((value: string) => void)[]>();

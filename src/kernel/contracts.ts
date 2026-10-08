@@ -9,6 +9,7 @@ import type {
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { MutableModels, Provider } from "@earendil-works/pi-ai";
 import type { ExtensionState } from "./availability.ts";
+import type { Change } from "./changes.ts";
 import type { Job } from "./jobs/state.ts";
 import { startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
@@ -134,6 +135,8 @@ export type MessagingContext = {
   tool(name: string, args: JsonObject): Promise<ToolExecutionResult | undefined>;
   /** Removes every done, failed and cancelled job from the jobs list; returns how many. */
   clearFinishedJobs(): Promise<number>;
+  /** The logged changes, newest first. */
+  changes(): Promise<Change[]>;
 };
 
 export type KernelContext = {
