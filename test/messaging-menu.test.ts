@@ -384,6 +384,22 @@ describe("typed input", { timeout: 30_000 }, () => {
     await sleep(500);
     expect(prompts()).toBe(1);
   });
+
+  test("a secret request made during a menu input is asked for when a command ends the input", async () => {
+    const got = typed();
+    await fake.receive({ command: "settings" });
+    await fake.press("Input");
+    await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+    await sleep(500);
+    expect(prompts()).toBe(0);
+    await fake.receive({ command: "status" });
+    await waitFor(() => prompts() === 1);
+    await sleep(500);
+    expect(prompts()).toBe(1);
+    await fake.receive({ messageId: "77", text: "s3cr3t" });
+    expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+    expect(got).toEqual([]);
+  });
 });
 
 describe("extensions", { timeout: 60_000 }, () => {

@@ -90,8 +90,11 @@ export async function startMessaging(
     }
     if (m.command !== undefined) {
       awaiting = undefined;
+      const inputting = menu.pendingInput();
       menu.cancelInput();
-      return menu.command(m);
+      await menu.command(m);
+      if (inputting) announce(); // the input it ended held back the secret request
+      return;
     }
     if (m.action !== undefined) {
       const inputting = menu.pendingInput();
