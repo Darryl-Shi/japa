@@ -62,9 +62,10 @@ async function poll(ctx: MessagingAdapterContext, signal: AbortSignal) {
       if (bot === undefined) {
         const value = await token;
         if (signal.aborted) return; // a waiter of a stopped adapter
-        bot = api = botApi(BASE, value, signal);
+        const fresh = (api = botApi(BASE, value, signal));
         const list = commands.map((c) => ({ command: c.name, description: c.description }));
-        await bot.call("setMyCommands", { commands: list });
+        await fresh.call("setMyCommands", { commands: list });
+        bot = fresh;
       }
       const allowed_updates = ["message", "callback_query"];
       for (const update of await bot.once<Update[]>("getUpdates", { offset, timeout: 50, allowed_updates })) {
@@ -79,6 +80,7 @@ async function poll(ctx: MessagingAdapterContext, signal: AbortSignal) {
         bot = api = undefined;
         token = kernel.requestSecret(NAME, "Telegram rejected the bot token. Send a new one from @BotFather.");
       } else {
+        console.error(`telegram: ${(error as Error).message}`);
         await sleep(backoff(attempt++), undefined, { signal }).catch(() => {});
       }
     }

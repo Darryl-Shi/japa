@@ -242,11 +242,14 @@ test("without a token the bot waits, asking nothing, and starts once it is provi
   expect(params("getUpdates")[0]).toEqual({ timeout: 50, allowed_updates: ["message", "callback_query"] });
 });
 
-test("polling carries on after server errors", async () => {
+test("polling logs errors and carries on", async () => {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const received = await listen();
-  fake.fail("getUpdates", 500, { ok: false, error_code: 500, description: "Internal" }, 1);
+  fake.fail("getUpdates", 409, { ok: false, error_code: 409, description: "Conflict" }, 1);
   fake.push(text(100, "hi"));
   await vi.waitFor(() => expect(received).toHaveLength(1), { timeout: 5000 });
+  expect(errors).toHaveBeenCalledWith("telegram: Conflict");
+  errors.mockRestore();
 });
 
 test("a default install has Telegram dormant: no error, no pending secret request", async () => {
