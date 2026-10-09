@@ -1399,6 +1399,14 @@ describe("update", { timeout: 30_000 }, () => {
     expect(launches).toEqual([]);
   });
 
+  test("/update on a checkout ahead of origin, with no new commits, says it is up to date", async () => {
+    check = async () => ({ current: B, target: A, commits: [] });
+    const shown = await openUpdate();
+    expect(shown.markdown).toBe("✓ japa is up to date (bbbbbbb)");
+    expect(shown.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([]);
+  });
+
   test("/update lists new commits, 20 at most, with the active job count", async () => {
     await daemon.root.commit(async (tx) => {
       const doc = await tx.doc(JobsDoc, daemon.root.id);

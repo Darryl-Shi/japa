@@ -16,9 +16,10 @@ const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 
 /**
  * The /update screen (design doc §4.1), asked in `chat`. While an update runs it says so; an interrupted one not yet
- * reported is reported here (`home`'s update log) and marked so. Otherwise it checks: up to date, or the new commits
- * (the newest `LISTED`, then how many more) and how many jobs are active, with `Update now`, which starts the update
- * to the commit checked (whatever origin has by then), and `Cancel`.
+ * reported is reported here (`home`'s update log) and marked so. Otherwise it checks: up to date (no new commits, also
+ * on a checkout ahead of origin), or the new commits (the newest `LISTED`, then how many more) and how many jobs are
+ * active, with `Update now`, which starts the update to the commit checked (whatever origin has by then), and
+ * `Cancel`.
  */
 export function updateMenu(
   nav: Nav,
@@ -50,7 +51,7 @@ export function updateMenu(
       return interruptedReport(home);
     }
     const check = await messaging.update.check();
-    if (check.current === check.target) return { markdown: `✓ japa is up to date (${short(check.current)})` };
+    if (check.commits.length === 0) return { markdown: `✓ japa is up to date (${short(check.current)})` };
     return nav.show(offer(check), outcome); // the screen an error pressing its buttons is shown on
   };
 }
