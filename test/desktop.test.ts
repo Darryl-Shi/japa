@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
 import { OMITTED, recentImagesOnly } from "../extensions/desktop/images.ts";
 import { desktopExtension } from "../extensions/desktop/index.ts";
@@ -45,7 +45,7 @@ test("a default install loads the desktop without touching Docker", async () => 
   expect(daemon.status().errors).toEqual([]);
   expect(daemon.status().extensions).toContainEqual({ name: "desktop",
     summary: "Gives me my own computer: a desktop with a browser and apps that I can see and operate",
-    provides: ["environment", "tool"], status: "noVNC: http://127.0.0.1:6080/vnc.html (password: secret desktop.vncPassword)", state: "on" });
+    provides: ["tool"], status: "noVNC: http://127.0.0.1:6080/vnc.html (password: secret desktop.vncPassword)", state: "on" });
   expect(daemon.capabilities()).toContain("- operator: Operates japa's own desktop computer — browser and apps — to get things done on websites and in programs.");
   await daemon.close();
 });
@@ -73,11 +73,17 @@ test("the desktop builds and starts in the background when japa starts, unless a
   }
 });
 
-test("an operator job acts in the container and holds the desktop", async () => {
+test("the desktop extension provides no environment", () => {
+  const ext = desktopExtension(testConfig(fakeDocker().docker));
+  expect(ext.provides!.environment).toBeUndefined();
+  expect((ext.provides!.tool as ToolRegistration[]).map((t) => t.name)).toEqual(["computer", "browser"]);
+});
+
+test("a job outside the container can act on the desktop", async () => {
   const fake = fakeDocker();
   const { daemon, faux } = await bootTest({}, [desktopExtension(testConfig(fake.docker))]);
   script(faux, (role, text) =>
-    text === "go" ? call("job_start", { title: "Click", brief: "click it", worker: "operator" })
+    text === "go" ? call("job_start", { title: "Click", brief: "click it" })
     : text === "click it" ? fauxAssistantMessage([fauxToolCall("computer", { action: "click", x: 1, y: 2 })], { stopReason: "toolUse" })
     : role === "toolResult" && text.startsWith("click — cursor") ? call("job_complete", { summary: "clicked" })
     : undefined);

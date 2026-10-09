@@ -28,8 +28,6 @@ const METHODS = [
   "cleanup", "exec",
 ] as const;
 
-const desktops = new WeakSet<object>();
-
 /** What a failed call answers: `cleanup` and `close` return nothing, `exec` an ExecutionError, the rest a FileError. */
 function failure(method: string, error: unknown) {
   const message = (error as Error).message;
@@ -143,11 +141,5 @@ export function remoteEnv(server: () => Promise<EnvServer>, cwd: string, id: str
   for (const method of METHODS) {
     env[method] = (...args: unknown[]) => invoke(server, () => ({ cwd: env.cwd }), method, args);
   }
-  desktops.add(env);
   return env as unknown as ExecutionEnv;
-}
-
-/** Whether `env` was made by `remoteEnv`. */
-export function isDesktop(env: ExecutionEnv | undefined): boolean {
-  return env !== undefined && desktops.has(env);
 }

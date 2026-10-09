@@ -4,7 +4,6 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defineTool, Type } from "../../src/sdk.ts";
 import type { Desktop } from "./container.ts";
-import { isDesktop } from "../../src/kernel/sandbox/remote-env.ts";
 import { claimDesktop } from "./lock.ts";
 
 const COMPUTER_READS = ["screenshot", "zoom", "cursor_position", "clipboard_get"];
@@ -23,7 +22,7 @@ const SCREEN = ["import", "-window", "root", "png:-"];
 const DESCRIPTION =
   "Operate japa's desktop (1280×800 Linux, XFCE) with mouse and keyboard; coordinates are screen pixels. " +
   "Read actions work anywhere: screenshot, zoom { region: [x1, y1, x2, y2] }, cursor_position, clipboard_get. " +
-  "Every other action needs an operator job — from the chief of staff, start one: " +
+  "Every other action is for jobs, one at a time — from the chief of staff, start a job for it: " +
   "click { x, y, button?, count?, modifiers? }, mouse_down / mouse_up { x, y, button? }, move { x, y }, " +
   "drag { path: [[x, y], …] }, scroll { x, y, direction, amount }, type { text }, " +
   "key { combo (xdotool syntax, e.g. ctrl+l, Return), hold? }, wait { seconds ≤ 30 }, clipboard_set { text }. " +
@@ -61,7 +60,8 @@ export function computerTool(desktop: Desktop): ToolRegistration {
       if (needs.some((name) => args[name as keyof typeof args] === undefined)) {
         return text(`${action} needs ${needs.join(" and ")}`);
       }
-      if (!COMPUTER_READS.includes(action)) {
+      const acting = !COMPUTER_READS.includes(action);
+      if (acting) {
         const refusal = await claimDesktop(api, context);
         if (refusal) return text(refusal);
       }
@@ -90,7 +90,7 @@ export function computerTool(desktop: Desktop): ToolRegistration {
       };
 
       try {
-        await desktop.ready(isDesktop(api.env));
+        await desktop.ready(acting);
         const button = BUTTONS[args.button ?? "left"];
         switch (action) {
           case "screenshot":

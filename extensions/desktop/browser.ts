@@ -4,7 +4,6 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { Browser, BrowserContext, Dialog, Page } from "playwright-core";
 import { defineTool, Type } from "../../src/sdk.ts";
 import type { Desktop } from "./container.ts";
-import { isDesktop } from "../../src/kernel/sandbox/remote-env.ts";
 import { claimDesktop } from "./lock.ts";
 
 const BROWSER_READS = ["tabs", "snapshot", "text", "screenshot"];
@@ -19,11 +18,12 @@ const DOWNLOADS = "/home/japa/Downloads";
 const DESCRIPTION =
   "Drive the desktop's Chromium — the same browser, tabs and logins the user sees — through its accessibility tree. " +
   "Read actions work anywhere: tabs, snapshot { tab? } (elements with refs like e12), text { ref? }, " +
-  "screenshot { ref?, fullPage? }. Every other action needs an operator job — from the chief of staff, start one: " +
+  "screenshot { ref?, fullPage? }. Every other action is for jobs, one at a time — from the chief of staff, start a job for it: " +
   "navigate { url }, back, forward, reload, tab_new { url? }, tab_select / tab_close { id }, " +
   "click / hover { ref, button?, count? }, type { ref, text, submit? } (replaces the field's content), " +
-  "select { ref, values }, press { key }, upload { ref, paths } (paths on the desktop), " +
-  "wait_for { text?, ref?, gone?, timeout? ≤ 30 s }, dialog { accept, text? }, evaluate { js }. " +
+  "select { ref, values }, press { key }, wait_for { text?, ref?, gone?, timeout? ≤ 30 s }, dialog { accept, text? }, " +
+  "evaluate { js }, upload { ref, paths }. " +
+  "Paths are on the desktop: put files in ~/.japa/desktop/shared and upload them from ~/shared/<name>. " +
   "Refs come from the latest snapshot of a tab; acting actions return the new snapshot, or the lines that changed.";
 
 export const CUT = "[cut at 8,000 tokens]";
@@ -104,7 +104,7 @@ export function browserTool(desktop: Desktop, connect: () => Promise<Browser>): 
       }
       const started = Math.floor(Date.now() / 1000);
       try {
-        await desktop.ready(isDesktop(api.env));
+        await desktop.ready(acting);
       } catch (error) {
         return text((error as Error).message);
       }

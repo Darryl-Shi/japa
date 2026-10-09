@@ -1,9 +1,8 @@
-// The one-operator lock: only jobs in the desktop environment act on the desktop, one at a time.
+// The one-operator lock: jobs act on the desktop one at a time.
 import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defineDoc, JobDoc, JobsDoc, ROOT_CONVERSATION_ID } from "../../src/sdk.ts";
-import { isDesktop } from "../../src/kernel/sandbox/remote-env.ts";
 
 // On the root conversation: the job holding the desktop. It is free once that job is not running or waiting on the user.
 export const LockDoc = defineDoc<{ job?: string }>({
@@ -15,12 +14,12 @@ export const LockDoc = defineDoc<{ job?: string }>({
   initial: () => ({}),
 });
 
-export const OPERATOR = "This acts on the desktop — start an operator job for it.";
+export const COS = "This acts on the desktop — start a job for it.";
 const waiting = (job: string) => `Waiting for the desktop (in use by job ${job})`;
 
-/** Takes the lock for the caller's job, waiting while another job holds it; outside the desktop environment, the refusal. */
+/** Takes the lock for the caller's job, waiting while another job holds it; for the chief of staff, the refusal. */
 export async function claimDesktop(api: ToolExecutionApi, context: Context): Promise<string | undefined> {
-  if (!isDesktop(api.env)) return OPERATOR;
+  if (api.conversationId === ROOT_CONVERSATION_ID) return COS;
   for (let first = true; ; first = false) {
     const holder = await api.commit(async (tx) => {
       const me = (await tx.doc(JobDoc, api.conversationId)).jobId;

@@ -3,7 +3,6 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Browser, Page } from "playwright-core";
 import { beforeEach, expect, test, vi } from "vitest";
 import { browserTool, CUT, snapshotText } from "../extensions/desktop/browser.ts";
-import { OPERATOR } from "../extensions/desktop/lock.ts";
 import { fakeApi, fakeBrowser, fakeDesktop, fakeLocator, fakePage, resultText, run } from "./desktop-helpers.ts";
 
 let fake: ReturnType<typeof fakeDesktop>;
@@ -30,13 +29,21 @@ test("a stale ref answers at once", async () => {
   expect(resultText(await run(tool, { action: "click", ref: "e12" }, fakeApi().api))).toBe("Element e12 is gone — take a new snapshot.");
 });
 
-test("read actions work outside the desktop environment; acting ones are refused there", async () => {
+test("a job outside the container can act on the desktop: reads don't wait for the image, acting actions do", async () => {
   const { tool } = browse(fakePage());
-  const { api } = fakeApi({ desktop: false });
   expect(resultText(await run(tool, { action: "tabs" }, api))).toBe("1 (current): Example — https://example.com/");
   expect(resultText(await run(tool, { action: "snapshot" }, api))).toBe('URL: https://example.com/\nTitle: Example\n- heading "Example" [ref=e1]');
-  expect(resultText(await run(tool, { action: "navigate", url: "https://x.test/" }, api))).toBe(OPERATOR);
   expect(fake.waits).toEqual([false, false]);
+  expect(resultText(await run(tool, { action: "navigate", url: "https://x.test/" }, api)))
+    .toBe('URL: https://x.test/\nTitle: Example\n- heading "Example" [ref=e1]');
+  expect(fake.waits).toEqual([false, false, true]);
+});
+
+test("upload takes paths on the desktop, from the shared folder", () => {
+  const { tool } = browse(fakePage());
+  expect(tool.description).toContain(
+    "Paths are on the desktop: put files in ~/.japa/desktop/shared and upload them from ~/shared/<name>.",
+  );
 });
 
 test("after an action on the same page, only the changed lines come back", async () => {

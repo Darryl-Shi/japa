@@ -2,7 +2,6 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { JsonObject, ToolExecutionApi, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import type { KernelContext } from "../src/kernel/contracts.ts";
 import type { Desktop, DesktopConfig, Docker, ExecResult } from "../extensions/desktop/container.ts";
-import { remoteEnv } from "../src/kernel/sandbox/remote-env.ts";
 import { vi } from "vitest";
 import { tempHome } from "./helpers.ts";
 
@@ -113,19 +112,15 @@ export function fakeDesktop() {
   };
 }
 
-/**
- * A tool api for job `job` in conversation `conversationId`, whose commits run on `docs`, keyed `<kind>:<conversation>`;
- * its env is the desktop's when `desktop`.
- */
-export function fakeApi({ desktop = true, conversationId = 7, job = "1", docs = {} as Record<string, any> } = {}) {
-  docs[`japa.job:${conversationId}`] = { jobId: job, environment: "desktop" };
+/** A tool api for job `job` in conversation `conversationId`, whose commits run on `docs`, keyed `<kind>:<conversation>`. */
+export function fakeApi({ conversationId = 7, job = "1", docs = {} as Record<string, any> } = {}) {
+  docs[`japa.job:${conversationId}`] = { jobId: job };
   docs["japa.jobs:1"] ??= { nextId: 2, jobs: { [job]: { id: job, status: "running" } } };
   const tx = {
     doc: async (token: { definition: { kind: string; initial(): unknown } }, id: number) =>
       (docs[`${token.definition.kind}:${id}`] ??= token.definition.initial()),
   };
-  const env = desktop ? remoteEnv(() => Promise.reject(new Error("not called")), "/home/japa", "desktop") : undefined;
-  const api = { conversationId, env, commit: async (change: (t: typeof tx) => unknown) => change(tx) };
+  const api = { conversationId, commit: async (change: (t: typeof tx) => unknown) => change(tx) };
   return { api: api as unknown as ToolExecutionApi, docs };
 }
 
