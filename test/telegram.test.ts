@@ -221,6 +221,14 @@ test("input together with buttons is rejected before sending", async () => {
   expect(sends()).toEqual([]);
 });
 
+test("an edit with input is rejected before calling Telegram", async () => {
+  const adapter = await connect();
+  await expect(adapter.edit("42", "7", { markdown: "x", input: { placeholder: "p" } })).rejects.toThrow(
+    "An edit can't carry an input",
+  );
+  expect(params("editMessageText")).toEqual([]);
+});
+
 test("a 429 waits retry_after seconds; a 5xx waits 1 s", async () => {
   const adapter = await connect();
   const tooMany = { ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 1 } };

@@ -153,6 +153,8 @@ const adapter: MessagingAdapter = {
   },
   send,
   edit: async (chat, id, m) => {
+    // force_reply only goes with a new message; editMessageText takes an inline keyboard or nothing.
+    if (m.input) throw new Error("An edit can't carry an input");
     await post("editMessageText", { chat_id: chat, message_id: Number(id) }, m.markdown, replyMarkup(m));
   },
   delete: async (chat, id) => {
