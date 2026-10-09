@@ -124,6 +124,15 @@ test("search escapes backslashes and quotes in plain words and defaults to 10 re
   ]);
 });
 
+test("search: plain words with and, or, in or = are still words", async () => {
+  const queries = ["Dana and Joe contract", "notes from the offsite in Lisbon", "budget or forecast", "x=1 notes"];
+  for (const query of queries) {
+    const { api, calls } = fake({ "GET files": {} });
+    expect(await drive(api, home(), { action: "search", query })).toBe("No files.");
+    expect((calls[0]![2] as { query: { q: string } }).query.q).toBe(`fullText contains '${query}' and trashed = false`);
+  }
+});
+
 test("search passes Drive q syntax through, wrapped, and still excludes trashed files", async () => {
   const queries = [
     "name contains 'plan'",
@@ -131,6 +140,9 @@ test("search passes Drive q syntax through, wrapped, and still excludes trashed 
     "'f1' in parents",
     "starred and modifiedTime > '2026-01-01'",
     "sharedWithMe or starred",
+    "fullText contains 'x' and not trashed",
+    "'me' in owners",
+    "viewedByMeTime >= '2026-01-01T00:00:00'",
   ];
   for (const query of queries) {
     const { api, calls } = fake({ "GET files": {} });

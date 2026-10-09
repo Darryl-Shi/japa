@@ -75,8 +75,15 @@ const SHORT: Record<string, string> = {
 const isGoogle = (type: string) => type.startsWith(GOOGLE);
 const shortType = (type: string) => (isGoogle(type) ? SHORT[type.slice(GOOGLE.length)] : undefined) ?? type;
 
-/** Drive's own query syntax, as opposed to plain words to look for. */
-const isDriveQuery = (query: string) => [" contains ", "=", " in ", " and ", " or "].some((s) => query.includes(s));
+const FIELD = "name|fullText|mimeType|modifiedTime|createdTime|viewedByMeTime|trashed|starred|sharedWithMe|" +
+  "properties|appProperties|visibility";
+/** A field compared ("name contains 'x'", "starred = true") or a membership ("'id' in parents"). */
+const TERM = new RegExp(`\\b(${FIELD})\\s*(contains|=|!=|<=|>=|<|>)|'[^']*'\\s+in\\s+(parents|owners|writers|readers)`);
+/** Nothing but boolean fields joined by and/or/not: "sharedWithMe or starred". */
+const FLAGS = /^\s*(not\s+)?(trashed|starred|sharedWithMe)(\s+(and|or)\s+(not\s+)?(trashed|starred|sharedWithMe))*\s*$/;
+
+/** Drive's own query syntax, as opposed to plain words to look for (which may well contain "and" or "in"). */
+const isDriveQuery = (query: string) => TERM.test(query) || FLAGS.test(query);
 
 /** The exported text format of the Google types `read` can show. */
 const EXPORTS: Record<string, string> = { [DOC]: "text/markdown", [SHEET]: "text/csv", [SLIDES]: "text/plain" };
