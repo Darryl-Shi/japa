@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { envApiKeyAuth, type FauxProviderHandle } from "@earendil-works/pi-ai";
-import { existsSync, readFileSync } from "node:fs";
+import { envApiKeyAuth, type FauxProviderHandle, StringEnum } from "@earendil-works/pi-ai";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
@@ -10,20 +10,26 @@ import type { Incoming, KernelContext, MessagingContext } from "../src/kernel/co
 import type { Job } from "../src/kernel/jobs/state.ts";
 import { COMMANDS, createMenu } from "../src/kernel/messaging/menu/index.ts";
 import { ago, type Nav, outcomeLine, type Page } from "../src/kernel/messaging/menu/nav.ts";
-import { addSecretRequest } from "../src/kernel/secret-requests.ts";
+import type { JapaExtension } from "../src/kernel/extension.ts";
+import { addSecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
+import { defineTool, Type } from "../src/sdk.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { echo, stage, testKit, waitFor } from "./helpers.ts";
 import { ask, call, idle, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
 // When `hook.ask` is set, the Settings home gains an `Input` button opening the screen it makes: there is no
-// user-facing input screen yet to test typed input with.
-const hook = vi.hoisted(() => ({ ask: undefined as ((nav: Nav, home: Page) => Page) | undefined }));
+// user-facing input screen yet to test typed input with. `hook.messaging` is the newest menu's messaging context.
+const hook = vi.hoisted(() => ({
+  ask: undefined as ((nav: Nav, home: Page) => Page) | undefined,
+  messaging: undefined as MessagingContext | undefined,
+}));
 vi.mock("../src/kernel/messaging/menu/settings.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/kernel/messaging/menu/settings.ts")>();
   return {
     ...real,
     settingsMenu: (nav: Nav, ...rest: [KernelContext, MessagingContext]) => {
+      hook.messaging = rest[1];
       const home = real.settingsMenu(nav, ...rest);
       const withInput: Page = async (outcome) => {
         const m = await home(outcome);
@@ -564,6 +570,196 @@ describe("typed input", { timeout: 30_000 }, () => {
 });
 
 describe("extensions", { timeout: 60_000 }, () => {
+  const ping = defineTool({
+    name: "demo_ping",
+    description: "Ping",
+    parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: "text", text: "pong" }] }),
+  });
+  /** `demo`: tool `demo_ping`, secret `demo.key`, and a boolean, two enums, a string and a number setting. */
+  const demo = () => {
+    let kept: KernelContext | undefined;
+    const extension: JapaExtension = {
+      name: "demo",
+      summary: "Demo pings",
+      secrets: [{ name: "demo.key", description: "Demo API key" }],
+      settings: Type.Object({
+        loud: Type.Optional(Type.Boolean({ default: false })),
+        mode: Type.Optional(StringEnum(["fast", "slow"], { default: "fast" })),
+        size: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
+        label: Type.Optional(Type.String({ description: "Shown in pings" })),
+        limit: Type.Optional(Type.Number()),
+      }),
+      provides: { tool: [ping] },
+      setup: (c) => {
+        kept = c;
+      },
+    };
+    return { extension, kernel: () => kept! };
+  };
+  const rootTools = async () => (await daemon.root.agent(ctx)).tools.map((t) => t.name);
+  /** Every item label of the paged list on screen, from its first page on. */
+  async function allLabels() {
+    while (labels().includes("‹")) await fake.press("‹");
+    const all = labels().filter((l) => !/^(‹|›|\d+\/\d+|‹ Back|⌂ Home)$/.test(l));
+    while (labels().includes("›")) {
+      await fake.press("›");
+      all.push(...labels().filter((l) => !/^(‹|›|\d+\/\d+|‹ Back|⌂ Home)$/.test(l)));
+    }
+    return all;
+  }
+  /** Opens /settings, Extensions, then the extension `name`. */
+  async function open(name: string) {
+    await fake.receive({ command: "settings" });
+    await fake.press("Extensions");
+    while (!labels().some((l) => l.startsWith(`${name} · `))) await fake.press("›");
+    await fake.press(labels().find((l) => l.startsWith(`${name} · `))!);
+  }
+  const body = (state: string, secret: string, settings: string[]) =>
+    `**demo · ${state}**\n\nDemo pings\n\nSecrets:\n- demo.key: ${secret}\n\nSettings:\n${settings.join("\n")}`;
+  const DEFAULTS = ["- loud: default (false)", '- mode: default ("fast")', "- size: not set", "- label: not set", "- limit: not set"];
+  const BUTTONS = ["loud: off", "mode", "size", "label", "limit"];
+  const shown = () => fake.edited.at(-1)!.markdown;
+
+  test("the list labels each extension on, not set up or error, sorted; a failed workspace one is listed", async () => {
+    await reboot(testKit(), [demo().extension]);
+    mkdirSync(join(home, "extensions", "broken"), { recursive: true });
+    writeFileSync(join(home, "extensions", "broken", "index.ts"), 'export default { name: "wrong", summary: "W" };\n');
+    await daemon.reconcile();
+    await fake.receive({ command: "settings" });
+    await fake.press("Extensions");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Extensions**");
+    const all = await allLabels();
+    expect(all).toEqual(expect.arrayContaining(["broken · ⚠️ error", "demo · ⚪ not set up", "fake · ✅ on"]));
+    const names = all.map((l) => l.split(" · ")[0]!);
+    expect(names).toEqual(names.toSorted());
+    const broken = (await hook.messaging!.extensions()).find((e) => e.name === "broken");
+    expect(broken).toMatchObject({ state: "not set up", workspace: true, loaded: false, error: "manifest name must match directory" });
+    await open("broken");
+    expect(shown()).toBe("**broken · ⚠️ error**\n\nError: manifest name must match directory");
+    expect(labels()).toEqual(["Roll back to last known good", "‹ Back", "⌂ Home"]);
+  });
+
+  test("the detail shows secrets as set or not set, never their value, and each setting", async () => {
+    await reboot(testKit(), [demo().extension]);
+    await open("demo");
+    expect(shown()).toBe(body("⚪ not set up", "not set", DEFAULTS));
+    expect(labels()).toEqual(["Set demo.key", ...BUTTONS, "‹ Back", "⌂ Home"]);
+    const info = (await hook.messaging!.extensions()).find((e) => e.name === "demo")!;
+    expect(info).toMatchObject({ summary: "Demo pings", state: "not set up", workspace: false, loaded: true, values: {} });
+    expect(info.secrets).toEqual([{ name: "demo.key", description: "Demo API key", set: false }]);
+    expect(Object.keys((info.schema as { properties: object }).properties)).toContain("enabled");
+    expect(await hook.messaging!.setSecret("demo", "demo.key", "s3cr3t")).toBe("Set demo.key.");
+    await open("demo");
+    expect(shown()).toBe(body("✅ on", "set", DEFAULTS));
+    expect(JSON.stringify(await hook.messaging!.extensions())).not.toContain("s3cr3t");
+  });
+
+  test("Set <secret> stores the typed secret, deletes it, and the extension becomes available to the CoS", async () => {
+    const d = demo();
+    await reboot(testKit(), [d.extension]);
+    expect(await rootTools()).not.toContain("demo_ping");
+    const provided = d.kernel().secretProvided("demo.key");
+    await open("demo");
+    await fake.press("Set demo.key");
+    expect(shown()).toBe("**Set demo.key**\n\nDemo API key\n\nSend the new value as your next message.");
+    expect(labels()).toEqual(["Cancel"]);
+    await fake.receive({ messageId: "77", text: "s3cr3t" });
+    expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
+    expect(readFileSync(join(home, "secrets", "demo.key"), "utf8")).toBe("s3cr3t");
+    expect(await provided).toBe("s3cr3t");
+    expect(shown()).toBe(`✓ Set demo.key.\n\n${body("✅ on", "set", DEFAULTS)}`);
+    expect(labels()).toEqual(["Set demo.key", ...BUTTONS, "Turn off", "‹ Back", "⌂ Home"]);
+    expect(await rootTools()).toContain("demo_ping");
+    expect(daemon.capabilities()).toContain("- demo: Demo pings");
+    await fake.press("‹ Back");
+    expect(await allLabels()).toContain("demo · ✅ on");
+    for (const m of [...fake.sent, ...fake.edited]) expect(m.markdown).not.toContain("s3cr3t");
+    await sleep(500);
+    expect(await transcript()).not.toContain("s3cr3t");
+  });
+
+  test("setting a requested secret from the menu fulfils the request", async () => {
+    await reboot(testKit(), [demo().extension]);
+    expect(await tool(daemon, faux, "secret_request", { name: "demo.key", why: "to ping" })).toMatch(/^Asked the user/);
+    await open("demo");
+    await fake.press("Set demo.key");
+    await fake.receive({ messageId: "77", text: "s3cr3t" });
+    expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
+    expect(shown()).toMatch(/^✓ Set demo\.key\.\n\n\*\*demo · ✅ on\*\*/);
+    expect((await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending).toEqual([]);
+    await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret demo.key provided]"));
+    expect(await rootTools()).toContain("demo_ping");
+    expect(await transcript()).not.toContain("s3cr3t");
+  });
+
+  test("a secret the extension doesn't declare is not set", async () => {
+    await reboot(testKit(), [demo().extension]);
+    expect(await hook.messaging!.setSecret("demo", "other.key", "x")).toBe("Not changed: demo doesn't use other.key");
+    expect(existsSync(join(home, "secrets", "other.key"))).toBe(false);
+  });
+
+  test("boolean toggle, enum choices and typed settings are set and logged; an invalid one shows ✗", async () => {
+    await reboot(testKit(), [demo().extension]);
+    await open("demo");
+    await fake.press("loud: off");
+    const loud = ["- loud: true", ...DEFAULTS.slice(1)];
+    expect(shown()).toBe(`✓ Set extensions.demo.loud. (change 1)\n\n${body("⚪ not set up", "not set", loud)}`);
+    expect(labels()).toContain("loud: on");
+    await fake.press("mode");
+    expect(shown()).toBe("**mode**");
+    expect(labels()).toEqual(["✓ fast", "slow", "‹ Back", "⌂ Home"]);
+    await fake.press("slow");
+    expect(shown()).toMatch(/^✓ Set extensions\.demo\.mode\. \(change 2\)\n\n\*\*demo/);
+    expect(shown()).toContain('- mode: "slow"');
+    await fake.press("size");
+    expect(labels()).toEqual(["1", "2", "‹ Back", "⌂ Home"]);
+    await fake.press("2");
+    expect(shown()).toContain("- size: 2");
+    await fake.press("size");
+    expect(labels()).toEqual(["1", "✓ 2", "‹ Back", "⌂ Home"]);
+    await fake.press("‹ Back");
+    await fake.press("label");
+    expect(shown()).toBe("**label**\n\nShown in pings\n\nSend the new value as your next message.");
+    await fake.receive({ text: "hello" });
+    expect(shown()).toMatch(/^✓ Set extensions\.demo\.label\. \(change 4\)/);
+    expect(shown()).toContain('- label: "hello"');
+    await fake.press("limit");
+    await fake.receive({ text: "5" });
+    expect(shown()).toContain("- limit: 5");
+    await fake.press("limit");
+    await fake.receive({ text: "lots" });
+    expect(shown()).toMatch(/^✗ .+\n\n\*\*demo/);
+    expect(shown()).toContain("- limit: 5");
+    await fake.press("loud: on");
+    expect(shown()).toContain("- loud: false");
+    const changes = await tool(daemon, faux, "changes_list");
+    for (const prop of ["loud", "mode", "size", "label", "limit"]) expect(changes).toContain(`Set extensions.demo.${prop}`);
+    expect(await tool(daemon, faux, "settings_get", { path: "extensions.demo" })).toBe(
+      JSON.stringify({ loud: false, mode: "slow", size: 2, label: "hello", limit: 5 }, null, 2),
+    );
+  });
+
+  test("Turn off hides the extension from the CoS; Turn on shows it again", async () => {
+    await reboot(testKit(), [demo().extension]);
+    await hook.messaging!.setSecret("demo", "demo.key", "k");
+    expect(await rootTools()).toContain("demo_ping");
+    await open("demo");
+    await fake.press("Turn off");
+    expect(shown()).toMatch(/^✓ Set extensions\.demo\.enabled\. \(change 1\)\n\n\*\*demo · ⏸ off\*\*/);
+    expect(labels()).toContain("Turn on");
+    expect(await rootTools()).not.toContain("demo_ping");
+    expect(daemon.capabilities()).not.toContain("demo");
+    await fake.press("‹ Back");
+    expect(await allLabels()).toContain("demo · ⏸ off");
+    await open("demo");
+    await fake.press("Turn on");
+    expect(shown()).toMatch(/^✓ Set extensions\.demo\.enabled\. \(change 2\)\n\n\*\*demo · ✅ on\*\*/);
+    expect(labels()).toContain("Turn off");
+    expect(await rootTools()).toContain("demo_ping");
+    expect(await tool(daemon, faux, "settings_get", { path: "extensions.demo.enabled" })).toBe("Not set.");
+  });
+
   test("an extension is rolled back from the menu after confirmation", async () => {
     stage(home, "extensions/echo/index.ts", echo("v1"));
     await tool(daemon, faux, "install", { kind: "extension", name: "echo" });
@@ -571,12 +767,14 @@ describe("extensions", { timeout: 60_000 }, () => {
     stage(home, "extensions/echo/index.ts", echo("v2"));
     await tool(daemon, faux, "install", { kind: "extension", name: "echo" });
     expect(await tool(daemon, faux, "echo")).toBe("v2");
-    await fake.receive({ command: "settings" });
-    await fake.press("Extensions");
-    await choose("echo (ok)");
-    expect(fake.edited.at(-1)!.markdown).toBe("**echo: Echoes**");
+    await open("echo");
+    expect(shown()).toBe("**echo · ✅ on**\n\nEchoes");
+    expect(labels()).toEqual(["Turn off", "Roll back to last known good", "‹ Back", "⌂ Home"]);
     await fake.press("Roll back to last known good");
-    expect(fake.edited.at(-1)!.markdown).toMatch(/^✓ Rolled back extension echo\.\n\n\*\*Extensions\*\*$/);
+    expect(shown()).toBe("**Roll back echo to last known good?**");
+    expect(labels()).toEqual(["Roll back to last known good", "Cancel"]);
+    await fake.press("Roll back to last known good");
+    expect(shown()).toMatch(/^✓ Rolled back extension echo\.\n\n\*\*Extensions\*\*$/);
     expect(await tool(daemon, faux, "echo")).toBe("v1");
     expect(await tool(daemon, faux, "changes_list")).toMatch(/Rolled back extension echo/);
   });

@@ -1,9 +1,8 @@
 import type { JsonObject, ModelRef, ToolExecutionResult } from "@earendil-works/pi-durable";
-import { join } from "node:path";
 import type { Change } from "../../changes.ts";
 import type { KernelContext, MessagingContext } from "../../contracts.ts";
-import { discoverExtensions } from "../../loader.ts";
 import { getPath, type Settings } from "../../settings.ts";
+import { extensionsMenu } from "./extensions.ts";
 import { ago, type Button, type Nav, type Page } from "./nav.ts";
 
 const ROLES = [
@@ -53,6 +52,8 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
       ],
       outcome,
     });
+
+  const extensions = extensionsMenu(nav, messaging, home);
 
   // Each role's model; an unset Worker or Consolidation uses the CoS's.
   const models: Page = async (outcome) => {
@@ -123,22 +124,6 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
     });
     const body = list.length === 0 ? "No schedules." : undefined;
     return nav.paged({ title: "Schedules", body, items, back: home, home, outcome });
-  };
-
-  // The loaded extensions and the workspace ones, which may have failed to load.
-  const extensions: Page = async (outcome) => {
-    const { extensions: loaded, errors } = kernel.surface.status();
-    const workspace = discoverExtensions([join(kernel.home, "extensions")]).map((f) => f.name);
-    const names = [...new Set([...loaded.map((e) => e.name), ...workspace])];
-    const items = names.map((name) => {
-      const error = errors.find((e) => e.name === name)?.error;
-      const summary = loaded.find((e) => e.name === name)?.summary ?? "not loaded";
-      const text = `${name}: ${summary}${error === undefined ? "" : `\nError: ${error}`}`;
-      const rollback = () => messaging.rollback(name);
-      const page = nav.confirm(text, "Roll back to last known good", rollback, extensions, extensions);
-      return [`${name} (${error === undefined ? "ok" : "error"})`, page] as const;
-    });
-    return nav.paged({ title: "Extensions", items, back: home, home, outcome });
   };
 
   return home;

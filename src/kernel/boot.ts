@@ -24,6 +24,7 @@ import { ChangesDoc, type Commit } from "./changes.ts";
 import {
   ACTIVATION_ORDER,
   type EnvironmentAdapter,
+  type ExtensionInfo,
   type KernelContext,
   type MessagingContext,
   type SecretsAdapter,
@@ -34,7 +35,7 @@ import { AUTHORIZE_SUFFIX, connectTool } from "./authorize.ts";
 import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
-import { type JapaExtension, secretNames } from "./extension.ts";
+import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
 import { installTool, rollBackAndLog, rollbackTool } from "./install.ts";
 import { byId, DAY, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
@@ -48,7 +49,7 @@ import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
 import { addSecretRequest, fulfilSecret, removeSecretRequest, SecretRequestsDoc } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
-import { setSetting, settingsTools } from "./settings-tools.ts";
+import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import { dirHash, ensureWorkspace } from "./workspace.ts";
@@ -187,9 +188,81 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         }, ctx);
         return reply;
       },
+      extensions: async () => {
+        const inWorkspace = new Set(discoverExtensions([workspace]).map((f) => f.name));
+        const errorOf = (name: string) => {
+          const errors = rt.errors.filter((e) => e.name === name).map((e) => e.error);
+          return errors.length > 0 ? { error: errors.join("; ") } : {};
+        };
+        const isSet = async (name: string) => {
+          try {
+            return (await secrets.get(name)) !== undefined;
+          } catch {
+            return false; // as `isConfigured` counts it
+          }
+        };
+        const loaded = await Promise.all(
+          rt.extensions.map(async (e): Promise<ExtensionInfo> => {
+            const line = e.status && statusLine(e.status);
+            const asked = askedSecretNames(e).map(async (name) => {
+              const description = secretDescription(e, name);
+              return { name, ...(description !== undefined && { description }), set: await isSet(name) };
+            });
+            return {
+              name: e.name,
+              summary: e.summary,
+              state: rt.states.get(e.name) ?? "not set up",
+              ...errorOf(e.name),
+              ...(line !== undefined && { status: line }),
+              workspace: inWorkspace.has(e.name),
+              loaded: true,
+              secrets: await Promise.all(asked),
+              schema: settingsSchema(e),
+              values: structuredClone(settings.extensions[e.name] ?? {}),
+            };
+          }),
+        );
+        const failed = [...inWorkspace]
+          .filter((name) => !rt.extensions.some((e) => e.name === name))
+          .map((name): ExtensionInfo => ({
+            name,
+            state: "not set up",
+            ...errorOf(name),
+            workspace: true,
+            loaded: false,
+            secrets: [],
+            values: {},
+          }));
+        return [...loaded, ...failed].sort((a, b) => a.name.localeCompare(b.name));
+      },
+      setSecret: async (extension, name, value, by) => {
+        const ext = rt.extensions.find((e) => e.name === extension);
+        if (ext === undefined) return `Not changed: no extension ${extension}`;
+        if (!secretNames(ext).includes(name)) return `Not changed: ${extension} doesn't use ${name}`;
+        const request = (await opened.snapshot(SecretRequestsDoc, root.id, ctx))!.pending.find((r) => r.name === name);
+        // A request fulfilled meanwhile by another path throws: then the value is stored as if none was pending.
+        const fulfilled = request !== undefined && (await fulfil(request.id, value, by).then(() => true, () => false));
+        if (!fulfilled) {
+          await secrets.set(name, value);
+          if (by !== undefined) await messaging.recordSecretMessage(by);
+          resolveWaiters(name, value);
+          await refreshAvailability();
+        }
+        return `Set ${name}.`;
+      },
     };
-    // Resolved by the surfaces' `fulfil`, by secret name.
+    // Resolved by the surfaces' `fulfil` and the menu's `setSecret`, by secret name.
     const waiters = new Map<string, ((value: string) => void)[]>();
+    const resolveWaiters = (name: string, value: string) => {
+      for (const resolve of waiters.get(name) ?? []) resolve(value);
+      waiters.delete(name);
+    };
+    /** Fulfils pending secret request `requestId` (see `fulfilSecret`), resolves its waiters and recomputes availability. */
+    const fulfil = async (requestId: string, value: string, by?: string) => {
+      const name = await fulfilSecret(opened, root, secrets, requestId, value, ctx, by);
+      resolveWaiters(name, value);
+      await refreshAvailability();
+    };
     const declared = (extension: string, name: string) => {
       const ext = rt.extensions.find((e) => e.name === extension);
       if (!ext || !secretNames(ext).includes(name)) {
@@ -273,12 +346,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               },
             };
           },
-          fulfil: async (requestId, value, by) => {
-            const name = await fulfilSecret(opened, root, secrets, requestId, value, ctx, by);
-            for (const resolve of waiters.get(name) ?? []) resolve(value);
-            waiters.delete(name);
-            await refreshAvailability();
-          },
+          fulfil,
         },
         status,
       },

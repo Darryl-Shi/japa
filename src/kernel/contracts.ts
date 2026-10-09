@@ -7,7 +7,7 @@ import type {
   UserInput,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { MutableModels, Provider } from "@earendil-works/pi-ai";
+import type { MutableModels, Provider, TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionState } from "./availability.ts";
 import type { Change } from "./changes.ts";
 import type { Job } from "./jobs/state.ts";
@@ -117,6 +117,24 @@ export type TriggerContext = { home: string; emit(event: { key: string; text: st
 export type Trigger = { name: string; start(ctx: TriggerContext): Promise<Dispose> };
 
 /**
+ * An extension as the settings menu shows it: a loaded one, or a workspace one that failed to load (`loaded` false,
+ * "not set up"). `secrets` are those setup asks for, each `set` or not (never its value); `schema` is its settings
+ * schema, as `settingsSchema`, and `values` its current `settings.extensions.<name>`.
+ */
+export type ExtensionInfo = {
+  name: string;
+  summary?: string;
+  state: ExtensionState;
+  error?: string;
+  status?: string;
+  workspace: boolean;
+  loaded: boolean;
+  secrets: { name: string; description?: string; set: boolean }[];
+  schema?: TSchema;
+  values: JsonObject;
+};
+
+/**
  * Kernel-internal, given only to the messaging surface: each adapter's reply cursor, and the settings menu's changes,
  * made through the same code paths as the CoS's tools.
  */
@@ -142,6 +160,14 @@ export type MessagingContext = {
    * succeeds (its reply doesn't start `No ` or `Not `), drops the change from the log; the reply.
    */
   undoChange(id: string): Promise<string>;
+  /** The loaded extensions and the workspace ones that failed to load, sorted by name. */
+  extensions(): Promise<ExtensionInfo[]>;
+  /**
+   * Stores `value` as `extension`'s secret `name` (`Not changed: …` when it doesn't declare it): fulfilling a pending
+   * request for it, as `SurfaceContext.secrets.fulfil`, else storing it and resolving `secretProvided` waiters, with
+   * `by` recorded as `recordSecretMessage`; then recomputes availability. Its reply, `Set <name>.`.
+   */
+  setSecret(extension: string, name: string, value: string, by?: string): Promise<string>;
 };
 
 export type KernelContext = {
