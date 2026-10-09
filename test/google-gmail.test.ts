@@ -231,6 +231,56 @@ test("read walks nested multipart/alternative inside multipart/mixed and prefers
   expect(out).not.toContain("HTML version");
 });
 
+test("read shows every inline text part outside alternatives: HTML body and mailing-list plain footer", async () => {
+  const { api } = fake({
+    "GET threads/t1": {
+      messages: [
+        message("m1", {
+          mimeType: "multipart/mixed",
+          headers: headers("list@x.com", "Digest"),
+          parts: [
+            { mimeType: "text/html", filename: "", body: { data: b64u("<p>Big news</p>") } },
+            { mimeType: "text/plain", filename: "", body: { data: b64u("--\nUnsubscribe: https://x/u\n") } },
+          ],
+        }),
+      ],
+    },
+  });
+  expect(await gmail(api, home(), { action: "read", id: "t1" })).toContain(
+    "id m1\n\nBig news\n\n--\nUnsubscribe: https://x/u",
+  );
+});
+
+test("read chooses one alternative per multipart/alternative group: plain where there is one", async () => {
+  const alternative = (plain: string | undefined, html: string) => ({
+    mimeType: "multipart/alternative",
+    parts: [
+      ...(plain === undefined ? [] : [{ mimeType: "text/plain", body: { data: b64u(plain) } }]),
+      {
+        mimeType: "multipart/related",
+        parts: [
+          { mimeType: "text/html", body: { data: b64u(html) } },
+          { mimeType: "image/png", filename: "logo.png", body: { size: 1, attachmentId: "A1" } },
+        ],
+      },
+    ],
+  });
+  const { api } = fake({
+    "GET threads/t1": {
+      messages: [
+        message("m1", {
+          mimeType: "multipart/mixed",
+          headers: headers("a@x.com", "Two"),
+          parts: [alternative("First plain", "<p>First HTML</p>"), alternative(undefined, "<p>Second HTML</p>")],
+        }),
+      ],
+    },
+  });
+  const out = await gmail(api, home(), { action: "read", id: "t1" });
+  expect(out).toContain("id m1\n\nFirst plain\n\nSecond HTML\n\nAttachments: logo.png");
+  expect(out).not.toContain("First HTML");
+});
+
 test("read converts an HTML-only body to text", async () => {
   const { api } = fake({
     "GET threads/t1": {

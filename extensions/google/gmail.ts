@@ -84,13 +84,33 @@ function decode(part: Part): string {
 const htmlBody = (html: string) =>
   htmlToText(html.replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)\s*>/gi, "$&\n"));
 
-/** The message's text: its text/plain parts, else its HTML converted to text (attachments aside). */
+const typeOf = (part: Part) => part.mimeType?.toLowerCase() ?? "";
+
+/**
+ * The inline text parts to show, in order: within each multipart/alternative one alternative (text/plain preferred,
+ * else the first with text), elsewhere every one (a mailing list's plain footer after an HTML body, say).
+ */
+function textParts(part: Part | undefined): Part[] {
+  if (!part) return [];
+  const type = typeOf(part);
+  if (type === "multipart/alternative") {
+    const options = (part.parts ?? []).map(textParts).filter((parts) => parts.length > 0);
+    const isPlain = (p: Part) => typeOf(p) === "text/plain";
+    const chosen = options.find((parts) => parts.every(isPlain)) ?? options.find((parts) => parts.some(isPlain));
+    return chosen ?? options[0] ?? [];
+  }
+  if (type.startsWith("multipart/")) return (part.parts ?? []).flatMap(textParts);
+  const text = type === "text/plain" || type === "text/html";
+  return text && !part.filename && part.body?.data ? [part] : [];
+}
+
+/** The message's text: its inline text parts, HTML converted to text (attachments aside). */
 function bodyText(payload: Part | undefined): string {
-  const inline = walk(payload).filter((part) => !part.filename && part.body?.data);
-  const of = (type: string) => inline.filter((part) => part.mimeType?.toLowerCase() === type).map(decode);
-  const plain = of("text/plain");
-  const text = plain.length > 0 ? plain.join("\n\n") : of("text/html").map(htmlBody).join("\n\n");
-  return text.trim() || "(no text)";
+  const text = textParts(payload)
+    .map((part) => (typeOf(part) === "text/html" ? htmlBody(decode(part)) : decode(part)).trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return text || "(no text)";
 }
 
 const attachmentsOf = (payload: Part | undefined) =>
