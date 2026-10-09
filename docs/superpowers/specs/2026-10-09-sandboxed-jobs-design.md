@@ -71,32 +71,30 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--bind / /`: the host filesystem as the user sees it.
 - `--dev /dev`, plus `--unshare-pid` and `--proc /proc`: a separate process namespace. The daemon's memory,
   environment and other processes are invisible.
+- `--bind D D` for every directory between the user's home and a protected path (e.g. `~/.config`,
+  `~/.local/share`), so a job can't rename it away and recreate the path.
+- `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
+  to secrets; jobs therefore can't patch japa itself on the host.
+  - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
+  - `$XDG_CONFIG_HOME/systemd` (the unit, drop-ins and new units), `$XDG_DATA_HOME/systemd` and
+    `$XDG_CONFIG_HOME/environment.d`, both at the `$XDG_*` location and the default one.
+  - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. One that is
+    a symlink: its target is protected and the link's directory is made read-only.
+  - Git config isn't protected: the daemon's git never reads it.
+- `--bind <home>/.jobs/<id>.tmp /tmp` and `/var/tmp`: a private temp dir, so tmux, screen and X11 sockets in `/tmp`
+  are out of reach.
 - `--bind <home>/.jobs/<id> <home>`: the job's clone in place of the real `~/.japa`. That hides the real `secrets/`,
   `state.db`, `japa.sock`, `daemon.lock` and `.git`.
 - `--bind <home>/desktop/shared <home>/desktop/shared`, when the desktop extension is installed: the folder for
   exchanging files with the desktop, which is otherwise covered by the clone.
 - `--tmpfs <settings.secrets.dir>`, when the secrets directory is configured outside `~/.japa`.
-- `--ro-bind` over the japa app directory (`~/.local/share/japa`, including its Node), the launcher
-  (`~/.local/bin/japa`) and the service unit (`~/.config/systemd/user/japa.service`). Otherwise a job could edit code
-  the daemon later runs with access to secrets. Jobs therefore can't patch japa itself on the host.
-- `--tmpfs /run/user/<uid>`: hides the D-Bus session bus, the systemd user manager, ssh-agent and keyring sockets.
-  Otherwise `systemd-run --user` runs any command outside the sandbox.
-- `--ro-bind-try /dev/null` over the Docker sockets (`/run/docker.sock`, `/var/run/docker.sock`): Docker access is
-  root access.
-- `--ro-bind` also over `$XDG_CONFIG_HOME/systemd` (unit drop-ins and new units). Every directory between the home
-  and a protected path (e.g. `~/.config`, `~/.local/share`) is bound onto itself first, so a job can't rename it away
-  and recreate the path. Mount order: `/`, `/dev`, `/proc`, these pinned parents, the protected paths, the private
-  `/tmp`, then the clone, shared and hidden paths — so nothing protected can cover the clone or a hidden path.
-  `$XDG_*` locations and their defaults are both protected; `/run/screen` is hidden like `/run/user/<uid>`. A protected path that is a symlink: its target is protected and the link's directory is
-  made read-only. Git config isn't protected: the daemon's git never reads it.
+- `--tmpfs /run/user/<uid>` and `/run/screen`: hides the D-Bus session bus, the systemd user manager, ssh-agent,
+  keyring and screen sockets. Otherwise `systemd-run --user` runs any command outside the sandbox.
+- `--ro-bind /dev/null` over the Docker sockets that exist (`/run/docker.sock`, `/var/run/docker.sock`): Docker
+  access is root access.
 - `--die-with-parent`, `--new-session`.
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
   environment. Provider API keys set as environment variables don't reach jobs.
-
-- `--bind <home>/.jobs/<id>.tmp /tmp` and `/var/tmp`: a private temp dir, so tmux, screen and X11 sockets in `/tmp`
-  are out of reach.
-- A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. The protected
-  config also covers `$XDG_DATA_HOME/systemd` and `$XDG_CONFIG_HOME/environment.d`.
 
 The network is shared, as now.
 
