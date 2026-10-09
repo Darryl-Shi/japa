@@ -556,6 +556,16 @@ test("job_start refuses without a sandbox", async () => {
   await daemon.close();
 });
 
+test("the CoS can't read a secrets dir that is a symlink out of the home through its real path", async () => {
+  const { daemon, faux, home, outside } = await bootSandboxed({ vault: true });
+  for (const path of [join(home, "secrets", "api-key"), join(outside, "vault", "api-key")]) {
+    const reply = await tool(daemon, faux, "read", { path });
+    expect(reply).toContain("Secrets are not readable here.");
+    expect(reply).not.toContain("sk-1");
+  }
+  await daemon.close();
+});
+
 // Masked, it would cover the job's clone.
 test("a secrets dir that holds the japa home is reported: jobs can read it", async () => {
   const { daemon, outside } = await bootSandboxed({ secrets: (outside) => ({ dir: outside }) });
@@ -705,18 +715,25 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
   });
 });
 
-test.skipIf(NO_BWRAP)("bad worker profiles are reported and cannot be started", async () => {
-  const { daemon, faux } = await bootWith({
-    "bad-tool": profile("bad-tool", ["tools: [grep]"]),
-    "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
-    "bad-env": profile("bad-env", ["environment: nowhere"]),
-    "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
-  });
+const badWorkers = {
+  "bad-tool": profile("bad-tool", ["tools: [grep]"]),
+  "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
+  "bad-env": profile("bad-env", ["environment: nowhere"]),
+  "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
+};
+
+test("bad worker profiles are reported", async () => {
+  const { daemon } = await bootWith(badWorkers);
   expect(
     bootErrors(daemon)
       .map((e) => e.name)
       .sort(),
   ).toEqual(["worker:bad-env", "worker:bad-ext", "worker:bad-model", "worker:bad-tool"]);
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("a bad worker profile cannot be started", async () => {
+  const { daemon, faux } = await bootWith(badWorkers);
   script(faux, (_role, text) => {
     if (text === "start bad") return call("job_start", { title: "Bad", brief: "b", worker: "bad-tool" });
   });

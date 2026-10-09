@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
@@ -27,6 +28,14 @@ test("the identity section reaches the model", async () => {
   ]);
   await (await daemon.root.submit({ type: "input", content: "hi" }, ctx)).wait(ctx);
   expect(systemPrompt).toContain("chief of staff");
+  await daemon.close();
+});
+
+// Jobs can write there: a dependency's missing optional `require` mustn't load code from it.
+test("after boot, CommonJS require has no global folders: no ~/.node_modules or ~/.node_libraries", async () => {
+  const { globalPaths } = createRequire(import.meta.url)("node:module") as { globalPaths: string[] };
+  const { daemon } = await bootTest();
+  expect(globalPaths).toEqual([]);
   await daemon.close();
 });
 

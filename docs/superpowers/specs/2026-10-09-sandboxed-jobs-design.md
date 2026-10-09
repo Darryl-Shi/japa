@@ -62,7 +62,8 @@ pair moves into the kernel (`src/kernel/sandbox/`).
   that server.
 - **Nothing in the daemon process:** none of a job's file or shell operations run there.
 - **The `local-env` extension:** keeps serving the CoS's read-only root environment (`createEnvDispatcher`,
-  `src/kernel/env.ts`). Jobs no longer use it.
+  `src/kernel/env.ts`). Jobs no longer use it. The CoS can't read the secrets dirs, nor the paths hidden from jobs
+  (by real path).
 
 ### 3.2 What a job sees
 
@@ -115,7 +116,8 @@ Consequences, accepted:
 - The daemon never runs a job-controlled program outside the sandbox: git commands in a clone (narrowing,
   committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
   global git config, ignore or attributes file; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
-  directories and its Node (jobs keep the original `PATH`).
+  directories and its Node (jobs keep the original `PATH`). CommonJS `require` has no global folders
+  (`~/.node_modules`, `~/.node_libraries`), so a dependency's missing optional module isn't looked for there.
 
 ### 3.3 Lifetime
 

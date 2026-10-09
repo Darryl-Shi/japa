@@ -60,7 +60,14 @@ import {
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
-import { createJobSandboxes, hiddenPaths, type JobSandboxes, narrowPath, sandboxRefusal } from "./sandbox/jobs.ts";
+import {
+  createJobSandboxes,
+  hiddenPaths,
+  type JobSandboxes,
+  narrowPath,
+  narrowRequire,
+  sandboxRefusal,
+} from "./sandbox/jobs.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import {
   liveness,
@@ -103,8 +110,10 @@ export type Daemon = {
 /** Boots japa in `home`: opens storage, activates contracts, ensures the CoS root conversation, resumes work. */
 export async function boot(options: BootOptions): Promise<Daemon> {
   const { home } = options;
-  // First, before the daemon runs any program: jobs keep the environment it started with.
+  // First, before the daemon runs any program: jobs keep the environment it started with. Nor does it load code from
+  // the global folders jobs can write.
   const jobEnv = narrowPath();
+  narrowRequire();
   mkdirSync(home, { recursive: true });
   const release = acquireLock(home);
   let runtime: Runtime | undefined;
@@ -518,7 +527,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         return adapter.create(input);
       },
     };
-    const env = createEnvDispatcher(local, secretsDirs, async (conversationId: ConversationId, context) => {
+    // What jobs don't see, the CoS can't read either: a secrets dir by its real path too.
+    const deny = [...secretsDirs, ...hidden];
+    const env = createEnvDispatcher(local, deny, async (conversationId: ConversationId, context) => {
       const jobId = (await opened.snapshot(JobDoc, conversationId, context))?.jobId;
       if (!jobId) throw new Error(`No job runs in conversation ${conversationId}`);
       return jobs.env(String(conversationId), jobId);

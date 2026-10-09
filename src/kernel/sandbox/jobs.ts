@@ -2,6 +2,7 @@
 // tool call and again after it stops. All of a job's file and shell operations run there, none in the daemon.
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { existsSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { cloneDir, cloneTmp, ensureClone } from "../jobs/clone.ts";
@@ -51,6 +52,16 @@ export function narrowPath(): Record<string, string> {
   narrowed = { original, path };
   process.env.PATH = path;
   return env;
+}
+
+/**
+ * Empties this process's CommonJS global folders (`~/.node_modules`, `~/.node_libraries`, `NODE_PATH`'s, Node's
+ * `lib/node`), where `require` looks last: a job can write there, so a dependency's missing optional `require` would
+ * load the job's code in the daemon.
+ */
+export function narrowRequire(): void {
+  const { globalPaths } = createRequire(import.meta.url)("node:module") as { globalPaths: string[] };
+  globalPaths.length = 0;
 }
 
 /**
