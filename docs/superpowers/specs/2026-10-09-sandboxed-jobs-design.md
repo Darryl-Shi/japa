@@ -89,11 +89,18 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
   environment. Provider API keys set as environment variables don't reach jobs.
 
-The network and `/tmp` are shared, as now.
+- `--bind <home>/.jobs/<id>.tmp /tmp` and `/var/tmp`: a private temp dir, so tmux, screen and X11 sockets in `/tmp`
+  are out of reach.
+- A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. The protected
+  config also covers `$XDG_DATA_HOME/systemd` and `$XDG_CONFIG_HOME/environment.d`.
+
+The network is shared, as now.
 
 Consequences, accepted:
 - bwrap sets `no_new_privs`, so `sudo` and other setuid programs don't work inside: jobs can't install system
-  packages. Abstract unix sockets in the shared network namespace stay reachable.
+  packages. Abstract unix sockets in the shared network namespace stay reachable. The rest of the home, shell startup files
+  included, stays writable: the boundary covers japa's secrets and what japa itself runs, not programs the user
+  later runs from his home.
 - The daemon never runs a job-controlled program outside the sandbox: git commands in a clone (narrowing,
   committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
   global git config; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
