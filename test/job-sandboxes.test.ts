@@ -124,7 +124,10 @@ test("hiddenPaths: one that is or holds the home, by real path, isn't hidden but
   symlinkSync(join(outside, "a"), join(outside, "link"));
   // A mask there would cover the clone mounted over the home.
   const paths = [join(outside, "link"), home, join(outside, "a"), join(outside, "vault"), join(home, "secrets")];
-  expect(hiddenPaths(home, paths)).toEqual({ hidden: [join(outside, "vault")], holdingHome: [join(outside, "a"), home] });
+  expect(hiddenPaths(home, paths)).toEqual({
+    hidden: [join(outside, "vault")],
+    holdingHome: [join(outside, "a"), home],
+  });
 });
 
 test("a job's spec has the daemon's Node dir read-only, by real path", () => {

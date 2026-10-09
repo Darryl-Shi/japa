@@ -56,7 +56,10 @@ test.each([
   ["null", "null"],
   ['{"id":1,"call":[1]}', "not a function"],
   ['{"id":1,"result":{"$bytes":5}}', "argument"],
-])("a line the server can't have meant (%s) is logged, then fails the calls in flight like a lost server", async (line, why) => {
+])("a line the server can't have meant (%s) is logged, then fails the calls in flight like a lost server", async (
+  line,
+  why,
+) => {
   const { garbled, logged, env } = garbledServer(line);
   const read = await env.readTextFile("x", ctx);
   expect(read).toMatchObject({ ok: false, error: { code: "unknown", message: expect.stringContaining(LOST) } });

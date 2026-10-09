@@ -481,12 +481,15 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const { file } = settings.storage;
     const db = typeof file === "string" ? [resolve(file.replace(/^~/, homedir()))] : [];
     // One that holds the home can't be: its mask would cover the clone.
-    const { hidden, holdingHome } = hiddenPaths(home, [...secretsDirs, ...db.flatMap((f) => [f, `${f}-wal`, `${f}-shm`])]);
+    const dbFiles = db.flatMap((f) => [f, `${f}-wal`, `${f}-shm`]);
+    const { hidden, holdingHome } = hiddenPaths(home, [...secretsDirs, ...dbFiles]);
     const jobs = createJobSandboxes({ home, packageRoot, hidden, env: jobEnv });
     sandboxes = jobs;
     const sandboxError = [
       ...(jobs.problem === undefined ? [] : [sandboxRefusal(jobs.problem)]),
-      ...holdingHome.map((path) => `Jobs can read ${path}: it is or holds the japa home, so their sandboxes can't hide it`),
+      ...holdingHome.map(
+        (path) => `Jobs can read ${path}: it is or holds the japa home, so their sandboxes can't hide it`,
+      ),
     ].map((error) => ({ name: "sandbox", error }));
     const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
     const rt = createRuntime({

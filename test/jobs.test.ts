@@ -87,8 +87,8 @@ async function bootSandboxed(
   writeFileSync(join(home, "marker"), "the real marker");
   const kit = testKit();
   const storage = o.storage?.(outside) ?? { adapter: "memory" };
-  const secretsSetting = o.secrets === undefined ? {} : { secrets: o.secrets(outside) };
-  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage, models: { cos: kit.model }, ...secretsSetting }));
+  const setting = o.secrets === undefined ? {} : { secrets: o.secrets(outside) };
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage, models: { cos: kit.model }, ...setting }));
   process.env.HOME = user;
   onTestFinished(() => {
     process.env.HOME = HOME;

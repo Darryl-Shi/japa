@@ -173,10 +173,10 @@ export function readOnlyPaths(
 
 /**
  * Where the read-only paths are mounted: `pinned` dirs are bound onto themselves (a mount point can't be renamed, so
- * the protected paths under them, and the hidden ones, can't be moved away and recreated); a protected symlink's directory is in
- * `readOnlyDirs`, so the link can't be replaced, and its target in `paths`, by real path. A missing protected file is
- * created empty, and a missing dir's parents, before the pins are computed, so the folders they need are pinned too;
- * `missing` dirs get a read-only tmpfs.
+ * the protected paths under them, and the hidden ones, can't be moved away and recreated); a protected symlink's
+ * directory is in `readOnlyDirs`, so the link can't be replaced, and its target in `paths`, by real path. A missing
+ * protected file is created empty, and a missing dir's parents, before the pins are computed, so the folders they need
+ * are pinned too; `missing` dirs get a read-only tmpfs.
  */
 function readOnlyMounts(spec: SandboxSpec) {
   const readOnlyDirs = new Set<string>();
