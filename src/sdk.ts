@@ -35,6 +35,7 @@ export type {
 } from "./kernel/contracts.ts";
 export { defineJapaExtension } from "./kernel/extension.ts";
 export { board, JobDoc, JobsDoc } from "./kernel/jobs/state.ts";
+export { splitMessage } from "./kernel/messaging/split.ts";
 export type { Job } from "./kernel/jobs/state.ts";
 export type { SecretRequest } from "./kernel/secret-requests.ts";
 export type { Authorize, AuthorizeContext, JapaExtension } from "./kernel/extension.ts";

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { backoff } from "../extensions/telegram/api.ts";
-import { toHtml } from "../extensions/telegram/html.ts";
+import { toHtml, toPlain, visibleLength } from "../extensions/telegram/html.ts";
 import telegram from "../extensions/telegram/index.ts";
 import type { Dispose, Incoming, MessagingAdapter } from "../src/kernel/contracts.ts";
 import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
@@ -52,7 +52,47 @@ test.each([
   ["> quoted\n> more", "<blockquote>quoted\nmore</blockquote>"],
   ["# Title", "<b>Title</b>"],
   ["snake_case_name stays", "snake_case_name stays"],
-])("toHtml(%j)", (md, html) => expect(toHtml(md)).toBe(html));
+  ["***both***", "<b><i>both</i></b>"],
+  ["**bold _nested_ here**", "<b>bold <i>nested</i> here</b>"],
+  ["a **lone star", "a **lone star"],
+  ["```\nunclosed", "<pre>unclosed</pre>"],
+  ["- a\n  - b\n- c", "• a\n  • b\n• c"],
+  ["1. a\n2. b", "1. a\n2. b"],
+  ["- [ ] todo\n- [x] done", "☐ todo\n☑ done"],
+  ["| a | bb |\n|---|---|\n| 1 | <2> |", "<pre>a | bb\n───────\n1 | &lt;2&gt;</pre>"],
+  ["<script>x</script>", "&lt;script&gt;x&lt;/script&gt;"],
+  ["||secret||", "<tg-spoiler>secret</tg-spoiler>"],
+  ["![cat](https://e.com/c.png)", '<a href="https://e.com/c.png">cat</a>'],
+  ["---", "———"],
+])("toHtml(%j)", (md, html) => {
+  expect(toHtml(md)).toBe(html);
+  expect(balanced(html)).toBe(true);
+});
+
+/** Whether every tag `html` opens is closed, in LIFO order, and nothing is closed that isn't open. */
+function balanced(html: string): boolean {
+  const open: string[] = [];
+  for (const [, close, name] of html.matchAll(/<(\/?)([a-z-]+)[^>]*>/g)) {
+    if (!close) open.push(name!);
+    else if (open.pop() !== name) return false;
+  }
+  return open.length === 0;
+}
+
+test("balanced rejects misnested and unclosed tags", () =>
+  expect(["<b><i>x</b></i>", "<b>x", "x</i>", "<b><i>x</i></b>"].map(balanced)).toEqual([false, false, false, true]));
+
+test("a blockquote over 10 lines is expandable", () =>
+  expect(toHtml(Array.from({ length: 11 }, (_, i) => `> ${i}`).join("\n"))).toMatch(/^<blockquote expandable>/));
+
+test("a blockquote of 10 lines is not expandable", () =>
+  expect(toHtml(Array.from({ length: 10 }, (_, i) => `> ${i}`).join("\n"))).toMatch(/^<blockquote>/));
+
+test("toPlain drops markers and keeps link targets", () =>
+  expect(toPlain("**a** [b](https://e.com) `c`")).toBe("a b (https://e.com) c"));
+
+test("visibleLength counts text without tags, with entities decoded", () =>
+  expect(visibleLength('<a href="x">a &amp; b</a> &lt;&gt;&quot;')).toBe(9));
 
 test("backoff starts at 1 s and doubles to 60 s", () =>
   expect([0, 1, 2, 5, 6, 9].map(backoff)).toEqual([1000, 2000, 4000, 32000, 60000, 60000]));
@@ -71,11 +111,39 @@ test("send posts HTML with an inline keyboard and returns the message id", async
   expect(fake.calls[0]!.token).toBe("T");
 });
 
-test("HTML Telegram can't parse is resent as plain text", async () => {
+const unparsable = { ok: false, error_code: 400, description: "Bad Request: can't parse entities: x" };
+
+test("HTML Telegram can't parse is resent as plain text without markers", async () => {
   const adapter = await connect();
-  fake.fail("sendMessage", 400, { ok: false, error_code: 400, description: "Bad Request: can't parse entities: x" }, 1);
+  fake.fail("sendMessage", 400, unparsable, 1);
   await adapter.send("42", { markdown: "**hi**" });
-  expect(sends().at(-1)).toEqual({ chat_id: "42", text: "**hi**" });
+  expect(sends().at(-1)).toEqual({ chat_id: "42", text: "hi" });
+});
+
+test("the plain-text fallback keeps force_reply and its placeholder", async () => {
+  const adapter = await connect();
+  fake.fail("sendMessage", 400, unparsable, 1);
+  await adapter.send("42", { markdown: "**hi**", input: { placeholder: "Paste svc.token" } });
+  expect(sends().at(-1)).toEqual({
+    chat_id: "42",
+    text: "hi",
+    reply_markup: { force_reply: true, input_field_placeholder: "Paste svc.token" },
+  });
+});
+
+test("a part whose rendered text is over 4096 characters is sent as two messages", async () => {
+  const adapter = await connect();
+  // Two 30-row tables with one long cell per column, in different rows, so each padded row is about twice its markdown.
+  const rows = [`| ${"k".repeat(58)} | v |`, ...Array.from({ length: 29 }, (_, i) => `| ${i % 10} | ${"v".repeat(58)} |`)];
+  const table = `| a | b |\n|---|---|\n${rows.join("\n")}`;
+  const markdown = `${table}\n\n${table}`;
+  expect(markdown.length).toBeLessThanOrEqual(4096);
+  expect(visibleLength(toHtml(markdown))).toBeGreaterThan(4096);
+  const buttons = [[{ label: "A", action: "1" }]];
+  expect(await adapter.send("42", { markdown, buttons })).toBe("2");
+  expect(sends()).toHaveLength(2);
+  for (const s of sends()) expect(visibleLength(s.text)).toBeLessThanOrEqual(4096);
+  expect(sends().map((s) => s.reply_markup)).toEqual([undefined, { inline_keyboard: [[{ text: "A", callback_data: "1" }]] }]);
 });
 
 test("without a token, sending fails", async () => {
