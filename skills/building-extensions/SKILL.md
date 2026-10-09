@@ -5,10 +5,14 @@ description: Use when writing or changing a japa extension (code in extensions/<
 
 # Building extensions
 
-Write `extensions/<name>/index.ts` in the current directory (the staging copy of `~/.japa`). Import
-only from `"japa/sdk"` and Node built-ins (`node:fs`, ...). Its default export is the manifest. The
-packaged extensions, good examples, are in `../node_modules/japa/extensions/`; they import
-`../../src/sdk.ts` where yours imports `japa/sdk`.
+Write `~/.japa/extensions/<name>/index.ts`. Import only from `"japa/sdk"` and Node built-ins
+(`node:fs`, ...). Its default export is the manifest. The packaged extensions, good examples, are in
+`~/.japa/node_modules/japa/extensions/`; they import `../../src/sdk.ts` where yours imports
+`japa/sdk`.
+
+Your `~/.japa` is a private copy for this job. When you finish, your changes under
+`~/.japa/extensions/<name>` go live if `japa check` passes (below); changes elsewhere in `~/.japa`
+are dropped. You don't install anything yourself.
 
 ## Minimal example
 
@@ -69,15 +73,15 @@ export default defineJapaExtension({
   `{ surface, chat? }`, and a `cursor` to persist and pass as `after` after a restart); `jobs(listener)`;
   `secrets.pending(listener)` and `secrets.fulfil(requestId, value)`; and `status()`.
 - **messaging**: a chat platform adapter, transport only (see Messaging adapters below).
-- **environment**: `{ name, create({ conversationId, cwd }) }` returning a Pi Durable `ExecutionEnv`;
-  worker profiles select it with `environment: <name>`.
+- **environment**: `{ name, create({ conversationId, cwd }) }` returning a Pi Durable `ExecutionEnv`.
+  The chief of staff's read-only tools run in the one named `local`; jobs always run in japa's sandbox.
 - **provider**: a pi-ai model provider object with an `id`; its models become selectable.
 - **storage**: `{ name, open(config, { home }) }` resolving to a Pi Durable `Storage`; chosen by
   settings `storage.adapter`.
 - **secrets**: `{ name, open(config, { home }) }` resolving to `{ get, set, delete, list }`; chosen by
   settings `secrets.adapter`.
 
-Storage and secrets are opened at boot, so they apply after a restart; the others apply on install.
+Storage and secrets are opened at boot, so they apply after a restart; the others apply when the change goes live.
 
 ## Messaging adapters
 
@@ -182,14 +186,16 @@ below also boots your extension in a throwaway daemon with a faux model and in-m
 
 ## Check
 
-From the staging directory, run
+From `~/.japa`, run
 
 ```
-../node_modules/japa/src/cli/main.ts check extension <name>
+japa check extension <name>
 ```
 
-(the same as `japa check extension <name>` run there). It stops at the first failure of: a valid
-manifest (core contracts, valid contributions); tool descriptions of at most 1024 characters; a
-typecheck (tests excluded); its `*.test.ts` files; and a smoke load (loads without errors, appears in
-the capabilities, no tool name shared with another extension or the kernel). It prints `ok` when
-all pass; fix each problem and rerun.
+(If `japa` isn't found, run `~/.local/bin/japa check extension <name>`.)
+
+It stops at the first failure of: a valid manifest (core contracts, valid contributions); tool
+descriptions of at most 1024 characters; a typecheck (tests excluded); its `*.test.ts` files; and a
+smoke load (loads without errors, appears in the capabilities, no tool name shared with another
+extension or the kernel). It prints `ok` when all pass; fix each problem and rerun. The same check
+runs when you finish: if it fails, nothing goes live.

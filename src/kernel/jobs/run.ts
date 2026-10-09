@@ -69,9 +69,9 @@ const FINAL = ["done", "failed", "cancelled"];
  *
  * From the decision to publish until its report is posted, the job is `publishing` (the report's seq): its sandbox
  * doesn't start, `job_message` refuses it, and it isn't pruned. A run that leaves the job done meanwhile (a follow-up
- * queued before) publishes nothing itself: its sandbox couldn't start. Skipping the publish, its report is posted
- * before the publishing run's, which comes after. A run that faults leaves `publishing` set: `unstickPublishing` ends
- * it at the next boot.
+ * queued before) publishes nothing itself: its sandbox couldn't start. Skipping the publish, its report is usually
+ * posted before the publishing run's, which comes after. A run that faults leaves `publishing` set:
+ * `unstickPublishing` ends it at the next boot.
  */
 export function jobRun(settings: Settings, hooks: JobHooks) {
   const JobRun = defineTask<JobRunInput, JobRunState, null>({

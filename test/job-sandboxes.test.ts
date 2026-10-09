@@ -321,6 +321,29 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     expect(asked).toHaveLength(4);
   });
 
+  test("a job reads the real attachments and current settings, but can't change them", async () => {
+    const { outside, home, sandboxes } = setup();
+    expect(existsSync(join(home, "attachments"))).toBe(false); // made when the sandbox starts
+    writeFileSync(join(home, "settings.json"), '{"now":true}\n'); // not committed: the clone has the older one
+    const env = sandboxes.env("c", "1");
+    expect((await env.exec("true", undefined, ctx)).ok).toBe(true);
+    mkdirSync(join(home, "attachments", "2026-10-10"), { recursive: true });
+    writeFileSync(join(home, "attachments", "2026-10-10", "a.png"), "png");
+    const script = [
+      `cat "${home}/attachments/2026-10-10/a.png"; echo`,
+      `cat "${home}/settings.json"`,
+      `echo x > "${home}/attachments/new" 2>/dev/null && echo wrote-attachment`,
+      `echo x > "${home}/settings.json" 2>/dev/null && echo wrote-settings`,
+      "true",
+    ].join("; ");
+    const out = join(outside, "out");
+    expect((await env.exec(`{ ${script}; } > "${out}"`, undefined, ctx)).ok).toBe(true);
+    expect(readFileSync(out, "utf8")).toBe('png\n{"now":true}\n');
+    expect(existsSync(join(home, "attachments", "new"))).toBe(false);
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe('{"now":true}\n');
+    expect(sandboxes.spec("1").readOnlyShared).toEqual([join(home, "attachments"), join(home, "settings.json")]);
+  });
+
   test("a job's calls share one sandbox, and closeAll stops it", async () => {
     const { home, sandboxes } = setup();
     const env = sandboxes.env("c", "1");

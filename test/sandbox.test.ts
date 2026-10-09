@@ -21,6 +21,8 @@ import { basename, dirname, join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import {
   jobEnv,
+  jobPath,
+  launcherPath,
   probeSandbox,
   readOnlyPaths,
   runSandboxed,
@@ -31,7 +33,7 @@ import {
 } from "../src/kernel/sandbox/bwrap.ts";
 import { NO_BWRAP, sandboxScratch, tempHome, waitFor } from "./helpers.ts";
 
-const ALLOWED = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
+const ALLOWED = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM", "JAPA_HOME"];
 
 const git = (dir: string, ...args: string[]) =>
   execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...args], {
@@ -128,6 +130,14 @@ test("probe fails with JAPA_BWRAP=/nonexistent", () => {
   expect(withEnv("JAPA_BWRAP", "/nonexistent", probeSandbox)).toMatch(/\S/);
 });
 
+test("the probe's reason has no trailing period, as messages add their own", () => {
+  const dir = mkdtempSync(join(tmpdir(), "japa-fake-bwrap-"));
+  const fake = join(dir, "bwrap");
+  writeFileSync(fake, "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace.' >&2\nexit 1\n");
+  chmodSync(fake, 0o755);
+  expect(withEnv("JAPA_BWRAP", fake, probeSandbox)).toBe("bwrap: No permissions to create a new namespace");
+});
+
 test("readOnlyPaths covers the app dir (with its Node), the launcher, the user's systemd and environment.d", () => {
   const dir = (path: string) => ({ path, dir: true });
   const file = (path: string) => ({ path, dir: false });
@@ -182,6 +192,17 @@ const bare: SandboxSpec = {
   shared: [],
   env: {},
 };
+
+test("jobEnv passes JAPA_HOME when it's set", () => {
+  expect(jobEnv({ PATH: "/p", JAPA_HOME: "/h/.japa", OTHER: "x" })).toEqual({ PATH: "/p", JAPA_HOME: "/h/.japa" });
+});
+
+test("jobPath appends the daemon's Node dir and the launcher's dir, once each", () => {
+  expect(jobPath("/usr/bin:/bin", "/n/bin", "/u/.local/bin")).toBe("/usr/bin:/bin:/n/bin:/u/.local/bin");
+  expect(jobPath("/n/bin:/usr/bin", "/n/bin", "/u/.local/bin")).toBe("/n/bin:/usr/bin:/u/.local/bin");
+  expect(jobPath(undefined, "/n/bin", "/u/.local/bin")).toBe("/n/bin:/u/.local/bin");
+  expect(launcherPath("/u")).toBe("/u/.local/bin/japa");
+});
 
 test("jobEnv keeps the allowed variables that are set", () => {
   const env = { PATH: "/p", HOME: "/u", TERM: undefined, FOO_SECRET: "1", ANTHROPIC_API_KEY: "k" };
@@ -756,6 +777,37 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     await run(`echo hi > "${home}/desktop/shared/f"`);
     expect(readFileSync(join(home, "desktop", "shared", "f"), "utf8")).toBe("hi\n");
     expect(existsSync(join(clone, "desktop", "shared", "f"))).toBe(false);
+  });
+
+  test("node and japa are found in a sandbox whose original PATH lacks them; JAPA_HOME reaches it", async () => {
+    const { outside, home, spec } = sandbox();
+    const [empty, node, launcher] = ["empty", "node-bin", "launcher-bin"].map((name) => join(outside, name));
+    for (const dir of [empty, node, launcher]) mkdirSync(dir);
+    writeFileSync(join(node, "node"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(join(launcher, "japa"), "#!/bin/sh\n", { mode: 0o755 });
+    const env = jobEnv({ ...spec.env, PATH: jobPath(empty, node, launcher), JAPA_HOME: home });
+    const script = 'command -v node; command -v japa; echo "$JAPA_HOME"';
+    const { output } = await runSandboxed({ ...spec, env }, ["/bin/sh", "-c", script], { timeoutMs: 10_000 });
+    expect(output).toBe(`${join(node, "node")}\n${join(launcher, "japa")}\n${home}\n`);
+  });
+
+  test("read-only shared paths are the real ones, and can't be written", async () => {
+    const { home, clone, spec } = sandbox();
+    mkdirSync(join(home, "attachments"));
+    writeFileSync(join(home, "attachments", "a"), "real");
+    writeFileSync(join(home, "settings.json"), "real settings");
+    writeFileSync(join(clone, "settings.json"), "clone settings");
+    const readOnlyShared = [join(home, "attachments"), join(home, "settings.json"), join(home, "missing")];
+    const script = [
+      `cat "${home}/attachments/a" "${home}/settings.json"; echo`,
+      `{ echo x > "${home}/attachments/b"; } 2>/dev/null && echo wrote`,
+      `{ echo x > "${home}/settings.json"; } 2>/dev/null && echo wrote`,
+      "true",
+    ].join("; ");
+    const { output } = await runSandboxed({ ...spec, readOnlyShared }, ["bash", "-c", script], { timeoutMs: 10_000 });
+    expect(output).toBe("realreal settings\n");
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe("real settings");
+    expect(existsSync(join(home, "attachments", "b"))).toBe(false);
   });
 
   test("no daemon in /proc, minimal env", async () => {

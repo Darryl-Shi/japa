@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { type FauxProviderHandle, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { configure, type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -12,11 +12,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
+import { jobPath } from "../src/kernel/sandbox/bwrap.ts";
+import { modelRefusal } from "../src/kernel/jobs/cos.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobDoc, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
@@ -599,6 +601,29 @@ test.skipIf(NO_BWRAP)("an unknown model is refused with the list", async () => {
   await daemon.close();
 });
 
+test.skipIf(NO_BWRAP)("a known model whose provider has no credentials is refused as such, with the list", async () => {
+  const kit = testKit({ models: [{ id: "a" }] });
+  const locked = fauxProvider({ provider: "locked", models: [{ id: "m" }] }).provider;
+  // As a provider whose key isn't set: known, but not usable.
+  const provider = Object.assign(Object.create(Object.getPrototypeOf(locked)), locked, {
+    auth: { apiKey: { name: "Locked", resolve: async () => undefined } },
+  });
+  const extension = { name: "locked", summary: "A provider without credentials", provides: { provider: [provider] } };
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  const daemon = await boot({ home, extensions: [kit.extension, probe, extension] });
+  expect(await tool(daemon, kit.faux, "job_start", { title: "T", brief: "b", model: "locked/m" })).toBe(
+    `Model "locked/m" has no credentials. Models: ${kit.model.provider}/a.`,
+  );
+  expect(await jobs(daemon)).toEqual({});
+  await daemon.close();
+});
+
+test("the model refusal says when no model is usable", () => {
+  expect(modelRefusal("p/x", false, [])).toBe('Unknown model "p/x". No models are usable.');
+  expect(modelRefusal("p/x", true, [])).toBe('Model "p/x" has no credentials. No models are usable.');
+  expect(modelRefusal("p/x", false, ["p/a", "p/b"])).toBe('Unknown model "p/x". Models: p/a, p/b.');
+});
+
 test.skipIf(NO_BWRAP)("a stored job with worker and environment still loads", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
@@ -714,7 +739,11 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const [result] = await jobResults(daemon);
     expect(result).toContain("the real marker");
     expect(result).not.toContain("api-key");
-    expect(await reported(daemon)).toEqual(['[job 1 "Look" done] seen']);
+    // What it wrote outside extensions/ and skills/ is dropped, and said so.
+    const kept = `Kept at ${join(home, ".jobs", "1")}.`;
+    expect(await reported(daemon)).toEqual([
+      `[job 1 "Look" done] seen\n\nNot live: the job changed nothing under extensions/ or skills/. ${kept} Dropped: made.`,
+    ]);
     await daemon.close();
   });
 
@@ -805,9 +834,13 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     await daemon.close();
   });
 
-  test("the daemon's own PATH holds only its Node and the system dirs; a job's is the original", async () => {
-    const original = process.env.PATH;
+  test("the daemon's own PATH holds only its Node and the system dirs; a job's is the original, plus japa's", async () => {
+    const before = process.env.PATH;
+    // Its Node's dir and the launcher's (in the user home the boot had), where the original lacks them.
+    const jobsPath = () => jobPath(before, dirname(process.execPath), join(homedir(), ".local", "bin"));
     const { daemon, faux } = await bootSandboxed();
+    const original = jobsPath();
+    expect(original.startsWith(`${before}:`)).toBe(true);
     const system = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     expect(process.env.PATH).toBe(`${dirname(process.execPath)}:${system}`);
     script(faux, (role, text) => {
@@ -828,7 +861,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     });
     await ask(again.daemon, "start");
     await waitFor(() => idle(again.daemon));
-    expect((await jobResults(again.daemon))[0]!.trim()).toBe(original);
+    expect((await jobResults(again.daemon))[0]!.trim()).toBe(jobsPath());
     await again.daemon.close();
   });
 });

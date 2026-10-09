@@ -111,8 +111,9 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--ro-bind /dev/null` over the Docker sockets that exist (`/run/docker.sock`, `/var/run/docker.sock`): Docker
   access is root access.
 - `--die-with-parent`, `--new-session`.
-- `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
-  environment. Provider API keys set as environment variables don't reach jobs. bwrap itself starts with only those
+- `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` and `JAPA_HOME` from the
+  daemon's environment, `PATH` with the daemon's Node dir and the launcher's dir (`~/.local/bin`) appended where
+  missing, so `node` and `japa check` work in a job. Provider API keys set as environment variables don't reach jobs. bwrap itself starts with only those
   (its own environment is readable inside, at `/proc/1/environ`), found through the daemon's `PATH`.
 
 The network is shared, as now.
@@ -179,7 +180,9 @@ the report and posting it ("completing" below means that phase; `JobStatus` is u
 delivered.
 
 1. **Narrow.** In the clone, restore every path outside `extensions/` and `skills/` to the starting commit and list them
-   as dropped. If nothing is left changed, delete the clone and stop. Otherwise commit with the message
+   as dropped. If nothing is left changed: with nothing dropped either, delete the clone and stop (no outcome line);
+   otherwise keep it and report `Not live: the job changed nothing under extensions/ or skills/.` with the dropped
+   paths. Otherwise commit with the message
    `Job <n>: <title>` (author `japa`).
 2. **Check.** For each changed `extensions/<name>` or `skills/<name>`, including deletions, run `japa check` inside
    the job's sandbox against the clone, with a 10-minute timeout per component. Any failure: nothing goes live.
@@ -214,13 +217,17 @@ The job's report (`[job <n> "<title>" done] …`) ends with exactly one outcome 
 | Outcome | Line |
 |---|---|
 | Nothing changed | *(no line)* |
+| Only files outside the components changed | `Not live: the job changed nothing under extensions/ or skills/. Kept at ~/.japa/.jobs/<id>. Dropped: notes.md.` |
 | Live | `Live: extensions/anthropic-sub, skills/x (change 17).` plus `Dropped: settings.json.` when relevant |
 | Check failed | `Not live: check failed for extensions/x: <problems>. Kept at ~/.japa/.jobs/<id>.` |
 | Conflict | `Not live: extensions/x/index.ts changed since this job started. Kept at ~/.japa/.jobs/<id>.` |
 | Load failure | `Not live: extensions/x failed to load: <error>. Reverted. Kept at ~/.japa/.jobs/<id>.` |
 
-On a "Not live" result, the CoS starts a new job on the current version and passes the kept clone's path in the
-brief.
+Every "Not live" line made after narrowing ends with ` Dropped: <paths>.` too when the job changed files outside
+the components: dropped work is never silent.
+
+On a "Not live" result, the CoS starts a new job on the current version. A job can't see another's kept clone (its
+own covers `~/.japa`), so the CoS reads what matters from the kept path and puts it in the brief.
 
 ### 4.6 Clean-up
 
@@ -369,7 +376,7 @@ On the first boot of this version:
 
 - No changes: no clone left, no outcome line.
 - A changed extension and a changed skill go live in one merge commit, one logged change, and undo reverts both.
-- A change to `settings.json` is dropped and reported.
+- A new file outside the components is dropped and reported; only such files: `Not live: the job changed nothing…`.
 - A failed check leaves `main` unchanged and the clone kept.
 - A load failure reverts the merge and reports it.
 - A crash between merge and load recovers at the next boot.

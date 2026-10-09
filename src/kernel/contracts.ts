@@ -256,7 +256,7 @@ function requireFields(
 const CORE_CONTRACTS: Contract[] = [
   {
     name: "provider",
-    docs: "Registers a pi-ai model provider, making its models selectable in settings and worker profiles.",
+    docs: "Registers a pi-ai model provider, making its models selectable in settings and for jobs.",
     phase: "runtime",
     cardinality: "many",
     validate: (c) => requireFields(c, { id: "string" }),

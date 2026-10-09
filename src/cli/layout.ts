@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { launcherPath } from "../kernel/sandbox/bwrap.ts";
 
 /** This checkout's root: the directory holding package.json. */
 export const APP = fileURLToPath(new URL("../..", import.meta.url));
@@ -24,7 +25,7 @@ export function layoutOf(app: string, userHome = homedir()): Layout {
     app,
     installDir,
     nodeDir: installDir === undefined ? undefined : join(installDir, "node"),
-    launcher: join(userHome, ".local", "bin", "japa"),
+    launcher: launcherPath(userHome),
   };
 }
 

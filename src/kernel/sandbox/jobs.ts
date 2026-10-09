@@ -1,7 +1,7 @@
 // Each job's sandbox: an env server under bwrap, on the job's own clone of the japa home, started on the job's first
 // tool call and again after it stops. All of a job's file and shell operations run there, none in the daemon.
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { Module } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -9,6 +9,7 @@ import { cloneDir, cloneTmp, ensureClone } from "../jobs/clone.ts";
 import {
   bwrap,
   jobEnv,
+  jobPath,
   probeSandbox,
   readOnlyPaths,
   realPath,
@@ -42,13 +43,13 @@ let narrowed: { original: string | undefined; path: string } | undefined;
 
 /**
  * Narrows this process's PATH to its Node's dir and the system dirs, so the daemon never runs a program found in a
- * dir a job can write; returns the environment jobs get (see `jobEnv`), with the PATH from before. Called again in the
- * same process, it still returns the original.
+ * dir a job can write; returns the environment jobs get (see `jobEnv`), with the PATH from before plus its Node's dir
+ * and the launcher's (see `jobPath`). Called again in the same process, it still starts from the original.
  */
 export function narrowPath(): Record<string, string> {
   const path = `${dirname(process.execPath)}:${SYSTEM_PATH}`;
   const original = narrowed !== undefined && process.env.PATH === narrowed.path ? narrowed.original : process.env.PATH;
-  const env = jobEnv({ ...process.env, PATH: original });
+  const env = jobEnv({ ...process.env, PATH: jobPath(original) });
   narrowed = { original, path };
   process.env.PATH = path;
   return env;
@@ -125,6 +126,9 @@ export function createJobSandboxes(o: {
     readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }, { path: nodeLib, dir: true }],
     hidden: o.hidden,
     shared: [join(home, "desktop", "shared")],
+    // The files the user sent, and the settings as they are now: the clone has neither (they're ignored, or changed
+    // since the last commit).
+    readOnlyShared: [join(home, "attachments"), join(home, "settings.json")],
     env: o.env,
   });
 
@@ -150,6 +154,7 @@ export function createJobSandboxes(o: {
     const missing = present.find((path) => !existsSync(path));
     if (missing !== undefined) throw new Error(`The job's sandbox can't start: ${missing} is missing`);
     ensureClone(home, packageRoot, jobId);
+    mkdirSync(join(home, "attachments"), { recursive: true });
     const s = spec(jobId);
     // bwrap gets only the sandbox's environment: its own is readable in the sandbox, at /proc/1/environ.
     const command = [bwrap(), ...sandboxArgs(s), process.execPath, SERVER, ENV_MODULE];

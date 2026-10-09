@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import {
@@ -22,10 +22,22 @@ function workspace(): string {
   return home;
 }
 
+test("a secrets directory symlinked out of the workspace is ignored, in a new workspace and an older one", () => {
+  const outside = tempHome();
+  for (const before of [undefined, "secrets/\n"]) {
+    const home = tempHome();
+    if (before !== undefined) writeFileSync(join(home, ".gitignore"), before);
+    symlinkSync(outside, join(home, "secrets"));
+    ensureWorkspace(home);
+    expect(git(home, "ls-files")).toBe(".gitignore");
+    expect(git(home, "status", "--porcelain")).toBe("");
+  }
+});
+
 test("ensureWorkspace creates the repo, .gitignore and the initial commit, idempotently", () => {
   const home = workspace();
   ensureWorkspace(home);
-  expect(readFileSync(join(home, ".gitignore"), "utf8")).toContain("secrets/");
+  expect(readFileSync(join(home, ".gitignore"), "utf8").split("\n")).toContain("/secrets");
   expect(git(home, "log", "--format=%s")).toBe("Initial workspace");
   expect(git(home, "branch", "--show-current")).toBe("main");
 });
@@ -360,11 +372,43 @@ test("revert commits any number of paths, whatever their names", () => {
 test("attachments are ignored by git, also in a workspace made before them", () => {
   const home = workspace();
   const gitignore = join(home, ".gitignore");
-  writeFileSync(gitignore, readFileSync(gitignore, "utf8").replace("attachments/\n", ""));
+  writeFileSync(gitignore, readFileSync(gitignore, "utf8").replace("/attachments/\n", ""));
   commit(home, [".gitignore"], "before attachments");
   ensureWorkspace(home);
   ensureWorkspace(home);
-  expect(readFileSync(gitignore, "utf8").split("\n").filter((l) => l === "attachments/")).toHaveLength(1);
+  expect(readFileSync(gitignore, "utf8").split("\n").filter((l) => l === "/attachments/")).toHaveLength(1);
+  expect(git(home, "status", "--porcelain")).toBe("");
+});
+
+test("japa's top-level dirs are ignored only at the top: a component's folder of the same name isn't", () => {
+  const home = workspace();
+  const lines = readFileSync(join(home, ".gitignore"), "utf8").split("\n");
+  for (const dir of ["attachments", "logs", ".jobs", ".cache", "desktop"]) {
+    expect(lines).toContain(`/${dir}/`);
+    expect(lines).not.toContain(`${dir}/`);
+    mkdirSync(join(home, dir), { recursive: true });
+    writeFileSync(join(home, dir, "f"), "ignored");
+    mkdirSync(join(home, "extensions", "x", dir), { recursive: true });
+    writeFileSync(join(home, "extensions", "x", dir, "f"), "kept");
+  }
+  expect(lines).toContain("node_modules/");
+  const untracked = git(home, "status", "--porcelain", "--untracked-files=all").split("\n").sort();
+  expect(untracked).toEqual(
+    ["attachments", "logs", ".jobs", ".cache", "desktop"].map((dir) => `?? extensions/x/${dir}/f`).sort(),
+  );
+});
+
+test("an older workspace's .gitignore gets the anchored lines appended, its own kept", () => {
+  const home = tempHome();
+  const old = "state.db*\nsecrets/\nattachments/\nlogs/\n.jobs/\n.cache/\n/desktop/\n";
+  writeFileSync(join(home, ".gitignore"), old);
+  ensureWorkspace(home);
+  const text = readFileSync(join(home, ".gitignore"), "utf8");
+  expect(text.startsWith(old)).toBe(true);
+  for (const line of ["/secrets", "/attachments/", "/logs/", "/.jobs/", "/.cache/"]) {
+    expect(text.split("\n").filter((l) => l === line)).toHaveLength(1);
+  }
+  expect(text.split("\n").filter((l) => l === "/desktop/")).toHaveLength(1);
   expect(git(home, "status", "--porcelain")).toBe("");
 });
 
@@ -387,7 +431,7 @@ test("appending to a .gitignore without a trailing newline keeps its last line i
   ensureWorkspace(home);
   const lines = readFileSync(join(home, ".gitignore"), "utf8").split("\n");
   expect(lines).toContain("build");
-  expect(lines).toContain("attachments/");
+  expect(lines).toContain("/attachments/");
   expect(lines).toContain("/desktop/");
 });
 

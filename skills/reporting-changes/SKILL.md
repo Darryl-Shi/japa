@@ -13,19 +13,22 @@ After you change something and have verified it, report in plain language, in th
 2. **How to use it:** what they say or do, or when it happens by itself.
 3. **How to change or undo it:** the words to say.
 
-Don't mention skills, extensions, workers, jobs, settings paths or change ids unless the user asks.
+Don't mention skills, extensions, jobs, settings paths or change ids unless the user asks.
 If something could not be done, say so plainly and what would fix it.
 
 ## The changes log
 
 Changes to japa's setup are logged (the `japa.changes` log) with a title, how to use it, and how to
-undo it. These tools log one:
+undo it. These log one:
 - `settings_set`: pass `title` and `howToUse` so the entry reads like your report, for example
   `settings_set({ path: "models.worker", value: {...}, title: "Cheaper model for background work", howToUse: "Nothing to do." })`.
-- `install` and `rollback` of a skill, worker profile or extension.
+- A job's changes to skills and extensions going live: its report ends with
+  `Live: <paths> (change <id>).`
+- `rollback` of a skill or extension.
 - `schedule_add` and `schedule_remove`.
 
-`settings_set`, `install` and `schedule_add` reply with the change id, such as `(change 7)`.
+`settings_set` and `schedule_add` reply with the change id, such as `(change 7)`, as a job's `Live:`
+line does.
 
 ## Showing and undoing
 
@@ -38,5 +41,5 @@ undo it. These tools log one:
   - `Not undone: <reason>` or `No change <id>.`: tell the user plainly, or find the right id with
     `changes_list`.
 
-An undo reverts the install's files or restores the settings values from before; you can't undo an
-undo with `change_undo`, so make the change again instead.
+An undo reverts the files a job made live (or a rollback changed), or restores the settings values
+from before; you can't undo an undo with `change_undo`, so make the change again instead.

@@ -11,9 +11,9 @@ import {
 import { type Job, JobDoc, JobsDoc } from "./state.ts";
 
 const WORKER_TEXT =
-  "You are working on a job for the chief of staff. Report notable progress with job_progress. " +
-  "When finished, call job_complete with a short summary. " +
-  "If you need an answer to continue, call job_ask with one clear question.";
+  "You are working on a job for the chief of staff. Work in the directory the brief names; if it names none and you " +
+  "need one, ask with job_ask. Report notable progress with job_progress. When finished, call job_complete with a " +
+  "short summary of what you did and found. If you need an answer to continue, call job_ask with one clear question.";
 
 /** Changes the caller's job in one commit and returns `change`'s result; a job already cleared stays gone. */
 async function updateJob<T>(

@@ -1,5 +1,6 @@
 import type { MessagingContext } from "../../contracts.ts";
 import type { Job, JobStatus } from "../../jobs/state.ts";
+import type { Settings } from "../../settings.ts";
 import { ago, dur, type Nav, PAGE, type Page } from "./nav.ts";
 
 const ICONS: Record<JobStatus, string> = {
@@ -51,6 +52,25 @@ function counts(jobs: Job[]): string {
   return parts.filter(([n]) => n > 0).map(([n, what]) => `${n} ${what}`).join(" · ");
 }
 
+/**
+ * `job`'s model and thinking level. One stored before jobs had them runs on the settings' (see `agentOf` in
+ * jobs/cos.ts): the worker model, else the CoS's, and `jobs.thinking`; read with `settings_get`, "default" when that
+ * fails.
+ */
+async function runsOn(job: Job, messaging: MessagingContext): Promise<{ model: string; thinking: string }> {
+  if (job.model !== undefined && job.thinking !== undefined) return { model: job.model, thinking: job.thinking };
+  let settings: Settings | undefined;
+  try {
+    const result = await messaging.tool("settings_get", {});
+    settings = JSON.parse((result?.content?.[0] as { text: string }).text) as Settings;
+  } catch {}
+  const ref = settings?.models?.worker ?? settings?.models?.cos;
+  return {
+    model: job.model ?? (ref === undefined ? "default model" : `${ref.provider}/${ref.modelId}`),
+    thinking: job.thinking ?? settings?.jobs?.thinking ?? "default",
+  };
+}
+
 /** `N finished job(s)`. */
 const finished = (n: number) => `${n} finished job${n === 1 ? "" : "s"}`;
 
@@ -73,9 +93,9 @@ export function jobsMenu(nav: Nav, jobs: () => Job[], messaging: MessagingContex
       const job = find(id);
       const now = Date.now();
       const ran = (isActive(job) ? now : job.updatedAt) - job.createdAt;
+      const { model, thinking } = await runsOn(job, messaging);
       const lines = [
-        // One stored before jobs had a model and thinking level ran on the defaults of then.
-        `${ICONS[job.status]} ${statusName(job.status)} · ${job.model ?? "default model"} · thinking ${job.thinking ?? "default"}`,
+        `${ICONS[job.status]} ${statusName(job.status)} · ${model} · thinking ${thinking}`,
         `Started ${ago(now - job.createdAt)} ago · updated ${ago(now - job.updatedAt)} ago · ran ${dur(ran)}`,
         "",
         `Brief:\n${cut(job.brief, BRIEF)}`,
