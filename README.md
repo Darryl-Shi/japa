@@ -278,8 +278,8 @@ client in Google Cloud Console and give japa its id and secret. It takes about t
 4. **Create the client** under [Clients](https://console.cloud.google.com/auth/clients): Create client, type
    **Desktop app**. Copy its **client ID** and **client secret**.
 5. **Connect.** Either run `japa setup`, choose Integrations → google, paste the id and secret, and sign in when it
-   asks; or tell japa "connect my Google account" in `japa chat` or Telegram, give it the id and secret when it
-   asks, and open the link it sends you.
+   asks; or set the id and secret in Telegram's `/settings` → Extensions → google (japa doesn't see google until
+   they're set), then tell japa "connect my Google account" in `japa chat` or Telegram and open the link it sends.
 
 Signing in opens Google's consent page. In Testing, Google first shows a "Google hasn't verified this app" screen:
 that's your own app, so choose **Continue**. Allow everything it asks (japa's access is fixed: mail, Drive,

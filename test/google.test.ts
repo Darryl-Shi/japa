@@ -1,5 +1,5 @@
 import type { ToolRegistration } from "@earendil-works/pi-durable";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Api } from "../extensions/google/api.ts";
@@ -20,10 +20,8 @@ const NOT_SIGNED_IN = 'Not signed in to Google (or the sign-in expired): call co
 
 const tools = () => (google.provides?.tool ?? []) as ToolRegistration[];
 
-const writeClient = (home: string) => {
-  writeFileSync(join(home, "secrets/google.clientId"), "client-1");
-  writeFileSync(join(home, "secrets/google.clientSecret"), "shh");
-};
+/** Boots with google's client id and secret stored, so google is available. */
+const bootClient = () => bootTest({}, [], undefined, { "google.clientId": "client-1", "google.clientSecret": "shh" });
 
 test("the manifest is valid, and provides the six tools with portable schemas", () => {
   expect(validateExtension(google)).toEqual([]);
@@ -57,8 +55,15 @@ test("the packaged extensions load google without errors", async () => {
   expect(extensions.map((e) => e.name)).toContain("google");
 });
 
-test("a booted daemon lists google as not connected, with its tools", async () => {
+test("without its client secrets google is not set up and hidden from the CoS", async () => {
   const { daemon } = await bootTest();
+  expect(daemon.status().extensions).toContainEqual(expect.objectContaining({ name: "google", state: "not set up" }));
+  expect(daemon.capabilities()).not.toContain("- google: ");
+  await daemon.close();
+});
+
+test("a booted daemon with the client lists google as not connected, with its tools", async () => {
+  const { daemon } = await bootClient();
   expect(daemon.status().errors).toEqual([]);
   await waitFor(() => daemon.status().extensions.some((e) => e.name === "google" && e.status === "not connected"));
   expect(daemon.status().extensions).toContainEqual({
@@ -66,26 +71,27 @@ test("a booted daemon lists google as not connected, with its tools", async () =
     summary: "Gmail, Drive, Calendar, Contacts and Tasks for one Google account",
     provides: ["tool"],
     status: "not connected",
+    state: "on",
   });
   expect(daemon.capabilities()).toContain("- google: ");
   await daemon.close();
 });
 
-test("without the client secrets a tool says how to set Google up", async () => {
-  const { daemon, faux } = await bootTest();
+test("when the client secrets go missing a tool says how to set Google up", async () => {
+  const { daemon, faux, home } = await bootClient();
+  rmSync(join(home, "secrets/google.clientId"));
   expect(await tool(daemon, faux, "gmail", { action: "labels" })).toBe(NO_CLIENT);
   await daemon.close();
 });
 
 test("with the client but no sign-in a tool says to connect", async () => {
-  const { daemon, faux, home } = await bootTest();
-  writeClient(home);
+  const { daemon, faux } = await bootClient();
   expect(await tool(daemon, faux, "gmail", { action: "labels" })).toBe(NOT_SIGNED_IN);
   await daemon.close();
 });
 
 test("google_request refuses URLs outside https://*.googleapis.com", async () => {
-  const { daemon, faux } = await bootTest();
+  const { daemon, faux } = await bootClient();
   expect(await tool(daemon, faux, "google_request", { method: "GET", url: "https://evil.example/x" })).toBe(
     "Only https://*.googleapis.com URLs are allowed.",
   );
@@ -93,8 +99,7 @@ test("google_request refuses URLs outside https://*.googleapis.com", async () =>
 });
 
 test("signed in, gmail labels sends the bearer token and formats the reply", async () => {
-  const { daemon, faux, home } = await bootTest();
-  writeClient(home);
+  const { daemon, faux, home } = await bootClient();
   const token = { access_token: "at-1", refresh_token: "rt-1", expires_at: Date.now() + 3600_000, scope: "", email: "me@x.com" };
   writeFileSync(join(home, "secrets/google.token"), JSON.stringify(token));
   const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
