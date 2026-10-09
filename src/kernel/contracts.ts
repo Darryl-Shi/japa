@@ -78,6 +78,12 @@ export type SurfaceContext = {
      * records the chat message that carried it.
      */
     fulfil(requestId: string, value: string, by?: string): Promise<void>;
+    /**
+     * Removes the request and tells the CoS it was declined, without a value; throws for an unknown request. A
+     * sign-in's request instead ends its `connect` flow, which reports the decline. Waiters for the secret's value
+     * keep waiting.
+     */
+    decline(requestId: string): Promise<void>;
   };
   status(): Status;
 };
@@ -108,9 +114,15 @@ export type Incoming = {
   images?: { data: Uint8Array; mimeType: string }[];
   command?: string; // "jobs" for "/jobs"
   action?: string; // a pressed button's action
+  replyTo?: string; // the id of the message this one replies to
 };
 
-export type OutgoingMessage = { markdown: string; buttons?: { label: string; action: string }[][] };
+export type OutgoingMessage = {
+  markdown: string;
+  buttons?: { label: string; action: string }[][];
+  /** Show this message with the platform's reply input, `placeholder` as its hint; ignored without such a UI. */
+  input?: { placeholder: string };
+};
 
 export type TriggerContext = { home: string; emit(event: { key: string; text: string }): Promise<void> };
 

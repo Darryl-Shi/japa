@@ -11,7 +11,7 @@ import { ChangesDoc } from "../src/kernel/changes.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
 import { type SecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
-import { bootTest, probe } from "./helpers.ts";
+import { bootTest, probe, waitFor } from "./helpers.ts";
 import { ask, call, idle, script, system, texts, tool } from "./jobs-helpers.ts";
 
 test("a secret request is listed, fulfilled into the store, and announced once without the value", async () => {
@@ -134,5 +134,81 @@ describe("extensions", () => {
 
   test("an undeclared secret can't be requested", async () => {
     await expect(kernel().requestSecret("other", "x")).rejects.toThrow('Extension svc did not declare secret "other"');
+  });
+});
+
+describe("declining", () => {
+  let daemon: Daemon;
+  let faux: FauxProviderHandle;
+  let kernel: () => KernelContext;
+  let surface: () => SurfaceContext;
+  const pending = async () => (await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending;
+  const idOf = async (name: string) => (await pending()).find((r) => r.name === name)!.id;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  beforeEach(async () => {
+    let kept: KernelContext | undefined;
+    // Its sign-in asks for a `secret` and fails with the prompt's error.
+    const demo: JapaExtension = {
+      name: "demo",
+      summary: "Test",
+      secrets: ["demo.key"],
+      setup: (c) => {
+        kept = c;
+      },
+      authorize: {
+        connected: async () => false,
+        run: async (_ctx, io) => {
+          io.notify({ type: "auth_url", url: "https://example.test/a" });
+          await io.prompt({ type: "secret", message: "Paste the code" });
+          return "Connected as x";
+        },
+      },
+    };
+    const probed = probe();
+    surface = probed.surface;
+    kernel = () => kept!;
+    ({ daemon, faux } = await bootTest({}, [demo, probed.extension]));
+    script(faux, () => undefined);
+  });
+
+  afterEach(() => daemon.close());
+
+  test("declining a request removes it and tells the CoS once, without a value", async () => {
+    await tool(daemon, faux, "secret_request", { name: "svc.token", why: "to read your calendar" });
+    const [request] = await pending();
+    await surface().secrets.decline(request!.id);
+    expect(await pending()).toEqual([]);
+    await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret svc.token declined]"));
+    await expect(surface().secrets.decline(request!.id)).rejects.toThrow(`No pending request ${request!.id}`);
+    expect((await texts(daemon.root, "user")).filter((t) => t === "[secret svc.token declined]")).toHaveLength(1);
+  });
+
+  test("declining a sign-in's request ends connect with the decline, not a CoS note", async () => {
+    await tool(daemon, faux, "connect", { extension: "demo" });
+    await waitFor(async () => (await pending()).some((r) => r.name === "demo.authorize"));
+    await surface().secrets.decline(await idOf("demo.authorize"));
+    await waitFor(async () =>
+      (await texts(daemon.root, "user")).includes("[demo: couldn't connect: The sign-in was declined]"),
+    );
+    expect(await texts(daemon.root, "user")).not.toContain("[secret demo.authorize declined]");
+    expect(await pending()).toEqual([]);
+  });
+
+  test("a requestSecret waiter keeps waiting after a decline and resolves on the next value", async () => {
+    const value = kernel().requestSecret("demo.key", "to ping");
+    await waitFor(async () => (await pending()).some((r) => r.name === "demo.key"));
+    await surface().secrets.decline(await idOf("demo.key"));
+    let settled = false;
+    void value.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await sleep(200);
+    expect(settled).toBe(false);
+    // The CoS asks again, and the user provides it.
+    await tool(daemon, faux, "secret_request", { name: "demo.key", why: "to ping" });
+    await surface().secrets.fulfil(await idOf("demo.key"), "v");
+    expect(await value).toBe("v");
   });
 });

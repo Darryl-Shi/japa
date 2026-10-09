@@ -47,7 +47,13 @@ import { MessagingDoc } from "./messaging/surface.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
-import { addSecretRequest, fulfilSecret, removeSecretRequest, SecretRequestsDoc } from "./secret-requests.ts";
+import {
+  addSecretRequest,
+  declineSecret,
+  fulfilSecret,
+  removeSecretRequest,
+  SecretRequestsDoc,
+} from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
@@ -258,11 +264,23 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         return `Set ${name}.`;
       },
     };
-    // Resolved by the surfaces' `fulfil` and the menu's `setSecret`, by secret name.
-    const waiters = new Map<string, ((value: string) => void)[]>();
+    // Resolved by the surfaces' `fulfil` and the menu's `setSecret`, by secret name; a rejectable one (a sign-in's) is
+    // rejected by a decline.
+    type Waiter = { resolve: (value: string) => void; reject?: (error: Error) => void };
+    const waiters = new Map<string, Waiter[]>();
     const resolveWaiters = (name: string, value: string) => {
-      for (const resolve of waiters.get(name) ?? []) resolve(value);
+      for (const { resolve } of waiters.get(name) ?? []) resolve(value);
       waiters.delete(name);
+    };
+    /** Rejects `name`'s rejectable waiters with `error`; the rest keep waiting. */
+    const rejectWaiters = (name: string, error: Error) => {
+      const kept: Waiter[] = [];
+      for (const waiter of waiters.get(name) ?? []) {
+        if (waiter.reject) waiter.reject(error);
+        else kept.push(waiter);
+      }
+      if (kept.length > 0) waiters.set(name, kept);
+      else waiters.delete(name);
     };
     /** Fulfils pending secret request `requestId` (see `fulfilSecret`), resolves its waiters and recomputes availability. */
     const fulfil = async (requestId: string, value: string, by?: string) => {
@@ -270,14 +288,22 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       resolveWaiters(name, value);
       await refreshAvailability();
     };
+    /** Declines pending secret request `requestId` (see `declineSecret`); a sign-in's ends its `connect` flow. */
+    const decline = async (requestId: string) => {
+      const request = await declineSecret(opened, root, requestId, ctx);
+      if (request.name.endsWith(AUTHORIZE_SUFFIX)) rejectWaiters(request.name, new Error("The sign-in was declined"));
+    };
     const declared = (extension: string, name: string) => {
       const ext = rt.extensions.find((e) => e.name === extension);
       if (!ext || !secretNames(ext).includes(name)) {
         throw new Error(`Extension ${extension} did not declare secret "${name}"`);
       }
     };
-    const provided = (name: string) =>
-      new Promise<string>((resolve) => waiters.set(name, [...(waiters.get(name) ?? []), resolve]));
+    /** The next value provided for `name`; when `rejectable`, a decline rejects it. */
+    const provided = (name: string, rejectable = false) =>
+      new Promise<string>((resolve, reject) =>
+        waiters.set(name, [...(waiters.get(name) ?? []), { resolve, ...(rejectable && { reject }) }]),
+      );
     const kernel = (extension: string): KernelContext => ({
       home,
       extension,
@@ -354,6 +380,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
             };
           },
           fulfil,
+          decline,
         },
         status,
       },
@@ -397,7 +424,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         extensions: () => rt.extensions,
         context: kernel,
         ask: async (name, why) => {
-          const value = provided(name);
+          const value = provided(name, true);
           await root.commit((tx) => addSecretRequest(tx, name, why), ctx);
           return value;
         },
