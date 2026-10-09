@@ -7,20 +7,18 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
-import { bootErrors, bootTest, NO_BWRAP, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, NO_BWRAP, sandboxScratch, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts, tool } from "./jobs-helpers.ts";
 
 /** Each `create` of the probe extension's environments, by environment name. */
@@ -74,9 +72,7 @@ const HOME = process.env.HOME;
 async function bootSandboxed(
   o: { vault?: boolean; storage?: (outside: string) => object; secrets?: (outside: string) => object } = {},
 ): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string; outside: string }> {
-  const cache = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
-  mkdirSync(cache, { recursive: true });
-  const outside = mkdtempSync(join(cache, "japa-jobs-"));
+  const outside = sandboxScratch("japa-jobs-");
   const [home, user] = [join(outside, "home"), join(outside, "user")];
   const secrets = o.vault ? join(outside, "vault") : join(home, "secrets");
   mkdirSync(secrets, { recursive: true });

@@ -1,8 +1,8 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
 import { type EntryRecord, ResetEntry } from "@earendil-works/pi-durable";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
@@ -30,6 +30,18 @@ export function bootErrors(daemon: Daemon): ReturnType<Daemon["status"]>["errors
   if (!NO_BWRAP) return errors;
   expect(errors).toContainEqual({ name: "sandbox", error: expect.stringMatching(/^Jobs can't run: /) });
   return errors.filter((error) => error.name !== "sandbox");
+}
+
+/**
+ * Makes a scratch dir (`mkdtemp` with `prefix`) for sandbox tests, outside both `/tmp` (which jobs see replaced by their
+ * own) and japa's package root (read-only to jobs): under `$XDG_CACHE_HOME/japa-tests` or the real user's
+ * `~/.cache/japa-tests`, whatever `HOME` tests set. Callers remove it.
+ */
+export function sandboxScratch(prefix: string): string {
+  const cache = process.env.XDG_CACHE_HOME || join(userInfo().homedir, ".cache");
+  const base = join(cache, "japa-tests");
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(join(realpathSync(base), prefix));
 }
 
 /** Creates a temp `japa` home dir; writes `settings.json` when `settings` is given. */

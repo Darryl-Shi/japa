@@ -19,7 +19,7 @@ import { cloneDir } from "../src/kernel/jobs/clone.ts";
 import { jobEnv } from "../src/kernel/sandbox/bwrap.ts";
 import { createJobSandboxes, hiddenPaths } from "../src/kernel/sandbox/jobs.ts";
 import { ensureWorkspace } from "../src/kernel/workspace.ts";
-import { NO_BWRAP, waitFor } from "./helpers.ts";
+import { NO_BWRAP, sandboxScratch, waitFor } from "./helpers.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -31,9 +31,7 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
  * finishes.
  */
 function setup(o: { node?: boolean } = {}) {
-  const cache = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
-  mkdirSync(cache, { recursive: true });
-  const outside = mkdtempSync(join(cache, "japa-job-sandboxes-"));
+  const outside = sandboxScratch("japa-job-sandboxes-");
   const [home, user, node] = [join(outside, "home"), join(outside, "user"), join(outside, "node")];
   const [vault, absent] = [join(outside, "vault"), join(outside, "absent")];
   for (const dir of [home, user, node, vault]) mkdirSync(dir);

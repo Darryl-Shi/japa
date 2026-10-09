@@ -18,7 +18,6 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import {
   jobEnv,
@@ -30,7 +29,7 @@ import {
   type SandboxSpec,
   within,
 } from "../src/kernel/sandbox/bwrap.ts";
-import { NO_BWRAP, tempHome } from "./helpers.ts";
+import { NO_BWRAP, sandboxScratch, tempHome } from "./helpers.ts";
 
 const ALLOWED = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
 
@@ -56,13 +55,6 @@ const NO_SYSTEMD_RUN = spawnSync("systemd-run", ["--version"]).status !== 0;
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"].filter((path) => existsSync(path));
 const RUNTIME_DIR = `/run/user/${process.getuid?.()}`;
 
-/** Where the sandbox tests' user homes go: not under `/tmp`, which jobs see replaced by their own. */
-function scratch(): string {
-  const dir = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
 /** A script that tries to create or overwrite each of `paths`: prints `wrote <path>` for each that worked, then `done`. */
 function tryWrites(paths: string[]): string {
   const write = `(mkdir -p "$(dirname "$f")" && echo x > "$f") 2>/dev/null && echo "wrote $f"`;
@@ -77,7 +69,7 @@ function tryWrites(paths: string[]): string {
  * `o.env(user)` is the environment the protected paths are resolved with.
  */
 function sandbox(o: { japaHome?: string; env?: (user: string) => NodeJS.ProcessEnv } = {}) {
-  const outside = mkdtempSync(join(scratch(), "japa-sandbox-"));
+  const outside = sandboxScratch("japa-sandbox-");
   const user = join(outside, "user");
   const home = o.japaHome === undefined ? tempHome() : join(user, o.japaHome);
   mkdirSync(home, { recursive: true });
