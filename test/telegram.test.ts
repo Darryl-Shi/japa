@@ -90,6 +90,28 @@ test("a button action over 64 bytes is rejected before sending", async () => {
   expect(sends()).toEqual([]);
 });
 
+test("a message with input is sent with force_reply and a placeholder cut to 64 characters", async () => {
+  const adapter = await connect();
+  await adapter.send("42", { markdown: "x", input: { placeholder: `Paste ${"k".repeat(70)}` } });
+  const markup = sends()[0]!.reply_markup;
+  expect(markup.force_reply).toBe(true);
+  expect([...markup.input_field_placeholder]).toHaveLength(64);
+  expect(markup.input_field_placeholder.endsWith("…")).toBe(true);
+});
+
+test("a short placeholder is sent as it is", async () => {
+  const adapter = await connect();
+  await adapter.send("42", { markdown: "x", input: { placeholder: "Paste svc.token" } });
+  expect(sends()[0]!.reply_markup).toEqual({ force_reply: true, input_field_placeholder: "Paste svc.token" });
+});
+
+test("input together with buttons is rejected before sending", async () => {
+  const adapter = await connect();
+  const m = { markdown: "x", input: { placeholder: "p" }, buttons: [[{ label: "A", action: "1" }]] };
+  await expect(adapter.send("42", m)).rejects.toThrow("input and buttons");
+  expect(sends()).toEqual([]);
+});
+
 test("a 429 waits retry_after seconds; a 5xx waits 1 s", async () => {
   const adapter = await connect();
   const tooMany = { ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 1 } };
@@ -156,6 +178,18 @@ test("texts, commands and button presses become Incoming messages", async () => 
     ]),
   );
   expect(params("answerCallbackQuery")).toEqual([{ callback_query_id: "cb1" }]);
+});
+
+test("a reply carries the id of the message it replies to", async () => {
+  fake.file("p", new Uint8Array([1]));
+  const received = await listen();
+  fake.push(
+    text(100, "s", { reply_to_message: { message_id: 7 } }),
+    media(101, { photo: [{ file_id: "p", file_size: 1 }], reply_to_message: { message_id: 8 } }),
+  );
+  await vi.waitFor(() => expect(received).toHaveLength(2));
+  expect(received[0]!.replyTo).toBe("7");
+  expect(received[1]!.replyTo).toBe("8");
 });
 
 test("a photo is read at its largest size with its caption; an album is one Incoming per photo", async () => {

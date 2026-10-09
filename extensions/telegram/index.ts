@@ -32,14 +32,29 @@ async function call<T>(method: string, params: object): Promise<T> {
   }
 }
 
-/** Sends `m` as HTML through `method`, or as plain text when Telegram can't parse the HTML. */
+/** Telegram's limit on `input_field_placeholder`, in characters. */
+const MAX_PLACEHOLDER = 64;
+
+/** `text` cut to `max` characters, ending in "…" when cut. */
+function truncate(text: string, max: number): string {
+  const chars = [...text];
+  return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}…`;
+}
+
+/**
+ * Sends `m` as HTML through `method`, or as plain text when Telegram can't parse the HTML. A message with `input` asks
+ * for a reply (force_reply), showing its placeholder in the input field.
+ */
 async function post<T>(method: string, params: object, m: OutgoingMessage): Promise<T> {
+  if (m.input && m.buttons) throw new Error("A message can't have both input and buttons");
   for (const b of m.buttons?.flat() ?? []) {
     if (Buffer.byteLength(b.action) > 64) throw new Error(`Button action over 64 bytes: ${b.action}`);
   }
-  const reply_markup = m.buttons && {
-    inline_keyboard: m.buttons.map((row) => row.map((b) => ({ text: b.label, callback_data: b.action }))),
-  };
+  const reply_markup = m.input
+    ? { force_reply: true, input_field_placeholder: truncate(m.input.placeholder, MAX_PLACEHOLDER) }
+    : m.buttons && {
+        inline_keyboard: m.buttons.map((row) => row.map((b) => ({ text: b.label, callback_data: b.action }))),
+      };
   try {
     return await call<T>(method, { ...params, text: toHtml(m.markdown), parse_mode: "HTML", reply_markup });
   } catch (error) {

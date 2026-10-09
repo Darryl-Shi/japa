@@ -16,6 +16,7 @@ export type Update = {
     photo?: FileInfo[];
     document?: FileInfo & { mime_type?: string };
     media_group_id?: string;
+    reply_to_message?: { message_id: number };
   };
   callback_query?: { id: string; from: { id: number }; message: { message_id: number; chat: Chat }; data: string };
 };
@@ -39,17 +40,20 @@ export async function parseUpdate(update: Update, api: BotApi): Promise<Incoming
   };
   if (query) return { ...from, action: query.data };
   const message = update.message!;
+  const reply = message.reply_to_message;
+  const replyTo = reply ? { replyTo: String(reply.message_id) } : {};
   const command = message.entities?.find((e) => e.type === "bot_command" && e.offset === 0);
   if (command) return { ...from, command: message.text!.slice(1, command.length).split("@")[0] };
   const image = message.document?.mime_type?.startsWith("image/") ? message.document : undefined;
   const file = message.photo?.at(-1) ?? image;
   if (file === undefined) {
-    return message.text === undefined ? "I can only read text and images here." : { ...from, text: message.text };
+    if (message.text === undefined) return "I can only read text and images here.";
+    return { ...from, ...replyTo, text: message.text };
   }
   if ((file.file_size ?? 0) > MAX_FILE_BYTES) {
     return "That file is too large: Telegram bots can only download files up to 20 MB.";
   }
   const { file_path } = await api.call<{ file_path: string }>("getFile", { file_id: file.file_id });
   const data = await api.download(file_path);
-  return { ...from, text: message.caption, images: [{ data, mimeType: image?.mime_type ?? "image/jpeg" }] };
+  return { ...from, ...replyTo, text: message.caption, images: [{ data, mimeType: image?.mime_type ?? "image/jpeg" }] };
 }
