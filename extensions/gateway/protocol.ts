@@ -8,6 +8,7 @@ export type ClientMessage =
   | { type: "submit"; text: string; mode?: "steer" | "followUp" }
   | { type: "abort" }
   | { type: "secret"; requestId: string; value: string }
+  | { type: "decline"; requestId: string }
   | { type: "status" };
 
 export type ServerMessage =

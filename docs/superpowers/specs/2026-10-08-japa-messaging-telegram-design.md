@@ -171,6 +171,9 @@ Registered with `commands()` on start:
 
 Unknown commands get a short help list. Commands never reach the CoS.
 
+`/update` (update japa, or roll back the last update) was added later; see
+`2026-10-09-japa-chat-update-markdown-secret-prompts-design.md` §4.
+
 ### 5.5 Secrets
 
 When a secret request is pending, the surface shows it ("japa needs
@@ -183,6 +186,10 @@ cancels this state (the request stays pending). The fulfilment records the
 message (`<adapter>:<id>`, as `fulfilledBy`); if the platform delivers that
 message again (a crash before it was confirmed), it is dropped and deleted
 again, never submitted.
+
+Superseded: each pending request now gets its own prompt, answered by a reply
+to it, with a Decline button; see
+`2026-10-09-japa-chat-update-markdown-secret-prompts-design.md` §2.
 
 ### 5.6 Settings menu
 
@@ -228,7 +235,8 @@ Plain `fetch` against the Bot API; no new dependencies.
   on every press.
 - **Formatting.** Markdown → Telegram HTML subset (`b i s u code pre a
   blockquote`), escaping everything else. If Telegram rejects the HTML (400
-  "can't parse entities"), the message is resent as plain text.
+  "can't parse entities"), the message is resent as plain text. (Now converted
+  through `marked`; see `2026-10-09-japa-chat-update-markdown-secret-prompts-design.md` §3.)
 - **Limits and errors.** `maxMessageChars` 4096. Honours `429 retry_after`;
   retries network and 5xx errors with backoff (1 s doubling to 60 s), up to
   8 attempts per call; polling never stops on errors. A 401 (bad token) stops

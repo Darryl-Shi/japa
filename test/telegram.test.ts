@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { backoff } from "../extensions/telegram/api.ts";
-import { toHtml } from "../extensions/telegram/html.ts";
+import { toHtml, toPlain, visibleLength } from "../extensions/telegram/html.ts";
 import telegram from "../extensions/telegram/index.ts";
 import type { Dispose, Incoming, MessagingAdapter } from "../src/kernel/contracts.ts";
 import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
@@ -52,7 +52,88 @@ test.each([
   ["> quoted\n> more", "<blockquote>quoted\nmore</blockquote>"],
   ["# Title", "<b>Title</b>"],
   ["snake_case_name stays", "snake_case_name stays"],
-])("toHtml(%j)", (md, html) => expect(toHtml(md)).toBe(html));
+  ["***both***", "<b><i>both</i></b>"],
+  ["**bold _nested_ here**", "<b>bold <i>nested</i> here</b>"],
+  ["a **lone star", "a **lone star"],
+  ["```\nunclosed", "<pre>unclosed</pre>"],
+  ["- a\n  - b\n- c", "• a\n  • b\n• c"],
+  ["1. a\n2. b", "1. a\n2. b"],
+  ["- [ ] todo\n- [x] done", "☐ todo\n☑ done"],
+  ["| a | bb |\n|---|---|\n| 1 | <2> |", "<pre>a | bb\n───────\n1 | &lt;2&gt;</pre>"],
+  ["<script>x</script>", "&lt;script&gt;x&lt;/script&gt;"],
+  ["||secret||", "<tg-spoiler>secret</tg-spoiler>"],
+  ["![cat](https://e.com/c.png)", '<a href="https://e.com/c.png">cat</a>'],
+  ["---", "———"],
+  ["**`code`**", "<b>code</b>"],
+  ["## `config.json`", "<b>config.json</b>"],
+  ["[`code`](https://e.com)", '<a href="https://e.com">code</a>'],
+  ["||`code`||", "<tg-spoiler>code</tg-spoiler>"],
+  ["> a\n> > b", "<blockquote>a\n\nb</blockquote>"],
+  ["> `c`\n>\n> ```\n> x\n> ```", "<blockquote>c\n\nx</blockquote>"],
+])("toHtml(%j)", (md, html) => {
+  const out = toHtml(md);
+  expect(out).toBe(html);
+  expect(balanced(out)).toBe(true);
+  expect(telegramNesting(out)).toBe(true);
+});
+
+/** Whether every tag `html` opens is closed, in LIFO order, and nothing is closed that isn't open. */
+function balanced(html: string): boolean {
+  const open: string[] = [];
+  for (const [, close, name] of html.matchAll(/<(\/?)([a-z-]+)[^>]*>/g)) {
+    if (!close) open.push(name!);
+    else if (open.pop() !== name) return false;
+  }
+  return open.length === 0;
+}
+
+/**
+ * Whether `html` keeps Telegram's nesting rules: code and pre inside no other tag (but pre>code), nothing inside code
+ * or pre (but that pair), and no blockquote inside a blockquote.
+ */
+function telegramNesting(html: string): boolean {
+  const open: string[] = [];
+  for (const [, close, name] of html.matchAll(/<(\/?)([a-z-]+)[^>]*>/g)) {
+    if (close) {
+      open.pop();
+      continue;
+    }
+    const top = open.at(-1);
+    const preCode = name === "code" && top === "pre" && open.length === 1;
+    if ((name === "code" || name === "pre") && open.length > 0 && !preCode) return false;
+    if ((top === "code" || top === "pre") && !preCode) return false;
+    if (name === "blockquote" && open.includes("blockquote")) return false;
+    open.push(name!);
+  }
+  return true;
+}
+
+test("telegramNesting rejects code inside tags, tags inside code, and nested blockquotes", () =>
+  expect(
+    [
+      "<b><code>x</code></b>",
+      "<code><b>x</b></code>",
+      "<blockquote><pre>x</pre></blockquote>",
+      "<blockquote><blockquote>x</blockquote></blockquote>",
+      '<pre><code class="language-ts">x</code></pre>',
+      "<blockquote><b><i>x</i></b></blockquote> <code>y</code>",
+    ].map(telegramNesting),
+  ).toEqual([false, false, false, false, true, true]));
+
+test("balanced rejects misnested and unclosed tags", () =>
+  expect(["<b><i>x</b></i>", "<b>x", "x</i>", "<b><i>x</i></b>"].map(balanced)).toEqual([false, false, false, true]));
+
+test("a blockquote over 10 lines is expandable", () =>
+  expect(toHtml(Array.from({ length: 11 }, (_, i) => `> ${i}`).join("\n"))).toMatch(/^<blockquote expandable>/));
+
+test("a blockquote of 10 lines is not expandable", () =>
+  expect(toHtml(Array.from({ length: 10 }, (_, i) => `> ${i}`).join("\n"))).toMatch(/^<blockquote>/));
+
+test("toPlain drops markers and keeps link targets", () =>
+  expect(toPlain("**a** [b](https://e.com) `c`")).toBe("a b (https://e.com) c"));
+
+test("visibleLength counts text without tags, with entities decoded", () =>
+  expect(visibleLength('<a href="x">a &amp; b</a> &lt;&gt;&quot;')).toBe(9));
 
 test("backoff starts at 1 s and doubles to 60 s", () =>
   expect([0, 1, 2, 5, 6, 9].map(backoff)).toEqual([1000, 2000, 4000, 32000, 60000, 60000]));
@@ -71,11 +152,39 @@ test("send posts HTML with an inline keyboard and returns the message id", async
   expect(fake.calls[0]!.token).toBe("T");
 });
 
-test("HTML Telegram can't parse is resent as plain text", async () => {
+const unparsable = { ok: false, error_code: 400, description: "Bad Request: can't parse entities: x" };
+
+test("HTML Telegram can't parse is resent as plain text without markers", async () => {
   const adapter = await connect();
-  fake.fail("sendMessage", 400, { ok: false, error_code: 400, description: "Bad Request: can't parse entities: x" }, 1);
+  fake.fail("sendMessage", 400, unparsable, 1);
   await adapter.send("42", { markdown: "**hi**" });
-  expect(sends().at(-1)).toEqual({ chat_id: "42", text: "**hi**" });
+  expect(sends().at(-1)).toEqual({ chat_id: "42", text: "hi" });
+});
+
+test("the plain-text fallback keeps force_reply and its placeholder", async () => {
+  const adapter = await connect();
+  fake.fail("sendMessage", 400, unparsable, 1);
+  await adapter.send("42", { markdown: "**hi**", input: { placeholder: "Paste svc.token" } });
+  expect(sends().at(-1)).toEqual({
+    chat_id: "42",
+    text: "hi",
+    reply_markup: { force_reply: true, input_field_placeholder: "Paste svc.token" },
+  });
+});
+
+test("a part whose rendered text is over 4096 characters is sent as two messages", async () => {
+  const adapter = await connect();
+  // Two 30-row tables with one long cell per column, in different rows, so each padded row is about twice its markdown.
+  const rows = [`| ${"k".repeat(58)} | v |`, ...Array.from({ length: 29 }, (_, i) => `| ${i % 10} | ${"v".repeat(58)} |`)];
+  const table = `| a | b |\n|---|---|\n${rows.join("\n")}`;
+  const markdown = `${table}\n\n${table}`;
+  expect(markdown.length).toBeLessThanOrEqual(4096);
+  expect(visibleLength(toHtml(markdown))).toBeGreaterThan(4096);
+  const buttons = [[{ label: "A", action: "1" }]];
+  expect(await adapter.send("42", { markdown, buttons })).toBe("2");
+  expect(sends()).toHaveLength(2);
+  for (const s of sends()) expect(visibleLength(s.text)).toBeLessThanOrEqual(4096);
+  expect(sends().map((s) => s.reply_markup)).toEqual([undefined, { inline_keyboard: [[{ text: "A", callback_data: "1" }]] }]);
 });
 
 test("without a token, sending fails", async () => {
@@ -88,6 +197,36 @@ test("a button action over 64 bytes is rejected before sending", async () => {
   const buttons = [[{ label: "A", action: "a".repeat(65) }]];
   await expect(adapter.send("42", { markdown: "x", buttons })).rejects.toThrow("over 64 bytes");
   expect(sends()).toEqual([]);
+});
+
+test("a message with input is sent with force_reply and a placeholder cut to 64 characters", async () => {
+  const adapter = await connect();
+  await adapter.send("42", { markdown: "x", input: { placeholder: `Paste ${"k".repeat(70)}` } });
+  const markup = sends()[0]!.reply_markup;
+  expect(markup.force_reply).toBe(true);
+  expect([...markup.input_field_placeholder]).toHaveLength(64);
+  expect(markup.input_field_placeholder.endsWith("…")).toBe(true);
+});
+
+test("a short placeholder is sent as it is", async () => {
+  const adapter = await connect();
+  await adapter.send("42", { markdown: "x", input: { placeholder: "Paste svc.token" } });
+  expect(sends()[0]!.reply_markup).toEqual({ force_reply: true, input_field_placeholder: "Paste svc.token" });
+});
+
+test("input together with buttons is rejected before sending", async () => {
+  const adapter = await connect();
+  const m = { markdown: "x", input: { placeholder: "p" }, buttons: [[{ label: "A", action: "1" }]] };
+  await expect(adapter.send("42", m)).rejects.toThrow("input and buttons");
+  expect(sends()).toEqual([]);
+});
+
+test("an edit with input is rejected before calling Telegram", async () => {
+  const adapter = await connect();
+  await expect(adapter.edit("42", "7", { markdown: "x", input: { placeholder: "p" } })).rejects.toThrow(
+    "An edit can't carry an input",
+  );
+  expect(params("editMessageText")).toEqual([]);
 });
 
 test("a 429 waits retry_after seconds; a 5xx waits 1 s", async () => {
@@ -156,6 +295,18 @@ test("texts, commands and button presses become Incoming messages", async () => 
     ]),
   );
   expect(params("answerCallbackQuery")).toEqual([{ callback_query_id: "cb1" }]);
+});
+
+test("a reply carries the id of the message it replies to", async () => {
+  fake.file("p", new Uint8Array([1]));
+  const received = await listen();
+  fake.push(
+    text(100, "s", { reply_to_message: { message_id: 7 } }),
+    media(101, { photo: [{ file_id: "p", file_size: 1 }], reply_to_message: { message_id: 8 } }),
+  );
+  await vi.waitFor(() => expect(received).toHaveLength(2));
+  expect(received[0]!.replyTo).toBe("7");
+  expect(received[1]!.replyTo).toBe("8");
 });
 
 test("a photo is read at its largest size with its caption; an album is one Incoming per photo", async () => {

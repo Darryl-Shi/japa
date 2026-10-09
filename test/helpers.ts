@@ -9,6 +9,7 @@ import { boot, type Daemon } from "../src/kernel/boot.ts";
 import type { SurfaceContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { fauxKit } from "../src/kernel/kit.ts";
+import type { Updater } from "../src/kernel/update-state.ts";
 
 export const REPO_EXTENSIONS = fileURLToPath(new URL("../extensions", import.meta.url));
 
@@ -79,20 +80,26 @@ export async function carryOver(daemon: Daemon): Promise<string | undefined> {
 
 /**
  * Boots a daemon in a temp home on in-memory storage, with the faux model as `models.cos` and `secrets` stored in
- * `<home>/secrets` beforehand.
+ * `<home>/secrets` beforehand, and `options.updater` as the daemon's `Updater`.
  */
 export async function bootTest(
   settings: object = {},
   extra: JapaExtension[] = [],
   kit = testKit(),
   secrets: Record<string, string> = {},
+  options: { updater?: Updater } = {},
 ): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string }> {
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
   for (const [name, value] of Object.entries(secrets)) {
     mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
     writeFileSync(join(home, "secrets", name), value, { mode: 0o600 });
   }
-  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, ...extra] });
+  const daemon = await boot({
+    home,
+    extensionDirs: [REPO_EXTENSIONS],
+    extensions: [kit.extension, ...extra],
+    updater: options.updater,
+  });
   return { daemon, faux: kit.faux, home };
 }
 

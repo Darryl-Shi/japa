@@ -144,7 +144,8 @@ japa chat       # terminal 2: chat with the CoS
 
 In `japa chat`: Enter sends (while the CoS is replying, it steers the reply); Esc stops the current reply;
 Ctrl-C quits the chat (the daemon keeps running). When an extension asks for a secret, a masked prompt replaces
-the editor; Enter submits it and Esc dismisses it.
+the editor; Enter submits it, Esc hides it (it comes back when the pending requests change), and Ctrl-X declines
+the request, which tells the CoS you said no.
 
 ### Service
 
@@ -211,6 +212,8 @@ cloning again (writing the launcher first if it's missing or points at another i
 settings, secrets, extensions, skills, workers — is never touched by an update, except to record which extensions
 it has told you about.
 
+You can also update from Telegram (or any messaging extension) with `/update`, as described under Telegram.
+
 ### Uninstall
 
 ```sh
@@ -238,8 +241,25 @@ on) and errors. `/settings` sets models, extensions (secrets, settings, on/off, 
 (pause, resume, remove) and general settings, and undoes recent changes; a value you type there goes to
 the menu, not the CoS, and a secret is deleted at once (a prompt left 10 minutes expires; your next
 message goes to the CoS again). Photos and image files are saved under
-`~/.japa/attachments/` and handed to the CoS. When japa needs a secret, it asks in the chat: send it as
-your next message, and the bot deletes the message at once.
+`~/.japa/attachments/` and handed to the CoS. The CoS's markdown — bold, links, nested lists, task lists
+(☐/☑), code, quotes, `||spoilers||` — is shown as Telegram formatting; tables come out in monospace, and
+long quotes collapse until you expand them. If Telegram still rejects a message, it's sent as plain text.
+
+When japa needs a secret, it sends a prompt — ``japa needs `<name>`: <why>. Reply to this message with it;
+I'll delete your reply at once.`` — with Telegram's reply box already open, then ``Don't want to provide
+`<name>`?`` with a `Decline` button. Only a reply to the prompt (or to its Decline message) is taken as the
+secret, and the bot deletes it at once; anything else you send goes to the CoS as usual. Several prompts can
+be open at once; answer them in any order. `Decline` withdraws the request and tells the CoS you said no.
+
+`/update` updates japa from the chat. It checks for new commits and lists them, with `Update now` and
+`Cancel`. `Update now` runs `japa update` outside the daemon (a transient systemd unit when the Linux
+service is running, a detached process otherwise, including on macOS), which restarts the service; the
+result — updated, failed and rolled back, or already up to date — is reported back in the chat you asked
+from, with a `Roll back` button that returns to the commit you were on (it asks first, and works offline,
+except when the two commits' dependencies differ: it reinstalls them, which needs the network). While one
+runs, `/update` says so. Progress is recorded in `~/.japa/update.json` and logged to
+`~/.japa/logs/update.log`. It needs japa running as the service or `japa daemon`; with a foreground daemon,
+the report asks you to restart it yourself.
 
 ## Desktop
 
@@ -288,7 +308,7 @@ that's your own app, so choose **Continue**. Allow everything it asks (japa's ac
 calendar, contacts and tasks). On the machine running japa, the browser comes back to japa by itself. Anywhere else — over
 SSH, or from your phone — the page it lands on after you approve fails to load: that's expected. Copy that page's
 full address from the address bar and paste it where japa asks: at the prompt in `japa setup`, at the masked
-prompt in `japa chat`, or as your next message in Telegram (the bot deletes it at once).
+prompt in `japa chat`, or as a reply to its prompt in Telegram (the bot deletes it at once).
 `japa status` shows `connected as you@gmail.com` under `google` once it's done.
 
 Then ask for things like "what came in from my accountant this week?", "reply to Dana that Thursday works", "find
@@ -322,7 +342,8 @@ workers/             worker profiles the CoS installed (git-tracked)
 secrets/             secrets, one file per secret      (ignored by git)
 attachments/         images received over Telegram, files from Google (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
-logs/                service log, macOS only           (ignored by git)
+logs/                service log (macOS only) and update.log, `/update`'s log (ignored by git)
+update.json          the last `/update`: how it went and whether it's been reported (ignored by git)
 setup.json           extensions `japa setup` and `japa update` have already told you about (ignored by git)
 state.db             conversations, jobs, memory, change log (SQLite; ignored by git)
 japa.sock            the socket `japa chat` and `japa status` connect to

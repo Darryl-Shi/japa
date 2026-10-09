@@ -94,3 +94,30 @@ export async function fulfilSecret(
   }
   return request.name;
 }
+
+// The requestId of a decline's CoS note, before the request's id: a repeat is a no-op.
+const DECLINED_PREFIX = "secret-declined:";
+
+/**
+ * Removes pending request `requestId` and tells the CoS it was declined, except for a sign-in's request, whose outcome
+ * `connect` reports; returns the request.
+ */
+export async function declineSecret(
+  harness: Harness,
+  root: Conversation,
+  requestId: string,
+  context: Context,
+): Promise<SecretRequest> {
+  const { pending } = (await harness.snapshot(SecretRequestsDoc, root.id, context))!;
+  const request = pending.find((r) => r.id === requestId);
+  if (request === undefined) throw new Error(`No pending request ${requestId}`);
+  await root.commit(async (tx) => {
+    const doc = await tx.doc(SecretRequestsDoc, root.id);
+    doc.pending = doc.pending.filter((r) => r.id !== requestId);
+  }, context);
+  if (!request.name.endsWith(AUTHORIZE_SUFFIX)) {
+    const content = `[secret ${request.name} declined]`;
+    await root.submit({ type: "input", content, requestId: `${DECLINED_PREFIX}${requestId}` }, context);
+  }
+  return request;
+}

@@ -113,6 +113,19 @@ test("attachments are ignored by git, also in a workspace made before them", () 
   expect(git(home, "status", "--porcelain")).toBe("");
 });
 
+test("update.json and its temp files are ignored by git, also in a workspace made before them", () => {
+  const home = workspace();
+  const gitignore = join(home, ".gitignore");
+  writeFileSync(gitignore, readFileSync(gitignore, "utf8").replace("update.json*\n", ""));
+  commit(home, [".gitignore"], "before update.json");
+  ensureWorkspace(home);
+  ensureWorkspace(home);
+  expect(readFileSync(gitignore, "utf8").split("\n").filter((l) => l === "update.json*")).toHaveLength(1);
+  writeFileSync(join(home, "update.json"), "{}");
+  writeFileSync(join(home, "update.json.123.tmp"), "{}");
+  expect(git(home, "status", "--porcelain")).toBe("");
+});
+
 test("appending to a .gitignore without a trailing newline keeps its last line intact", () => {
   const home = tempHome();
   writeFileSync(join(home, ".gitignore"), "build");

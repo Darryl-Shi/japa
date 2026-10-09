@@ -11,9 +11,10 @@ import type { MutableModels, Provider, TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionState } from "./availability.ts";
 import type { Change } from "./changes.ts";
 import type { Job } from "./jobs/state.ts";
-import { startMessaging } from "./messaging/surface.ts";
+import { type SecretPrompt, startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
 import { schemaProblems } from "./tool-schema.ts";
+import type { UpdateCheck, UpdateState } from "./update-state.ts";
 
 /** Releases what an `activate()` set up. */
 export type Dispose = () => void | Promise<void>;
@@ -78,6 +79,12 @@ export type SurfaceContext = {
      * records the chat message that carried it.
      */
     fulfil(requestId: string, value: string, by?: string): Promise<void>;
+    /**
+     * Removes the request and tells the CoS it was declined, without a value; throws for an unknown request. A
+     * sign-in's request instead ends its `connect` flow, which reports the decline. Waiters for the secret's value
+     * keep waiting.
+     */
+    decline(requestId: string): Promise<void>;
   };
   status(): Status;
 };
@@ -108,9 +115,15 @@ export type Incoming = {
   images?: { data: Uint8Array; mimeType: string }[];
   command?: string; // "jobs" for "/jobs"
   action?: string; // a pressed button's action
+  replyTo?: string; // the id of the message this one replies to
 };
 
-export type OutgoingMessage = { markdown: string; buttons?: { label: string; action: string }[][] };
+export type OutgoingMessage = {
+  markdown: string;
+  buttons?: { label: string; action: string }[][];
+  /** Show this message with the platform's reply input, `placeholder` as its hint; ignored without such a UI. */
+  input?: { placeholder: string };
+};
 
 export type TriggerContext = { home: string; emit(event: { key: string; text: string }): Promise<void> };
 
@@ -149,6 +162,10 @@ export type MessagingContext = {
   secretInput(adapter: string): Promise<number | undefined>;
   /** Saves `opened` as `adapter`'s `secretInput`, or clears it when undefined. */
   saveSecretInput(adapter: string, opened: number | undefined): Promise<void>;
+  /** `adapter`'s saved secret prompts, and the ids of the latest prompts and decline messages it sent, oldest first. */
+  promptState(adapter: string): Promise<{ prompts: SecretPrompt[]; history: string[] }>;
+  /** Saves `adapter`'s secret prompts and their message ids, keeping the last `PROMPT_HISTORY` ids. */
+  savePromptState(adapter: string, state: { prompts: SecretPrompt[]; history: string[] }): Promise<void>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;
   /** Rolls a workspace extension back to its last known good version, as the `rollback` tool; its reply. */
@@ -172,6 +189,24 @@ export type MessagingContext = {
    * `by` recorded as `recordSecretMessage`; then recomputes availability. Its reply, `Set <name>.`.
    */
   setSecret(extension: string, name: string, value: string, by?: string): Promise<string>;
+  /** Updating japa from chat (design doc §4.3), through the `Updater` the CLI gave `boot`, and its `update.json`. */
+  update: {
+    /** What an update would bring in. Throws `Updating from chat isn't available: japa wasn't started as a daemon.`
+     * without an updater, as `start` does. */
+    check(): Promise<UpdateCheck>;
+    /** The full sha japa's checkout is on, without fetching; throws as `check` does without an updater. */
+    current(): Promise<string>;
+    /**
+     * Records an update to `to` (from `from`, asked in `chat`) as running, then launches it. Refuses (throws `An update
+     * is already running (started <ago> ago).`) while one runs; a launch that throws leaves it failed, its error the
+     * summary, and reported (the caller shows that error), and rethrows.
+     */
+    start(chat: { adapter: string; chat: string }, from: string, to: string, rollback: boolean): Promise<void>;
+    /** The recorded update, if any. */
+    state(): Promise<UpdateState | undefined>;
+    /** Marks the recorded update reported if it is the one `started` then: a report can't mark a newer run's. */
+    markReported(started: number): Promise<void>;
+  };
 };
 
 export type KernelContext = {

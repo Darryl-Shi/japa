@@ -1,7 +1,7 @@
 # japa — secret prompts, chat markdown, and /update
 
 Date: 2026-10-09
-Status: Draft for review
+Status: Implemented
 Amends: `2026-10-08-japa-messaging-telegram-design.md` (the "messaging spec") and
 `2026-10-08-japa-install-design.md` (the "install spec", §5 updating)
 

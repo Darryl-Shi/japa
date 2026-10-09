@@ -16,6 +16,14 @@ import type { JapaExtension } from "../src/kernel/extension.ts";
 import { addSecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { defineTool, Type } from "../src/sdk.ts";
 import { statusText } from "../src/kernel/status.ts";
+import {
+  readUpdateState,
+  type UpdateCheck,
+  type Updater,
+  type UpdateState,
+  updateLog,
+  writeUpdateState,
+} from "../src/kernel/update-state.ts";
 import { echo, REPO_EXTENSIONS, stage, testKit, waitFor } from "./helpers.ts";
 import { ask, call, idle, jobs as jobsOf, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
@@ -103,7 +111,8 @@ function typed(secret = false) {
   return got;
 }
 
-const PROMPT = "japa needs `svc.token`: to sync. Send it as your next message; I'll delete it at once.";
+const PROMPT = "japa needs `svc.token`: to sync. Reply to this message with it; I'll delete your reply at once.";
+const DECLINE = "Don't want to provide `svc.token`?";
 /** The open time of the fake adapter's secret input marker, if any. */
 const marker = async () => (await daemon.harness.snapshot(MessagingDoc, ROOT_CONVERSATION_ID, ctx))?.secretInput?.fake;
 const prompts = () => fake.sent.filter((s) => s.markdown === PROMPT).length;
@@ -378,7 +387,8 @@ test("an unknown command gets the help list and never reaches the CoS", async ()
   await fake.receive({ command: "start" });
   expect(fake.sent.at(-1)!.markdown).toBe(
     "Commands:\n/jobs — Jobs: progress, results and cleanup\n/status — Model, extensions and errors\n" +
-      "/settings — Models, extensions, schedules, general settings and changes",
+      "/settings — Models, extensions, schedules, general settings and changes\n" +
+      "/update — Update japa, or roll back the last update",
   );
   await sleep(2000);
   expect(await texts(daemon.root, "user")).toEqual([]);
@@ -893,39 +903,23 @@ describe("typed input", { timeout: 30_000 }, () => {
     expect(fake.edited.at(-1)!.markdown).toBe("**Settings**");
   });
 
-  test("a menu input takes precedence over a pending secret request; the prompt is sent again after", async () => {
-    script(faux, (role, text) =>
-      role === "user" && text === "connect" ? call("secret_request", { name: "svc.token", why: "to sync" }) : undefined,
-    );
-    await fake.receive({ text: "connect" });
-    await waitFor(() => prompts() === 1);
-    const got = typed();
-    await fake.receive({ command: "settings" });
-    await fake.press("Input");
-    await fake.receive({ text: "value" });
-    expect(got).toEqual(["value"]);
-    expect(existsSync(join(home, "secrets/svc.token"))).toBe(false);
-    await waitFor(() => prompts() === 2);
-    await fake.receive({ messageId: "77", text: "s3cr3t" });
-    expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
-    expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
-  });
-
-  test("a secret request made during a menu input is asked for when the input ends", async () => {
+  test("a request is prompted even while a menu input waits; a reply fulfils it and plain text goes to the input", async () => {
     const got = typed();
     await fake.receive({ command: "settings" });
     await fake.press("Input");
     await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
-    await sleep(500);
-    expect(prompts()).toBe(0);
+    await waitFor(() => fake.sent.some((s) => s.markdown === DECLINE));
+    const prompt = fake.sent.find((s) => s.markdown === PROMPT)!;
+    await fake.receive({ messageId: "77", text: "s3cr3t", replyTo: prompt.id });
+    expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+    expect(fake.deleted[0]).toEqual({ chat: "42", messageId: "77" });
+    expect(got).toEqual([]);
     await fake.receive({ text: "value" });
     expect(got).toEqual(["value"]);
-    await waitFor(() => prompts() === 1);
-    await sleep(500);
-    expect(prompts()).toBe(1);
+    expect(await transcript()).not.toContain("s3cr3t");
   });
 
-  test("an input expires 10 minutes after it opens: the next text goes to the CoS, then a held request is asked for", async () => {
+  test("an input expires 10 minutes after it opens: the next text goes to the CoS", async () => {
     const got = typed();
     const real = Date.now.bind(Date);
     let offset = 0;
@@ -937,16 +931,10 @@ describe("typed input", { timeout: 30_000 }, () => {
       await fake.receive({ text: "a" });
       expect(got).toEqual(["a"]);
       await fake.press("Input");
-      await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
-      await sleep(500);
-      expect(prompts()).toBe(0);
       offset += INPUT_MS;
       await fake.receive({ text: "yes" });
       await waitFor(async () => (await texts(daemon.root, "user")).includes("yes"));
       expect(got).toEqual(["a"]);
-      await waitFor(() => prompts() === 1);
-      await fake.receive({ messageId: "77", text: "s3cr3t" });
-      expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
     } finally {
       clock.mockRestore();
     }
@@ -991,50 +979,6 @@ describe("typed input", { timeout: 30_000 }, () => {
     }
   });
 
-  test("a held secret request is asked for even when ending the input fails to show", async () => {
-    typed();
-    const edit = fake.adapter.edit;
-    const enders = [
-      () => fake.receive({ text: "value" }),
-      () => fake.press("Cancel"),
-      () => {
-        fake.failSend = (m) => m.markdown === "**Settings**";
-        return fake.receive({ command: "settings" });
-      },
-    ];
-    for (const [i, end] of enders.entries()) {
-      fake.adapter.edit = edit;
-      fake.failSend = undefined;
-      await fake.receive({ command: "settings" });
-      await fake.press("Input");
-      await daemon.root.commit((tx) => addSecretRequest(tx, `svc${i}.token`, "to sync"), ctx);
-      await sleep(300);
-      expect(fake.sent.some((s) => s.markdown.startsWith(`japa needs \`svc${i}.token\``))).toBe(false);
-      fake.adapter.edit = async () => {
-        throw new Error("edit failed");
-      };
-      await end();
-      await waitFor(() => fake.sent.some((s) => s.markdown.startsWith(`japa needs \`svc${i}.token\``)));
-      await fake.receive({ messageId: `7${i}`, text: `s3cr3t${i}` });
-      expect(readFileSync(join(home, `secrets/svc${i}.token`), "utf8")).toBe(`s3cr3t${i}`);
-    }
-  });
-
-  test("a secret request made during a menu input is asked for when a command ends the input", async () => {
-    const got = typed();
-    await fake.receive({ command: "settings" });
-    await fake.press("Input");
-    await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
-    await sleep(500);
-    expect(prompts()).toBe(0);
-    await fake.receive({ command: "status" });
-    await waitFor(() => prompts() === 1);
-    await sleep(500);
-    expect(prompts()).toBe(1);
-    await fake.receive({ messageId: "77", text: "s3cr3t" });
-    expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
-    expect(got).toEqual([]);
-  });
 });
 
 describe("extensions", { timeout: 60_000 }, () => {
@@ -1192,22 +1136,29 @@ describe("extensions", { timeout: 60_000 }, () => {
       daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fake.extension, d.extension] });
     }
 
-    test("the next text within 10 minutes is deleted, never submitted, and the owner told to tap Set again", async () => {
-      await askThenRestart(() => daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx));
-      await sleep(500);
-      expect(prompts()).toBe(0); // held back, as by the input
+    test("it holds the next plain text, not a reply to a request prompt: deleted, never submitted, the owner told to tap Set again", async () => {
+      await askThenRestart();
+      await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+      await waitFor(() => fake.sent.some((s) => s.markdown === DECLINE)); // prompted while the text is held
+      const [prompt, decline] = fake.sent;
+      expect(prompt).toMatchObject({ markdown: PROMPT });
+      await fake.receive({ messageId: "76", text: "v4lu3", replyTo: prompt!.id });
+      expect(readFileSync(join(home, "secrets", "svc.token"), "utf8")).toBe("v4lu3");
+      expect(await marker()).toBeTypeOf("number");
       await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
-      expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
-      expect(fake.sent.map((s) => s.markdown)).toEqual([EXPIRED, PROMPT]);
+      expect(fake.deleted).toEqual(
+        ["76", prompt!.id, decline!.id, "77"].map((messageId) => ({ chat: "42", messageId })),
+      );
+      expect(fake.sent.map((s) => s.markdown)).toContain(EXPIRED);
+      expect(prompts()).toBe(1);
       expect(await marker()).toBeUndefined();
       expect(existsSync(join(home, "secrets", "demo.key"))).toBe(false);
       await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" }); // delivered again
-      expect(fake.deleted).toHaveLength(2);
-      await fake.receive({ messageId: "78", text: "tok" });
-      expect(readFileSync(join(home, "secrets", "svc.token"), "utf8")).toBe("tok");
+      expect(fake.deleted).toHaveLength(5);
       await fake.receive({ text: "hello" });
       await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
       expect(await transcript()).not.toContain("s3cr3t");
+      expect(await transcript()).not.toContain("v4lu3");
     });
 
     test("after 10 minutes the marker is just cleared and the next text goes to the CoS", async () => {
@@ -1238,13 +1189,20 @@ describe("extensions", { timeout: 60_000 }, () => {
     });
   });
 
-  test("setting a requested secret from the menu fulfils the request", async () => {
+  test("setting a requested secret from the menu fulfils the request and deletes its prompt", async () => {
     await reboot(testKit(), [demo().extension]);
     expect(await tool(daemon, faux, "secret_request", { name: "demo.key", why: "to ping" })).toMatch(/^Asked the user/);
+    await waitFor(() => fake.sent.some((s) => s.markdown === "Don't want to provide `demo.key`?"));
+    const [prompt, decline] = fake.sent;
     await open("demo");
     await fake.press("Set demo.key");
     await fake.receive({ messageId: "77", text: "s3cr3t" });
-    expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
+    expect(fake.deleted[0]).toEqual({ chat: "42", messageId: "77" });
+    await waitFor(() => fake.deleted.length === 3);
+    expect(fake.deleted.slice(1)).toEqual([
+      { chat: "42", messageId: prompt!.id },
+      { chat: "42", messageId: decline!.id },
+    ]);
     expect(shown()).toMatch(/^✓ Set demo\.key\.\n\n\*\*demo · ✅ on\*\*/);
     expect((await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending).toEqual([]);
     await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret demo.key provided]"));
@@ -1352,5 +1310,272 @@ describe("extensions", { timeout: 60_000 }, () => {
     expect(shown()).toMatch(/^✓ Rolled back extension echo\.\n\n\*\*Extensions\*\*$/);
     expect(await tool(daemon, faux, "echo")).toBe("v1");
     expect(await tool(daemon, faux, "changes_list")).toMatch(/Rolled back extension echo/);
+  });
+});
+
+describe("update", { timeout: 30_000 }, () => {
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+  const CHAT = { adapter: "fake", chat: "42" };
+  const UPDATING = "Updating… japa will restart and report back here.";
+  const CONFIRM = "**Roll back to aaaaaaa? japa will restart.**";
+  // What the fake `Updater`'s check and current answer (and how often they were asked), what its launch throws, and
+  // the launches it was asked for.
+  let check: () => Promise<UpdateCheck>;
+  let current: () => Promise<string>;
+  let asked: { check: number; current: number };
+  let launchError: Error | undefined;
+  let launches: [string, boolean][];
+  let kit: ReturnType<typeof testKit>;
+  const updater: Updater = {
+    check: () => {
+      asked.check++;
+      return check();
+    },
+    current: () => {
+      asked.current++;
+      return current();
+    },
+    launch: async (to, rollback) => {
+      launches.push([to, rollback]);
+      if (launchError !== undefined) throw launchError;
+    },
+  };
+  const oneCommit = async () => ({ current: A, target: B, commits: ["bbbbbbb two"] });
+  /** A finished update from A to B, asked in `chat`, unreported. */
+  const updated = (chat = CHAT): UpdateState => ({
+    state: "updated",
+    started: Date.now(),
+    finished: Date.now(),
+    chat,
+    from: A,
+    to: B,
+    rollback: false,
+    restarted: "service",
+    commits: ["bbbbbbb two"],
+    whatsNew: [],
+    reported: false,
+  });
+
+  const offline = async (): Promise<UpdateCheck> => {
+    throw new Error("could not fetch origin main: unable to access");
+  };
+
+  beforeEach(async () => {
+    check = oneCommit;
+    current = async () => A;
+    asked = { check: 0, current: 0 };
+    launchError = undefined;
+    launches = [];
+    kit = testKit();
+    await daemon.close();
+    fake = fakeAdapter();
+    ({ daemon, faux, home } = await bootMessaging(fake, {}, [], kit, { updater }));
+  });
+
+  /** Sends /update: it says it's checking, then that message shows the result, which is returned. */
+  async function openUpdate() {
+    await fake.receive({ command: "update" });
+    const checking = fake.sent.at(-1)!;
+    expect(checking.markdown).toBe("Checking for updates…");
+    const shown = fake.edited.at(-1)!;
+    expect(shown.messageId).toBe(checking.id);
+    return shown;
+  }
+  /** Presses the button labelled `label` on the screen `shown`. */
+  const pressOn = (shown: { messageId: string; buttons?: { label: string; action: string }[][] }, label: string) =>
+    fake.receive({ action: shown.buttons!.flat().find((b) => b.label === label)!.action, messageId: shown.messageId });
+  /** The newest message the surface sent, once there is one besides the first `before`. */
+  async function nextSent(before: number) {
+    await waitFor(() => fake.sent.length > before);
+    return fake.sent.at(-1)!;
+  }
+
+  test("/update when current says so", async () => {
+    check = async () => ({ current: A, target: A, commits: [] });
+    const shown = await openUpdate();
+    expect(shown.markdown).toBe("✓ japa is up to date (aaaaaaa)");
+    expect(shown.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([]);
+  });
+
+  test("/update on a checkout ahead of origin, with no new commits, says it is up to date", async () => {
+    check = async () => ({ current: B, target: A, commits: [] });
+    const shown = await openUpdate();
+    expect(shown.markdown).toBe("✓ japa is up to date (bbbbbbb)");
+    expect(shown.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([]);
+  });
+
+  test("/update lists new commits, 20 at most, with the active job count", async () => {
+    await daemon.root.commit(async (tx) => {
+      const doc = await tx.doc(JobsDoc, daemon.root.id);
+      doc.jobs = { "1": jobOf("1"), "2": jobOf("2", { status: "done" }) };
+      doc.nextId = 3;
+    }, ctx);
+    await waitFor(() => hook.jobs!().length === 2);
+    const commits = Array.from({ length: 23 }, (_, i) => `${String(23 - i).padStart(7, "c")} commit ${23 - i}`);
+    check = async () => ({ current: A, target: B, commits });
+    const shown = await openUpdate();
+    expect(shown.markdown).toBe(
+      `**23 new commits**\n\naaaaaaa → bbbbbbb\n\n${commits.slice(0, 20).join("\n")}\n+3 more\n\n` +
+        "japa will restart; 1 job active.",
+    );
+    expect(labels()).toEqual(["Update now", "Cancel"]);
+    for (const b of shown.buttons!.flat()) expect(Buffer.byteLength(b.action)).toBeLessThanOrEqual(64);
+    check = oneCommit;
+    expect((await openUpdate()).markdown).toBe(
+      "**1 new commit**\n\naaaaaaa → bbbbbbb\n\nbbbbbbb two\n\njapa will restart; 1 job active.",
+    );
+  });
+
+  test("Update now launches the checked commit and says japa will restart", async () => {
+    const shown = await openUpdate();
+    expect(shown.markdown).toBe("**1 new commit**\n\naaaaaaa → bbbbbbb\n\nbbbbbbb two\n\njapa will restart; 0 jobs active.");
+    check = async () => ({ current: A, target: "c".repeat(40), commits: ["ccccccc three", "bbbbbbb two"] }); // moved on since
+    await fake.press("Update now");
+    expect(fake.edited.at(-1)).toMatchObject({ messageId: shown.messageId, markdown: UPDATING });
+    expect(fake.edited.at(-1)!.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([[B, false]]);
+    expect(readUpdateState(home)).toMatchObject({ state: "running", chat: CHAT, from: A, to: B, rollback: false, reported: false });
+  });
+
+  test("a second Update now while one runs launches nothing", async () => {
+    const first = await openUpdate();
+    const second = await openUpdate();
+    await pressOn(first, "Update now");
+    expect(fake.edited.at(-1)!.markdown).toBe(UPDATING);
+    await pressOn(second, "Update now");
+    expect(fake.edited.at(-1)!.messageId).toBe(second.messageId);
+    expect(fake.edited.at(-1)!.markdown).toContain("An update is already running (started");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^✗ An update is already running \(started <1m ago\)\.\n\n\*\*1 new commit\*\*/);
+    const again = await openUpdate();
+    expect(again.markdown).toBe("An update is already running (started <1m ago).");
+    expect(again.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([[B, false]]);
+  });
+
+  test("Cancel ends it without launching", async () => {
+    await openUpdate();
+    await fake.press("Cancel");
+    expect(fake.edited.at(-1)!.markdown).toBe("Update cancelled.");
+    expect(fake.edited.at(-1)!.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([]);
+    expect(readUpdateState(home)).toBeUndefined();
+  });
+
+  test("a check error is shown on the screen", async () => {
+    check = async () => {
+      throw new Error("could not fetch origin main: offline");
+    };
+    expect((await openUpdate()).markdown).toBe("✗ could not fetch origin main: offline");
+    await daemon.close(); // a daemon without an updater: not started by `japa daemon`
+    fake = fakeAdapter();
+    ({ daemon, faux, home } = await bootMessaging(fake));
+    expect((await openUpdate()).markdown).toBe("✗ Updating from chat isn't available: japa wasn't started as a daemon.");
+  });
+
+  test("a launch that fails is shown on the screen, recorded as failed and not reported again", async () => {
+    launchError = new Error("systemd-run exited with code 1: Access denied");
+    const shown = await openUpdate();
+    await fake.press("Update now");
+    expect(fake.edited.at(-1)).toMatchObject({
+      messageId: shown.messageId,
+      markdown: `✗ systemd-run exited with code 1: Access denied\n\n${shown.markdown}`,
+    });
+    expect(readUpdateState(home)).toMatchObject({ state: "failed", summary: launchError.message, reported: true });
+    const sent = fake.sent.length;
+    await sleep(2500);
+    expect(fake.sent).toHaveLength(sent);
+  });
+
+  test("an interrupted update is reported once and /update works again after", async () => {
+    // Running, but with no pid a minute after it started: it never got going. Asked from another chat app, whose
+    // surface would report it; /update sees it first.
+    const other = { adapter: "other", chat: "1" };
+    writeUpdateState(home, { ...updated(other), state: "running", started: Date.now() - 61_000, finished: undefined });
+    const interrupted = `✗ The update was interrupted; see \`${updateLog(home)}\`.`;
+    const shown = await openUpdate();
+    expect(shown.markdown).toBe(interrupted);
+    expect(shown.buttons ?? []).toEqual([]);
+    expect(readUpdateState(home)!.reported).toBe(true);
+    expect((await openUpdate()).markdown).toMatch(/^\*\*1 new commit\*\*/);
+    expect([...fake.sent, ...fake.edited].filter((m) => m.markdown === interrupted)).toHaveLength(1);
+    await fake.press("Update now");
+    expect(launches).toEqual([[B, false]]);
+  });
+
+  test("Roll back asks first, then launches the previous commit as a rollback, from the commit japa is on", async () => {
+    writeUpdateState(home, updated());
+    const report = await nextSent(0);
+    expect(report.buttons).toEqual([[{ label: "Roll back", action: `rb:${A}` }]]);
+    current = async () => B;
+    await fake.press("Roll back");
+    const confirm = fake.sent.at(-1)!; // a message of its own: the report stays
+    expect(confirm.markdown).toBe(CONFIRM);
+    expect(confirm.buttons!.flat().map((b) => b.label)).toEqual(["Roll back", "Cancel"]);
+    await fake.press("Cancel");
+    expect(fake.edited.at(-1)).toMatchObject({ messageId: confirm.id, markdown: "Roll back cancelled." });
+    expect(launches).toEqual([]);
+    await fake.press("Roll back", report.id);
+    const again = fake.sent.at(-1)!;
+    expect(again.markdown).toBe(CONFIRM);
+    await fake.press("Roll back");
+    expect(fake.edited.at(-1)).toMatchObject({ messageId: again.id, markdown: UPDATING });
+    expect(fake.edited.at(-1)!.buttons ?? []).toEqual([]);
+    expect(launches).toEqual([[A, true]]);
+    expect(readUpdateState(home)).toMatchObject({ state: "running", chat: CHAT, from: B, to: A, rollback: true, reported: false });
+  });
+
+  test("Roll back works offline: it never fetches", async () => {
+    writeUpdateState(home, updated());
+    await nextSent(0);
+    check = offline;
+    current = async () => B;
+    await fake.press("Roll back");
+    await fake.press("Roll back");
+    expect(fake.edited.at(-1)!.markdown).toBe(UPDATING);
+    expect(launches).toEqual([[A, true]]);
+    expect(readUpdateState(home)).toMatchObject({ state: "running", from: B, to: A, rollback: true });
+    expect(asked).toEqual({ check: 0, current: 1 });
+  });
+
+  test("Roll back pressed while an update runs says so, and asks and launches nothing", async () => {
+    writeUpdateState(home, updated());
+    await nextSent(0);
+    await fake.press("Roll back");
+    const confirm = fake.sent.at(-1)!;
+    writeUpdateState(home, { ...updated(), state: "running", pid: process.pid, finished: undefined }); // started meanwhile
+    await fake.press("Roll back");
+    expect(fake.edited.at(-1)).toMatchObject({
+      messageId: confirm.id,
+      markdown: `✗ An update is already running (started <1m ago).\n\n${CONFIRM}`,
+    });
+    expect(fake.edited.at(-1)!.markdown).toContain("An update is already running (started");
+    expect(asked).toEqual({ check: 0, current: 0 });
+    expect(launches).toEqual([]);
+    expect(readUpdateState(home)).toMatchObject({ state: "running", pid: process.pid });
+  });
+
+  test("the Roll back button still works after a restart; the confirm screen's buttons expire", async () => {
+    writeUpdateState(home, updated());
+    const rollBack = (await nextSent(0)).buttons![0]![0]!.action;
+    await fake.press("Roll back");
+    const confirm = fake.sent.at(-1)!;
+    const yes = confirm.buttons!.flat().find((b) => b.label === "Roll back")!.action;
+    await daemon.close();
+    fake = fakeAdapter();
+    daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fake.extension], updater });
+    await fake.receive({ action: yes, messageId: confirm.id });
+    expect(fake.edited.at(-1)).toMatchObject({ messageId: confirm.id, markdown: "This menu expired — send /update again." });
+    await fake.receive({ action: "rb:not-a-sha", messageId: "9" });
+    expect(fake.edited.at(-1)).toMatchObject({ messageId: "9", markdown: "This menu expired — send /update again." });
+    expect(launches).toEqual([]);
+    current = async () => B;
+    await fake.receive({ action: rollBack, messageId: "1" });
+    expect(fake.sent.at(-1)!.markdown).toBe(CONFIRM);
+    await fake.press("Roll back");
+    expect(launches).toEqual([[A, true]]);
+    expect(fake.sent.filter((m) => m.markdown.startsWith("✓ Updated"))).toEqual([]); // reported before the restart
   });
 });

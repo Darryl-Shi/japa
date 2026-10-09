@@ -2,6 +2,7 @@
 // and restarts japa -- rolling all of it back when the new code doesn't run (design doc §5).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, sep } from "node:path";
+import { patchUpdateState, type Restarted, type UpdateCheck, type UpdateState } from "../kernel/update-state.ts";
 import { markOffered } from "./configure.ts";
 import { openSetupContext } from "./context.ts";
 import { foregroundPid, waitForDaemon } from "./daemon.ts";
@@ -16,11 +17,17 @@ export type UpdateOptions = {
   /** Defaults to the checkout's current branch. */
   branch?: string;
   to?: string;
+  /** With `to`: only fast-forward to it, refusing on diverged history as a plain update does (a chat-started update;
+   * without it `to` moves the branch there, which is how a Roll back goes back -- even offline, to a commit the
+   * checkout has). */
+  ffOnly?: boolean;
   check: boolean;
   restart: boolean;
   interactive: boolean;
   userHome?: string;
   log: (s: string) => void;
+  /** Gets the run's progress for `update.json` (`--from-chat`): its pid first, then how it ended. */
+  record?: (patch: Partial<UpdateState>) => void;
 };
 
 export type UpdateDeps = {
@@ -30,8 +37,9 @@ export type UpdateDeps = {
   npmCi(app: string, node: string): Promise<void>;
   validate(app: string, node: string): Promise<void>;
   baseline(home: string): Promise<void>;
-  whatsNew(app: string, node: string, interactive: boolean): Promise<void>;
-  restart(log: (s: string) => void): Promise<void>;
+  /** What's new in the new code: shown in a terminal (nothing returned), otherwise logged and returned line by line. */
+  whatsNew(app: string, node: string, interactive: boolean): Promise<string[]>;
+  restart(log: (s: string) => void): Promise<Restarted>;
 };
 
 /** An update that stopped with a user-facing reason; everything it had changed is already rolled back. */
@@ -44,6 +52,13 @@ const GIT_CONFIG = ["-c", "user.name=japa", "-c", "user.email=japa@localhost", "
 const NO_WARNINGS = "--disable-warning=ExperimentalWarning";
 
 const short = (sha: string) => sha.slice(0, 7);
+/** Runs git in `app`, with the identity `git stash` needs. */
+const gitIn =
+  (app: string) =>
+  (...args: string[]) =>
+    exec("git", ["-C", app, ...GIT_CONFIG, ...args]);
+/** Non-empty lines of `text`. */
+const linesOf = (text: string) => text.split("\n").filter((line) => line.trim() !== "");
 const bare = (version: string) => (version.startsWith("v") ? version.slice(1) : version);
 const under = (path: string, dir: string) => path.startsWith(`${dir}${sep}`);
 
@@ -110,8 +125,16 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
     baseline: async (home) => markOffered(home, (await openSetupContext(home)).extensions),
     whatsNew: async (app, node, interactive) => {
       const args = [NO_WARNINGS, join(app, "src/cli/main.ts"), "setup", "--whats-new"];
-      if (!interactive) args.push("--non-interactive");
-      await exec(node, args, { stdio: "inherit" });
+      if (interactive) {
+        await exec(node, args, { stdio: "inherit" });
+        return [];
+      }
+      args.push("--non-interactive");
+      const r = await exec(node, args);
+      const lines = linesOf(r.stdout);
+      for (const line of lines) o.log(line);
+      if (r.code !== 0) o.log(`could not list what's new: ${reason(r)}`);
+      return lines;
     },
     restart: (log) => restartAfterUpdate(serviceEnv(layoutOf(o.app, o.userHome)), o.home, log),
   };
@@ -120,25 +143,111 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
 /**
  * Step 8 (design doc §5.1): restarts the service when it's running or failing and waits for it to answer. A service
  * the user stopped stays stopped, and a foreground `japa daemon` is never killed -- both are only told about.
+ * Returns which way it went.
  */
-export async function restartAfterUpdate(env: ServiceEnv, home: string, log: (s: string) => void, waitMs?: number): Promise<void> {
+export async function restartAfterUpdate(
+  env: ServiceEnv,
+  home: string,
+  log: (s: string) => void,
+  waitMs?: number,
+): Promise<Restarted> {
   const state = await serviceState(env);
   const foreground = state !== "active" && foregroundPid(home) !== undefined;
   if (state === "active" || (state === "failed" && !foreground)) {
     await restartService(env);
     if ((await waitForDaemon(home, waitMs)) === undefined) log("japa didn't answer within 30 s; see: japa service logs");
-  } else if (foreground) {
+    return "service";
+  }
+  if (foreground) {
     log("restart `japa daemon` to apply");
-  } else if (state === "inactive") {
+    return "foreground";
+  }
+  if (state === "inactive") {
     log("japa's service is stopped, so it was left stopped; start it with: japa service start");
+    return "stopped";
+  }
+  return "none";
+}
+
+/**
+ * The commits `old..target` brings, newest first, as `<short sha> <subject>`; the newest `max` of them. Not
+ * `--oneline`, which follows the user's git config (decorations, colours).
+ */
+async function commitsBetween(app: string, old: string, target: string, max?: number): Promise<string[]> {
+  const limit = max === undefined ? [] : [`-${max}`];
+  return linesOf((await gitIn(app)("log", "--format=%h %s", ...limit, `${old}..${target}`)).stdout);
+}
+
+/**
+ * Steps 1-2 (design doc §5.1): the branch to stand on and the sha to come back to, then a fetch of origin's `branch`
+ * (by default the current one) and the target commit -- `to`, or origin's tip. Changes nothing else. A fetch that
+ * fails is fatal, except for a Roll back (`to` without `ffOnly`) to a commit the checkout has: that goes ahead,
+ * logged, as it needs no network.
+ */
+async function locate(
+  app: string,
+  o: { branch?: string; to?: string; ffOnly?: boolean; log?: (s: string) => void } = {},
+) {
+  const { branch, to } = o;
+  const git = gitIn(app);
+  const branchRef = await git("symbolic-ref", "--short", "HEAD");
+  if (branchRef.code !== 0) throw new UpdateFailed("not on a branch");
+  const original = branchRef.stdout.trim();
+  const on = branch ?? original;
+  const old = (await git("rev-parse", "HEAD")).stdout.trim();
+
+  const fetched = await git("fetch", "origin", on);
+  const wanted = to ?? `origin/${on}`;
+  const resolved = await git("rev-parse", "--verify", `${wanted}^{commit}`);
+  if (fetched.code !== 0) {
+    const failed = `could not fetch origin ${on}: ${reason(fetched)}`;
+    const rollingBack = to !== undefined && o.ffOnly !== true;
+    if (!rollingBack || resolved.code !== 0) throw new UpdateFailed(failed);
+    o.log?.(`${failed}; rolling back with what's here`);
+  }
+  if (resolved.code !== 0) throw new UpdateFailed(`no such commit: ${wanted}`);
+  return { original, branch: on, old, target: resolved.stdout.trim() };
+}
+
+/** What `japa update` would bring in (design doc §4.3): fetches origin's `branch` and lists its new commits, changing
+ * nothing else. Throws `UpdateFailed` as `update` does. */
+export async function checkForUpdate(app: string, branch?: string): Promise<UpdateCheck> {
+  const { old, target } = await locate(app, { branch });
+  return { current: old, target, commits: await commitsBetween(app, old, target) };
+}
+
+/**
+ * Updates the checkout at `o.app` (design doc §5.1). Throws `UpdateFailed` with the reason; nothing is left half-done.
+ * `o.record` gets the pid first and how the run ended last -- a failure once everything is put back.
+ */
+export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = {}): Promise<"up to date" | "checked" | "updated"> {
+  // Nothing has changed yet, so a pid that can't be recorded may stop the run.
+  o.record?.({ pid: process.pid });
+  /** Records the run's result. A write that fails is only logged: the outcome (or the reason it failed) wins. */
+  const note = (patch: Partial<UpdateState>) => {
+    try {
+      o.record?.(patch);
+    } catch (error) {
+      o.log(`could not record the update: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  try {
+    return await updateCheckout(o, overrides, note);
+  } catch (error) {
+    const [summary, ...said] = (error instanceof Error ? error.message : String(error)).split("\n");
+    note({ state: "failed", summary, output: said.length === 0 ? undefined : said.join("\n"), finished: Date.now() });
+    throw error;
   }
 }
 
-/** Updates the checkout at `o.app` (design doc §5.1). Throws `UpdateFailed` with the reason; nothing is left half-done. */
-export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = {}): Promise<"up to date" | "checked" | "updated"> {
+async function updateCheckout(
+  o: UpdateOptions,
+  overrides: Partial<UpdateDeps>,
+  note: (patch: Partial<UpdateState>) => void,
+): Promise<"up to date" | "checked" | "updated"> {
   const deps = { ...defaultDeps(o), ...overrides };
   const layout = layoutOf(o.app, o.userHome);
-  const git = (...args: string[]) => exec("git", ["-C", o.app, ...GIT_CONFIG, ...args]);
+  const git = gitIn(o.app);
   const out = async (...args: string[]) => (await git(...args)).stdout.trim();
 
   /** A step that must not fail the thing it is trying to repair: its failure is logged and swallowed. */
@@ -162,34 +271,22 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
     return on === "" ? `on a detached HEAD at ${sha}` : `on ${on} at ${sha}`;
   };
 
-  // 1. Preflight: a branch to stand on and the sha to come back to.
-  const branchRef = await git("symbolic-ref", "--short", "HEAD");
-  if (branchRef.code !== 0) throw new UpdateFailed("not on a branch");
-  const original = branchRef.stdout.trim();
-  const branch = o.branch ?? original;
+  // 1-2. Preflight (a branch to stand on and the sha to come back to), fetch, and pick the target commit.
+  const { original, branch, old, target } = await locate(o.app, o);
   /** `--branch` naming another branch asks to stand on it, which an update always does -- even if its code is current. */
   const switched = branch !== original;
-  const old = await out("rev-parse", "HEAD");
-
-  // 2. Fetch and pick the target commit.
-  const fetched = await git("fetch", "origin", branch);
-  if (fetched.code !== 0) throw new UpdateFailed(`could not fetch origin ${branch}: ${reason(fetched)}`);
-  const wanted = o.to ?? `origin/${branch}`;
-  const resolved = await git("rev-parse", "--verify", `${wanted}^{commit}`);
-  if (resolved.code !== 0) throw new UpdateFailed(`no such commit: ${wanted}`);
-  const target = resolved.stdout.trim();
 
   // Up to date means standing on the target branch at the target commit: a `--branch` elsewhere is still a move.
   if (!switched && target === old) {
     o.log(`japa is up to date (${short(old)})`);
+    note({ state: "up to date", to: old, finished: Date.now() });
     return "up to date";
   }
   if (o.check) {
     if (switched) o.log(`would switch to ${branch} (${short(target)})`);
-    const count = await out("rev-list", "--count", `${old}..${target}`);
-    const incoming = await out("log", "--oneline", `${old}..${target}`);
-    o.log(`${count} new commits`);
-    if (incoming !== "") o.log(incoming);
+    const incoming = await commitsBetween(o.app, old, target);
+    o.log(`${incoming.length} new commits`);
+    if (incoming.length > 0) o.log(incoming.join("\n"));
     return "checked";
   }
 
@@ -232,14 +329,15 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
     if (tip === undefined) await attempt(`delete ${branch}`, () => mustGit("branch", "-D", branch));
   };
 
-  const apply = o.to === undefined ? await git("merge", "--ff-only", target) : await git("checkout", "-B", branch, target);
+  // Only `--to` without `--ff-only` (a Roll back) may move the branch anywhere but forward.
+  const fastForward = o.to === undefined || o.ffOnly === true;
+  const apply = fastForward ? await git("merge", "--ff-only", target) : await git("checkout", "-B", branch, target);
   if (apply.code !== 0) {
     await returnToOriginal();
     await popStash();
-    const why =
-      o.to === undefined
-        ? `your checkout has diverged from origin/${branch}; nothing changed`
-        : `could not check out ${o.to}: ${reason(apply)}`;
+    const why = fastForward
+      ? `your checkout has diverged from origin/${branch}; nothing changed`
+      : `could not check out ${o.to}: ${reason(apply)}`;
     throw new UpdateFailed(why);
   }
 
@@ -291,15 +389,18 @@ export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = 
   if (replacedNode !== undefined) dropOldNode(replacedNode);
 
   // 7-9. What's new in the new code, one restart for code and configuration, then the report.
+  let whatsNew: string[];
+  let restarted: Restarted = "none";
   try {
-    await deps.whatsNew(o.app, node, o.interactive);
-    if (o.restart) await deps.restart(o.log);
+    whatsNew = await deps.whatsNew(o.app, node, o.interactive);
+    if (o.restart) restarted = await deps.restart(o.log);
   } finally {
     await popStash();
   }
   o.log(`${short(old)} → ${short(target)}`);
-  const summary = await out("log", "--oneline", "-20", `${old}..${target}`);
-  if (summary !== "") o.log(summary);
+  const commits = await commitsBetween(o.app, old, target, 20);
+  if (commits.length > 0) o.log(commits.join("\n"));
+  note({ state: "updated", to: target, commits, whatsNew, restarted, finished: Date.now() });
   return "updated";
 }
 
@@ -309,18 +410,25 @@ function flag(args: string[], name: string): string | undefined {
   return i === -1 ? undefined : args[i + 1];
 }
 
-/** The `japa update [--check] [--branch <b>] [--to <sha>] [--no-restart]` CLI. */
+/**
+ * The `japa update [--check] [--branch <b>] [--to <sha>] [--no-restart]` CLI. Two hidden flags serve a chat-started
+ * update (design doc §4.4): `--ff-only` (with `--to`) refuses to move the branch anywhere but forward, and
+ * `--from-chat` runs without prompts and records the run in `update.json`.
+ */
 export async function updateCommand(home: string, args: string[]): Promise<void> {
+  const fromChat = args.includes("--from-chat");
   try {
     await update({
       app: APP,
       home,
       branch: flag(args, "--branch"),
       to: flag(args, "--to"),
+      ffOnly: args.includes("--ff-only"),
       check: args.includes("--check"),
       restart: !args.includes("--no-restart"),
-      interactive: process.stdin.isTTY === true,
+      interactive: !fromChat && process.stdin.isTTY === true,
       log: (s) => console.log(s),
+      record: fromChat ? (patch) => patchUpdateState(home, patch) : undefined,
     });
   } catch (error) {
     if (!(error instanceof UpdateFailed)) throw error;

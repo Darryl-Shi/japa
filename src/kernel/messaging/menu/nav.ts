@@ -45,11 +45,11 @@ export function dur(ms: number): string {
 }
 
 /**
- * Screens with buttons for one command's menu (`scope` "s" for /settings, "j" for /jobs). Each button's action,
- * `<run>:<scope>:<n>`, maps in memory to what pressing it shows; the newest `KEEP` are kept. A button remembers the
- * screen it was made on, where an error pressing it is shown as `✗ <message>`.
+ * Screens with buttons for one command's menu (`scope` "s" for /settings, "j" for /jobs, "u" for /update). Each
+ * button's action, `<run>:<scope>:<n>`, maps in memory to what pressing it shows; the newest `KEEP` are kept. A button
+ * remembers the screen it was made on, where an error pressing it is shown as `✗ <message>`.
  */
-export function createNav(scope: "s" | "j", run: string) {
+export function createNav(scope: "s" | "j" | "u", run: string) {
   let next = 0;
   let shown: Page | undefined; // the screen being rendered: the origin of the buttons made meanwhile
   let input: Input | undefined;

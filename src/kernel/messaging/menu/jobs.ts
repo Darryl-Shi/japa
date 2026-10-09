@@ -22,7 +22,8 @@ const LABEL = 64;
 /** Characters of a brief shown on a job's detail. */
 const BRIEF = 800;
 
-const isActive = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
+/** Queued, running or waiting for an answer: not finished. */
+export const isActive = (j: Job) => j.status === "queued" || j.status === "running" || j.status === "needs_input";
 const statusName = (status: JobStatus) => status.replace("_", " ");
 
 /** `text` cut to `max` characters, ending `…` when cut. */
