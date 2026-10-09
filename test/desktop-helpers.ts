@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { JsonObject, ToolExecutionApi, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import type { KernelContext } from "../src/kernel/contracts.ts";
 import type { Desktop, DesktopConfig, Docker, ExecResult } from "../extensions/desktop/container.ts";
-import { remoteEnv } from "../extensions/desktop/env.ts";
+import { remoteEnv } from "../src/kernel/sandbox/remote-env.ts";
 import { vi } from "vitest";
 import { tempHome } from "./helpers.ts";
 

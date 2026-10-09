@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defineDoc, JobDoc, JobsDoc, ROOT_CONVERSATION_ID } from "../../src/sdk.ts";
-import { isDesktop } from "./env.ts";
+import { isDesktop } from "../../src/kernel/sandbox/remote-env.ts";
 
 // On the root conversation: the job holding the desktop. It is free once that job is not running or waiting on the user.
 export const LockDoc = defineDoc<{ job?: string }>({

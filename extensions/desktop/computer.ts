@@ -4,7 +4,7 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { setTimeout as sleep } from "node:timers/promises";
 import { defineTool, Type } from "../../src/sdk.ts";
 import type { Desktop } from "./container.ts";
-import { isDesktop } from "./env.ts";
+import { isDesktop } from "../../src/kernel/sandbox/remote-env.ts";
 import { claimDesktop } from "./lock.ts";
 
 const COMPUTER_READS = ["screenshot", "zoom", "cursor_position", "clipboard_get"];

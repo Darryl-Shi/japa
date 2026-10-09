@@ -4,7 +4,7 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import type { Browser, BrowserContext, Dialog, Page } from "playwright-core";
 import { defineTool, Type } from "../../src/sdk.ts";
 import type { Desktop } from "./container.ts";
-import { isDesktop } from "./env.ts";
+import { isDesktop } from "../../src/kernel/sandbox/remote-env.ts";
 import { claimDesktop } from "./lock.ts";
 
 const BROWSER_READS = ["tabs", "snapshot", "text", "screenshot"];

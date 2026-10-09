@@ -4,7 +4,7 @@ import { defineJapaExtension, type EnvironmentAdapter, type JapaExtension, type 
 import { browserTool } from "./browser.ts";
 import { computerTool } from "./computer.ts";
 import { type DesktopConfig, desktopContainer, dockerCli } from "./container.ts";
-import { ENV_MODULE, type EnvServer, remoteEnv, SERVER, startEnvServer } from "./env.ts";
+import { ENV_MODULE, type EnvServer, remoteEnv, SERVER, startEnvServer } from "../../src/kernel/sandbox/remote-env.ts";
 import { keepRecentImages } from "./images.ts";
 
 export function desktopExtension(config: DesktopConfig): JapaExtension {

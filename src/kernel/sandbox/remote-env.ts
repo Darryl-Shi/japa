@@ -1,4 +1,5 @@
-// The `desktop` ExecutionEnv: a client of `env-server.ts`, which runs NodeExecutionEnv inside the container.
+// An out-of-process ExecutionEnv: a client of `env-server.ts`, which runs NodeExecutionEnv in another process (the
+// desktop's container).
 import type { Context } from "@earendil-works/chord";
 import { err, type ExecutionEnv, ExecutionError, FileError } from "@earendil-works/pi-durable/env";
 import { spawn } from "node:child_process";
@@ -57,16 +58,16 @@ function encode(value: unknown, onCallback: (callback: Callback) => void): unkno
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encode(item, onCallback)]));
 }
 
-/** Spawns `command` as the env server; the server's last stderr line explains a lost connection. */
-export function startEnvServer(command: string[]): EnvServer {
+/** Spawns `command` as the env server; calls fail with `lost` and the server's last stderr line once it dies. */
+export function startEnvServer(command: string[], lost = LOST): EnvServer {
   const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
   const requests = new Map<number, Request>();
   let lastId = 0;
   let lastStderr = "";
   let closed = false;
-  const reason = () => (lastStderr ? `${LOST}: ${lastStderr}` : LOST);
+  const reason = () => (lastStderr ? `${lost}: ${lastStderr}` : lost);
   const send = (message: object) => child.stdin.write(`${JSON.stringify(message)}\n`);
-  const lost = () => {
+  const onLost = () => {
     closed = true;
     for (const request of requests.values()) request.reject(new Error(reason()));
     requests.clear();
@@ -106,9 +107,9 @@ export function startEnvServer(command: string[]): EnvServer {
     else if (message.thrown !== undefined) request.reject(new Error(message.thrown));
     else request.resolve(decode(message.result, request.context));
   });
-  child.on("close", lost);
-  child.on("error", lost);
-  child.stdin.on("error", lost);
+  child.on("close", onLost);
+  child.on("error", onLost);
+  child.stdin.on("error", onLost);
 
   const server: EnvServer = {
     call(target, method, args, context) {
@@ -136,7 +137,7 @@ export function startEnvServer(command: string[]): EnvServer {
   return server;
 }
 
-/** The `desktop` environment `id` at `cwd`, served by `server()`; one function per ExecutionEnv method. */
+/** The environment `id` at `cwd`, served by `server()`; one function per ExecutionEnv method. */
 export function remoteEnv(server: () => Promise<EnvServer>, cwd: string, id: string): ExecutionEnv {
   const env: Record<string, unknown> & { cwd: string } = { id, cwd };
   for (const method of METHODS) {
