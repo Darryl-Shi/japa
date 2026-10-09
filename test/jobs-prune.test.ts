@@ -32,7 +32,6 @@ async function seed(daemon: Daemon, list: [JobStatus, number][]) {
         id,
         title: `t${id}`,
         brief: "b",
-        worker: "general",
         status,
         conversationId: (1000 + i) as ConversationId,
         createdAt: updatedAt,

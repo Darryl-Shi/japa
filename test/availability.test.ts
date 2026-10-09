@@ -83,14 +83,9 @@ function pinging(name: string, more: Partial<JapaExtension> = {}) {
 /** `demo`, which needs the secret `demo.key`. */
 const demoExtension = () => pinging("demo", { secrets: ["demo.key"] });
 
-/** A profile `pinger` that names `demo`. */
-const pinger = ["---", "name: pinger", "description: Pings", "tools: [read]", "extensions: [demo]", "---", "Ping."];
-/** A profile `desk` that names the desktop's skill. */
-const desk = ["---", "name: desk", "description: Desk", "tools: [read]", "skills: [using-the-desktop]", "---", "Desk."];
-
 /**
- * Boots on in-memory storage (unless `settings` says otherwise) with `extra` extensions, the `pinger` and `desk`
- * worker profiles and the secrets in `secrets` already stored.
+ * Boots on in-memory storage (unless `settings` says otherwise) with `extra` extensions and the secrets in `secrets`
+ * already stored.
  */
 async function bootWith(
   extra: JapaExtension[],
@@ -99,9 +94,6 @@ async function bootWith(
   kit = testKit(),
 ) {
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
-  mkdirSync(join(home, "workers"));
-  writeFileSync(join(home, "workers", "pinger.md"), pinger.join("\n"));
-  writeFileSync(join(home, "workers", "desk.md"), desk.join("\n"));
   mkdirSync(join(home, "secrets"), { recursive: true });
   for (const [name, value] of Object.entries(secrets)) writeFileSync(join(home, "secrets", name), value);
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, ...extra] });
@@ -111,14 +103,14 @@ async function bootWith(
 const toolNames = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
 const stateOf = (daemon: Daemon, name: string) => daemon.status().extensions.find((e) => e.name === name)?.state;
 
-/** Starts a job with the `pinger` profile; returns its conversation. */
+/** Starts a job to ping; returns its conversation. */
 async function startPinger(
   daemon: Daemon,
   faux: FauxProviderHandle,
   onBrief = call("job_ask", { question: "Which one?" }),
 ) {
   script(faux, (role, text) => {
-    if (text === "start ping") return call("job_start", { title: "Ping", brief: "Ping it", worker: "pinger" });
+    if (text === "start ping") return call("job_start", { title: "Ping", brief: "Ping it" });
     if (text === "Ping it") return onBrief;
     if (role === "user" && text === "that one") return call("job_complete", { summary: "pinged" });
   });
@@ -133,7 +125,7 @@ test("an unconfigured extension is hidden from the CoS and its status says not s
   expect(daemon.capabilities()).not.toContain("demo");
   expect(stateOf(daemon, "demo")).toBe("not set up");
   expect(statusText(daemon.status())).toMatch(/^  demo — demo summary \(not set up\)$/m);
-  expect(bootErrors(daemon)).toEqual([]); // the profile naming demo stays valid
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });
 
@@ -146,7 +138,7 @@ test("a configured extension is offered to the CoS and its status says nothing m
   await daemon.close();
 });
 
-test.skipIf(NO_BWRAP)("a job whose profile names an unavailable extension runs without it", async () => {
+test.skipIf(NO_BWRAP)("a job runs without an unavailable extension", async () => {
   const { daemon, faux } = await bootWith([demoExtension().extension]);
   const job = await startPinger(daemon, faux, call("job_complete", { summary: "done" }));
   expect(await toolNames(job)).not.toContain("demo_ping");
@@ -155,7 +147,7 @@ test.skipIf(NO_BWRAP)("a job whose profile names an unavailable extension runs w
   await daemon.close();
 });
 
-test.skipIf(NO_BWRAP)("a job whose profile names an available extension gets its tools", async () => {
+test.skipIf(NO_BWRAP)("a job gets an available extension's tools", async () => {
   const { daemon, faux } = await bootWith([demoExtension().extension], {}, { "demo.key": "k" });
   const job = await startPinger(daemon, faux, call("job_complete", { summary: "done" }));
   expect(await toolNames(job)).toContain("demo_ping");
@@ -296,11 +288,11 @@ test.skipIf(NO_BWRAP)("a job spanning a restart gets the extensions available at
   await daemon.close();
 });
 
-test("an unavailable extension's skills are hidden and come back with it; a profile naming one stays valid", async () => {
+test("an unavailable extension's skills are hidden and come back with it", async () => {
   const { daemon, faux } = await bootWith([demoExtension().extension], { extensions: { desktop: { enabled: false } } });
   const skill = () => tool(daemon, faux, "skill_read", { name: "using-the-desktop" });
   expect(stateOf(daemon, "desktop")).toBe("off");
-  expect(bootErrors(daemon)).toEqual([]); // desk names the desktop's skill
+  expect(bootErrors(daemon)).toEqual([]);
   expect(await skill()).toMatch(/^No skill "using-the-desktop"/);
   await tool(daemon, faux, "settings_set", { path: "extensions.desktop.enabled", value: true });
   expect(await skill()).not.toMatch(/^No skill/);

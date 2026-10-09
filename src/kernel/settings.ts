@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type Models, type TSchema, Type, validateToolArguments } from "@earendil-works/pi-ai";
+import { type Models, StringEnum, type TSchema, Type, validateToolArguments } from "@earendil-works/pi-ai";
 import type { JsonObject, ModelRef } from "@earendil-works/pi-durable";
 import { message } from "./loader.ts";
 
@@ -10,11 +10,16 @@ export function japaHome(): string {
   return process.env.JAPA_HOME ?? join(homedir(), ".japa");
 }
 
+/** The thinking levels a job can run at (pi-ai's, but `max`, which few models take). */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
 export type Settings = {
   models: { cos?: ModelRef; worker?: ModelRef; consolidation?: ModelRef };
   storage: { adapter: string } & JsonObject;
   secrets: { adapter: string } & JsonObject;
-  jobs: { maxConcurrent: number; keepFinishedDays: number };
+  /** `thinking`: the level of a job started without one. */
+  jobs: { maxConcurrent: number; keepFinishedDays: number; thinking: ThinkingLevel };
   context: { toolResultTokens: number };
   memory: { maxFacts: number; maxTokens: number };
   safety: { toolErrorThreshold: number; goodAfterMinutes: number };
@@ -25,7 +30,7 @@ export const DEFAULT_SETTINGS: Settings = {
   models: {},
   storage: { adapter: "sqlite" },
   secrets: { adapter: "file" },
-  jobs: { maxConcurrent: 4, keepFinishedDays: 7 },
+  jobs: { maxConcurrent: 4, keepFinishedDays: 7, thinking: "medium" },
   context: { toolResultTokens: 2000 },
   memory: { maxFacts: 30, maxTokens: 1500 },
   safety: { toolErrorThreshold: 5, goodAfterMinutes: 10 },
@@ -38,7 +43,11 @@ const settingsSchema = Type.Object({
   models: Type.Object({ cos: Ref, worker: Type.Optional(Ref), consolidation: Type.Optional(Ref) }),
   storage: Type.Object({ adapter: Type.String() }),
   secrets: Type.Object({ adapter: Type.String() }),
-  jobs: Type.Object({ maxConcurrent: Type.Integer({ minimum: 1 }), keepFinishedDays: Type.Integer({ minimum: 1 }) }),
+  jobs: Type.Object({
+    maxConcurrent: Type.Integer({ minimum: 1 }),
+    keepFinishedDays: Type.Integer({ minimum: 1 }),
+    thinking: StringEnum([...THINKING_LEVELS]),
+  }),
   context: Type.Record(Type.String(), Type.Number({ exclusiveMinimum: 0 })),
   memory: Type.Record(Type.String(), Type.Integer({ minimum: 1 })),
   safety: Type.Object({

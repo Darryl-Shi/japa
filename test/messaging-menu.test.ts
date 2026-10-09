@@ -128,7 +128,7 @@ const result = (text: string) => ({ content: [{ type: "text", text }] });
 /** `settings_get` for the fake menus: no models set. */
 const settingsGet = async (name: string) => (name === "settings_get" ? result('{"models":{}}') : undefined);
 const HOME = ["Models", "Extensions", "Schedules", "General", "Recent changes"];
-const MODELS = "**Models**\n\nCoS: faux/a\nWorker: same as CoS\nConsolidation: same as CoS";
+const MODELS = "**Models**\n\nCoS: faux/a\nWorker: same as CoS\nConsolidation: same as CoS\nJob thinking: medium";
 
 /** Presses the button labelled `label` in the newest message `f` got (edited, else sent), through `menu`. */
 function presser(menu: ReturnType<typeof createMenu>, f: ReturnType<typeof fakeAdapter>) {
@@ -160,7 +160,8 @@ const jobOf = (id: string, fields: Partial<Job> = {}): Job => ({
   id,
   title: `t${id}`,
   brief: "b",
-  worker: "general",
+  model: "p/m",
+  thinking: "medium",
   status: "running",
   conversationId: (1000 + Number(id)) as Job["conversationId"],
   createdAt: Date.now(),
@@ -239,10 +240,24 @@ describe("jobs", { timeout: 30_000 }, () => {
     expect(labels()).toEqual(["🔄 #9 t9 · <1m", "🔄 #10 t10 · <1m", "‹", "2/2"]);
   });
 
-  test("a job's detail shows its status, worker, times, brief and what its status calls for", async () => {
+  test("/jobs shows model and thinking", async () => {
+    // A job from before jobs had them: its worker profile's.
+    const legacy = { ...jobOf("2"), worker: "coder" } as Job;
+    delete legacy.model;
+    delete legacy.thinking;
+    await seed([jobOf("1", { model: "anthropic/opus", thinking: "xhigh" }), legacy]);
+    await openJobs();
+    await fake.press("🔄 #1 t1 · <1m");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*#1 t1\*\*\n\n🔄 running · anthropic\/opus · thinking xhigh\n/);
+    await openJobs();
+    await fake.press("🔄 #2 t2 · <1m");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*#2 t2\*\*\n\n🔄 running · default model · thinking default\n/);
+  });
+
+  test("a job's detail shows its status, model, thinking, times, brief and what its status calls for", async () => {
     const now = Date.now();
     await seed([
-      jobOf("1", { title: "Research flights", worker: "researcher", brief: "Find flights", progress: "checking", createdAt: now - 2 * HOUR, updatedAt: now - 5 * MINUTE }),
+      jobOf("1", { title: "Research flights", model: "anthropic/opus", thinking: "high", brief: "Find flights", progress: "checking", createdAt: now - 2 * HOUR, updatedAt: now - 5 * MINUTE }),
       jobOf("2", { status: "done", result: "Found 3", createdAt: now - 72 * HOUR, updatedAt: now - 29 * HOUR }),
       jobOf("3", { status: "needs_input", result: "Which date?", createdAt: now - 65 * MINUTE }),
       jobOf("4", { status: "failed", result: "No network", createdAt: now - 3 * MINUTE }),
@@ -255,23 +270,23 @@ describe("jobs", { timeout: 30_000 }, () => {
       return fake.edited.at(-1)!.markdown;
     };
     expect(await detail("🔄 #1 Research flights · 5m")).toBe(
-      "**#1 Research flights**\n\n🔄 running · worker researcher\nStarted 2h ago · updated 5m ago · ran 2h 0m\n\nBrief:\nFind flights\n\nProgress:\nchecking",
+      "**#1 Research flights**\n\n🔄 running · anthropic/opus · thinking high\nStarted 2h ago · updated 5m ago · ran 2h 0m\n\nBrief:\nFind flights\n\nProgress:\nchecking",
     );
     expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
     expect(await detail("✅ #2 t2 · 29h")).toBe(
-      "**#2 t2**\n\n✅ done · worker general\nStarted 3d ago · updated 29h ago · ran 1d 19h\n\nBrief:\nb\n\nResult:\nFound 3",
+      "**#2 t2**\n\n✅ done · p/m · thinking medium\nStarted 3d ago · updated 29h ago · ran 1d 19h\n\nBrief:\nb\n\nResult:\nFound 3",
     );
     expect(await detail("❓ #3 t3 · <1m")).toBe(
-      "**#3 t3**\n\n❓ needs input · worker general\nStarted 1h ago · updated <1m ago · ran 1h 5m\n\nBrief:\nb\n\nQuestion:\nWhich date?",
+      "**#3 t3**\n\n❓ needs input · p/m · thinking medium\nStarted 1h ago · updated <1m ago · ran 1h 5m\n\nBrief:\nb\n\nQuestion:\nWhich date?",
     );
     expect(await detail("❌ #4 t4 · <1m")).toBe(
-      "**#4 t4**\n\n❌ failed · worker general\nStarted 3m ago · updated <1m ago · ran 3m\n\nBrief:\nb\n\nReason:\nNo network",
+      "**#4 t4**\n\n❌ failed · p/m · thinking medium\nStarted 3m ago · updated <1m ago · ran 3m\n\nBrief:\nb\n\nReason:\nNo network",
     );
     expect(await detail("⏳ #5 t5 · <1m")).toBe(
-      "**#5 t5**\n\n⏳ queued · worker general\nStarted <1m ago · updated <1m ago · ran <1m\n\nBrief:\nb",
+      "**#5 t5**\n\n⏳ queued · p/m · thinking medium\nStarted <1m ago · updated <1m ago · ran <1m\n\nBrief:\nb",
     );
     expect(await detail("⛔ #6 t6 · <1m")).toBe(
-      "**#6 t6**\n\n⛔ cancelled · worker general\nStarted <1m ago · updated <1m ago · ran <1m\n\nBrief:\nb",
+      "**#6 t6**\n\n⛔ cancelled · p/m · thinking medium\nStarted <1m ago · updated <1m ago · ran <1m\n\nBrief:\nb",
     );
   });
 
@@ -420,7 +435,7 @@ test("the 501st-oldest action expires", async () => {
   await menu.press({ ...msg, action: oldest.action });
   expect(f.edited.at(-1)!.markdown).toBe("This menu expired — send /settings again.");
   await menu.press({ ...msg, action: kept.action });
-  expect(f.edited.at(-1)!.markdown).toBe("**Models**\n\nCoS: not set\nWorker: same as CoS\nConsolidation: same as CoS");
+  expect(f.edited.at(-1)!.markdown).toBe("**Models**\n\nCoS: not set\nWorker: same as CoS\nConsolidation: same as CoS\nJob thinking: medium");
 });
 
 test("a stale /jobs button says send /jobs again", async () => {
@@ -440,7 +455,7 @@ test("every screen but a home has ‹ Back and ⌂ Home; Back returns to the pre
   expect(fake.sent.at(-1)!.buttons!.flat().map((b) => b.label)).toEqual(HOME);
   await fake.press("Models");
   expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*Models\*\*\n\nCoS: faux\//);
-  expect(labels()).toEqual(["CoS", "Worker", "Consolidation", "‹ Back", "⌂ Home"]);
+  expect(labels()).toEqual(["CoS", "Worker", "Consolidation", "Job thinking", "‹ Back", "⌂ Home"]);
   await fake.press("CoS");
   expect(fake.edited.at(-1)!.markdown).toBe("**Choose a provider**");
   expect(labels().slice(-2)).toEqual(["‹ Back", "⌂ Home"]);
@@ -471,7 +486,7 @@ test("a rejected or failed action shows ✗ on the screen it came from", async (
   const press = presser(menu, f);
   await menu.command({ ...msg, command: "settings" });
   await press("Models");
-  const models = "**Models**\n\nCoS: not set\nWorker: same as CoS\nConsolidation: same as CoS";
+  const models = "**Models**\n\nCoS: not set\nWorker: same as CoS\nConsolidation: same as CoS\nJob thinking: medium";
   for (const label of ["CoS", "p", "a"]) await press(label);
   expect(f.edited.at(-1)!.markdown).toBe(`✗ no such model\n\n${models}`);
   for (const label of ["CoS", "p", "a"]) await press(label);
@@ -716,6 +731,21 @@ describe("models", { timeout: 30_000 }, () => {
     expect(fake.edited.at(-1)!.markdown).toBe(`✓ Set models.consolidation. (change 2)\n\n${MODELS}`);
     expect(await tool(daemon, faux, "settings_get", { path: "models.consolidation" })).toBe("Not set.");
     expect(await tool(daemon, faux, "changes_list")).toMatch(/^2 \S+ Set models\.consolidation$/m);
+  });
+
+  test("Job thinking lists the levels, ticks the current one, and sets jobs.thinking, logged", async () => {
+    await reboot(testKit({ models: [{ id: "a" }] }));
+    await fake.receive({ command: "settings" });
+    await fake.press("Models");
+    await fake.press("Job thinking");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Job thinking**");
+    expect(labels()).toEqual(["off", "minimal", "low", "✓ medium", "high", "xhigh", "‹ Back", "⌂ Home"]);
+    await fake.press("high");
+    const high = MODELS.replace("Job thinking: medium", "Job thinking: high");
+    expect(fake.edited.at(-1)!.markdown).toBe(`✓ Set jobs.thinking. (change 1)\n\n${high}`);
+    expect(await tool(daemon, faux, "settings_get", { path: "jobs.thinking" })).toBe('"high"');
+    await fake.press("Job thinking");
+    expect(labels()).toContain("✓ high");
   });
 });
 

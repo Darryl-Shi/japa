@@ -1,7 +1,8 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { configure, type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
   existsSync,
   mkdirSync,
@@ -17,7 +18,7 @@ import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
-import { JobsDoc } from "../src/kernel/jobs/state.ts";
+import { JobDoc, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
 import { bootErrors, bootTest, NO_BWRAP, sandboxScratch, tempHome, testKit, waitFor } from "./helpers.ts";
 import {
@@ -63,18 +64,15 @@ const probe = defineJapaExtension({
   provides: { environment: [recording("local"), recording("probe")], tool: [probeWrite] },
 });
 
-/** Boots with `workers` written to `<home>/workers` and the probe extension. */
-async function bootWith(workers: Record<string, string> = {}): Promise<{ daemon: Daemon; faux: FauxProviderHandle }> {
-  const kit = testKit();
-  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
-  mkdirSync(join(home, "workers"));
-  for (const [name, text] of Object.entries(workers)) writeFileSync(join(home, "workers", `${name}.md`), text);
+/** Boots with the probe extension and `settings` over in-memory storage and the kit's CoS model. */
+async function bootWith(
+  settings: object = {},
+  kit = testKit(),
+): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string }> {
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
   const daemon = await boot({ home, extensions: [kit.extension, probe] });
-  return { daemon, faux: kit.faux };
+  return { daemon, faux: kit.faux, home };
 }
-
-const profile = (name: string, lines: string[]) =>
-  ["---", `name: ${name}`, "description: Test", ...lines, "---", "Work."].join("\n");
 
 const HOME = process.env.HOME;
 
@@ -119,7 +117,7 @@ async function bootSandboxed(
 /** Has job 1 (a coder) run `command` in bash; its result. */
 async function jobBash(daemon: Daemon, faux: FauxProviderHandle, command: string): Promise<string> {
   script(faux, (role, text) => {
-    if (text === "start") return call("job_start", { title: "Bash", brief: "bash", worker: "coder" });
+    if (text === "start") return call("job_start", { title: "Bash", brief: "bash" });
     if (text === "bash") return call("bash", { command });
     if (role === "toolResult" && text.includes("end")) return call("job_complete", { summary: "ran" });
   });
@@ -525,9 +523,14 @@ test.skipIf(NO_BWRAP)("a restart during the nudge nudges once and reports once",
   await daemon.close();
 });
 
-test.skipIf(NO_BWRAP)("the CoS and jobs are offered their own tools", async () => {
-  const { daemon, faux } = await bootWith({ shell: profile("shell", ["tools: [read, bash]", "extensions: []"]) });
-  const names = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
+const names = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
+
+/** Job 1's conversation. */
+const jobConversation = async (daemon: Daemon) =>
+  (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+
+test.skipIf(NO_BWRAP)("every job has all four coding tools and every available extension", async () => {
+  const { daemon, faux } = await bootWith();
   const root = await names(daemon.root);
   expect(root).toEqual(expect.arrayContaining(["read", "job_start", "probe_write"]));
   for (const name of ["write", "edit", "bash", "job_progress", "job_complete", "job_ask"]) {
@@ -535,13 +538,103 @@ test.skipIf(NO_BWRAP)("the CoS and jobs are offered their own tools", async () =
   }
 
   script(faux, (_role, text) => {
-    if (text === "start shell") return call("job_start", { title: "Shell", brief: "Look around", worker: "shell" });
+    if (text === "start shell") return call("job_start", { title: "Shell", brief: "Look around" });
+    if (text === "Look around") return call("job_complete", { summary: "looked" });
   });
   await ask(daemon, "start shell");
-  const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
-  const tools = await names(job);
-  expect(tools).toEqual(expect.arrayContaining(["read", "bash", "job_progress", "job_complete", "job_ask"]));
-  for (const name of ["write", "job_start", "probe_write"]) expect(tools).not.toContain(name);
+  const tools = await names(await jobConversation(daemon));
+  expect(tools).toEqual(
+    expect.arrayContaining(["read", "write", "edit", "bash", "job_progress", "job_complete", "job_ask", "skill_read", "probe_write"]),
+  );
+  expect(tools).not.toContain("job_start");
+  await waitFor(() => idle(daemon));
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("job_start without model or thinking uses the settings", async () => {
+  const kit = testKit({ models: [{ id: "a" }, { id: "x" }] });
+  const worker = { provider: kit.model.provider, modelId: "x" };
+  const { daemon, faux } = await bootWith({ models: { cos: kit.model, worker } }, kit);
+  script(faux, (_role, text) => {
+    if (text === "start") return call("job_start", { title: "T", brief: "Do it" });
+    if (text === "Do it") return call("job_complete", { summary: "done" });
+  });
+  await ask(daemon, "start");
+  const agent = await (await jobConversation(daemon)).agent(ctx);
+  expect(agent.model).toEqual(worker);
+  expect(agent.thinkingLevel).toBe("medium");
+  expect(agent.cwd).toBeUndefined();
+  expect((await jobs(daemon))["1"]).toMatchObject({ model: `${kit.model.provider}/x`, thinking: "medium" });
+  await waitFor(() => idle(daemon));
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("job_start with model and thinking stores and uses them", async () => {
+  const kit = testKit({ models: [{ id: "a" }, { id: "x" }] });
+  const { daemon, faux } = await bootWith({ jobs: { thinking: "low" } }, kit);
+  const model = `${kit.model.provider}/x`;
+  script(faux, (_role, text) => {
+    if (text === "start") return call("job_start", { title: "T", brief: "Do it", model, thinking: "high" });
+    if (text === "Do it") return call("job_complete", { summary: "done" });
+  });
+  await ask(daemon, "start");
+  const agent = await (await jobConversation(daemon)).agent(ctx);
+  expect(agent.model).toEqual({ provider: kit.model.provider, modelId: "x" });
+  expect(agent.thinkingLevel).toBe("high");
+  expect((await jobs(daemon))["1"]).toMatchObject({ model, thinking: "high" });
+  await waitFor(() => idle(daemon));
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("an unknown model is refused with the list", async () => {
+  const kit = testKit({ models: [{ id: "a" }, { id: "x" }] });
+  const { daemon, faux } = await bootWith({}, kit);
+  const list = `Models: ${kit.model.provider}/a, ${kit.model.provider}/x.`;
+  for (const model of ["nope/none", `${kit.model.provider}/none`, "no-slash"]) {
+    expect(await tool(daemon, faux, "job_start", { title: "T", brief: "b", model })).toBe(
+      `Unknown model "${model}". ${list}`,
+    );
+  }
+  expect(await jobs(daemon)).toEqual({});
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("a stored job with worker and environment still loads", async () => {
+  const kit = testKit();
+  const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
+  const hold = held();
+  script(kit.faux, (_role, text, signal) => {
+    if (text === "start") return call("job_start", { title: "Old", brief: "Take long" });
+    if (text === "Take long") return hold.wait(say("lost"), signal);
+  });
+  let daemon = await boot({ home, extensions: [kit.extension, probe] });
+  await ask(daemon, "start");
+  await waitFor(hold.started);
+  // As a job started by a worker profile left them.
+  const { conversationId } = (await jobs(daemon))["1"]!;
+  await daemon.harness.commit(async (tx) => {
+    const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs["1"]!;
+    delete job.model;
+    delete job.thinking;
+    Object.assign(job, { worker: "coder", environment: "local" });
+    Object.assign(await tx.doc(JobDoc, conversationId), { skills: ["nope"], environment: "local" });
+    const write = CodingTools.tools!.filter((t) => t.name !== "read");
+    await configure(tx, conversationId, { tools: { remove: write }, cwd: "/nowhere", instructions: "Old." });
+  }, ctx);
+  await daemon.close();
+
+  script(kit.faux, (_role, text) => {
+    if (text === "Take long") return call("job_complete", { summary: "finished" });
+  });
+  daemon = await boot({ home, extensions: [kit.extension, probe] });
+  const agent = await (await jobConversation(daemon)).agent(ctx);
+  expect(agent.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["read", "write", "edit", "bash", "probe_write"]));
+  expect(agent.cwd).toBeUndefined();
+  expect(agent.instructions).toBeUndefined();
+  expect(agent.model).toEqual(kit.model);
+  expect(agent.thinkingLevel).toBe("medium");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Old" done] finished']);
   await daemon.close();
 });
 
@@ -608,7 +701,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     // Held until the clone is looked at: completing deletes a clone with nothing to publish.
     const hold = held();
     script(faux, (role, text, signal) => {
-      if (text === "start") return call("job_start", { title: "Look", brief: "look", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Look", brief: "look" });
       if (text === "look") return call("bash", { command });
       if (role === "toolResult" && text.includes("marker")) return hold.wait(call("job_complete", { summary: "seen" }), signal);
     });
@@ -653,7 +746,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const { daemon, faux } = await bootSandboxed();
     const command = "tr '\\0' '\\n' </proc/1/environ; cat /proc/*/environ 2>/dev/null; echo end";
     script(faux, (role, text) => {
-      if (text === "start") return call("job_start", { title: "Env", brief: "env", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Env", brief: "env" });
       if (text === "env") return call("bash", { command });
       if (role === "toolResult" && text.includes("end")) return call("job_complete", { summary: "seen" });
     });
@@ -697,7 +790,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
   test("a dead sandbox fails one call, then restarts", async () => {
     const { daemon, faux } = await bootSandboxed();
     script(faux, (role, text) => {
-      if (text === "start") return call("job_start", { title: "Die", brief: "die", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Die", brief: "die" });
       // The env server, bwrap's only child: with it, the whole sandbox ends.
       if (text === "die") return call("bash", { command: "kill -9 $PPID" });
       if (role === "toolResult" && text.includes("sandbox stopped")) return call("bash", { command: "echo ok" });
@@ -718,7 +811,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const system = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     expect(process.env.PATH).toBe(`${dirname(process.execPath)}:${system}`);
     script(faux, (role, text) => {
-      if (text === "start") return call("job_start", { title: "Path", brief: "path", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Path", brief: "path" });
       if (text === "path") return call("bash", { command: 'echo "$PATH"' });
       if (role === "toolResult" && text.trim() === original) return call("job_complete", { summary: "same" });
     });
@@ -730,7 +823,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     // A second boot in this process still gives jobs the original.
     const again = await bootSandboxed();
     script(again.faux, (_role, text) => {
-      if (text === "start") return call("job_start", { title: "Path", brief: "path", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Path", brief: "path" });
       if (text === "path") return call("bash", { command: 'echo "$PATH"' });
     });
     await ask(again.daemon, "start");
@@ -761,7 +854,7 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
   test("a job's skill goes live when it completes", async () => {
     const { daemon, faux, home } = await bootSandboxed();
     script(faux, (role, text) => {
-      if (text === "start") return call("job_start", { title: "Hello", brief: "hello", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello" });
       if (text === "hello") return call("bash", { command: writeHello(home) });
       if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote it" });
     });
@@ -778,7 +871,7 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
     const { daemon, faux, home } = await bootSandboxed();
     const hold = held();
     script(faux, (role, text, signal) => {
-      if (text === "start") return call("job_start", { title: "Hello", brief: "hello", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello" });
       if (text === "hello") return call("bash", { command: writeHello(home) });
       if (role === "toolResult" && text.trim() === "written") {
         return hold.wait(call("job_complete", { summary: "wrote it" }), signal);
@@ -802,7 +895,7 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
     const beat = join(user, "beat");
     const hold = held();
     script(faux, (role, text, signal) => {
-      if (text === "start") return call("job_start", { title: "Beat", brief: "beat", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Beat", brief: "beat" });
       if (text === "beat") return call("bash", { command: heartbeat(beat) });
       if (role === "toolResult" && text.trim() === "beating") {
         return hold.wait(call("job_complete", { summary: "left it running" }), signal);
@@ -822,7 +915,7 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
     const { daemon, faux, user } = await bootSandboxed();
     const beat = join(user, "beat");
     script(faux, (role, text) => {
-      if (text === "start") return call("job_start", { title: "Beat", brief: "beat", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Beat", brief: "beat" });
       if (text === "beat") return call("bash", { command: heartbeat(beat) });
       if (role === "toolResult" && text.trim() === "beating") return call("job_ask", { question: "Stop it?" });
       if (text === "stop") return call("job_stop", { id: "1" });
@@ -875,7 +968,7 @@ async function slowJob() {
     if (existsSync(user)) writeFileSync(gate, "");
   });
   script(faux, (role, text) => {
-    if (text === "start") return call("job_start", { title: "Slow", brief: "slow", worker: "coder" });
+    if (text === "start") return call("job_start", { title: "Slow", brief: "slow" });
     if (text === "slow") return call("bash", { command: writeSlow(home, beat, gate) });
     if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote it" });
   });
@@ -935,7 +1028,7 @@ describe.skipIf(NO_BWRAP)("going live, slowly", { timeout: 120_000 }, () => {
     const first = held();
     const more = held();
     script(faux, (role, text, signal) => {
-      if (text === "start") return call("job_start", { title: "Slow", brief: "slow", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Slow", brief: "slow" });
       if (text === "slow") return call("bash", { command: writeSlow(home, beat, gate) });
       if (role === "toolResult" && text.trim() === "written") {
         return first.wait(call("job_complete", { summary: "wrote it" }), signal);
@@ -979,7 +1072,7 @@ describe.skipIf(NO_BWRAP)("finishing", { timeout: 60_000 }, () => {
     const beat = join(user, "beat");
     const report = held();
     script(faux, (role, text, signal) => {
-      if (text === "start") return call("job_start", { title: "Beat", brief: "beat", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Beat", brief: "beat" });
       if (text === "beat") return call("bash", { command: heartbeat(beat) });
       if (role === "toolResult" && text.trim() === "beating") {
         return fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom" });
@@ -998,7 +1091,7 @@ describe.skipIf(NO_BWRAP)("finishing", { timeout: 60_000 }, () => {
   test("a job done after its nudge publishes too", async () => {
     const { daemon, faux, home } = await bootSandboxed();
     script(faux, (role, text) => {
-      if (text === "start") return call("job_start", { title: "Hello", brief: "hello", worker: "coder" });
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello" });
       if (text === "hello") return call("bash", { command: writeHello(home) });
       if (role === "toolResult" && text.trim() === "written") return say("I wrote it");
       if (text === NUDGE) return say("Wrote skills/hello");
@@ -1020,30 +1113,14 @@ test("the CoS has no install tool", async () => {
   await daemon.close();
 });
 
-const badWorkers = {
-  "bad-tool": profile("bad-tool", ["tools: [grep]"]),
-  "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
-  "bad-env": profile("bad-env", ["environment: nowhere"]),
-  "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
-};
-
-test("bad worker profiles are reported", async () => {
-  const { daemon } = await bootWith(badWorkers);
-  expect(
-    bootErrors(daemon)
-      .map((e) => e.name)
-      .sort(),
-  ).toEqual(["worker:bad-env", "worker:bad-ext", "worker:bad-model", "worker:bad-tool"]);
-  await daemon.close();
-});
-
-test.skipIf(NO_BWRAP)("a bad worker profile cannot be started", async () => {
-  const { daemon, faux } = await bootWith(badWorkers);
-  script(faux, (_role, text) => {
-    if (text === "start bad") return call("job_start", { title: "Bad", brief: "b", worker: "bad-tool" });
-  });
-  await ask(daemon, "start bad");
-  expect(await texts(daemon.root, "toolResult")).toEqual(['Unknown worker "bad-tool". Workers: builder, coder, general, operator, researcher.']);
-  expect(await jobs(daemon)).toEqual({});
+test("a leftover workers dir shows in status", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  mkdirSync(join(home, "workers"));
+  writeFileSync(join(home, "workers", "coder.md"), "---\nname: coder\ndescription: Codes\n---\nCode.");
+  const daemon = await boot({ home, extensions: [kit.extension] });
+  expect(bootErrors(daemon)).toEqual([
+    { name: "workers", error: "~/.japa/workers/ is no longer used: jobs have no profiles" },
+  ]);
   await daemon.close();
 });

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
@@ -8,11 +8,7 @@ import { bootTest, tempHome } from "./helpers.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const skills = readdirSync(join(packageRoot, "skills"));
-const workers = readdirSync(join(packageRoot, "workers")).map((f) => f.replace(/\.md$/, ""));
-const files = [
-  ...skills.map((s) => join(packageRoot, "skills", s, "SKILL.md")),
-  ...workers.map((w) => join(packageRoot, "workers", `${w}.md`)),
-];
+const files = skills.map((s) => join(packageRoot, "skills", s, "SKILL.md"));
 
 test("the packaged skills are the default set", () => {
   expect(skills.sort()).toEqual([
@@ -26,13 +22,16 @@ test("the packaged skills are the default set", () => {
   ]);
 });
 
-test("every packaged skill and worker passes japa check", async () => {
+test("every packaged skill passes japa check", async () => {
   const home = tempHome();
   for (const name of skills) expect([name, await check("skill", name, packageRoot, home)]).toEqual([name, []]);
-  for (const name of workers) expect([name, await check("worker", name, packageRoot, home)]).toEqual([name, []]);
 });
 
-test("every tool name the skills and workers mention exists", async () => {
+test("there are no packaged worker profiles", () => {
+  expect(existsSync(join(packageRoot, "workers"))).toBe(false);
+});
+
+test("every tool name the skills mention exists", async () => {
   const { daemon } = await bootTest();
   const tools = new Set(daemon.registry.snapshot().tools().map((t) => t.tool.name));
   await daemon.close();

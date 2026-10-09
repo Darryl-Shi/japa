@@ -11,14 +11,13 @@ import { capabilities } from "../src/kernel/capabilities.ts";
 import { bootTest, testKit } from "./helpers.ts";
 import { ask, call, say, textOf } from "./jobs-helpers.ts";
 
-test("capabilities lists extensions, workers, models and surfaces", () => {
+test("capabilities have no Workers section", () => {
   const text = capabilities({
     extensions: [
       { name: "gateway", summary: "Lets you chat from the terminal", provides: { surface: [{ name: "gateway" }] } },
       { name: "notes", summary: "Keeps notes" },
       { name: "fake", summary: "Fake chat", provides: { messaging: [{ name: "fake" }] } },
     ],
-    profiles: new Map([["general", { name: "general", description: "Does general work" }]]),
     models: { cos: { provider: "anthropic", modelId: "big" }, consolidation: { provider: "openai", modelId: "small" } },
   });
   expect(text).toBe(
@@ -27,8 +26,6 @@ test("capabilities lists extensions, workers, models and surfaces", () => {
       "- gateway: Lets you chat from the terminal",
       "- notes: Keeps notes",
       "- fake: Fake chat",
-      "Workers:",
-      "- general: Does general work",
       "Models: cos anthropic/big, worker same as cos, consolidation openai/small",
       "Surfaces: gateway, fake",
     ].join("\n"),
@@ -46,7 +43,7 @@ function run(faux: FauxProviderHandle, respond: (text: string) => AssistantMessa
   return systems;
 }
 
-test("the capabilities section sits between identity and about-you and names extensions and workers", async () => {
+test("the capabilities section sits between identity and about-you and names extensions", async () => {
   const notes = { name: "notes", summary: "Keeps the user's notes" };
   const { daemon, faux } = await bootTest({}, [notes]);
   const systems = run(faux, (text) => (text === "remember" ? call("memory_remember", { text: "Dana likes tea" }) : undefined));
@@ -57,7 +54,7 @@ test("the capabilities section sits between identity and about-you and names ext
   expect(at("chief of staff")).toBeLessThan(at("Extensions:"));
   expect(at("Extensions:")).toBeLessThan(at("Dana likes tea"));
   expect(prompt).toContain("- notes: Keeps the user's notes");
-  expect(prompt).toMatch(/Workers:\n- builder: .*\n- coder: .*\n- general: .*\n- operator: .*\n- researcher: /);
+  expect(prompt).not.toContain("Workers:");
   await daemon.close();
 });
 

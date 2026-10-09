@@ -1,5 +1,4 @@
 import type { ToolRegistration } from "@earendil-works/pi-durable";
-import { createModels } from "@earendil-works/pi-ai";
 import { execFile } from "node:child_process";
 import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,21 +6,18 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boot } from "./boot.ts";
-import type { EnvironmentAdapter } from "./contracts.ts";
 import type { JapaExtension } from "./extension.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { fauxKit } from "./kit.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
-import { loadSkills } from "./skills.ts";
-import { profileError, readProfile } from "./workers.ts";
 import { cachedCopy } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const packaged = join(packageRoot, "extensions");
 
-export const CHECK_KINDS = ["skill", "worker", "extension"] as const;
+export const CHECK_KINDS = ["skill", "extension"] as const;
 
-/** The problems with the skill, worker profile or extension `name` in `dir` (the workspace or staging root); `[]` passes. */
+/** The problems with the skill or extension `name` in `dir` (the workspace or staging root); `[]` passes. */
 export async function check(
   kind: (typeof CHECK_KINDS)[number],
   name: string,
@@ -30,7 +26,6 @@ export async function check(
 ): Promise<string[]> {
   linkSdk(home, packageRoot); // so `dir`'s extensions resolve "japa/sdk"
   if (kind === "skill") return checkSkill(name, dir);
-  if (kind === "worker") return checkWorker(name, dir, home);
   return checkExtension(name, dir, home);
 }
 
@@ -46,28 +41,6 @@ function checkSkill(name: string, dir: string): string[] {
   } catch (error) {
     return [message(error)];
   }
-}
-
-/** Checks the profile against the builtin models, built-in tools, and the packaged and `dir`'s extensions and skills. */
-async function checkWorker(name: string, dir: string, home: string): Promise<string[]> {
-  let profile;
-  try {
-    profile = readProfile(join(dir, "workers", `${name}.md`), home);
-  } catch (error) {
-    return [message(error)];
-  }
-  if (profile.name !== name) return [`name "${profile.name}" must match the file name "${name}"`];
-  const found = discoverExtensions([packaged, join(dir, "extensions")]);
-  const { extensions } = await loadExtensions(found);
-  const environments = extensions.flatMap((e) => (e.provides?.environment ?? []) as EnvironmentAdapter[]);
-  const error = profileError(
-    profile,
-    createModels(),
-    new Map(environments.map((a) => [a.name, a])),
-    new Map(extensions.filter((e) => e.provides?.tool || e.durable).map((e) => [e.name, e])),
-    loadSkills([join(packageRoot, "skills"), ...found.map((f) => join(f.file, "..", "skills")), join(dir, "skills")]).skills,
-  );
-  return error === undefined ? [] : [error];
 }
 
 /** Manifest, typecheck, the extension's own tests and a smoke load, stopping at the first that fails. */

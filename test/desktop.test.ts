@@ -46,7 +46,8 @@ test("a default install loads the desktop without touching Docker", async () => 
   expect(daemon.status().extensions).toContainEqual({ name: "desktop",
     summary: "Gives me my own computer: a desktop with a browser and apps that I can see and operate",
     provides: ["tool"], status: "noVNC: http://127.0.0.1:6080/vnc.html (password: secret desktop.vncPassword)", state: "on" });
-  expect(daemon.capabilities()).toContain("- operator: Operates japa's own desktop computer — browser and apps — to get things done on websites and in programs.");
+  expect(daemon.capabilities()).toContain("- desktop: Gives me my own computer");
+  expect(daemon.capabilities()).not.toContain("- operator: Operates japa's own desktop computer — browser and apps — to get things done on websites and in programs.");
   await daemon.close();
 });
 

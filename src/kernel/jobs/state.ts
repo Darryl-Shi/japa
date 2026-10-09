@@ -1,12 +1,18 @@
 import { defineDoc, type ConversationId, type EntryId } from "@earendil-works/pi-durable";
+import type { ThinkingLevel } from "../settings.ts";
 
 export type JobStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "cancelled";
 
+/**
+ * A job. `model` (`<provider>/<modelId>`) and `thinking` are what it runs on; one stored before jobs had them has
+ * neither, and its worker profile's name in `worker`, which is ignored.
+ */
 export type Job = {
   id: string;
   title: string;
   brief: string;
-  worker: string;
+  model?: string;
+  thinking?: ThinkingLevel;
   status: JobStatus;
   conversationId: ConversationId;
   progress?: string;
@@ -33,9 +39,9 @@ export const JobsDoc = defineDoc<{ nextId: number; jobs: Record<string, Job> }>(
   initial: () => ({ nextId: 1, jobs: {} }),
 });
 
-// On each job's conversation. `skills` is its profile's, until profiles go; one stored with an `environment` (the
-// profile's, before every job ran in its sandbox) still loads.
-export const JobDoc = defineDoc<{ jobId: string; skills?: string[] }>({
+// On each job's conversation. One stored with its profile's `skills` or `environment`, from before jobs had no
+// profiles, still loads; both are ignored.
+export const JobDoc = defineDoc<{ jobId: string }>({
   kind: "japa.job",
   version: 1,
   scope: "conversation",

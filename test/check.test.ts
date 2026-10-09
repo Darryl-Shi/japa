@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { check } from "../src/kernel/check.ts";
+import { CHECK_KINDS, check } from "../src/kernel/check.ts";
 import { tempHome } from "./helpers.ts";
 
 /** A temp home holding `files` (by path relative to it), used as both the checked dir and the home. */
@@ -46,31 +46,8 @@ test("a good skill passes", async () => {
   expect(await check("skill", "notes", home, home)).toEqual([]);
 });
 
-test("a worker naming an unknown tool fails", async () => {
-  const home = staged({ "workers/scout.md": "---\nname: scout\ndescription: Looks around\ntools: [read, fly]\n---\nLook." });
-  expect(await check("worker", "scout", home, home)).toEqual([`unknown tool "fly"`]);
-});
-
-test("a worker whose name does not match its file fails", async () => {
-  const home = staged({ "workers/scout.md": "---\nname: other\ndescription: Looks around\ntools: [read]\n---\nLook." });
-  expect(await check("worker", "scout", home, home)).toEqual([`name "other" must match the file name "scout"`]);
-});
-
-test("a good worker passes", async () => {
-  const home = staged({
-    "skills/notes/SKILL.md": "---\nname: notes\ndescription: Takes notes\n---\nBody",
-    "workers/scout.md": "---\nname: scout\ndescription: Looks around\ntools: [read]\nskills: [notes]\n---\nLook.",
-  });
-  expect(await check("worker", "scout", home, home)).toEqual([]);
-});
-
-test("a worker may use a skill shipped by an extension", async () => {
-  const home = staged({
-    "extensions/hello/index.ts": extension("hello", "hello"),
-    "extensions/hello/skills/greeting/SKILL.md": "---\nname: greeting\ndescription: Greets\n---\nBody",
-    "workers/scout.md": "---\nname: scout\ndescription: Looks around\ntools: [read]\nskills: [greeting]\n---\nLook.",
-  });
-  expect(await check("worker", "scout", home, home)).toEqual([]);
+test("the check kinds are skill and extension", () => {
+  expect(CHECK_KINDS).toEqual(["skill", "extension"]);
 });
 
 describe("extensions", { timeout: 60_000 }, () => {
@@ -136,6 +113,21 @@ describe("extensions", { timeout: 60_000 }, () => {
 
     expect(`${r.stdout}${r.stderr}`.trim()).toBe("ok");
   });
+});
+
+test("japa check worker is refused", () => {
+  const dir = staged({ "workers/scout.md": "---\nname: scout\ndescription: Looks around\n---\nLook." });
+  const main = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
+  const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", main, "check", "worker", "scout"], {
+    cwd: dir,
+    env: { ...process.env, JAPA_HOME: tempHome() },
+    encoding: "utf8",
+  });
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("Usage: japa check <skill|extension> <name>");
+  const usage = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", main], { encoding: "utf8" });
+  expect(usage.stderr).toMatch(/^ {2}check <skill\|extension> <name>$/m);
+  expect(usage.stderr).not.toMatch(/worker/);
 });
 
 test("japa check prints ok and exits 0 for a good skill", () => {

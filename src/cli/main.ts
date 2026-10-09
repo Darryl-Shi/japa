@@ -26,8 +26,8 @@ Commands:
   daemon   Run japa in the foreground
   chat     Chat with japa
   status   Show the model, extensions, and errors
-  check <skill|worker|extension> <name>
-           Check a skill, worker profile or extension in the current directory
+  check <skill|extension> <name>
+           Check a skill or extension in the current directory
   rollback <skill|extension> <name> [to]
            Roll it back to its last known good version, or to the git ref to
   safe-mode [--default-adapters]
@@ -58,7 +58,7 @@ async function status(home: string): Promise<void> {
 async function checkCommand(home: string): Promise<void> {
   const [kind, name] = process.argv.slice(3);
   const known = CHECK_KINDS.find((k) => k === kind);
-  if (known === undefined || name === undefined) throw new Error("Usage: japa check <skill|worker|extension> <name>");
+  if (known === undefined || name === undefined) throw new Error("Usage: japa check <skill|extension> <name>");
   const problems = await check(known, name, process.cwd(), home);
   console.log(problems.length === 0 ? "ok" : problems.join("\n"));
   if (problems.length > 0) process.exitCode = 1;

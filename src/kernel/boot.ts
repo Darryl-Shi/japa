@@ -104,7 +104,7 @@ export type Daemon = {
   capabilities(): string;
   /** Runs `Reflect` on the stored transcript and waits for it. */
   reflect(): Promise<void>;
-  /** Reloads the changed workspace extensions, skills and worker profiles; its errors also go to `status()`. */
+  /** Reloads the changed workspace extensions and the skills; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
   /** Tags the workspace's HEAD as last known good, under the workspace lock. */
   markGood(): Promise<void>;
@@ -532,7 +532,6 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       sources,
       hashes,
       models,
-      environments,
       registry,
       selection,
       cos,

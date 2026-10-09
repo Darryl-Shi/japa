@@ -7,7 +7,6 @@ function job(id: number, status: JobStatus, extra: Partial<Job> = {}): Job {
     id: String(id),
     title: `t${id}`,
     brief: "b",
-    worker: "general",
     status,
     conversationId: id as ConversationId,
     createdAt: id,

@@ -3,7 +3,6 @@ import { defineExtension, defineTool, type Extension, section } from "@earendil-
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "./frontmatter.ts";
-import { JobDoc } from "./jobs/state.ts";
 
 export type Skill = { name: string; description: string; dir: string; file: string /* SKILL.md path */ };
 
@@ -42,7 +41,7 @@ export function skillAt(skills: ReadonlyMap<string, Skill>, dir: string): Skill 
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-/** The skills section (all skills, or a job's own) and `skill_read`, which reads skill files on the kernel side. */
+/** The skills section and `skill_read`, which reads skill files on the kernel side. */
 export function skillsExtension(skills: ReadonlyMap<string, Skill>): Extension {
   const skillRead = defineTool({
     name: "skill_read",
@@ -62,13 +61,10 @@ export function skillsExtension(skills: ReadonlyMap<string, Skill>): Extension {
     name: "japa-skills",
     tools: [skillRead],
     sections: [
-      section("skills", async ({ conversationId, read }, context) => {
-        const only = (await read.snapshot(JobDoc, conversationId, context))?.skills;
-        const shown = [...skills.values()].filter((s) => only === undefined || only.includes(s.name));
-        if (shown.length === 0) return undefined;
-        return [...shown.map((s) => `- ${s.name}: ${s.description}`), "Load one with skill_read when it applies."].join(
-          "\n",
-        );
+      section("skills", () => {
+        if (skills.size === 0) return undefined;
+        const lines = [...skills.values()].map((s) => `- ${s.name}: ${s.description}`);
+        return [...lines, "Load one with skill_read when it applies."].join("\n");
       }),
     ],
   });

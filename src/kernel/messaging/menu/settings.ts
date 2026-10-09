@@ -1,7 +1,7 @@
 import type { JsonObject, ModelRef, ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { Change } from "../../changes.ts";
 import type { KernelContext, MessagingContext } from "../../contracts.ts";
-import { getPath, type Settings } from "../../settings.ts";
+import { DEFAULT_SETTINGS, getPath, type Settings, THINKING_LEVELS } from "../../settings.ts";
 import { extensionsMenu } from "./extensions.ts";
 import { ago, type Button, type Nav, PAGE, type Page } from "./nav.ts";
 import { schedulesMenu } from "./schedules.ts";
@@ -57,18 +57,31 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
   const extensions = extensionsMenu(nav, messaging, home);
   const schedules = schedulesMenu(nav, messaging, home);
 
-  // Each role's model; an unset Worker or Consolidation uses the CoS's.
+  /** `jobs.thinking`: the thinking level of a job started without one. */
+  const jobThinking = async () => (await current()).jobs?.thinking ?? DEFAULT_SETTINGS.jobs.thinking;
+
+  // Each role's model, an unset Worker or Consolidation using the CoS's; then the jobs' thinking level.
   const models: Page = async (outcome) => {
     const refs = (await current()).models;
     const value = (role: Role) => refText(refs[role]) ?? (role === "cos" ? "not set" : "same as CoS");
+    const lines = ROLES.map(([label, role]) => `${label}: ${value(role)}`);
     return nav.paged({
       title: "Models",
-      body: ROLES.map(([label, role]) => `${label}: ${value(role)}`).join("\n"),
-      items: ROLES.map(([label, role]) => [label, providers(role)] as const),
+      body: [...lines, `Job thinking: ${await jobThinking()}`].join("\n"),
+      items: [...ROLES.map(([label, role]) => [label, providers(role)] as const), ["Job thinking", thinking] as const],
       back: home,
       home,
       outcome,
     });
+  };
+  // The thinking levels, the current one ticked.
+  const thinking: Page = async (outcome) => {
+    const now = await jobThinking();
+    const items = THINKING_LEVELS.map((level) => {
+      const set = () => messaging.setSetting("jobs.thinking", level);
+      return [`${level === now ? "✓ " : ""}${level}`, nav.perform(set, models)] as const;
+    });
+    return nav.paged({ title: "Job thinking", items, back: models, home, outcome });
   };
   // The providers with credentials and at least one model.
   const providers = (role: Role): Page => async (outcome) => {

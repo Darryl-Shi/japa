@@ -1,19 +1,20 @@
-import { type Message, StringEnum, Type } from "@earendil-works/pi-ai";
+import { type Message, type Models, StringEnum, Type } from "@earendil-works/pi-ai";
 import {
+  type AgentChange,
   configure,
   defineExtension,
   defineTool,
   type Extension,
+  type ModelRef,
   ROOT_CONVERSATION_ID,
   section,
   type Tx,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { sandboxRefusal } from "../sandbox/jobs.ts";
-import type { Settings } from "../settings.ts";
-import type { WorkerProfile } from "../workers.ts";
+import { type Settings, THINKING_LEVELS } from "../settings.ts";
 import { Anchor, BACKGROUND, type JobHooks, jobRun } from "./run.ts";
-import { board, byId, goingLive, JobDoc, JobsDoc } from "./state.ts";
+import { board, byId, goingLive, type Job, JobDoc, JobsDoc } from "./state.ts";
 import { WorkerExtension } from "./worker.ts";
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -25,8 +26,8 @@ export function line(m: Message): string {
 }
 
 export type JobsOptions = JobHooks & {
-  profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
+  models: Models;
   extensions: ReadonlyMap<string, Extension>; // extension-built Pi Durable extensions, by japa extension name
   available: () => ReadonlySet<string>; // the names of the extensions agents may use now
   skills: Extension;
@@ -34,14 +35,28 @@ export type JobsOptions = JobHooks & {
   sandboxProblem: () => string | undefined; // why jobs can't run here, if they can't
 };
 
-/** The agent of a job run by `profile`, with the available extensions it names (all available ones when unnamed). */
-function agentOf({ settings, extensions, available, skills, safety }: JobsOptions, profile: WorkerProfile) {
-  const names = (profile.extensions ?? [...extensions.keys()]).filter((name) => available().has(name));
+/** `<provider>/<modelId>` as a model ref (the id may hold more slashes); undefined when it isn't one. */
+export function parseModel(text: string | undefined): ModelRef | undefined {
+  const slash = text?.indexOf("/") ?? -1;
+  if (text === undefined || slash <= 0 || slash === text.length - 1) return undefined;
+  return { provider: text.slice(0, slash), modelId: text.slice(slash + 1) };
+}
+
+const modelText = (ref: ModelRef) => `${ref.provider}/${ref.modelId}`;
+
+/**
+ * The agent of `job`: its model and thinking level (the settings' when it has none, as a job stored before it could),
+ * and every coding tool, skill and available extension. One started by a worker profile may have stored a tool filter,
+ * a cwd and instructions: they are cleared.
+ */
+function agentOf(
+  { settings, extensions, available, skills, safety }: JobsOptions,
+  job: Pick<Job, "model" | "thinking">,
+): AgentChange {
+  const names = [...extensions.keys()].filter((name) => available().has(name));
   return {
-    model: profile.model ?? settings.models.worker ?? settings.models.cos,
-    thinkingLevel: profile.thinking,
-    cwd: profile.cwd,
-    instructions: profile.instructions,
+    model: parseModel(job.model) ?? settings.models.worker ?? settings.models.cos,
+    thinkingLevel: job.thinking ?? settings.jobs.thinking,
     extensions: [
       WorkerExtension,
       CodingTools,
@@ -49,53 +64,77 @@ function agentOf({ settings, extensions, available, skills, safety }: JobsOption
       safety,
       ...names.flatMap((name) => extensions.get(name) ?? []),
     ],
-    tools: { remove: CodingTools.tools!.filter((t) => !profile.tools.includes(t.name)) },
+    tools: null,
+    cwd: null,
+    instructions: null,
   };
 }
 
+/** The models a job can run on: `<provider>/<modelId>` of each one whose provider has credentials. */
+async function availableModels(models: Models): Promise<string[]> {
+  return (await models.getAvailable()).map((m) => `${m.provider}/${m.id}`);
+}
+
 /**
- * Re-applies each unfinished job's profile, so it picks up reloaded extensions and skills; one whose conversation is
+ * Re-applies each unfinished job's agent, so it picks up reloaded extensions and skills; one whose conversation is
  * gone is skipped, so it can't fail a boot.
  */
 export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<void> {
   const { jobs } = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
   for (const job of Object.values(jobs)) {
-    const profile = options.profiles.get(job.worker);
-    if (profile === undefined || !["queued", "running", "needs_input"].includes(job.status)) continue;
+    if (!["queued", "running", "needs_input"].includes(job.status)) continue;
     if ((await tx.conversation(job.conversationId)) === undefined) continue;
-    await configure(tx, job.conversationId, agentOf(options, profile));
+    await configure(tx, job.conversationId, agentOf(options, job));
   }
 }
 
 /** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
 export function jobsExtension(options: JobsOptions): Extension {
-  const { profiles, settings } = options;
+  const { settings } = options;
   const { JobRun, start } = jobRun(settings, { publish: options.publish, closeSandbox: options.closeSandbox });
 
   const jobStart = defineTool({
     name: "job_start",
     description:
-      "Start a background job: a worker that does the brief and reports back. Workers:\n" +
-      [...profiles.values()].map((p) => `${p.name}: ${p.description}`).join("\n"),
-    parameters: Type.Object({ title: Type.String(), brief: Type.String(), worker: Type.Optional(Type.String()) }),
-    execute: async ({ title, brief, worker: name = "general" }, api, context) => {
+      "Start a background job: a worker that does the brief and reports back. It has read, write, edit and bash, " +
+      "every skill and every extension's tools.",
+    parameters: Type.Object({
+      title: Type.String(),
+      brief: Type.String(),
+      model: Type.Optional(
+        Type.String({ description: '"<provider>/<modelId>"; by default, the worker model (models.worker).' }),
+      ),
+      thinking: Type.Optional(
+        StringEnum([...THINKING_LEVELS], { description: "How hard the model thinks; by default, jobs.thinking." }),
+      ),
+    }),
+    execute: async ({ title, brief, model: name, thinking }, api, context) => {
       const problem = options.sandboxProblem();
       if (problem !== undefined) return reply(sandboxRefusal(problem));
-      const profile = profiles.get(name);
-      if (profile === undefined) return reply(`Unknown worker "${name}". Workers: ${[...profiles.keys()].join(", ")}.`);
+      let model = settings.models.worker ?? settings.models.cos!;
+      if (name !== undefined) {
+        // Unknown, or its provider has no credentials.
+        const available = await availableModels(options.models);
+        const ref = parseModel(name);
+        if (ref === undefined || !available.includes(modelText(ref))) {
+          return reply(`Unknown model "${name}". Models: ${available.join(", ")}.`);
+        }
+        model = ref;
+      }
+      const job = { model: modelText(model), thinking: thinking ?? settings.jobs.thinking };
       const started = await api.commit(async (tx) => {
         const doc = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
         const id = String(doc.nextId++);
         const anchor = await tx.createTask(Anchor, null, BACKGROUND);
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        await configure(tx, child.id, agentOf(options, profile));
-        Object.assign(await tx.doc(JobDoc, child.id), { jobId: id, ...(profile.skills && { skills: profile.skills }) });
+        await configure(tx, child.id, agentOf(options, job));
+        Object.assign(await tx.doc(JobDoc, child.id), { jobId: id });
         const now = Date.now();
         doc.jobs[id] = {
           id,
           title,
           brief,
-          worker: name,
+          ...job,
           status: "queued",
           conversationId: child.id,
           createdAt: now,

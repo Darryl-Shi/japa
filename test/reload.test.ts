@@ -96,24 +96,25 @@ test.skipIf(NO_BWRAP)("a running job gets a new extension's tools", async () => 
   await daemon.close();
 });
 
-test.skipIf(NO_BWRAP)("new skills and workers are picked up", async () => {
+test.skipIf(NO_BWRAP)("new skills are picked up, by the CoS and jobs", async () => {
   const { daemon, faux, home } = await bootTest();
   write(home, "skills/notes/SKILL.md", "---\nname: notes\ndescription: Take notes\n---\nWrite them down.");
-  write(home, "workers/scribe.md", "---\nname: scribe\ndescription: Writes\n---\nWrite.");
   await daemon.reconcile();
-  let system = "";
+  const systems: Record<string, string> = {};
   faux.setResponses(
     Array.from({ length: 10 }, () => ({ messages }) => {
       const last = textOf(messages.findLast((m) => m.role !== "system")!);
-      if (last !== "start") return say("ok");
-      system = messages.flatMap((m) => (m.role === "system" ? [getSystemMessageText(m)] : [])).join("\n");
-      return call("job_start", { title: "Notes", brief: "brief", worker: "scribe" });
+      systems[last] = messages.flatMap((m) => (m.role === "system" ? [getSystemMessageText(m)] : [])).join("\n");
+      if (last === "start") return call("job_start", { title: "Notes", brief: "brief" });
+      if (last === "brief") return call("job_complete", { summary: "noted" });
+      return say("ok");
     }),
   );
   await ask(daemon, "start");
-  expect(system).toContain("- notes: Take notes");
-  expect((await jobs(daemon))["1"]).toMatchObject({ worker: "scribe" });
   await waitFor(() => idle(daemon));
+  expect(systems.start).toContain("- notes: Take notes");
+  expect(systems.brief).toContain("- notes: Take notes");
+  expect((await jobs(daemon))["1"]!.status).toBe("done");
   await daemon.close();
 });
 
@@ -193,9 +194,13 @@ test("a new extension's settings schema applies", async () => {
   await daemon.close();
 });
 
-test("skill and worker errors are returned", async () => {
+test("skill errors are returned; a workers dir is noticed", async () => {
   const { daemon, home } = await bootTest();
-  write(home, "workers/scribe.md", "---\nname: scribe\ndescription: Writes\ntools: [nope]\n---\nWrite.");
-  expect((await daemon.reconcile()).errors).toEqual([{ name: "worker:scribe", error: 'unknown tool "nope"' }]);
+  write(home, "skills/bad/SKILL.md", "---\nname: bad\n---\nNo description.");
+  write(home, "workers/scribe.md", "---\nname: scribe\ndescription: Writes\n---\nWrite.");
+  expect((await daemon.reconcile()).errors).toEqual([
+    { name: "skill:bad", error: "description is required" },
+    { name: "workers", error: "~/.japa/workers/ is no longer used: jobs have no profiles" },
+  ]);
   await daemon.close();
 });

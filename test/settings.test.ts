@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { DEFAULT_SETTINGS, japaHome, loadSettings } from "../src/kernel/settings.ts";
+import { DEFAULT_SETTINGS, japaHome, loadSettings, mergeSettings, validateSettings } from "../src/kernel/settings.ts";
 import { tempHome } from "./helpers.ts";
 
 test("defaults when settings.json is missing", () => {
@@ -22,8 +22,20 @@ test("storage and secrets merge over their defaults", () => {
 });
 
 test("jobs merges over its default", () => {
-  expect(loadSettings(tempHome({ jobs: {} })).jobs).toEqual({ maxConcurrent: 4, keepFinishedDays: 7 });
-  expect(loadSettings(tempHome({ jobs: { maxConcurrent: 2 } })).jobs).toEqual({ maxConcurrent: 2, keepFinishedDays: 7 });
+  expect(loadSettings(tempHome({ jobs: {} })).jobs).toEqual({ maxConcurrent: 4, keepFinishedDays: 7, thinking: "medium" });
+  expect(loadSettings(tempHome({ jobs: { maxConcurrent: 2 } })).jobs).toEqual({
+    maxConcurrent: 2,
+    keepFinishedDays: 7,
+    thinking: "medium",
+  });
+});
+
+test("jobs.thinking rejects an unknown level", () => {
+  const cos = { provider: "p", modelId: "m" };
+  const valid = (thinking: string) => validateSettings(mergeSettings({ models: { cos }, jobs: { thinking } }), {});
+  for (const level of ["off", "minimal", "low", "medium", "high", "xhigh"]) expect(valid(level).jobs.thinking).toBe(level);
+  expect(() => valid("huge")).toThrow(/^jobs\.thinking: /);
+  expect(() => valid("max")).toThrow(/^jobs\.thinking: /);
 });
 
 test("context and memory defaults; partial context merges over its default", () => {

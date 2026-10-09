@@ -7,6 +7,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ExtensionState, extensionState, type SecretReader } from "./availability.ts";
 import { capabilities } from "./capabilities.ts";
@@ -14,7 +15,6 @@ import {
   ACTIVATION_ORDER,
   CONTRACTS,
   type Dispose,
-  type EnvironmentAdapter,
   type KernelContext,
   type MessagingContext,
 } from "./contracts.ts";
@@ -23,15 +23,20 @@ import { jobsExtension, type JobsOptions, reconfigureJobs } from "./jobs/cos.ts"
 import { discoverExtensions, type LoadError, loadExtensions, message } from "./loader.ts";
 import type { Settings } from "./settings.ts";
 import { loadSkills, type Skill, skillsExtension } from "./skills.ts";
-import { loadWorkers, profileError, type WorkerProfile } from "./workers.ts";
 import { cachedCopy, dirHash } from "./workspace.ts";
 
 export type Runtime = ReturnType<typeof createRuntime>;
 
+/** Shown while `<home>/workers`, from when jobs had worker profiles, is still there. */
+const WORKERS_NOTICE: LoadError = {
+  name: "workers",
+  error: "~/.japa/workers/ is no longer used: jobs have no profiles",
+};
+
 /**
  * The daemon's live extension state: the loaded extensions, their activations and built Pi Durable extensions, the
- * skills, worker profiles, root selection and capabilities text; `start` activates extensions, `reconcile` reloads
- * the workspace extensions in `<home>/extensions` that changed on disk, and the skills and worker profiles.
+ * skills, root selection and capabilities text; `start` activates extensions, `reconcile` reloads the workspace
+ * extensions in `<home>/extensions` that changed on disk, and the skills.
  * Only the available extensions (see `availability.ts`), and their skills, reach the root selection, the jobs' agents
  * and the capabilities; `refreshAvailability` recomputes which those are.
  */
@@ -46,7 +51,6 @@ export function createRuntime(input: {
   sources: Map<string, string>; // the directory of each extension loaded from disk, by name
   hashes: Map<string, string>; // the `dirHash` of each workspace extension when it was loaded, by name
   models: Models;
-  environments: Map<string, EnvironmentAdapter>;
   registry: Registry;
   selection: Extension[]; // the root's, filled by `start`
   cos: Extension;
@@ -57,7 +61,7 @@ export function createRuntime(input: {
   kernel: (extension: string) => KernelContext;
   messaging: MessagingContext; // kernel-internal, given to contract activations only
 }) {
-  const { home, packageRoot, packaged, settings, sources, hashes, models, environments, registry, selection } = input;
+  const { home, packageRoot, packaged, settings, sources, hashes, models, registry, selection } = input;
   const activations: { extension: string; contract: string; dispose: Dispose }[] = []; // in activation order
   const built = new Map<string, Extension>();
   let jobsOptions: JobsOptions | undefined;
@@ -75,13 +79,11 @@ export function createRuntime(input: {
     available: new Set<string>() as ReadonlySet<string>,
     states: new Map<string, ExtensionState>() as ReadonlyMap<string, ExtensionState>,
     capabilities: "",
-    /** The skills agents see (the available extensions', with the package's and the user's) and worker profiles. */
+    /** The skills agents see: the available extensions', with the package's and the user's. */
     skills: new Map<string, Skill>() as ReadonlyMap<string, Skill>,
-    profiles: new Map<string, WorkerProfile>() as ReadonlyMap<string, WorkerProfile>,
     refreshCapabilities: () => {
       runtime.capabilities = capabilities({
         extensions: runtime.extensions.filter((e) => runtime.available.has(e.name)),
-        profiles: jobsOptions!.profiles,
         models: settings.models,
       });
     },
@@ -96,7 +98,7 @@ export function createRuntime(input: {
       refreshing = run.catch(() => {});
       return run;
     },
-    /** Re-applies each unfinished job's profile, so it picks up the current extensions and skills. */
+    /** Re-applies each unfinished job's agent, so it picks up the current extensions and skills. */
     reconfigure: (root: Conversation) => root.commit((tx) => reconfigureJobs(tx, jobsOptions!), ctx),
     /** `reconcile`, one at a time. */
     reconcile: (root: Conversation) => {
@@ -203,8 +205,8 @@ export function createRuntime(input: {
   }
 
   /**
-   * Reloads skills (the package's, the available extensions', the user's) and worker profiles, installs `japa-skills`
-   * and `japa-jobs`, and resets the root selection; returns the skill and worker errors.
+   * Reloads skills (the package's, the available extensions', the user's), installs `japa-skills` and `japa-jobs`,
+   * and resets the root selection; returns the skill errors, and a notice of a leftover `<home>/workers`.
    */
   function reloadContent(): LoadError[] {
     const skillsOf = (use: (extension: string) => boolean) =>
@@ -213,25 +215,16 @@ export function createRuntime(input: {
         ...[...sources].flatMap(([name, dir]) => (use(name) ? [join(dir, "skills")] : [])),
         join(home, "skills"),
       ]);
-    // A profile is checked against every extension's skills, as against every built extension, so one naming an
-    // unavailable extension's skill stays valid and runs without it.
+    // Every extension's skills are checked, so an unavailable extension's bad skill is reported too.
     const all = skillsOf(() => true);
     const skills = skillsOf((name) => runtime.available.has(name)).skills;
-    const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")], home);
-    const errors = [...all.errors, ...workers.errors];
-    for (const profile of workers.profiles.values()) {
-      const error = profileError(profile, models, environments, built, all.skills);
-      if (error === undefined) continue;
-      errors.push({ name: `worker:${profile.name}`, error });
-      workers.profiles.delete(profile.name);
-    }
-    replaceErrors((e) => /^(skill|worker):/.test(e.name), errors);
+    const errors = [...all.errors, ...(existsSync(join(home, "workers")) ? [WORKERS_NOTICE] : [])];
+    replaceErrors((e) => e.name.startsWith("skill:") || e.name === WORKERS_NOTICE.name, errors);
     runtime.skills = skills;
-    runtime.profiles = workers.profiles;
     const skillsExt = skillsExtension(skills);
     jobsOptions = {
-      profiles: workers.profiles,
       settings,
+      models,
       extensions: built,
       available: () => runtime.available,
       skills: skillsExt,

@@ -74,7 +74,8 @@ export function jobsMenu(nav: Nav, jobs: () => Job[], messaging: MessagingContex
       const now = Date.now();
       const ran = (isActive(job) ? now : job.updatedAt) - job.createdAt;
       const lines = [
-        `${ICONS[job.status]} ${statusName(job.status)} · worker ${job.worker}`,
+        // One stored before jobs had a model and thinking level ran on the defaults of then.
+        `${ICONS[job.status]} ${statusName(job.status)} · ${job.model ?? "default model"} · thinking ${job.thinking ?? "default"}`,
         `Started ${ago(now - job.createdAt)} ago · updated ${ago(now - job.updatedAt)} ago · ran ${dur(ran)}`,
         "",
         `Brief:\n${cut(job.brief, BRIEF)}`,
