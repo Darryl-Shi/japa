@@ -97,6 +97,8 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   `state.db`, `japa.sock`, `daemon.lock` and `.git`.
 - `--bind <home>/desktop/shared <home>/desktop/shared`, when the desktop extension is installed: the folder for
   exchanging files with the desktop, which is otherwise covered by the clone.
+- `--ro-bind` the real `<home>/attachments` (files the user sent) and `<home>/settings.json` over the clone's: a job
+  can read the user's attachments and the current settings, not change them.
 - `--tmpfs` over a secrets directory whose real path is outside `~/.japa` (`settings.secrets.dir`, or
   `~/.japa/secrets` as a symlink out of it), at that real path.
 - `--dev-bind /dev/null` over a storage database outside `~/.japa` (`settings.storage.file`) and its `-wal` and
