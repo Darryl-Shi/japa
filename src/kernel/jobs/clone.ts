@@ -1,6 +1,16 @@
 // Each job's private copy of the japa home: a git clone at `<home>/.jobs/<id>`, which its sandbox mounts in place of
 // the home. Next to it, outside the job's reach: `<id>.base`, the commit it started from, and `<id>.tmp`, its /tmp.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { linkSdk } from "../loader.ts";
 import { git } from "../workspace.ts";
@@ -54,8 +64,27 @@ export function ensureClone(home: string, packageRoot: string, jobId: string): s
 }
 
 /**
+ * Deletes `path`, first making every folder under it (not through symlinks) readable, writable and searchable by its
+ * owner: a job can `chmod 000` one in its clone or temp dir.
+ */
+function removeTree(path: string): void {
+  const dirs = [path];
+  while (dirs.length > 0) {
+    const dir = dirs.pop()!;
+    const stat = lstatSync(dir, { throwIfNoEntry: false });
+    if (!stat?.isDirectory()) continue;
+    if ((stat.mode & 0o700) !== 0o700) chmodSync(dir, (stat.mode & 0o7777) | 0o700);
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) dirs.push(join(dir, entry.name));
+    }
+  }
+  rmSync(path, { recursive: true, force: true });
+}
+
+/**
  * Deletes, with their `.base` and `.tmp`, the clones in `<home>/.jobs` older than 7 days (by the clone dir's mtime) or
  * whose job `keep` rejects, and any `.base` or `.tmp` left without its clone. The staging archive goes by age only.
+ * An entry that can't be deleted is logged and left; the rest are still pruned.
  */
 export function pruneClones(home: string, keep: (jobId: string) => boolean, now = Date.now()): void {
   const dir = jobsDir(home);
@@ -65,11 +94,22 @@ export function pruneClones(home: string, keep: (jobId: string) => boolean, now 
   const ids = new Set(names.map((name) => name.replace(/\.(base|tmp)$/, "")));
   for (const id of ids) {
     const clone = join(dir, id);
-    const prune =
-      id === STAGING_ARCHIVE
-        ? existsSync(clone) && old(clone)
-        : !existsSync(clone) || old(clone) || !keep(id);
-    if (!prune) continue;
-    for (const path of [clone, `${clone}.base`, `${clone}.tmp`]) rmSync(path, { recursive: true, force: true });
+    try {
+      const prune =
+        id === STAGING_ARCHIVE
+          ? existsSync(clone) && old(clone)
+          : !existsSync(clone) || old(clone) || !keep(id);
+      if (!prune) continue;
+    } catch (error) {
+      console.error(`Couldn't check ${clone} for pruning: ${(error as Error).message}`);
+      continue;
+    }
+    for (const path of [clone, `${clone}.base`, `${clone}.tmp`]) {
+      try {
+        removeTree(path);
+      } catch (error) {
+        console.error(`Couldn't remove ${path}: ${(error as Error).message}`);
+      }
+    }
   }
 }

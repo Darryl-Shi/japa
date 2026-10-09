@@ -1,11 +1,32 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readlinkSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { cloneBase, cloneDir, ensureClone, pruneClones } from "../src/kernel/jobs/clone.ts";
 import { commit, ensureWorkspace } from "../src/kernel/workspace.ts";
 import { tempHome } from "./helpers.ts";
+
+/** Paths `rmSync` fails on, standing in for an entry that can't be removed. */
+const unremovable = vi.hoisted(() => new Set<string>());
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  const rmSync: typeof fs.rmSync = (path, options) => {
+    if (unremovable.has(String(path))) throw new Error(`EBUSY: can't remove ${String(path)}`);
+    fs.rmSync(path, options);
+  };
+  return { ...fs, rmSync };
+});
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const DAY = 86_400_000;
@@ -117,6 +138,35 @@ test("pruneClones removes old and orphaned clones, keeps recent ones", () => {
   age(join(jobs, "staging-archive"), 8);
   pruneClones(home, () => true, now);
   expect(existsSync(join(jobs, "staging-archive"))).toBe(false);
+});
+
+test("pruneClones removes folders a job made inaccessible, and goes on past an entry it can't remove", () => {
+  const home = workspace();
+  for (const id of ["1", "2", "3"]) ensureClone(home, packageRoot, id);
+  const jobs = join(home, ".jobs");
+  const outside = tempHome();
+  writeFileSync(join(outside, "keep"), "k");
+  chmodSync(outside, 0o500);
+  onTestFinished(() => chmodSync(outside, 0o700));
+  for (const dir of [join(jobs, "1", "locked", "deeper"), join(jobs, "3.tmp", "locked")]) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "f"), "x");
+  }
+  // A symlink to a folder outside: neither followed nor changed.
+  symlinkSync(outside, join(jobs, "1", "link"));
+  chmodSync(join(jobs, "1", "locked", "deeper"), 0o000);
+  chmodSync(join(jobs, "1", "locked"), 0o000);
+  chmodSync(join(jobs, "3.tmp", "locked"), 0o000);
+  unremovable.add(join(jobs, "2"));
+  onTestFinished(() => unremovable.clear());
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+  pruneClones(home, () => false);
+  const left = ["1", "2", "3"].flatMap((id) => [id, `${id}.base`, `${id}.tmp`]);
+  expect(left.filter((name) => existsSync(join(jobs, name)))).toEqual(["2"]);
+  expect(errors).toHaveBeenCalledWith(expect.stringContaining(join(jobs, "2")));
+  expect(statSync(outside).mode & 0o777).toBe(0o500);
+  expect(readFileSync(join(outside, "keep"), "utf8")).toBe("k");
 });
 
 test("pruneClones without a .jobs dir does nothing", () => {
