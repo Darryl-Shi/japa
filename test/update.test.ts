@@ -1,12 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import type { Exec } from "../src/cli/exec.ts";
 import { launcherText, layoutOf, writeLauncher } from "../src/cli/layout.ts";
 import { type ServiceEnv, unitPath } from "../src/cli/service.ts";
-import { restartAfterUpdate, update, type UpdateDeps, type UpdateOptions } from "../src/cli/update.ts";
+import {
+  checkForUpdate,
+  restartAfterUpdate,
+  update,
+  type UpdateDeps,
+  UpdateFailed,
+  type UpdateOptions,
+} from "../src/cli/update.ts";
+import type { Restarted, UpdateState } from "../src/kernel/update-state.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "japa-update-"));
 
@@ -100,13 +108,24 @@ function privateNode(nodeDir: string, text: string): string {
   return join(nodeDir, "bin", "node");
 }
 
-/** `update`'s options and recording stub deps over `c`; `fail` makes that one step throw. */
+/**
+ * `update`'s options and recording stub deps over `c`; `fail` makes that one step throw, `whatsNew` and `restarted`
+ * are what those steps answer. `patches` collects what `update` records, `patchHeads` HEAD at each.
+ */
 function harness(
   c: Checkout,
-  setup: { options?: Partial<UpdateOptions>; node?: string; fail?: "ensureNode" | "npmCi" | "validate" } = {},
+  setup: {
+    options?: Partial<UpdateOptions>;
+    node?: string;
+    fail?: "ensureNode" | "npmCi" | "validate" | "restart";
+    whatsNew?: string[];
+    restarted?: Restarted;
+  } = {},
 ) {
   const logs: string[] = [];
   const calls: Call[] = [];
+  const patches: Partial<UpdateState>[] = [];
+  const patchHeads: string[] = [];
   const record = (name: string, ...args: unknown[]) => {
     calls.push({ name, args, head: head(c.app) });
     if (name === setup.fail) throw new Error("boom");
@@ -122,8 +141,14 @@ function harness(
     npmCi: async (app, usedNode) => record("npmCi", app, usedNode),
     validate: async (app, usedNode) => record("validate", app, usedNode),
     baseline: async (home) => record("baseline", home),
-    whatsNew: async (app, usedNode, interactive) => record("whatsNew", app, usedNode, interactive),
-    restart: async () => record("restart"),
+    whatsNew: async (app, usedNode, interactive) => {
+      record("whatsNew", app, usedNode, interactive);
+      return setup.whatsNew ?? [];
+    },
+    restart: async () => {
+      record("restart");
+      return setup.restarted ?? "none";
+    },
   };
   const o: UpdateOptions = {
     app: c.app,
@@ -133,9 +158,13 @@ function harness(
     interactive: false,
     userHome: c.userHome,
     log: (s) => logs.push(s),
+    record: (patch) => {
+      patches.push(patch);
+      patchHeads.push(head(c.app));
+    },
     ...setup.options,
   };
-  return { o, deps, logs, calls, names: () => calls.map((call) => call.name) };
+  return { o, deps, logs, calls, patches, patchHeads, names: () => calls.map((call) => call.name) };
 }
 
 test("up to date changes nothing", async () => {
@@ -321,12 +350,13 @@ test("a rollback that fails itself keeps the original error and the local edits"
 test("--no-restart updates and runs whatsNew without restarting", async () => {
   const c = checkout();
   const target = push(c, "two", { README: "two\n" });
-  const h = harness(c, { options: { restart: false } });
+  const h = harness(c, { options: { restart: false }, restarted: "service" });
 
   await update(h.o, h.deps);
 
   expect(h.names()).toEqual(["validate", "whatsNew"]);
   expect(head(c.app)).toBe(target);
+  expect(h.patches.at(-1)).toMatchObject({ state: "updated", restarted: "none" });
 });
 
 test("--branch checks out a branch we don't have yet and leaves the current one alone", async () => {
@@ -422,6 +452,215 @@ test("--to checks out an older commit", async () => {
   expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("one\n");
   expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+});
+
+test("--to --ff-only fast-forwards to exactly that commit, not the branch tip", async () => {
+  const c = checkout();
+  const two = push(c, "two", { README: "two\n" });
+  push(c, "three", { README: "three\n" });
+  const h = harness(c, { options: { to: two, ffOnly: true } });
+
+  const result = await update(h.o, h.deps);
+
+  expect(result).toBe("updated");
+  expect(head(c.app)).toBe(two);
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("two\n");
+  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+});
+
+test("--to --ff-only on diverged history refuses, keeps the local commit and edits", async () => {
+  const c = checkout();
+  const two = push(c, "two", { README: "upstream\n" });
+  const local = commitFiles(c.app, "local", { README: "local\n" });
+  writeFileSync(join(c.app, "scratch.txt"), "scratch\n");
+  const h = harness(c, { options: { to: two, ffOnly: true } });
+
+  await expect(update(h.o, h.deps)).rejects.toThrow("your checkout has diverged from origin/main; nothing changed");
+
+  expect(head(c.app)).toBe(local);
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
+  expect(readFileSync(join(c.app, "scratch.txt"), "utf8")).toBe("scratch\n");
+  expect(git(c.app, "stash", "list")).toBe("");
+  expect(h.calls).toEqual([]);
+});
+
+test("checkForUpdate lists incoming commits newest first and changes nothing", async () => {
+  const c = checkout();
+  const before = head(c.app);
+  const two = push(c, "two", { README: "two\n" });
+  const three = push(c, "three", { README: "three\n" });
+
+  const check = await checkForUpdate(c.app);
+
+  expect(check).toEqual({ current: before, target: three, commits: [`${short(three)} three`, `${short(two)} two`] });
+  expect(head(c.app)).toBe(before);
+  expect(git(c.app, "status", "--porcelain")).toBe("");
+  expect(git(c.app, "stash", "list")).toBe("");
+});
+
+test("checkForUpdate on a current checkout lists nothing, and fails as update does", async () => {
+  const c = checkout();
+  const before = head(c.app);
+
+  expect(await checkForUpdate(c.app)).toEqual({ current: before, target: before, commits: [] });
+  await expect(checkForUpdate(c.app, "nope")).rejects.toThrow(/^could not fetch origin nope: /);
+  await expect(checkForUpdate(c.app, "nope")).rejects.toBeInstanceOf(UpdateFailed);
+
+  git(c.app, "checkout", "-q", "--detach", "HEAD");
+  await expect(checkForUpdate(c.app)).rejects.toThrow(new UpdateFailed("not on a branch"));
+});
+
+test("record gets the pid first and the result last: updated, with commits, whatsNew and restarted", async () => {
+  const c = checkout();
+  const two = push(c, "two", { README: "two\n" });
+  const h = harness(c, { restarted: "service", whatsNew: ["new extension: demo"] });
+
+  await update(h.o, h.deps);
+
+  expect(h.patches).toEqual([
+    { pid: process.pid },
+    {
+      state: "updated",
+      to: two,
+      commits: [`${short(two)} two`],
+      whatsNew: ["new extension: demo"],
+      restarted: "service",
+      finished: expect.any(Number),
+    },
+  ]);
+});
+
+test("record keeps the newest 20 commits", async () => {
+  const c = checkout();
+  const shas = Array.from({ length: 22 }, (_, i) => push(c, `commit ${i}`, { README: `${i}\n` }));
+  const h = harness(c);
+
+  await update(h.o, h.deps);
+
+  const commits = h.patches.at(-1)?.commits ?? [];
+  expect(commits).toHaveLength(20);
+  expect(commits[0]).toBe(`${short(shas[21])} commit 21`);
+  expect(commits[19]).toBe(`${short(shas[2])} commit 2`);
+});
+
+test("record gets up to date", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  const h = harness(c);
+
+  await update(h.o, h.deps);
+
+  expect(h.patches).toEqual([{ pid: process.pid }, { state: "up to date", to: old, finished: expect.any(Number) }]);
+});
+
+test("record gets each failure with its summary and output, after the rollback", async () => {
+  const cases = [
+    { fail: "ensureNode", step: "node", files: { ".node-version": "99.9.9\n" } },
+    { fail: "npmCi", step: "dependencies", files: { "package-lock.json": '{ "lockfileVersion": 2 }\n' } },
+    { fail: "validate", step: "validation", files: { README: "two\n" } },
+  ] as const;
+  for (const { fail, step, files } of cases) {
+    const c = checkout();
+    const old = head(c.app);
+    // Only a private Node is ours to replace, so only it reaches ensureNode.
+    const node = fail === "ensureNode" ? privateNode(layoutOf(c.app, c.userHome).nodeDir!, "old node") : undefined;
+    push(c, "two", files);
+    const h = harness(c, { node, fail });
+
+    await expect(update(h.o, h.deps), fail).rejects.toThrow(UpdateFailed);
+
+    expect(h.patches, fail).toEqual([
+      { pid: process.pid },
+      { state: "failed", summary: `update failed at ${step}: boom; still on ${short(old)}`, finished: expect.any(Number) },
+    ]);
+    expect(h.patchHeads.at(-1), fail).toBe(old); // recorded once the checkout is back
+  }
+
+  // A failed command's output goes below its summary.
+  const c = checkout();
+  const old = head(c.app);
+  push(c, "broken", { "src/cli/main.ts": 'throw new Error("broken build");\n' });
+  const h = harness(c, { node: process.execPath });
+  const { validate: _, ...deps } = h.deps; // the real validate: runs the new main.ts --version
+
+  await expect(update(h.o, deps)).rejects.toThrow(UpdateFailed);
+
+  const failed = h.patches.at(-1)!;
+  expect(failed.state).toBe("failed");
+  expect(failed.summary).toMatch(/^update failed at validation: \S+ .*src\/cli\/main\.ts --version exited with code 1; still on /);
+  expect(failed.summary).not.toContain("\n");
+  expect(failed.output?.split("\n")).toContain("Error: broken build");
+  expect(h.patchHeads.at(-1)).toBe(old);
+});
+
+test("record gets a refusal and an unexpected error as failures", async () => {
+  const diverged = checkout();
+  push(diverged, "two", { README: "upstream\n" });
+  commitFiles(diverged.app, "local", { README: "local\n" });
+  const refused = harness(diverged);
+
+  await expect(update(refused.o, refused.deps)).rejects.toThrow(UpdateFailed);
+
+  expect(refused.patches).toEqual([
+    { pid: process.pid },
+    { state: "failed", summary: "your checkout has diverged from origin/main; nothing changed", finished: expect.any(Number) },
+  ]);
+
+  const c = checkout();
+  push(c, "two", { README: "two\n" });
+  const h = harness(c, { fail: "restart" });
+
+  await expect(update(h.o, h.deps)).rejects.toThrow("boom");
+
+  expect(h.patches).toEqual([{ pid: process.pid }, { state: "failed", summary: "boom", finished: expect.any(Number) }]);
+});
+
+test("record gets the rollback move when --to names the previous commit", async () => {
+  const c = checkout();
+  const first = head(c.app);
+  push(c, "two", { README: "two\n" });
+  git(c.app, "fetch", "-q", "origin", "main");
+  git(c.app, "merge", "-q", "--ff-only", "origin/main");
+  const h = harness(c, { options: { to: first }, restarted: "service" });
+
+  await update(h.o, h.deps);
+
+  expect(h.patches).toEqual([
+    { pid: process.pid },
+    { state: "updated", to: first, commits: [], whatsNew: [], restarted: "service", finished: expect.any(Number) },
+  ]);
+});
+
+test("without a terminal, what's new is logged and recorded line by line", async () => {
+  const c = checkout();
+  const main = 'if (process.argv.includes("--whats-new")) console.log("demo is new\\n\\nrun `japa setup` to configure");\n';
+  push(c, "has news", { "src/cli/main.ts": main });
+  const h = harness(c, { node: process.execPath });
+  const { validate: _v, whatsNew: _w, ...deps } = h.deps; // the real ones: run the new main.ts
+
+  await update(h.o, deps);
+
+  expect(h.logs.slice(0, 2)).toEqual(["demo is new", "run `japa setup` to configure"]);
+  expect(h.patches.at(-1)).toMatchObject({ state: "updated", whatsNew: ["demo is new", "run `japa setup` to configure"] });
+});
+
+test("in a terminal, what's new talks to the user directly and records nothing", async () => {
+  const c = checkout();
+  const seen = join(c.root, "stdout.txt");
+  // A main.ts that, for --whats-new, writes which file its stdout is (its inode) instead of printing.
+  const main = [
+    'import { fstatSync, writeFileSync } from "node:fs";',
+    `if (process.argv.includes("--whats-new")) writeFileSync(${JSON.stringify(seen)}, String(fstatSync(1).ino));`,
+  ].join("\n");
+  push(c, "checks its stdout", { "src/cli/main.ts": main });
+  const h = harness(c, { node: process.execPath, options: { interactive: true } });
+  const { validate: _v, whatsNew: _w, ...deps } = h.deps;
+
+  await update(h.o, deps);
+
+  expect(readFileSync(seen, "utf8")).toBe(String(fstatSync(1).ino)); // our own stdout, inherited
+  expect(h.patches.at(-1)).toMatchObject({ state: "updated", whatsNew: [] });
 });
 
 test("a changed .node-version on a private Node downloads it and rewrites the launcher", async () => {
@@ -543,7 +782,7 @@ test("a running service is restarted", async () => {
   const { env, calls } = service("active");
   const logs: string[] = [];
 
-  await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+  expect(await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50)).toBe("service");
 
   expect(calls).toContain("systemctl --user restart japa");
   expect(logs).toEqual(["japa didn't answer within 30 s; see: japa service logs"]); // nothing listens in this test
@@ -553,7 +792,7 @@ test("a stopped service is left stopped", async () => {
   const { env, calls } = service("inactive");
   const logs: string[] = [];
 
-  await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+  expect(await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50)).toBe("stopped");
 
   expect(calls).not.toContain("systemctl --user restart japa");
   expect(logs).toEqual(["japa's service is stopped, so it was left stopped; start it with: japa service start"]);
@@ -564,7 +803,7 @@ test("a crash-looping or failed service is restarted, not reported as stopped", 
     const { env, calls } = service(state);
     const logs: string[] = [];
 
-    await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+    expect(await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50), state).toBe("service");
 
     expect(calls, state).toContain("systemctl --user restart japa");
     expect(logs, state).toEqual(["japa didn't answer within 30 s; see: japa service logs"]); // nothing listens in this test
@@ -579,7 +818,7 @@ test("a foreground daemon is told about, never restarted", async () => {
     writeFileSync(join(home, "daemon.lock"), String(process.pid));
     const logs: string[] = [];
 
-    await restartAfterUpdate(env, home, (s) => logs.push(s), 50);
+    expect(await restartAfterUpdate(env, home, (s) => logs.push(s), 50), state).toBe("foreground");
 
     expect(calls, state).not.toContain("systemctl --user restart japa");
     expect(logs, state).toEqual(["restart `japa daemon` to apply"]);
@@ -590,7 +829,7 @@ test("no service and no daemon: nothing to restart", async () => {
   const { env, calls } = service("not installed");
   const logs: string[] = [];
 
-  await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50);
+  expect(await restartAfterUpdate(env, tmp(), (s) => logs.push(s), 50)).toBe("none");
 
   expect(calls).toEqual([]);
   expect(logs).toEqual([]);
