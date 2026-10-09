@@ -40,7 +40,7 @@ export default defineJapaExtension({
 `;
 
 /** A temp home with the `demo` fixture extension (above) under `extensions/`, and the setup context opened over
- * it plus the packaged extensions (so `brave`, `parallel`, `telegram`, `web`, `desktop`, `sqlite` are also discovered). */
+ * it plus the packaged extensions (so `brave`, `google`, `parallel`, `telegram`, `web`, `desktop`, `sqlite` are also discovered). */
 async function demoContext(home: string) {
   mkdirSync(join(home, "extensions", "demo"), { recursive: true });
   writeFileSync(join(home, "extensions", "demo", "index.ts"), DEMO_SOURCE);
@@ -50,14 +50,14 @@ async function demoContext(home: string) {
 const readSettings = (home: string) => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
 const readSetup = (home: string) => JSON.parse(readFileSync(join(home, "setup.json"), "utf8"));
 
-test("configurable lists what needs the user -- brave, parallel, telegram, demo -- and not web (no key), the desktop (all defaults) or sqlite", async () => {
+test("configurable lists what needs the user -- brave, google, parallel, telegram, demo -- and not web (no key), the desktop (all defaults) or sqlite", async () => {
   const ctx = await demoContext(tempHome());
 
   const names = configurable(ctx.extensions)
     .map((e) => e.name)
     .sort();
 
-  expect(names).toEqual(["brave", "demo", "parallel", "telegram"]);
+  expect(names).toEqual(["brave", "demo", "google", "parallel", "telegram"]);
 });
 
 test("configuring demo writes its secret and typed settings", async () => {

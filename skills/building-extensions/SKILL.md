@@ -49,6 +49,8 @@ export default defineJapaExtension({
   asks only for secrets and required settings, so an extension with defaults works with no setup.
 - `setup(ctx)`: called with your `KernelContext` before your tools are installed (below).
 - `status`: optional `() => string | undefined`, a short line shown under the extension in `japa status`.
+- `authorize`: optional `{ run(ctx, io), connected(ctx) }`, for an extension that signs in to the user's
+  account (below).
 
 ## Core contracts
 
@@ -135,6 +137,17 @@ When a secret is missing, reply telling the chief of staff to ask for it with
 `secretProvided(name)` resolves with the value the next time a request for it is fulfilled, and
 `requestSecret(name, why)` asks the user itself, then resolves the same way.
 `setSecret(name, value)` stores a secret named in your manifest (for one you generate yourself).
+
+An extension that signs in to the user's account (OAuth) declares `authorize: { run, connected }`.
+`run(ctx, io)` signs in through `io` (pi-ai's `AuthInteraction`: `io.notify({ type: "auth_url", url,
+instructions })` shows a link, `await io.prompt({ type: "manual_code", message, signal })` asks the user
+to paste something; honour `io.signal`), stores what it gets with `ctx.setSecret` (declare that
+secret `generated: true`), and returns a line such as "Connected as you@example.com"; it throws with a
+user-facing message on failure. `connected(ctx)` says whether it's signed in now. You never call them:
+`japa setup` runs `run` after the extension's secrets (offering "Sign in again?" when `connected`), and
+the kernel tool `connect({ extension })` runs it from chat, passing the link to the user and turning a
+prompt into a masked secret request. When a token is missing or refused, reply telling the chief of
+staff to call `connect({ extension: "<name>" })`. The packaged `google` extension is the example.
 
 ## The escape hatch: `durable`
 

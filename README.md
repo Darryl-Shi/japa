@@ -81,7 +81,7 @@ The first run walks through, in order:
    yourself), a sign-in as `<provider>.credential`, which japa refreshes as needed.
 3. **Model.** Pick the model; background jobs and memory upkeep use it too unless you say no and pick others.
 4. **Integrations.** Only those that need something from you — a Telegram bot token, a Parallel or Brave Search
-   key — are listed: pick any to set up now (none by default), or do it later, or ask the CoS. Anything with a
+   key, a Google sign-in (see Google) — are listed: pick any to set up now (none by default), or do it later, or ask the CoS. Anything with a
    default isn't asked about at all (the desktop just works, see Desktop); change it later by asking the CoS.
 5. **Background service.** Installs and starts `japa service` (see Running), so japa keeps running after you log
    out — no question asked; pass `--no-service` to skip it. Setup then waits for japa to answer and prints
@@ -246,6 +246,45 @@ installed and usable by the user running japa (on Linux: `sudo usermod -aG docke
   browser's logins; those from the last ~30 s before a stop, recreate or reboot may be lost, as Chromium commits
   cookies every ~30 s).
 
+## Google
+
+japa can work with one Google account — Gmail, Drive, Calendar, Contacts and Tasks, reading and writing. Google
+doesn't let a shared app have this much access without a paid security review, so you make your own (free) OAuth
+client in Google Cloud Console and give japa its id and secret. It takes about ten minutes, once:
+
+1. **Create a project** at [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate)
+   (any name, e.g. "japa").
+2. **Enable the APIs.** In the [API Library](https://console.cloud.google.com/apis/library), search for and enable
+   each of: **Gmail API**, **Google Drive API**, **Google Calendar API**, **People API** (contacts) and **Google
+   Tasks API**.
+3. **Set up the consent screen** at [Google Auth Platform](https://console.cloud.google.com/auth/overview): click
+   Get started, give it a name and your email, and pick the audience:
+   - **External** (any Google account, e.g. @gmail.com). Leave it in **Testing** and, under Audience, add your own
+     address as a **test user**. In Testing, Google ends the sign-in after **7 days**: `japa status` then
+     says `sign-in expired — ask japa to reconnect`, and you connect again (below). Publishing the app avoids
+     this, but Google then wants it verified.
+   - **Internal**, if your account is in a Google Workspace organization you administer: no test users and no
+     7-day limit.
+4. **Create the client** under [Clients](https://console.cloud.google.com/auth/clients): Create client, type
+   **Desktop app**. Copy its **client ID** and **client secret**.
+5. **Connect.** Either run `japa setup`, choose Integrations → google, paste the id and secret, and sign in when it
+   asks; or tell japa "connect my Google account" in `japa chat` or Telegram, give it the id and secret when it
+   asks, and open the link it sends you.
+
+Signing in opens Google's consent page; allow everything it asks (japa's access is fixed: mail, Drive, calendar,
+contacts and tasks). On the machine running japa, the browser comes back to japa by itself. Anywhere else — over
+SSH, or from your phone — the page it lands on after you approve fails to load: that's expected. Copy that page's
+full address from the address bar and paste it where japa asks: at the prompt in `japa setup`, at the masked
+prompt in `japa chat`, or as your next message in Telegram (the bot deletes it at once).
+`japa status` shows `connected as you@gmail.com` under `google` once it's done.
+
+Then ask for things like "what came in from my accountant this week?", "reply to Dana that Thursday works", "find
+the Q3 budget doc and summarize it", "schedule 30 minutes with Dana next Tuesday", "what's Bob's phone number?" or
+"add 'renew passport' to my tasks for Friday". japa checks with you before it sends mail, deletes, trashes or
+shares anything you didn't ask for in so many words; creating, changing or deleting a calendar event emails its
+guests. Attachments and downloaded files are saved under `~/.japa/attachments/google/`. Only one Google account is
+supported; to switch accounts, connect again and sign in as the other one.
+
 ## Where state lives
 
 The code — japa's git checkout, and a private Node.js if one was installed — lives under the install directory,
@@ -268,7 +307,7 @@ skills/              skills the CoS installed          (git-tracked)
 workers/             worker profiles the CoS installed (git-tracked)
 .staging/            git worktree (branch `staging`) where the CoS builds things before installing them
 secrets/             secrets, one file per secret      (ignored by git)
-attachments/         images received over Telegram     (ignored by git)
+attachments/         images received over Telegram, files from Google (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
 logs/                service log, macOS only           (ignored by git)
 setup.json           extensions `japa setup` and `japa update` have already told you about (ignored by git)

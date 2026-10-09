@@ -45,8 +45,8 @@ yet do.
 ### Non-goals (v1)
 
 Multiple users, out-of-process extensions, embedding search, approval gates for side-effecting actions,
-nested jobs, built-in OAuth flows (possible later through the `provider` and
-`tool` contracts), storage migration between backends, a hosted deployment.
+nested jobs, storage migration between backends, a hosted deployment. (Interactive sign-in for extensions is the
+`authorize` hook, §5.1; see `2026-10-09-japa-google-design.md`.)
 
 ## 2. Foundation: Pi Durable
 
@@ -319,6 +319,10 @@ defineJapaExtension({
   secrets: ["gcal.token"],            // secret names it may read
   settings: Type.Object({ ... }),     // TypeBox schema for its settings
   status: () => string | undefined,  // a line under the extension in japa status
+  authorize: {                        // optional: signs in to the user's account (OAuth)
+    run: (ctx, io) => Promise<string>,  // signs in through io, stores what it gets; a line for the user
+    connected: (ctx) => Promise<boolean>,
+  },
   // skills/ next to index.ts are bundled automatically
 });
 ```
@@ -332,6 +336,9 @@ Rules:
   violation.
 - The kernel converts `provides.tool` plus `durable` into one Pi Durable
   `Extension` named after the japa extension.
+- `authorize`, when present, needs both functions. `japa setup` runs it after
+  the extension's secrets, and the kernel tool `connect({ extension })` runs it
+  from chat (any surface); see `2026-10-09-japa-google-design.md` §3.
 
 ### 5.2 Loader and boot sequence
 
@@ -631,6 +638,10 @@ schema. CoS tools: `settings_get({ path? })`, `settings_set({ path, value })`
   straight to the `secrets` adapter and never enters the transcript.
 - On fulfilment the kernel posts `[secret <name> provided]` into the CoS
   thread (`requestId = secret:<requestId>`).
+- The kernel may withdraw a pending request (`removeSecretRequest`): the chat
+  sign-in of `connect` asks for a pasted address as `<extension>.authorize` and
+  withdraws it when the flow no longer needs it, and boot withdraws any left
+  over (`2026-10-09-japa-google-design.md` §3.3).
 
 ## 10. Self-extension and safety net (core)
 
@@ -719,6 +730,7 @@ environment, tools, extensions, and skills must all resolve.
 | `telegram` | messaging | Telegram over Bot API long polling: text and images in, the `/jobs`, `/status` and `/settings` commands and settings menu. Dormant until the user provides `telegram.botToken`. |
 | `web` | tool | `web_fetch` (no key) and `web_search` (Brave; asks for its key with `secret_request` on first use). |
 | `desktop` | environment, tool, durable | A persistent Docker desktop (Chromium and apps, watched or taken over in noVNC); the `desktop` environment, `computer` and `browser`. Lazy: the first use builds the image and starts the container. See the computer-use spec, `2026-10-08-japa-computer-use-design.md`. |
+| `google` | tool | Gmail, Drive, Calendar, Contacts and Tasks for one Google account (`gmail`, `drive`, `calendar`, `contacts`, `tasks`, `google_request`). Dormant until the user provides `google.clientId`/`google.clientSecret` and signs in. See `2026-10-09-japa-google-design.md`. |
 
 With these defaults the CoS directly has `web_fetch`, `web_search`, the
 `schedule_*` tools, and built-in `read` (in its read-only environment).
