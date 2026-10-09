@@ -7,15 +7,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { ChangesDoc, logChange } from "../src/kernel/changes.ts";
 import type { Incoming, KernelContext, MessagingContext } from "../src/kernel/contracts.ts";
-import type { Job } from "../src/kernel/jobs/state.ts";
+import { type Job, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { COMMANDS, createMenu } from "../src/kernel/messaging/menu/index.ts";
-import { ago, type Nav, outcomeLine, type Page } from "../src/kernel/messaging/menu/nav.ts";
+import { ago, dur, type Nav, outcomeLine, type Page } from "../src/kernel/messaging/menu/nav.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { addSecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { defineTool, Type } from "../src/sdk.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { echo, stage, testKit, waitFor } from "./helpers.ts";
-import { ask, call, idle, reported, script, texts, tool } from "./jobs-helpers.ts";
+import { ask, call, idle, jobs as jobsOf, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
 // When `hook.ask` is set, the Settings home gains an `Input` button opening the screen it makes: there is no
@@ -130,34 +130,211 @@ test("/status shows what japa status prints", async () => {
     .toBe("model: p/m\nextensions:\n  a — A\n    up");
 });
 
-test("/jobs lists running and recent jobs as buttons; pressing one shows its report", async () => {
-  script(faux, (_role, text) => (text === "start sum" ? call("job_start", { title: "Sum", brief: "Add" }) : undefined));
-  await ask(daemon, "start sum");
-  await waitFor(async () => (await reported(daemon)).length > 0 && (await idle(daemon)) && fake.sent.length > 0);
-  await fake.receive({ command: "jobs" });
-  const list = fake.sent.at(-1)!;
-  expect(list.markdown).toBe("**Jobs**");
-  expect(list.buttons![0]![0]!.label).toMatch(/^1\. Sum \(/);
-  await fake.press(list.buttons![0]![0]!.label);
-  expect(fake.edited.at(-1)).toMatchObject({ messageId: list.id, markdown: expect.stringMatching(/^\*\*Job 1\*\*\n\n\[job 1 "Sum" /) });
-  expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
-  await fake.press("‹ Back");
-  expect(fake.edited.at(-1)!.markdown).toBe("**Jobs**");
+/** A job `id` titled `t<id>`, created and updated now, with `fields` over that. */
+const jobOf = (id: string, fields: Partial<Job> = {}): Job => ({
+  id,
+  title: `t${id}`,
+  brief: "b",
+  worker: "general",
+  status: "running",
+  conversationId: (1000 + Number(id)) as Job["conversationId"],
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+  seq: 0,
+  reported: [],
+  ...fields,
 });
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
-test("a job report longer than a message is cut to fit", async () => {
-  const small = fakeAdapter({ maxMessageChars: 100 });
-  const job = { id: "1", title: "Sum", status: "done", result: "word ".repeat(100), updatedAt: Date.now() } as Job;
-  const menu = createMenu(small.adapter, {} as KernelContext, {} as MessagingContext, () => [job]);
-  await menu.command({ ...msg, command: "jobs" });
-  await menu.press({ ...msg, action: small.sent.at(-1)!.buttons![0]![0]!.action });
-  expect(small.edited.at(-1)!.markdown).toMatch(/^\*\*Job 1\*\*\n\n\[job 1 "Sum" done\] word/);
-  expect(small.edited.at(-1)!.markdown.length).toBeLessThanOrEqual(100);
-});
+describe("jobs", { timeout: 30_000 }, () => {
+  /** Replaces the root's jobs with `list`, then waits until the surface has them. */
+  async function seed(list: Job[]) {
+    await daemon.root.commit(async (tx) => {
+      const doc = await tx.doc(JobsDoc, daemon.root.id);
+      doc.jobs = Object.fromEntries(list.map((j) => [j.id, j]));
+      doc.nextId = list.length + 1;
+    }, ctx);
+    await sleep(100);
+  }
+  /** Sends /jobs; returns the list it shows. */
+  async function openJobs() {
+    await fake.receive({ command: "jobs" });
+    return fake.sent.at(-1)!;
+  }
 
-test("/jobs without jobs says so", async () => {
-  await fake.receive({ command: "jobs" });
-  expect(fake.sent.at(-1)!.markdown).toBe("**Jobs**\n\nNo running or recent jobs.");
+  test("the list counts jobs and shows active ones by id, then finished ones newest first, with icons and ages", async () => {
+    const now = Date.now();
+    await seed([
+      jobOf("1", { status: "done", updatedAt: now - 3 * HOUR }),
+      jobOf("2", { status: "running", updatedAt: now - 5 * MINUTE }),
+      jobOf("3", { status: "failed", updatedAt: now - 50 * HOUR }),
+      jobOf("4", { status: "needs_input", updatedAt: now - MINUTE }),
+      jobOf("5", { status: "queued" }),
+      jobOf("6", { status: "cancelled", updatedAt: now - 10 * MINUTE }),
+      jobOf("7", { status: "done", updatedAt: now - MINUTE }),
+      jobOf("8", { status: "queued" }),
+    ]);
+    const list = await openJobs();
+    expect(list.markdown).toBe("**Jobs**\n\n1 running · 1 needs input · 2 queued · 4 finished");
+    expect(list.buttons!.flat().map((b) => b.label)).toEqual([
+      "🔄 #2 t2 · 5m",
+      "❓ #4 t4 · 1m",
+      "⏳ #5 t5 · <1m",
+      "⏳ #8 t8 · <1m",
+      "✅ #7 t7 · 1m",
+      "⛔ #6 t6 · 10m",
+      "✅ #1 t1 · 3h",
+      "❌ #3 t3 · 2d",
+      "Clear finished",
+    ]);
+    await seed([jobOf("1", { status: "running" }), jobOf("2", { status: "done" })]);
+    expect((await openJobs()).markdown).toBe("**Jobs**\n\n1 running · 1 finished");
+    await seed([jobOf("1", { status: "queued" })]);
+    const queued = await openJobs();
+    expect(queued.markdown).toBe("**Jobs**\n\n1 queued");
+    expect(queued.buttons!.flat().map((b) => b.label)).toEqual(["⏳ #1 t1 · <1m"]);
+  });
+
+  test("without jobs the list says No jobs.", async () => {
+    const list = await openJobs();
+    expect(list.markdown).toBe("**Jobs**\n\nNo jobs.");
+    expect(list.buttons).toEqual([]);
+  });
+
+  test("the list is paged 8 at a time; a long title is cut so the label fits 64 characters", async () => {
+    const long = "x".repeat(100);
+    await seed(Array.from({ length: 10 }, (_, i) => jobOf(String(i + 1), i === 0 ? { title: long } : {})));
+    const list = await openJobs();
+    const shown = list.buttons!.flat().map((b) => b.label);
+    expect(shown.slice(1)).toEqual([...[2, 3, 4, 5, 6, 7, 8].map((i) => `🔄 #${i} t${i} · <1m`), "1/2", "›"]);
+    expect(shown[0]).toMatch(/^🔄 #1 x+… · <1m$/);
+    expect([...shown[0]!].length).toBe(64);
+    await fake.press("›");
+    expect(labels()).toEqual(["🔄 #9 t9 · <1m", "🔄 #10 t10 · <1m", "‹", "2/2"]);
+  });
+
+  test("a job's detail shows its status, worker, times, brief and what its status calls for", async () => {
+    const now = Date.now();
+    await seed([
+      jobOf("1", { title: "Research flights", worker: "researcher", brief: "Find flights", progress: "checking", createdAt: now - 2 * HOUR, updatedAt: now - 5 * MINUTE }),
+      jobOf("2", { status: "done", result: "Found 3", createdAt: now - 72 * HOUR, updatedAt: now - 29 * HOUR }),
+      jobOf("3", { status: "needs_input", result: "Which date?", createdAt: now - 65 * MINUTE }),
+      jobOf("4", { status: "failed", result: "No network", createdAt: now - 3 * MINUTE }),
+      jobOf("5", { status: "queued" }),
+      jobOf("6", { status: "cancelled", result: "stopped" }),
+    ]);
+    const detail = async (label: string) => {
+      await openJobs();
+      await fake.press(label);
+      return fake.edited.at(-1)!.markdown;
+    };
+    expect(await detail("🔄 #1 Research flights · 5m")).toBe(
+      "**#1 Research flights**\n\n🔄 running · worker researcher\nStarted 2h ago · updated 5m ago · ran 2h 0m\n\nBrief:\nFind flights\n\nProgress:\nchecking",
+    );
+    expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
+    expect(await detail("✅ #2 t2 · 29h")).toBe(
+      "**#2 t2**\n\n✅ done · worker general\nStarted 3d ago · updated 29h ago · ran 1d 19h\n\nBrief:\nb\n\nResult:\nFound 3",
+    );
+    expect(await detail("❓ #3 t3 · <1m")).toBe(
+      "**#3 t3**\n\n❓ needs input · worker general\nStarted 1h ago · updated <1m ago · ran 1h 5m\n\nBrief:\nb\n\nQuestion:\nWhich date?",
+    );
+    expect(await detail("❌ #4 t4 · <1m")).toBe(
+      "**#4 t4**\n\n❌ failed · worker general\nStarted 3m ago · updated <1m ago · ran 3m\n\nBrief:\nb\n\nReason:\nNo network",
+    );
+    expect(await detail("⏳ #5 t5 · <1m")).toBe(
+      "**#5 t5**\n\n⏳ queued · worker general\nStarted <1m ago · updated <1m ago · ran <1m\n\nBrief:\nb",
+    );
+    expect(await detail("⛔ #6 t6 · <1m")).toBe(
+      "**#6 t6**\n\n⛔ cancelled · worker general\nStarted <1m ago · updated <1m ago · ran <1m\n\nBrief:\nb",
+    );
+  });
+
+  test("durations", () => {
+    expect([0, MINUTE - 1, 5 * MINUTE, 65 * MINUTE, 25 * HOUR, 49 * HOUR + 59 * MINUTE].map(dur)).toEqual([
+      "<1m",
+      "<1m",
+      "5m",
+      "1h 5m",
+      "1d 1h",
+      "2d 1h",
+    ]);
+  });
+
+  test("a long brief is cut at 800 characters; Full brief shows it whole", async () => {
+    const brief = `${"a".repeat(850)}z`;
+    await seed([jobOf("1", { brief })]);
+    await openJobs();
+    await fake.press("🔄 #1 t1 · <1m");
+    expect(fake.edited.at(-1)!.markdown).toContain(`\n\nBrief:\n${"a".repeat(799)}…`);
+    expect(fake.edited.at(-1)!.markdown).not.toContain("aaaz");
+    expect(labels()).toEqual(["Full brief", "‹ Back", "⌂ Home"]);
+    await fake.press("Full brief");
+    expect(fake.edited.at(-1)!.markdown).toBe(`**#1 t1**\n\n${brief}`);
+    expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
+    await fake.press("‹ Back");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*#1 t1\*\*\n\n🔄 running/);
+    await seed([jobOf("1", { brief: "a".repeat(800) })]);
+    await openJobs();
+    await fake.press("🔄 #1 t1 · <1m");
+    expect(fake.edited.at(-1)!.markdown).toContain(`\n\nBrief:\n${"a".repeat(800)}`);
+    expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
+  });
+
+  test("a job report longer than a message is cut to fit", async () => {
+    const small = fakeAdapter({ maxMessageChars: 100 });
+    const job = jobOf("1", { title: "Sum", status: "done", result: "word ".repeat(100) });
+    const menu = createMenu(small.adapter, {} as KernelContext, {} as MessagingContext, () => [job]);
+    await menu.command({ ...msg, command: "jobs" });
+    await menu.press({ ...msg, action: small.sent.at(-1)!.buttons![0]![0]!.action });
+    expect(small.edited.at(-1)!.markdown).toMatch(/^\*\*#1 Sum\*\*\n\n✅ done/);
+    expect(small.edited.at(-1)!.markdown.length).toBeLessThanOrEqual(100);
+  });
+
+  test("Clear finished, after confirmation, removes the finished jobs and keeps the active ones", async () => {
+    await seed([jobOf("1"), jobOf("2", { status: "done" }), jobOf("3", { status: "failed" })]);
+    await openJobs();
+    await fake.press("Clear finished");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Clear 2 finished jobs?**");
+    expect(labels()).toEqual(["Clear", "Cancel"]);
+    await fake.press("Cancel");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Jobs**\n\n1 running · 2 finished");
+    await fake.press("Clear finished");
+    await fake.press("Clear");
+    expect(fake.edited.at(-1)!.markdown).toBe("✓ Cleared 2 finished jobs\n\n**Jobs**\n\n1 running");
+    expect(labels()).toEqual(["🔄 #1 t1 · <1m"]);
+    expect(Object.keys(await jobsOf(daemon))).toEqual(["1"]);
+    await seed([jobOf("1", { status: "cancelled" })]);
+    await openJobs();
+    await fake.press("Clear finished");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Clear 1 finished job?**");
+    await fake.press("Clear");
+    expect(fake.edited.at(-1)!.markdown).toBe("✓ Cleared 1 finished job\n\n**Jobs**\n\nNo jobs.");
+  });
+
+  test("Back from a job opened on page 2 returns to page 2; Home to page 1", async () => {
+    await seed(Array.from({ length: 10 }, (_, i) => jobOf(String(i + 1))));
+    await openJobs();
+    await fake.press("›");
+    await fake.press("🔄 #9 t9 · <1m");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*#9 t9\*\*/);
+    await fake.press("‹ Back");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Jobs**\n\n10 running");
+    expect(labels()).toEqual(["🔄 #9 t9 · <1m", "🔄 #10 t10 · <1m", "‹", "2/2"]);
+    await fake.press("🔄 #10 t10 · <1m");
+    await fake.press("⌂ Home");
+    expect(labels().slice(-2)).toEqual(["1/2", "›"]);
+  });
+
+  test("a job started by the CoS is listed and its detail shown", async () => {
+    script(faux, (_role, text) => (text === "start sum" ? call("job_start", { title: "Sum", brief: "Add" }) : undefined));
+    await ask(daemon, "start sum");
+    await waitFor(async () => (await reported(daemon)).length > 0 && (await idle(daemon)) && fake.sent.length > 0);
+    const list = await openJobs();
+    expect(list.buttons![0]![0]!.label).toMatch(/^\S+ #1 Sum · /u);
+    await fake.press(list.buttons![0]![0]!.label);
+    expect(fake.edited.at(-1)).toMatchObject({ messageId: list.id, markdown: expect.stringMatching(/^\*\*#1 Sum\*\*\n\n.+\n\nBrief:\nAdd/s) });
+  });
 });
 
 test("an unknown command gets the help list and never reaches the CoS", async () => {
@@ -170,7 +347,7 @@ test("an unknown command gets the help list and never reaches the CoS", async ()
 });
 
 test("a button from before a restart says the menu expired", async () => {
-  const job = { id: "1", title: "Sum", status: "running", updatedAt: Date.now() } as Job;
+  const job = jobOf("1", { title: "Sum" });
   const menus = [1, 2].map(() => createMenu(fake.adapter, {} as KernelContext, {} as MessagingContext, () => [job]));
   for (const menu of menus) await menu.command({ ...msg, command: "jobs" });
   await menus[1]!.press({ ...msg, action: fake.sent.at(-2)!.buttons![0]![0]!.action });
@@ -196,13 +373,13 @@ test("the 501st-oldest action expires", async () => {
 
 test("a stale /jobs button says send /jobs again", async () => {
   const f = fakeAdapter();
-  const job = { id: "1", title: "Sum", status: "running", updatedAt: Date.now() } as Job;
+  const job = jobOf("1", { title: "Sum" });
   const menu = createMenu(f.adapter, {} as KernelContext, {} as MessagingContext, () => [job]);
   for (let i = 0; i < 501; i++) await menu.command({ ...msg, command: "jobs" });
   await menu.press({ ...msg, action: f.sent[0]!.buttons![0]![0]!.action });
   expect(f.edited.at(-1)!.markdown).toBe("This menu expired — send /jobs again.");
   await menu.press({ ...msg, action: f.sent[1]!.buttons![0]![0]!.action });
-  expect(f.edited.at(-1)!.markdown).toMatch(/^\*\*Job 1\*\*/);
+  expect(f.edited.at(-1)!.markdown).toMatch(/^\*\*#1 Sum\*\*/);
 });
 
 test("every screen but a home has ‹ Back and ⌂ Home; Back returns to the previous screen", async () => {

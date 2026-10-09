@@ -9,7 +9,7 @@ export type Input = { secret: boolean; apply: (text: string) => Promise<string>;
 export type Nav = ReturnType<typeof createNav>;
 
 /** Buttons per page of a list. */
-const PAGE = 8;
+export const PAGE = 8;
 /** Actions kept; older buttons expire. */
 const KEEP = 500;
 const NOT_CHANGED = "Not changed: ";
@@ -30,6 +30,16 @@ export function ago(ms: number): string {
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   return hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/** A duration of `ms`: `<1m`, `Nm` under an hour, `Nh Nm` under a day, then `Nd Nh`. */
+export function dur(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 /**
@@ -74,17 +84,21 @@ export function createNav(scope: "s" | "j", run: string) {
       return { markdown, buttons: footer.length > 0 ? [...rows, footer] : rows };
     },
 
-    /** A screen of one button per item, `PAGE` to a page, with a row `‹` · `p/n` · `›` when there is more than one. */
+    /**
+     * A screen of one button per item, `PAGE` to a page, with a row `‹` · `p/n` · `›` when there is more than one, then
+     * `rows`.
+     */
     paged(options: {
       title: string;
       body?: string;
       items: (readonly [string, Page] | Button)[];
       page?: number;
+      rows?: Button[][];
       back?: Page;
       home?: Page;
       outcome?: string;
     }): OutgoingMessage {
-      const { items, page: wanted = 0, ...rest } = options;
+      const { items, page: wanted = 0, rows: extra = [], ...rest } = options;
       const pages = Math.max(1, Math.ceil(items.length / PAGE));
       const page = Math.min(Math.max(wanted, 0), pages - 1);
       const at = (p: number): Page => async (outcome) => nav.paged({ ...options, page: p, outcome });
@@ -98,7 +112,7 @@ export function createNav(scope: "s" | "j", run: string) {
         if (page < pages - 1) row.push(nav.button("›", at(page + 1)));
         rows.push(row);
       }
-      return nav.screen({ ...rest, rows });
+      return nav.screen({ ...rest, rows: [...rows, ...extra] });
     },
 
     /** Asks `question`, with `yes` running `run` then showing `then`, and `Cancel` showing `back`. */

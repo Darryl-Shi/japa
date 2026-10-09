@@ -46,7 +46,7 @@ export function createMenu(
   const navs = { s: createNav("s", run), j: createNav("j", run) };
   const homes = new Map<string, [Nav, Page]>([
     ["settings", [navs.s, settingsMenu(navs.s, kernel, messaging)]],
-    ["jobs", [navs.j, jobsMenu(navs.j, jobs)]],
+    ["jobs", [navs.j, jobsMenu(navs.j, jobs, messaging)]],
   ]);
   let at: { chat: string; messageId: string } | undefined; // the message showing the pending input's screen
   const waiting = () => (navs.s.pending() !== undefined ? navs.s : navs.j.pending() !== undefined ? navs.j : undefined);

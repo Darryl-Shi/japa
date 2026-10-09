@@ -81,8 +81,9 @@ The first run walks through, in order:
    yourself), a sign-in as `<provider>.credential`, which japa refreshes as needed.
 3. **Model.** Pick the model; background jobs and memory upkeep use it too unless you say no and pick others.
 4. **Integrations.** Only those that need something from you — a Telegram bot token, a Parallel or Brave Search
-   key, a Google sign-in (see Google) — are listed: pick any to set up now (none by default), or do it later, or ask the CoS. Anything with a
-   default isn't asked about at all (the desktop just works, see Desktop); change it later by asking the CoS.
+   key, a Google sign-in (see Google) — are listed: pick any to set up now (none by default), or later here or in
+   Telegram's `/settings`; until then japa doesn't see them. Anything with a default isn't asked about at all (the
+   desktop just works, see Desktop); change it later by asking the CoS.
 5. **Background service.** Installs and starts `japa service` (see Running), so japa keeps running after you log
    out — no question asked; pass `--no-service` to skip it. Setup then waits for japa to answer and prints
    `japa status`; without a service manager it tells you to run `japa daemon`.
@@ -93,7 +94,12 @@ it.
 
 The wizard covers models, sign-in, integrations and the service. Other settings — `jobs.*`,
 `context.toolResultTokens`, `memory.*`, `safety.*`, `storage.adapter`, `secrets.adapter` — aren't in it; edit
-`~/.japa/settings.json` directly, or ask the CoS.
+`~/.japa/settings.json` directly, use Telegram's `/settings`, or ask the CoS. `jobs.keepFinishedDays` (default `7`)
+is how many days finished jobs stay listed before they're cleared.
+
+An extension that needs a secret or a required setting stays hidden from japa — the CoS and its jobs don't know it
+exists — until it's set up, with `japa setup` or `/settings` → Extensions. `extensions.<name>.enabled: false` hides
+one the same way (`/settings` → Extensions → Turn off).
 
 You can switch to a browser or another window at any point; setup waits. Ctrl-C asks whether to quit (Enter keeps
 going, a second Ctrl-C quits); steps already completed stay saved.
@@ -219,15 +225,19 @@ left as it is; the command names the file.
 ## Telegram
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy its token.
-2. In `japa chat`, ask the CoS to connect Telegram, and paste the token at the masked prompt.
+2. Run `japa setup` and paste the token under Integrations → Telegram.
 3. Message your bot; it answers with your Telegram user id. Tell the CoS, which sets
    `extensions.telegram.owner`. Anyone else just gets their own user id back.
 
 Then chat with the CoS from Telegram: replies to your messages and proactive ones (schedules, job
-reports) come to you there. `/jobs` lists jobs, `/status` shows the model, extensions and errors, and
-`/settings` opens a menu for models, schedules and extension rollbacks. Photos and image files are
-saved under `~/.japa/attachments/` and handed to the CoS. When japa needs a secret, it asks in the
-chat: send it as your next message, and the bot deletes the message at once.
+reports) come to you there. `/jobs` lists jobs, active ones first, with counts and ages; each opens its
+brief and its progress, result, question or reason, and `Clear finished` clears the finished ones (they
+go by themselves after `jobs.keepFinishedDays`). `/status` shows the model, extensions (and which aren't
+on) and errors. `/settings` sets models, extensions (secrets, settings, on/off, rollback), schedules
+(pause, resume, remove) and general settings, and undoes recent changes; a value you type there goes to
+the menu, not the CoS, and a secret is deleted at once. Photos and image files are saved under
+`~/.japa/attachments/` and handed to the CoS. When japa needs a secret, it asks in the chat: send it as
+your next message, and the bot deletes the message at once.
 
 ## Desktop
 
