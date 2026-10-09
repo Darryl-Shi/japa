@@ -89,7 +89,8 @@ export function hiddenPaths(home: string, paths: string[]): { hidden: string[]; 
 /**
  * The jobs' sandboxes for japa home `home`: each mounts the job's clone over it, and its own temp dir at /tmp; japa's
  * code at `packageRoot`, what the daemon runs, its Node dir `nodeDir` (the first in its PATH) and that Node's
- * `nodeLib`, `<prefix>/lib/node` (where `require` still looks last, see `narrowRequire`), are read-only, and the
+ * `nodeLib`, `<prefix>/lib/node` (`JAPA_NODE_LIB` when set; where `require` still looks last, see `narrowRequire`),
+ * are read-only, and the
  * `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
  *
  * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (by something outside
@@ -105,7 +106,9 @@ export function createJobSandboxes(o: {
 }): JobSandboxes {
   const { home, packageRoot } = o;
   const nodeDir = o.nodeDir ?? realpathSync(dirname(process.execPath));
-  const nodeLib = o.nodeLib ?? resolve(dirname(realpathSync(process.execPath)), "..", "lib", "node");
+  // Tests set JAPA_NODE_LIB to a stand-in: a sandbox leaves an empty mount point where it's missing.
+  const nodeLib =
+    o.nodeLib ?? process.env.JAPA_NODE_LIB ?? resolve(dirname(realpathSync(process.execPath)), "..", "lib", "node");
   const problem = probeSandbox();
   const servers = new Map<string, EnvServer>();
   const present = o.hidden.filter((path) => existsSync(path));

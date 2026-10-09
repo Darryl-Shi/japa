@@ -25,8 +25,8 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * A japa workspace and a user home (`HOME`, until the test finishes) outside `/tmp`, which jobs see replaced by their
- * own, and the job sandboxes on them; with `o.node`, `<outside>/node` stands in for the daemon's Node dir, and the
- * missing `<outside>/prefix/lib/node` (`lib` exists) for its `lib/node`. Hidden are
+ * own, and the job sandboxes on them; with `o.node`, `<outside>/node` stands in for the daemon's Node dir. The missing
+ * `<outside>/prefix/lib/node` (`lib` exists) always stands in for its `lib/node`, never touched in tests. Hidden are
  * `<outside>/vault`, which has a `key`, and the missing `<outside>/absent`. All closed and removed when the test
  * finishes.
  */
@@ -42,8 +42,8 @@ function setup(o: { node?: boolean } = {}) {
   const saved = process.env.HOME;
   process.env.HOME = user;
   const nodeLib = join(outside, "prefix", "lib", "node");
-  if (o.node) mkdirSync(dirname(nodeLib), { recursive: true });
-  const nodeDirs = o.node ? { nodeDir: node, nodeLib } : {};
+  mkdirSync(dirname(nodeLib), { recursive: true });
+  const nodeDirs = o.node ? { nodeDir: node, nodeLib } : { nodeLib };
   const sandboxes = createJobSandboxes({ home, packageRoot, hidden: [vault, absent], env: jobEnv(), ...nodeDirs });
   onTestFinished(() => {
     sandboxes.closeAll();
@@ -135,7 +135,12 @@ test("hiddenPaths: one that is or holds the home, by real path, isn't hidden but
 
 // Jobs can write `~/.node_modules`, `~/.node_libraries` and NODE_PATH's dirs: a dependency's optional `require` of a
 // module that isn't installed (`supports-color` from `debug`, `bufferutil` from `ws`) mustn't load one from there.
-test("narrowRequire: require no longer looks in ~/.node_modules, ~/.node_libraries or NODE_PATH", () => {
+/**
+ * A temp `home` with `.node_modules/probe` and `.node_libraries/probe3`, and `extra` with `probe2`, for NODE_PATH;
+ * `load` is a script that `require`s the three, as if from `<root>/main.js`, into `loaded`: each module's name, or
+ * its error's code.
+ */
+function requireProbes() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "japa-require-")));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const [home, extra] = [join(root, "home"), join(root, "extra")];
@@ -148,18 +153,29 @@ test("narrowRequire: require no longer looks in ~/.node_modules, ~/.node_librari
     mkdirSync(join(dir!, name!), { recursive: true });
     writeFileSync(join(dir!, name!, "index.js"), `module.exports = "${name}";`);
   }
+  const load = [
+    `const require = createRequire(${JSON.stringify(join(root, "main.js"))});`,
+    "const tryLoad = (name) => { try { return require(name); } catch (error) { return error.code; } };",
+    'const loaded = ["probe", "probe2", "probe3"].map(tryLoad);',
+  ].join("\n");
+  const env = { PATH: process.env.PATH, HOME: home, NODE_PATH: extra };
+  return { root, home, extra, load, env };
+}
+
+const MISSING = "MODULE_NOT_FOUND";
+
+test("narrowRequire: require no longer looks in ~/.node_modules, ~/.node_libraries or NODE_PATH", () => {
+  const { home, extra, load, env } = requireProbes();
   const jobs = new URL("../src/kernel/sandbox/jobs.ts", import.meta.url).href;
   const run = (narrow: boolean) => {
     const script = [
       `import { createRequire } from "node:module";`,
       narrow ? `import { narrowRequire } from ${JSON.stringify(jobs)}; narrowRequire();` : "",
-      `const require = createRequire(${JSON.stringify(join(root, "main.js"))});`,
-      "const load = (name) => { try { return require(name); } catch (error) { return error.code; } };",
-      'const loaded = ["probe", "probe2", "probe3"].map(load);',
+      load,
       "console.log(JSON.stringify([...loaded, process.env.HOME, process.env.NODE_PATH ?? null]));",
     ].join("\n");
     const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
-      env: { PATH: process.env.PATH, HOME: home, NODE_PATH: extra },
+      env,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -167,17 +183,52 @@ test("narrowRequire: require no longer looks in ~/.node_modules, ~/.node_librari
   };
   // Found there without it: the probes are where Node looks.
   expect(run(false)).toEqual(["probe", "probe2", "probe3", home, extra]);
-  const missing = "MODULE_NOT_FOUND";
   // HOME is restored; NODE_PATH stays unset, for the daemon's own children too.
-  expect(run(true)).toEqual([missing, missing, missing, home, null]);
+  expect(run(true)).toEqual([MISSING, MISSING, MISSING, home, null]);
 });
 
-test("a job's spec has the daemon's Node dir and its lib/node read-only, by real path", () => {
-  const { sandboxes } = setup();
+// `japa check` and the other commands load the daemon's code too.
+test("the CLI narrows require before running a command", () => {
+  const { root, home, load, env } = requireProbes();
+  // After the command, as the process exits: what a dependency's optional `require` would find then.
+  const preload = join(root, "preload.mjs");
+  const result = join(root, "result.json");
+  const write = `writeFileSync(${JSON.stringify(result)}, JSON.stringify([...loaded, process.env.HOME]))`;
+  writeFileSync(
+    preload,
+    [
+      `import { createRequire } from "node:module";`,
+      `import { writeFileSync } from "node:fs";`,
+      `process.on("exit", () => {`,
+      load,
+      `${write};`,
+      "});",
+    ].join("\n"),
+  );
+  const main = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
+  const args = ["--disable-warning=ExperimentalWarning", "--import", preload, main, "--version"];
+  const output = execFileSync(process.execPath, args, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  expect(output).toMatch(/^japa /);
+  expect(JSON.parse(readFileSync(result, "utf8"))).toEqual([MISSING, MISSING, MISSING, home]);
+});
+
+test("a job's spec has the daemon's Node dir and its lib/node read-only, by real path; tests' JAPA_NODE_LIB", () => {
   const bin = realpathSync(dirname(process.execPath));
-  expect(sandboxes.spec("1").readOnly).toContainEqual({ path: bin, dir: true });
+  const saved = process.env.JAPA_NODE_LIB;
+  onTestFinished(() => {
+    if (saved === undefined) delete process.env.JAPA_NODE_LIB;
+    else process.env.JAPA_NODE_LIB = saved;
+  });
+  // Only specs: no sandbox starts, so nothing is mounted in the real prefix.
+  const readOnly = () => createJobSandboxes({ home: "/h", packageRoot, hidden: [], env: {} }).spec("1").readOnly;
+  delete process.env.JAPA_NODE_LIB;
+  expect(readOnly()).toContainEqual({ path: bin, dir: true });
   // Where `require` still looks last, after narrowRequire.
-  expect(sandboxes.spec("1").readOnly).toContainEqual({ path: resolve(bin, "..", "lib", "node"), dir: true });
+  expect(readOnly()).toContainEqual({ path: resolve(bin, "..", "lib", "node"), dir: true });
+  // The tests' stand-in, set for every test file (test/setup.ts).
+  process.env.JAPA_NODE_LIB = "/stand-in/lib/node";
+  expect(readOnly()).toContainEqual({ path: "/stand-in/lib/node", dir: true });
+  expect(readOnly()).not.toContainEqual({ path: resolve(bin, "..", "lib", "node"), dir: true });
 });
 
 describe.skipIf(NO_BWRAP)("a job's sandbox", () => {

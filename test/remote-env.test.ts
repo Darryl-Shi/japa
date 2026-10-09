@@ -87,6 +87,19 @@ test("a garbled line is logged quoted, its control characters escaped", async ()
   expect(message).not.toMatch(/[\u0000-\u001f]/);
 });
 
+// JSON leaves them as they are; a terminal or viewer reading the log would reorder or break the text.
+test("the log escapes C1, DEL, bidi and line-separator characters too, in the line and the error", async () => {
+  const { logged, env } = garbledServer('{"id":1,"call":["\u202e\u0085\u009b\u007f\u2066x",{"$context":true},{}]}');
+  const onOutput = () => {
+    throw new Error("boom\u2028\u2029\u202a");
+  };
+  expect(await env.exec("true", { onOutput }, ctx)).toMatchObject({ ok: false });
+  const [[message]] = logged.mock.calls as [[string]];
+  expect(message).toContain('("boom\\u2028\\u2029\\u202a")');
+  expect(message).toContain("\\u202e\\u0085\\u009b\\u007f\\u2066x");
+  expect(message).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/);
+});
+
 test("a callback that throws is logged, then fails the calls in flight like a lost server", async () => {
   const { garbled, logged, env } = garbledServer('{"id":1,"call":["out",{"$context":true},{}]}');
   const onOutput = () => {

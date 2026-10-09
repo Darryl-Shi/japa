@@ -8,6 +8,7 @@ import { boot } from "../kernel/boot.ts";
 import { check, CHECK_KINDS } from "../kernel/check.ts";
 import { rollBack } from "../kernel/install.ts";
 import { enterSafeMode } from "../kernel/safety.ts";
+import { narrowRequire } from "../kernel/sandbox/jobs.ts";
 import { japaHome } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
 import { daemonStatus } from "./daemon.ts";
@@ -120,6 +121,10 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   update: (home) => updateCommand(home, process.argv.slice(3)),
   uninstall: uninstallCommand,
 };
+// First, before any command: a dependency's optional `require` (`debug`'s `supports-color`, `ws`'s `bufferutil`)
+// mustn't load a module from `~/.node_modules`, `~/.node_libraries` or NODE_PATH, which jobs can write. The imports
+// above load no CommonJS module that makes one.
+narrowRequire();
 if (process.argv[2] === "--version") {
   console.log(versionText());
 } else {

@@ -15,6 +15,14 @@ export const SERVER = fileURLToPath(new URL("./env-server.ts", import.meta.url))
 /** How much of a server line that failed is logged. */
 const MAX_LOGGED = 200;
 
+/** What JSON leaves as it is but a terminal or viewer acts on: DEL, C1 controls, line separators, bidi controls. */
+const UNSAFE = /[\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/** `text` as a JSON string, with the `UNSAFE` characters escaped too: safe to log. */
+function quote(text: string): string {
+  return JSON.stringify(text).replace(UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
 export type EnvServer = {
   call(target: { cwd: string } | { handle: number }, method: string, args: unknown[], context: Context): Promise<unknown>;
   readonly closed: boolean;
@@ -122,8 +130,7 @@ export function startEnvServer(
       const why = error instanceof Error ? error.message : String(error);
       const shown = line.length > MAX_LOGGED ? `${line.slice(0, MAX_LOGGED)}\u2026` : line;
       // Quoted, control characters escaped: both can come from the sandbox (JSON.parse's error quotes the line).
-      const [quotedWhy, quotedLine] = [JSON.stringify(why), JSON.stringify(shown)];
-      console.error(`The env server's connection ends, its line failed (${quotedWhy}): ${quotedLine}`);
+      console.error(`The env server's connection ends, its line failed (${quote(why)}): ${quote(shown)}`);
       onLost();
       child.kill();
     }

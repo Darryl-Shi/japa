@@ -81,13 +81,15 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   to secrets; jobs therefore can't patch japa itself on the host.
   - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
   - The daemon's Node directory, by real path, first in the daemon's `PATH`: elsewhere than the app directory with
-    nvm or a dev checkout. And that Node's `<prefix>/lib/node`, where `require` still looks last (see below).
+    nvm or a dev checkout. And that Node's `<prefix>/lib/node`, where `require` still looks last (see below);
+    `JAPA_NODE_LIB` stands in for it in tests, so no empty mount point is left in the real prefix.
   - `$XDG_CONFIG_HOME/systemd` (the unit, drop-ins and new units), `$XDG_DATA_HOME/systemd` and
     `$XDG_CONFIG_HOME/environment.d`, both at the `$XDG_*` location and the default one.
   - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it; not one
     inside another protected directory, nor one only root could create (`/usr/lib/node`), where bwrap couldn't
-    make the mount point and a job can't create it anyway. One that is a symlink: its target is protected and the
-    link's directory is made read-only.
+    make the mount point and a job can't create it anyway. The directories above one left out are still pinned:
+    one the user can't create in (another user's, in one it can write) can't be moved away and recreated as its
+    own. One that is a symlink: its target is protected and the link's directory is made read-only.
   - Git config isn't protected: the daemon's git never reads it.
 - `--bind <home>/.jobs/<id>.tmp /tmp` and `/var/tmp`: a private temp dir, so tmux, screen and X11 sockets in `/tmp`
   are out of reach.
@@ -122,7 +124,8 @@ Consequences, accepted:
   committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
   global git config, ignore or attributes file; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
   directories and its Node (jobs keep the original `PATH`). CommonJS `require`'s global folders are only Node's
-  `<prefix>/lib/node` (read-only to jobs): at boot `NODE_PATH` is unset and `Module._initPaths()` runs without
+  `<prefix>/lib/node` (read-only to jobs): at boot, and first in every CLI command (`japa check` boots the daemon's
+  code too), `NODE_PATH` is unset and `Module._initPaths()` runs without
   `HOME`, so a dependency's missing optional module isn't looked for in `~/.node_modules`, `~/.node_libraries` or
   `NODE_PATH`.
 

@@ -1,6 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,6 +12,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -320,6 +323,41 @@ test("sandboxArgs leaves out a missing protected dir inside another protected on
   expect(args.filter((arg) => arg === inApp || arg === ROOTS_ONLY)).toEqual([]);
   expect(existsSync(join(app, "node"))).toBe(false);
 });
+
+/**
+ * A folder this user neither owns nor can write, in one it can write (the system temp dir), preferably one it can't
+ * even enter (systemd's private tmp dirs); undefined if none.
+ */
+const FOREIGN = (() => {
+  const can = (path: string, mode: number) => {
+    try {
+      accessSync(path, mode);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (process.getuid?.() === 0 || !can(tmpdir(), constants.W_OK)) return undefined;
+  const found = readdirSync(tmpdir())
+    .map((name) => join(tmpdir(), name))
+    .filter((path) => {
+      const stat = statSync(path, { throwIfNoEntry: false });
+      return stat?.isDirectory() && stat.uid !== process.getuid?.() && !can(path, constants.W_OK);
+    });
+  return found.find((path) => !can(path, constants.X_OK)) ?? found[0];
+})();
+
+// Left out (no mount point can be made in it), the path stays out of reach only while that folder can't be moved
+// away and recreated as the user's own.
+test.skipIf(FOREIGN === undefined)(
+  "sandboxArgs pins the folders above a missing protected dir it leaves out (skipped: no foreign folder in tmp)",
+  () => {
+    const path = join(FOREIGN!, "lib", "node");
+    const args = sandboxArgs({ ...bare, readOnly: [{ path, dir: true }] });
+    expect(args).not.toContain(path);
+    expect(pins(args)).toContain(FOREIGN);
+  },
+);
 
 test("sandboxArgs hides a dir with an empty tmpfs and a file with /dev/null, those that exist", () => {
   const user = tempUser();

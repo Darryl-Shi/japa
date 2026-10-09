@@ -157,9 +157,18 @@ function creatable(path: string): boolean {
 function movableAncestors(path: string): string[] {
   const dirs: string[] = [];
   for (let dir = dirname(path); dir !== dirname(dir); dir = dirname(dir)) {
-    if (statSync(dir, { throwIfNoEntry: false })?.isDirectory() && movable(dir)) dirs.push(dir);
+    if (isDirectory(dir) && movable(dir)) dirs.push(dir);
   }
   return dirs;
+}
+
+/** Whether `path` is a directory this user can reach: not one inside a folder it can't enter (EACCES). */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Why `bwrap --ro-bind / / true` fails here (stderr's last line, or the spawn error); undefined when it works. */
@@ -235,9 +244,11 @@ function readOnlyMounts(spec: SandboxSpec) {
   // Every folder above them the user could move, wherever it is, the japa home's too: the clone, bound after them,
   // still covers it. The user's home as well, which could otherwise be renamed away whole where its own parent is
   // writable. A hidden path's too: renamed, a folder would take the mask with it, and the next sandbox would find
-  // nothing to hide where it was.
+  // nothing to hide where it was. And a protected path left out above's: it stays out of reach only while the folder
+  // the user can't create in (another user's, in one it can write) can't be moved away and recreated as its own.
   const home = realPath(spec.userHome) ?? spec.userHome;
-  const pinTargets = [...readOnlyDirs, ...paths.map(({ path }) => path), ...spec.hidden].filter((p) => !inOwnMount(p));
+  const targets = [...readOnlyDirs, ...resolved.map(({ path }) => path), ...spec.hidden];
+  const pinTargets = targets.filter((path) => !inOwnMount(path));
   const parents = pinTargets.flatMap((path) => movableAncestors(path));
   const pinned = new Set([...(existsSync(home) ? [home] : []), ...parents]);
   // Parents first: binding one covers the mounts already under it.
