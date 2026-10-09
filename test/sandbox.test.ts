@@ -31,11 +31,17 @@ const NO_BWRAP = withEnv("JAPA_BWRAP", undefined, () => probeSandbox() !== undef
 const NO_SYSTEMD_RUN = spawnSync("systemd-run", ["--version"]).status !== 0;
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"].filter((path) => existsSync(path));
 
+/** A script that tries to create or overwrite each of `paths`: prints `wrote <path>` for each that worked, then `done`. */
+function tryWrites(paths: string[]): string {
+  const write = `(mkdir -p "$(dirname "$f")" && echo x > "$f") 2>/dev/null && echo "wrote $f"`;
+  return `for f in ${paths.map((f) => `"${f}"`).join(" ")}; do ${write}; done; echo done`;
+}
+
 /**
  * A japa home with `secrets/x`, `state.db`, `japa.sock` and a shared folder, and `marker` and `skills/s` committed;
- * its clone at `.jobs/1`. Outside it: a user home with an installed app (and its Node), the launcher, the service
- * unit and `.gitconfig` (no `.config/git`, a missing read-only path); a hidden dir, plus a missing one. All removed
- * when the test finishes.
+ * its clone at `.jobs/1`. Outside it: the sandbox's `/tmp`; a user home with an installed app (and its Node), the
+ * launcher and the service unit, but no `.gitconfig`, `.config/git`, `.local/share/systemd` or
+ * `.config/environment.d`; a hidden dir, plus a missing one. All removed when the test finishes.
  */
 function sandbox() {
   const home = tempHome();
@@ -67,7 +73,6 @@ function sandbox() {
     [join(user, ".local", "share", "japa", "node", "node"), "node"],
     [join(user, ".local", "bin", "japa"), "launcher"],
     [join(units, "japa.service"), "unit"],
-    [join(user, ".gitconfig"), "gitconfig"],
   ] as const) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, text);
@@ -75,33 +80,46 @@ function sandbox() {
   const hidden = join(outside, "secrets");
   mkdirSync(hidden);
   writeFileSync(join(hidden, "key"), "hidden-secret");
+  const tmp = join(outside, "tmp");
+  mkdirSync(tmp);
 
   const spec: SandboxSpec = {
     home,
     clone,
+    tmp,
     readOnly: readOnlyPaths(app, user, {}),
     hidden: [hidden, join(outside, "absent")],
     shared: [join(home, "desktop", "shared")],
   };
   const run = (script: string, o: { timeoutMs?: number; cwd?: string } = {}) =>
     runSandboxed(spec, ["bash", "-c", script], { timeoutMs: o.timeoutMs ?? 10_000, cwd: o.cwd });
-  return { home, clone, outside, user, app, units, hidden, spec, run };
+  return { home, clone, outside, user, app, units, hidden, tmp, spec, run };
 }
 
 test("probe fails with JAPA_BWRAP=/nonexistent", () => {
   expect(withEnv("JAPA_BWRAP", "/nonexistent", probeSandbox)).toMatch(/\S/);
 });
 
-test("readOnlyPaths covers the app dir (with its Node), the launcher, systemd's and git's user config", () => {
-  const tail = ["/u/.local/bin/japa", "/u/.config/systemd", "/u/.gitconfig", "/u/.config/git"];
-  expect(readOnlyPaths("/u/.local/share/japa/app", "/u", {})).toEqual(["/u/.local/share/japa", ...tail]);
-  expect(readOnlyPaths("/src/japa", "/u", {})).toEqual(["/src/japa", ...tail]);
-  const xdg = ["/src/japa", "/u/.local/bin/japa", "/x/systemd", "/u/.gitconfig", "/x/git"];
-  expect(readOnlyPaths("/src/japa", "/u", { XDG_CONFIG_HOME: "/x" })).toEqual(xdg);
+test("readOnlyPaths covers the app dir (with its Node), the launcher, the user's systemd, environment.d and git config", () => {
+  const dir = (path: string) => ({ path, dir: true });
+  const file = (path: string) => ({ path, dir: false });
+  const paths = (app: string, config = "/u/.config", data = "/u/.local/share") => [
+    dir(app),
+    dir(`${config}/systemd`),
+    dir(`${config}/git`),
+    dir(`${config}/environment.d`),
+    dir(`${data}/systemd`),
+    file("/u/.local/bin/japa"),
+    file("/u/.gitconfig"),
+  ];
+  expect(readOnlyPaths("/u/.local/share/japa/app", "/u", {})).toEqual(paths("/u/.local/share/japa"));
+  expect(readOnlyPaths("/src/japa", "/u", {})).toEqual(paths("/src/japa"));
+  const xdg = { XDG_CONFIG_HOME: "/x", XDG_DATA_HOME: "/d" };
+  expect(readOnlyPaths("/src/japa", "/u", xdg)).toEqual(paths("/src/japa", "/x", "/d"));
 });
 
 test("sandboxArgs masks each existing docker socket once, by its real path", () => {
-  const args = sandboxArgs({ home: "/h", clone: "/h/.jobs/1", readOnly: [], hidden: [], shared: [] });
+  const args = sandboxArgs({ home: "/h", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] });
   const masked = args.flatMap((arg, i) => (arg === "/dev/null" && args[i - 1] === "--ro-bind-try" ? [args[i + 1]] : []));
   // A missing mount point would make bwrap fail ("Can't create file at /run/docker.sock").
   expect(masked).toEqual([...new Set(DOCKER_SOCKETS.map((path) => realpathSync(path)))]);
@@ -141,13 +159,47 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
       join(units, "japa.service"),
       join(units, "japa.service.d", "x.conf"),
       join(units, "evil.service"),
-      join(user, ".gitconfig"),
     ];
-    const write = `(mkdir -p "$(dirname "$f")" && echo x > "$f") 2>/dev/null && echo "wrote $f"`;
-    const { output } = await run(`for f in ${targets.map((f) => `"${f}"`).join(" ")}; do ${write}; done; echo done`);
+    const { output } = await run(tryWrites(targets));
     expect(output.trim()).toBe("done");
     expect(readFileSync(join(app, "main.ts"), "utf8")).toBe("app");
     expect(existsSync(join(units, "japa.service.d"))).toBe(false);
+  });
+
+  test("missing protected paths can't be created, and git still reads its config", async () => {
+    const { home, user, run } = sandbox();
+    const gitconfig = join(user, ".gitconfig");
+    const config = join(user, ".config");
+    const targets = [
+      gitconfig,
+      join(config, "git", "config"),
+      join(user, ".local", "share", "systemd", "user", "japa.service.d", "x.conf"),
+      join(config, "environment.d", "x.conf"),
+    ];
+    const { output } = await run(`${tryWrites(targets)}; HOME="${user}" git -C "${home}" log --format=%s`);
+    expect(output.trim()).toBe("done\ninit");
+    // At most an empty placeholder is left behind.
+    expect(existsSync(gitconfig) ? readFileSync(gitconfig, "utf8") : "").toBe("");
+    for (const dir of [join(config, "git"), join(user, ".local", "share", "systemd"), join(config, "environment.d")]) {
+      expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
+    }
+  });
+
+  test("/tmp and /var/tmp are the job's own", async () => {
+    const { tmp, run } = sandbox();
+    const name = `japa-sandbox-${process.pid}-${Date.now()}`;
+    writeFileSync(join("/tmp", `${name}.host`), "host");
+    onTestFinished(() => {
+      for (const path of [`/tmp/${name}.host`, `/tmp/${name}`, `/var/tmp/${name}.var`]) rmSync(path, { force: true });
+    });
+    const { output } = await run(
+      `echo a > /tmp/${name}; echo b > /var/tmp/${name}.var; test -e /tmp/${name}.host && echo "host /tmp visible"; echo done`,
+    );
+    expect(output.trim()).toBe("done");
+    expect(readFileSync(join(tmp, name), "utf8")).toBe("a\n");
+    expect(readFileSync(join(tmp, `${name}.var`), "utf8")).toBe("b\n");
+    expect(existsSync(`/tmp/${name}`)).toBe(false);
+    expect(existsSync(`/var/tmp/${name}.var`)).toBe(false);
   });
 
   test("hidden dirs are empty", async () => {
