@@ -1,12 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
 import { type Conversation, type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { extensionState, isConfigured, type SecretReader } from "../src/kernel/availability.ts";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
-import type { KernelContext, MessagingAdapter, Status } from "../src/kernel/contracts.ts";
+import type { KernelContext, MessagingAdapter, SecretsStore, Status } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { statusText } from "../src/kernel/status.ts";
@@ -85,16 +85,23 @@ const demoExtension = () => pinging("demo", { secrets: ["demo.key"] });
 
 /** A profile `pinger` that names `demo`. */
 const pinger = ["---", "name: pinger", "description: Pings", "tools: [read]", "extensions: [demo]", "---", "Ping."];
+/** A profile `desk` that names the desktop's skill. */
+const desk = ["---", "name: desk", "description: Desk", "tools: [read]", "skills: [using-the-desktop]", "---", "Desk."];
 
 /**
- * Boots on in-memory storage with `extra` extensions, the `pinger` worker profile and the secrets in `secrets`
- * already stored.
+ * Boots on in-memory storage (unless `settings` says otherwise) with `extra` extensions, the `pinger` and `desk`
+ * worker profiles and the secrets in `secrets` already stored.
  */
-async function bootWith(extra: JapaExtension[], settings: object = {}, secrets: Record<string, string> = {}) {
-  const kit = testKit();
+async function bootWith(
+  extra: JapaExtension[],
+  settings: object = {},
+  secrets: Record<string, string> = {},
+  kit = testKit(),
+) {
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model }, ...settings });
   mkdirSync(join(home, "workers"));
   writeFileSync(join(home, "workers", "pinger.md"), pinger.join("\n"));
+  writeFileSync(join(home, "workers", "desk.md"), desk.join("\n"));
   mkdirSync(join(home, "secrets"), { recursive: true });
   for (const [name, value] of Object.entries(secrets)) writeFileSync(join(home, "secrets", name), value);
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, ...extra] });
@@ -260,6 +267,85 @@ test("a running job loses a hidden extension's tools", async () => {
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "pinged" });
   expect(await texts(job, "toolResult")).not.toContain("pong");
   await daemon.close();
+});
+
+test("a job spanning a restart gets the extensions available at boot", async () => {
+  const kit = testKit();
+  const demo = demoExtension();
+  const settings = { storage: { adapter: "sqlite" } };
+  let { daemon, faux, home } = await bootWith([demo.extension], settings, { "demo.key": "k" }, kit);
+  const job = await startPinger(daemon, faux);
+  await waitFor(async () => (await reported(daemon)).length === 1);
+  expect((await jobs(daemon))["1"]!.status).toBe("needs_input");
+  expect(await toolNames(job)).toContain("demo_ping");
+  const conversationId = job.id;
+  await waitFor(() => idle(daemon));
+  await daemon.close();
+
+  const file = join(home, "settings.json");
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, JSON.stringify({ ...saved, extensions: { ...saved.extensions, demo: { enabled: false } } }));
+  daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, demo.extension] });
+  expect(stateOf(daemon, "demo")).toBe("off");
+  const after = (await daemon.harness.conversation(conversationId, ctx))!;
+  expect(await toolNames(after)).not.toContain("demo_ping");
+  await daemon.close();
+});
+
+test("an unavailable extension's skills are hidden and come back with it; a profile naming one stays valid", async () => {
+  const { daemon, faux } = await bootWith([demoExtension().extension], { extensions: { desktop: { enabled: false } } });
+  const skill = () => tool(daemon, faux, "skill_read", { name: "using-the-desktop" });
+  expect(stateOf(daemon, "desktop")).toBe("off");
+  expect(daemon.status().errors).toEqual([]); // desk names the desktop's skill
+  expect(await skill()).toMatch(/^No skill "using-the-desktop"/);
+  await tool(daemon, faux, "settings_set", { path: "extensions.desktop.enabled", value: true });
+  expect(await skill()).not.toMatch(/^No skill/);
+  await tool(daemon, faux, "settings_set", { path: "extensions.desktop.enabled", value: false });
+  expect(await skill()).toMatch(/^No skill "using-the-desktop"/);
+  expect(daemon.status().errors).toEqual([]);
+  await daemon.close();
+});
+
+test("a secrets read that throws counts as not set; it is logged once per refresh and shown in status", async () => {
+  let locked = true;
+  const values = new Map<string, string>();
+  const store: SecretsStore = {
+    get: async (name) => {
+      if (locked && name.startsWith("demo.")) throw new Error("locked");
+      return values.get(name);
+    },
+    set: async (name, value) => void values.set(name, value),
+    delete: async (name) => void values.delete(name),
+    list: async () => [...values.keys()],
+  };
+  const vault: JapaExtension = { name: "vault", summary: "Vault", provides: { secrets: [{ name: "vault", open: async () => store }] } };
+  const two = pinging("demo2", { secrets: ["demo.other"] });
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const logged = () => errors.mock.calls.filter((call) => String(call[0]).includes("locked"));
+  try {
+    const { daemon, faux } = await bootWith([vault, demoExtension().extension, two.extension], { secrets: { adapter: "vault" } });
+    expect(stateOf(daemon, "demo")).toBe("not set up");
+    const shown = () => daemon.status().errors.filter((e) => e.name.startsWith("demo"));
+    const both = [
+      { name: "demo", error: "secrets: locked" },
+      { name: "demo2", error: "secrets: locked" },
+    ];
+    expect(shown()).toEqual(both);
+    expect(logged()).toEqual([["demo, demo2: secrets: locked"]]); // one error, logged once
+    await tool(daemon, faux, "settings_set", { path: "jobs.maxConcurrent", value: 2 });
+    expect(logged()).toHaveLength(2);
+    expect(shown()).toEqual(both);
+    expect(statusText(daemon.status())).toContain("demo: secrets: locked");
+    locked = false;
+    values.set("demo.key", "k");
+    await tool(daemon, faux, "settings_set", { path: "jobs.maxConcurrent", value: 3 });
+    expect(stateOf(daemon, "demo")).toBe("on");
+    expect(shown()).toEqual([]);
+    expect(logged()).toHaveLength(2);
+    await daemon.close();
+  } finally {
+    errors.mockRestore();
+  }
 });
 
 test("statusText shows a state that is not on after the summary", () => {

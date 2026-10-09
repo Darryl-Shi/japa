@@ -32,8 +32,8 @@ export type Runtime = ReturnType<typeof createRuntime>;
  * The daemon's live extension state: the loaded extensions, their activations and built Pi Durable extensions, the
  * skills, worker profiles, root selection and capabilities text; `start` activates extensions, `reconcile` reloads
  * the workspace extensions in `<home>/extensions` that changed on disk, and the skills and worker profiles.
- * Only the available extensions (see `availability.ts`) reach the root selection, the jobs' agents and the
- * capabilities; `refreshAvailability` recomputes which those are.
+ * Only the available extensions (see `availability.ts`), and their skills, reach the root selection, the jobs' agents
+ * and the capabilities; `refreshAvailability` recomputes which those are.
  */
 export function createRuntime(input: {
   home: string;
@@ -61,6 +61,7 @@ export function createRuntime(input: {
   let content: { jobs: Extension; skills: Extension } | undefined; // installed by `reloadContent`
   let reconciling: Promise<unknown> = Promise.resolve();
   let refreshing: Promise<unknown> = Promise.resolve();
+  let readErrors: LoadError[] = []; // the secrets reads that threw in the latest `computeStates`, in `errors`
 
   const runtime = {
     extensions: input.extensions,
@@ -71,7 +72,7 @@ export function createRuntime(input: {
     available: new Set<string>() as ReadonlySet<string>,
     states: new Map<string, ExtensionState>() as ReadonlyMap<string, ExtensionState>,
     capabilities: "",
-    /** The loaded skills and worker profiles, by name. */
+    /** The skills agents see (the available extensions', with the package's and the user's) and worker profiles. */
     skills: new Map<string, Skill>() as ReadonlyMap<string, Skill>,
     profiles: new Map<string, WorkerProfile>() as ReadonlyMap<string, WorkerProfile>,
     refreshCapabilities: () => {
@@ -83,14 +84,17 @@ export function createRuntime(input: {
     },
     start,
     /**
-     * Recomputes the extensions' states, one call at a time; when the available ones changed, resets the root
-     * selection and capabilities and, given `root`, reconfigures the unfinished jobs.
+     * Recomputes the extensions' states, one call at a time; when the available ones changed, reloads the content
+     * (the skills follow them), resets the root selection and capabilities and, given `root`, reconfigures the
+     * unfinished jobs.
      */
     refreshAvailability: (root?: Conversation) => {
       const run = refreshing.then(() => refreshAvailability(root));
       refreshing = run.catch(() => {});
       return run;
     },
+    /** Re-applies each unfinished job's profile, so it picks up the current extensions and skills. */
+    reconfigure: (root: Conversation) => root.commit((tx) => reconfigureJobs(tx, jobsOptions!), ctx),
     /** `reconcile`, one at a time. */
     reconcile: (root: Conversation) => {
       const run = reconciling.then(() => reconcile(root));
@@ -151,12 +155,32 @@ export function createRuntime(input: {
     return [...errors, ...contentErrors];
   }
 
-  /** Recomputes `runtime.states` and `runtime.available` from the stored secrets and `settings.extensions`. */
+  /**
+   * Recomputes `runtime.states` and `runtime.available` from the stored secrets and `settings.extensions`. A secrets
+   * read that throws counts as not set: each extension's goes to `errors` as `secrets: <message>`, replacing the
+   * previous computation's, and each distinct one is logged once, naming the extensions it hit.
+   */
   async function computeStates() {
     const states = new Map<string, ExtensionState>();
-    for (const e of runtime.extensions) states.set(e.name, await extensionState(e, input.secrets, settings.extensions));
+    const failed: LoadError[] = [];
+    for (const e of runtime.extensions) {
+      const secrets: SecretReader = {
+        get: (name) =>
+          input.secrets.get(name).catch((error: unknown) => {
+            failed.push({ name: e.name, error: `secrets: ${message(error)}` });
+            throw error;
+          }),
+      };
+      states.set(e.name, await extensionState(e, secrets, settings.extensions));
+    }
     runtime.states = states;
     runtime.available = new Set([...states].flatMap(([name, state]) => (state === "on" ? [name] : [])));
+    const stale = readErrors;
+    replaceErrors((e) => stale.includes(e), failed);
+    readErrors = failed;
+    for (const [error, hit] of Map.groupBy(failed, (f) => f.error)) {
+      console.error(`${hit.map((f) => f.name).join(", ")}: ${error}`);
+    }
   }
 
   async function refreshAvailability(root?: Conversation) {
@@ -165,9 +189,8 @@ export function createRuntime(input: {
     const after = runtime.available;
     if (content === undefined) return; // before the tool phase, whose `reloadContent` uses the new states
     if (before.size === after.size && [...before].every((name) => after.has(name))) return;
-    select();
-    runtime.refreshCapabilities();
-    if (root) await root.commit((tx) => reconfigureJobs(tx, jobsOptions!), ctx);
+    reloadContent();
+    if (root) await runtime.reconfigure(root);
   }
 
   /** Resets the root selection: the CoS, safety, jobs and skills extensions, then the available built ones. */
@@ -177,27 +200,32 @@ export function createRuntime(input: {
   }
 
   /**
-   * Reloads skills and worker profiles, installs `japa-skills` and `japa-jobs`, and resets the root selection; returns
-   * the skill and worker errors.
+   * Reloads skills (the package's, the available extensions', the user's) and worker profiles, installs `japa-skills`
+   * and `japa-jobs`, and resets the root selection; returns the skill and worker errors.
    */
   function reloadContent(): LoadError[] {
-    const skills = loadSkills([
-      join(packageRoot, "skills"),
-      ...[...sources.values()].map((dir) => join(dir, "skills")),
-      join(home, "skills"),
-    ]);
+    const skillsOf = (use: (extension: string) => boolean) =>
+      loadSkills([
+        join(packageRoot, "skills"),
+        ...[...sources].flatMap(([name, dir]) => (use(name) ? [join(dir, "skills")] : [])),
+        join(home, "skills"),
+      ]);
+    // A profile is checked against every extension's skills, as against every built extension, so one naming an
+    // unavailable extension's skill stays valid and runs without it.
+    const all = skillsOf(() => true);
+    const skills = skillsOf((name) => runtime.available.has(name)).skills;
     const workers = loadWorkers([join(packageRoot, "workers"), join(home, "workers")], home);
-    const errors = [...skills.errors, ...workers.errors];
+    const errors = [...all.errors, ...workers.errors];
     for (const profile of workers.profiles.values()) {
-      const error = profileError(profile, models, environments, built, skills.skills);
+      const error = profileError(profile, models, environments, built, all.skills);
       if (error === undefined) continue;
       errors.push({ name: `worker:${profile.name}`, error });
       workers.profiles.delete(profile.name);
     }
     replaceErrors((e) => /^(skill|worker):/.test(e.name), errors);
-    runtime.skills = skills.skills;
+    runtime.skills = skills;
     runtime.profiles = workers.profiles;
-    const skillsExt = skillsExtension(skills.skills);
+    const skillsExt = skillsExtension(skills);
     jobsOptions = {
       profiles: workers.profiles,
       settings,

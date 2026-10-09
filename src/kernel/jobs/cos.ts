@@ -51,14 +51,17 @@ function agentOf({ settings, extensions, available, skills, safety }: JobsOption
   };
 }
 
-/** Re-applies each unfinished job's profile, so it picks up reloaded extensions and skills. */
+/**
+ * Re-applies each unfinished job's profile, so it picks up reloaded extensions and skills; one whose conversation is
+ * gone is skipped, so it can't fail a boot.
+ */
 export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<void> {
   const { jobs } = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
   for (const job of Object.values(jobs)) {
     const profile = options.profiles.get(job.worker);
-    if (profile && ["queued", "running", "needs_input"].includes(job.status)) {
-      await configure(tx, job.conversationId, agentOf(options, profile));
-    }
+    if (profile === undefined || !["queued", "running", "needs_input"].includes(job.status)) continue;
+    if ((await tx.conversation(job.conversationId)) === undefined) continue;
+    await configure(tx, job.conversationId, agentOf(options, profile));
   }
 }
 

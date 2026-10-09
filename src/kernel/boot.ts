@@ -469,6 +469,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     }
     // The rest of the contracts; `japa-jobs` is installed after tools, so pending job tasks resume with it.
     await rt.start(extensions, ACTIVATION_ORDER.slice(1));
+    // Which extensions are available may have changed while japa was down.
+    await rt.reconfigure(root);
     harness.resume();
     if (safeMode !== undefined) {
       const content =
