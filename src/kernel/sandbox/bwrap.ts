@@ -121,12 +121,30 @@ function isSymlink(path: string): boolean {
   }
 }
 
-/** The existing directories strictly between `home` and `path`, when `path` is under it. */
-function between(home: string, path: string): string[] {
+/** Whether this user can write `path`. */
+function writable(path: string): boolean {
+  try {
+    accessSync(path, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether this user could move `dir` (an existing directory): it can write it, or its parent (renaming takes write
+ * access to the parent, not to the folder), or owns the parent, which it could make writable.
+ */
+function movable(dir: string): boolean {
+  const parent = dirname(dir);
+  return writable(dir) || writable(parent) || statSync(parent, { throwIfNoEntry: false })?.uid === process.getuid?.();
+}
+
+/** The existing directories above `path`, `/` aside, that this user could move (see `movable`). */
+function movableAncestors(path: string): string[] {
   const dirs: string[] = [];
-  if (!within(path, home)) return dirs;
-  for (let dir = dirname(path); dir !== home && within(dir, home); dir = dirname(dir)) {
-    if (existsSync(dir)) dirs.push(dir);
+  for (let dir = dirname(path); dir !== dirname(dir); dir = dirname(dir)) {
+    if (statSync(dir, { throwIfNoEntry: false })?.isDirectory() && movable(dir)) dirs.push(dir);
   }
   return dirs;
 }
@@ -199,12 +217,13 @@ function readOnlyMounts(spec: SandboxSpec) {
     }
     paths.push({ path, dir, missing: missing && dir });
   }
-  // Every parent, the japa home's too: the clone, bound after them, still covers it. The user's home as well, which
-  // could otherwise be renamed away whole where its own parent is writable. A hidden path's too: renamed, a folder
-  // would take the mask with it, and the next sandbox would find nothing to hide where it was.
+  // Every folder above them the user could move, wherever it is, the japa home's too: the clone, bound after them,
+  // still covers it. The user's home as well, which could otherwise be renamed away whole where its own parent is
+  // writable. A hidden path's too: renamed, a folder would take the mask with it, and the next sandbox would find
+  // nothing to hide where it was.
   const home = realPath(spec.userHome) ?? spec.userHome;
   const protectedPaths = [...readOnlyDirs, ...paths.map(({ path }) => path), ...spec.hidden];
-  const parents = protectedPaths.flatMap((path) => between(home, path));
+  const parents = protectedPaths.flatMap((path) => movableAncestors(path));
   const pinned = new Set([...(existsSync(home) ? [home] : []), ...parents]);
   // Parents first: binding one covers the mounts already under it.
   return { pinned: [...pinned].sort(), readOnlyDirs: [...readOnlyDirs].sort(), paths };

@@ -84,8 +84,8 @@ export function hiddenPaths(home: string, paths: string[]): { hidden: string[]; 
  * code at `packageRoot`, what the daemon runs and its Node dir `nodeDir` (the first in its PATH) are read-only, and
  * the `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
  *
- * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (from outside the user's
- * home, where its folders aren't pinned), it would be found nowhere to hide, and read where it went.
+ * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (by something outside
+ * the sandboxes; in one, its folders are pinned), it would be found nowhere to hide, and read where it went.
  */
 export function createJobSandboxes(o: {
   home: string;

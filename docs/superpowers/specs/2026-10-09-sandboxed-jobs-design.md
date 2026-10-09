@@ -72,8 +72,10 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--bind / /`: the host filesystem as the user sees it.
 - `--dev /dev`, plus `--unshare-pid` and `--proc /proc`: a separate process namespace. The daemon's memory,
   environment and other processes are invisible.
-- `--bind D D` for every directory between the user's home and a protected or hidden path (e.g. `~/.config`,
-  `~/.local/share`), so a job can't rename it away and recreate the path, or move a hidden one out of its mask.
+- `--bind D D` for the user's home and every existing directory above a protected or hidden path, wherever it is
+  (`/` aside), that the user could move: one it can write, or one in a directory it can write or owns (renaming
+  takes write access to the parent). E.g. `~/.config`, `~/.local/share`. So a job can't rename it away and
+  recreate the path, or move a hidden one out of its mask.
 - `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
   to secrets; jobs therefore can't patch japa itself on the host.
   - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).

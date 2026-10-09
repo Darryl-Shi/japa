@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import {
@@ -171,6 +172,9 @@ function tempUser(): string {
 const pins = (args: string[]) =>
   args.flatMap((arg, i) => (arg === "--bind" && args[i + 1] === args[i + 2] && args[i + 1] !== "/" ? [args[i + 1]] : []));
 
+/** Those of `pins` that are `user` or under it (the writable folders above a temp user home are pinned too). */
+const pinsIn = (args: string[], user: string) => pins(args).filter((dir) => dir === user || dir.startsWith(`${user}/`));
+
 /** A spec with nothing to protect, for a japa home `/h` and a user home `/u` that don't exist. */
 const bare: SandboxSpec = {
   home: "/h",
@@ -268,7 +272,7 @@ test("sandboxArgs pins the user's home and the existing folders between it and e
   const args = sandboxArgs(spec);
   // `.local` holds the job home, which the clone (bound later) still covers; so does the user's home.
   const local = join(user, ".local");
-  expect(pins(args)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
+  expect(pinsIn(args, user)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const at = (path: string) => args.findIndex((arg, i) => arg === path && args[i - 1] === "--bind");
   expect(at(user)).toBeGreaterThan(args.indexOf("/proc"));
   expect(at(user)).toBeLessThan(at(join(user, ".config")));
@@ -293,7 +297,7 @@ test("sandboxArgs creates missing placeholders and their folders first, and pins
   const args = sandboxArgs(spec);
   const local = join(user, ".local");
   expect(readFileSync(join(local, "bin", "japa"), "utf8")).toBe("");
-  expect(pins(args)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
+  expect(pinsIn(args, user)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const systemd = join(local, "share", "systemd");
   expect(args.join(" ")).toContain(`--tmpfs ${systemd} --remount-ro ${systemd}`);
 });
@@ -320,7 +324,38 @@ test("sandboxArgs pins the existing folders between the user's home and each hid
   const args = sandboxArgs({ ...bare, userHome: user, hidden: [secrets, wal, "/elsewhere/secrets"] });
   const config = join(user, ".config");
   const data = join(user, "data");
-  expect(pins(args)).toEqual([user, config, join(config, "japa"), data, join(data, "db")]);
+  expect(pinsIn(args, user)).toEqual([user, config, join(config, "japa"), data, join(data, "db")]);
+});
+
+test("sandboxArgs pins every writable folder above a protected or hidden path, outside the user's home too", () => {
+  const root = tempUser();
+  const user = join(root, "user");
+  const secrets = join(root, "elsewhere", "a", "secrets");
+  const app = join(root, "elsewhere", "b", "app");
+  for (const dir of [user, secrets, app]) mkdirSync(dir, { recursive: true });
+  const readOnly = [
+    { path: app, dir: true },
+    { path: "/usr/bin", dir: true },
+  ];
+  const args = sandboxArgs({ ...bare, userHome: user, readOnly, hidden: [secrets, "/elsewhere/secrets"] });
+  const elsewhere = join(root, "elsewhere");
+  expect(pinsIn(args, root)).toEqual([root, elsewhere, join(elsewhere, "a"), join(elsewhere, "b"), user]);
+  // Not `/`, nor a folder this user can't write (unless it runs as root).
+  expect(pins(args)).not.toContain("/");
+  if (process.getuid?.() !== 0) expect(pins(args)).not.toContain("/usr");
+  // Before the clone, which covers any that holds the japa home.
+  expect(args.lastIndexOf(join(elsewhere, "a"))).toBeLessThan(args.indexOf(bare.clone));
+});
+
+test("sandboxArgs pins a folder it can't write in one it can but doesn't own (sticky /tmp, a group's)", () => {
+  const locked = tempUser(); // directly in the system temp dir, which root owns
+  mkdirSync(join(locked, "secrets"));
+  chmodSync(locked, 0o555);
+  try {
+    expect(pins(sandboxArgs({ ...bare, hidden: [join(locked, "secrets")] }))).toContain(locked);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
 });
 
 test("sandboxArgs masks the runtime dirs that exist: the user's, and screen's sockets", () => {
@@ -520,6 +555,51 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(output).toMatch(/^mv=[1-9]\nend\n$/);
     expect(existsSync(`${japa}2`)).toBe(false);
     expect(readdirSync(secrets)).toEqual(["key"]);
+  });
+
+  test("writable folders holding a hidden or protected path outside the user's home can't be renamed", async () => {
+    const { outside, spec } = sandbox();
+    const root = join(outside, "elsewhere");
+    const [a, b] = [join(root, "a"), join(root, "b")];
+    const secrets = join(a, "secrets");
+    const app = join(b, "app");
+    for (const dir of [secrets, app]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(secrets, "key"), "hidden-secret");
+    writeFileSync(join(app, "main.ts"), "app");
+    const moves = [a, b, root].map((dir) => `mv "${dir}" "${dir}2" 2>/dev/null; echo "${basename(dir)}=$?"`);
+    const readOnly = [...spec.readOnly, { path: app, dir: true }];
+    const withPaths = { ...spec, hidden: [...spec.hidden, secrets], readOnly };
+    const { output } = await runSandboxed(withPaths, ["bash", "-c", `${moves.join("; ")}; echo end`], {
+      timeoutMs: 10_000,
+    });
+    expect(output).toMatch(/^a=[1-9]\nb=[1-9]\nelsewhere=[1-9]\nend\n$/);
+    for (const dir of [a, b, root]) expect(existsSync(`${dir}2`)).toBe(false);
+    expect(readdirSync(secrets)).toEqual(["key"]);
+  });
+
+  // Renaming a folder takes write access to its parent, not to itself; owning the parent, the job could chmod it.
+  test("read-only folders holding a hidden path can't be renamed in a writable parent or the user's", async () => {
+    const { outside, spec } = sandbox();
+    const root = join(outside, "elsewhere");
+    const [c, d] = [join(root, "c"), join(root, "d")];
+    const e = join(d, "e");
+    const hidden = [join(c, "secrets"), join(e, "secrets")];
+    for (const dir of hidden) mkdirSync(dir, { recursive: true });
+    for (const dir of [c, e, d]) chmodSync(dir, 0o555);
+    try {
+      const script = [
+        `mv "${c}" "${c}2" 2>/dev/null; echo "c=$?"`,
+        `chmod u+w "${d}"; mv "${e}" "${e}2" 2>/dev/null; echo "e=$?"`,
+        "echo end",
+      ].join("; ");
+      const { output } = await runSandboxed({ ...spec, hidden: [...spec.hidden, ...hidden] }, ["bash", "-c", script], {
+        timeoutMs: 10_000,
+      });
+      expect(output).toMatch(/^c=[1-9]\ne=[1-9]\nend\n$/);
+      expect([existsSync(`${c}2`), existsSync(`${e}2`)]).toEqual([false, false]);
+    } finally {
+      for (const dir of [c, `${c}2`, d, e, `${e}2`]) if (existsSync(dir)) chmodSync(dir, 0o755);
+    }
   });
 
   test("hidden dirs are empty", async () => {
