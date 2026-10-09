@@ -28,7 +28,7 @@ const EXPIRED = "That prompt expired — tap Set again.";
 export type SecretPrompt = { requestId: string; chat: string; prompt: string; decline: string };
 
 // On the root conversation, per adapter: its reply cursor, when its menu screen waiting for a secret opened, its
-// secret prompts, and the ids of its latest prompts (`PROMPT_HISTORY`).
+// secret prompts, and the ids of its latest prompts and their decline messages (`PROMPT_HISTORY`).
 export const MessagingDoc = defineDoc<{
   cursors: Record<string, string>;
   secretInput?: Record<string, number>;

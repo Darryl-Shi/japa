@@ -315,6 +315,18 @@ test("a reply to the prompt fulfils it; reply, prompt and decline message are de
   await daemon.close();
 });
 
+test("a reply to the Decline message fulfils the request as a reply to the prompt does", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home, prompt, decline } = await prompted(fake);
+  await fake.receive({ text: "s3cr3t", messageId: "77", replyTo: decline.id });
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  expect(fake.deleted).toEqual([at("77"), at(prompt.id), at(decline.id)]);
+  expect(await pendingOf(daemon)).toEqual([]);
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret svc.token provided]"));
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
 test("a plain text while a request is pending goes to the CoS and leaves the request", async () => {
   const fake = fakeAdapter();
   const { daemon } = await prompted(fake);
@@ -409,6 +421,21 @@ test("a reply to a prompt no longer pending is deleted, never submitted, and the
   expect(fake.deleted.slice(2)).toEqual([at("77"), at("77")]);
   await sleep(2000);
   expect(sentTexts(fake).filter((t) => t === STALE)).toHaveLength(1);
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("first");
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("a reply to the Decline message of a request no longer pending is deleted, never submitted, and the owner told", async () => {
+  const fake = fakeAdapter();
+  const { extension, surface } = probe();
+  const { daemon, home, decline } = await prompted(fake, [extension]);
+  await surface().secrets.fulfil((await pendingOf(daemon))[0]!.id, "first");
+  await waitFor(() => fake.deleted.length === 2);
+  await fake.receive({ messageId: "77", text: "s3cr3t", replyTo: decline.id });
+  expect(fake.deleted.at(-1)).toEqual(at("77"));
+  expect(sentTexts(fake)).toContain(STALE);
+  await sleep(2000);
   expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("first");
   expect(await transcript(daemon)).not.toContain("s3cr3t");
   await daemon.close();

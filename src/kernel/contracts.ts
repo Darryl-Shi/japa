@@ -161,9 +161,9 @@ export type MessagingContext = {
   secretInput(adapter: string): Promise<number | undefined>;
   /** Saves `opened` as `adapter`'s `secretInput`, or clears it when undefined. */
   saveSecretInput(adapter: string, opened: number | undefined): Promise<void>;
-  /** `adapter`'s saved secret prompts, and the ids of the latest prompts it sent, oldest first. */
+  /** `adapter`'s saved secret prompts, and the ids of the latest prompts and decline messages it sent, oldest first. */
   promptState(adapter: string): Promise<{ prompts: SecretPrompt[]; history: string[] }>;
-  /** Saves `adapter`'s secret prompts and prompt ids, keeping the last `PROMPT_HISTORY` ids. */
+  /** Saves `adapter`'s secret prompts and their message ids, keeping the last `PROMPT_HISTORY` ids. */
   savePromptState(adapter: string, state: { prompts: SecretPrompt[]; history: string[] }): Promise<void>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;
