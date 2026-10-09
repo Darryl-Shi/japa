@@ -89,11 +89,18 @@ export function jobRun(settings: Settings) {
   return { JobRun, start };
 }
 
-/** Updates `job` for the settled message; returns the report to post, if any. */
+/**
+ * Updates `job` for the settled message; returns the report to post, if any. A run that ends unreported (stopped,
+ * aborted or failed) clears `completed`, which would otherwise keep the job from being pruned.
+ */
 async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord): Promise<string | undefined> {
-  if (job.status === "cancelled") return undefined;
+  const aborted = settled.status === "unanswered" && settled.reason === "aborted";
+  if (job.status === "cancelled" || aborted) {
+    job.completed = false;
+    return undefined;
+  }
   if (settled.status === "unanswered") {
-    if (settled.reason === "aborted") return undefined;
+    job.completed = false;
     job.status = "failed";
     job.result = settled.detail === undefined ? settled.reason : `${settled.reason}: ${String(settled.detail)}`;
     return reportText(job, job.result);

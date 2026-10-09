@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, expect, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { CONTRACTS, type MessagingContext } from "../src/kernel/contracts.ts";
@@ -103,6 +104,46 @@ test("clearFinishedJobs keeps a completed job until its report is posted", async
   hold.release();
   await waitFor(() => idle(daemon));
   expect(await reported(daemon)).toEqual(['[job 1 "Work" done] done']);
+  expect(await messaging.clearFinishedJobs()).toBe(1);
+  await daemon.close();
+});
+
+/**
+ * Starts a job whose worker's model call is held, then marks it as job_complete leaves it, before its run's answer is
+ * reported; `end` then ends that run.
+ */
+async function completedThen(end: (daemon: Daemon, release: () => void) => Promise<void>) {
+  const booted = await bootClearing();
+  const { daemon, faux } = booted;
+  const hold = held();
+  const boom = fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom" });
+  script(faux, (_role, text, signal) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "Do work") return hold.wait(boom, signal);
+  });
+  await ask(daemon, "start work");
+  await waitFor(hold.started);
+  await daemon.harness.commit(async (tx) => {
+    Object.assign((await tx.doc(JobsDoc, daemon.root.id)).jobs["1"]!, { status: "done", completed: true });
+  }, ctx);
+  await end(daemon, hold.release);
+  await waitFor(() => idle(daemon));
+  return booted;
+}
+
+test("a job whose run then fails can be cleared", async () => {
+  const { daemon, messaging } = await completedThen(async (_daemon, release) => release());
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "failed", completed: false });
+  expect(await reported(daemon)).toEqual(['[job 1 "Work" failed] model_error: boom']);
+  expect(await messaging.clearFinishedJobs()).toBe(1);
+  await daemon.close();
+});
+
+test("a job whose run is then aborted can be cleared", async () => {
+  const { daemon, messaging } = await completedThen(async (d) => {
+    await (await d.harness.conversation((await jobs(d))["1"]!.conversationId, ctx))!.abort(ctx);
+  });
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", completed: false });
   expect(await messaging.clearFinishedJobs()).toBe(1);
   await daemon.close();
 });
