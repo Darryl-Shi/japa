@@ -239,7 +239,7 @@ test("an interrupted update doesn't stop a new one", async () => {
   await daemon.close();
 });
 
-test("a launch that throws leaves the state failed with its reason", async () => {
+test("a launch that throws leaves the state failed with its reason, reported (the caller shows the error)", async () => {
   const { updater } = fakeUpdater(async () => {
     throw new Error("systemd-run exited with code 1: Access denied");
   });
@@ -251,21 +251,24 @@ test("a launch that throws leaves the state failed with its reason", async () =>
     state: "failed",
     summary: "systemd-run exited with code 1: Access denied",
     finished: expect.any(Number),
-    reported: false,
+    reported: true,
   });
   await daemon.close();
 });
 
-test("check asks the updater, and markReported marks the recorded update reported", async () => {
+test("check asks the updater, and markReported marks the recorded update reported, if it is the one reported", async () => {
   const { updater } = fakeUpdater();
   const { daemon, home, update } = await bootUpdating(updater);
   expect(await update.state()).toBeUndefined();
 
   expect(await update.check()).toEqual({ current: FROM, target: TO, commits: ["bbbbbbb two"] });
-  await update.markReported(); // nothing recorded: nothing to mark
+  await update.markReported(1); // nothing recorded: nothing to mark
   expect(await update.state()).toBeUndefined();
   await update.start(CHAT, FROM, TO, false);
-  await update.markReported();
+  const { started } = (await update.state())!;
+  await update.markReported(started - 1); // a report of the run before: this one still needs its own
+  expect(readUpdateState(home)?.reported).toBe(false);
+  await update.markReported(started);
 
   expect(readUpdateState(home)?.reported).toBe(true);
   await daemon.close();

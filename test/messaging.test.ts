@@ -1,12 +1,21 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { ACTIVATION_ORDER, CONTRACTS, type TriggerContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
+import { interruptedReport, updateReport } from "../src/kernel/messaging/update-report.ts";
 import { addSecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
+import {
+  patchUpdateState,
+  readUpdateState,
+  type UpdateState,
+  updateLog,
+  writeUpdateState,
+} from "../src/kernel/update-state.ts";
 import { bootTest, carryOver, probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, say, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
@@ -574,3 +583,154 @@ test("a reply to a prompt whose decline message failed, left undeleted, is never
   await daemon.close();
 });
 
+
+describe("update reporting", () => {
+  const FROM = "a".repeat(40);
+  const TO = "b".repeat(40);
+  /** A finished update from FROM to TO asked in chat "7" of `adapter`, unreported; `fields` over that. */
+  const updated = (adapter = "fake", fields: Partial<UpdateState> = {}): UpdateState => ({
+    state: "updated",
+    started: Date.now(),
+    finished: Date.now(),
+    chat: { adapter, chat: "7" },
+    from: FROM,
+    to: TO,
+    rollback: false,
+    restarted: "service",
+    commits: ["bbbbbbb two", "ccccccc one"],
+    whatsNew: [],
+    reported: false,
+    ...fields,
+  });
+  const ROLL_BACK = [[{ label: "Roll back", action: `rb:${FROM}` }]];
+
+  test("a finished update is reported once to the chat that asked, with Roll back", async () => {
+    const kit = testKit();
+    const { daemon: before, home } = await bootMessaging(fakeAdapter(), {}, [], kit);
+    await before.close();
+    const whatsNew = ["New extension: demo — Demo pings", "run `japa setup` to configure"];
+    writeUpdateState(home, updated("fake", { whatsNew }));
+    const fake = fakeAdapter();
+    const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fake.extension] });
+    await waitFor(() => fake.sent.length > 0, 1500); // when the surface starts, not at its first poll
+    expect(fake.sent).toEqual([
+      {
+        chat: "7",
+        id: "1",
+        markdown:
+          "✓ Updated aaaaaaa → bbbbbbb\n\nbbbbbbb two\nccccccc one\n\nNew:\nNew extension: demo — Demo pings\n\n" +
+          "Configure them in /settings.",
+        buttons: ROLL_BACK,
+      },
+    ]);
+    expect(readUpdateState(home)!.reported).toBe(true);
+    await sleep(2500);
+    expect(fake.sent).toHaveLength(1);
+    await daemon.close();
+  });
+
+  test("an update report for another adapter is left for it", async () => {
+    const fake = fakeAdapter();
+    const { daemon, home } = await bootMessaging(fake);
+    writeUpdateState(home, updated("telegram"));
+    await sleep(2500);
+    expect(fake.sent).toEqual([]);
+    expect(readUpdateState(home)!.reported).toBe(false);
+    await daemon.close();
+  });
+
+  test("a result written while running is reported within a few seconds; none once the surface stops", async () => {
+    const fake = fakeAdapter();
+    const { daemon, home } = await bootMessaging(fake);
+    writeUpdateState(home, updated("fake", { state: "running", pid: process.pid, finished: undefined }));
+    await sleep(2500);
+    expect(fake.sent).toEqual([]);
+    patchUpdateState(home, { state: "updated", restarted: "foreground", finished: Date.now() }); // the old daemon reports it
+    await waitFor(() => fake.sent.length > 0, 3000);
+    expect(fake.sent).toEqual([
+      {
+        chat: "7",
+        id: "1",
+        markdown: "✓ Updated aaaaaaa → bbbbbbb\n\nbbbbbbb two\nccccccc one\n\nRestart `japa daemon` to apply.",
+        buttons: ROLL_BACK,
+      },
+    ]);
+    await sleep(2500);
+    expect(fake.sent).toHaveLength(1);
+    await daemon.close();
+    writeUpdateState(home, updated());
+    await sleep(2500);
+    expect(fake.sent).toHaveLength(1);
+    expect(readUpdateState(home)!.reported).toBe(false);
+  });
+
+  test("an interrupted update is reported to the chat that asked", async () => {
+    const fake = fakeAdapter();
+    const { daemon, home } = await bootMessaging(fake);
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
+    writeUpdateState(home, updated("fake", { state: "running", pid: dead, finished: undefined }));
+    await waitFor(() => fake.sent.length > 0, 3000);
+    expect(fake.sent).toEqual([{ chat: "7", id: "1", markdown: `✗ The update was interrupted; see \`${updateLog(home)}\`.` }]);
+    expect(readUpdateState(home)!.reported).toBe(true);
+    await daemon.close();
+  });
+
+  test("a report that can't be sent is sent on a later poll, its error logged once", async () => {
+    const fake = fakeAdapter();
+    const { daemon, home } = await bootMessaging(fake);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    fake.failSend = () => true;
+    writeUpdateState(home, updated());
+    await sleep(4500);
+    expect(errors.mock.calls.filter(([line]) => String(line).includes("update"))).toEqual([
+      ["fake: couldn't report the update: send failed"],
+    ]);
+    errors.mockRestore();
+    expect(readUpdateState(home)!.reported).toBe(false);
+    fake.failSend = undefined;
+    await waitFor(() => fake.sent.length > 0, 3000);
+    expect(fake.sent[0]!.markdown).toMatch(/^✓ Updated aaaaaaa → bbbbbbb/);
+    expect(readUpdateState(home)!.reported).toBe(true);
+    await daemon.close();
+  });
+
+  test("a corrupt update.json reports nothing and /update still works", async () => {
+    const fake = fakeAdapter();
+    const updater = { check: async () => ({ current: FROM, target: FROM, commits: [] }), launch: async () => {} };
+    const { daemon, home } = await bootMessaging(fake, {}, [], testKit(), { updater });
+    writeFileSync(join(home, "update.json"), "{ not json");
+    await sleep(2500);
+    writeFileSync(join(home, "update.json"), '{ "state": "updated", "chat": { "adapter": "fake", "chat": "7" } }');
+    await sleep(2500);
+    expect(fake.sent).toEqual([]);
+    await fake.receive({ command: "update" });
+    expect(fake.edited.at(-1)!.markdown).toBe("✓ japa is up to date (aaaaaaa)");
+    await daemon.close();
+  });
+
+  test("update reports: a Roll back has no button; restart notes; a failure with its output; up to date", () => {
+    const home = "/home/x/.japa";
+    expect(updateReport(updated("fake", { rollback: true, commits: [] }), home)).toEqual({
+      markdown: "✓ Rolled back aaaaaaa → bbbbbbb",
+    });
+    expect(updateReport(updated("fake", { restarted: "stopped", commits: [] }), home)).toEqual({
+      markdown: "✓ Updated aaaaaaa → bbbbbbb\n\njapa's service is stopped; start it with `japa service start`.",
+      buttons: ROLL_BACK,
+    });
+    const summary = "update failed at validation: node exited with code 1; still on aaaaaaa";
+    const failed = updated("fake", { state: "failed", to: undefined, commits: undefined, summary });
+    expect(updateReport({ ...failed, output: "SyntaxError: x\n    at y" }, home)).toEqual({
+      markdown: `✗ ${summary}\n\n\`\`\`\nSyntaxError: x\n    at y\n\`\`\``,
+    });
+    expect(updateReport(failed, home)).toEqual({ markdown: `✗ ${summary}` });
+    expect(updateReport({ ...failed, summary: undefined }, home)).toEqual({
+      markdown: "✗ The update failed; see `/home/x/.japa/logs/update.log`.",
+    });
+    expect(updateReport(updated("fake", { state: "up to date", to: FROM }), home)).toEqual({
+      markdown: "✓ japa is up to date (aaaaaaa)",
+    });
+    expect(interruptedReport(home)).toEqual({
+      markdown: "✗ The update was interrupted; see `/home/x/.japa/logs/update.log`.",
+    });
+  });
+});

@@ -197,13 +197,13 @@ export type MessagingContext = {
     /**
      * Records an update to `to` (from `from`, asked in `chat`) as running, then launches it. Refuses (throws `An update
      * is already running (started <ago> ago).`) while one runs; a launch that throws leaves it failed, its error the
-     * summary, and rethrows.
+     * summary, and reported (the caller shows that error), and rethrows.
      */
     start(chat: { adapter: string; chat: string }, from: string, to: string, rollback: boolean): Promise<void>;
     /** The recorded update, if any. */
     state(): Promise<UpdateState | undefined>;
-    /** Marks the recorded update reported. */
-    markReported(): Promise<void>;
+    /** Marks the recorded update reported if it is the one `started` then: a report can't mark a newer run's. */
+    markReported(started: number): Promise<void>;
   };
 };
 

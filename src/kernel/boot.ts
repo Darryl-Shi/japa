@@ -43,9 +43,9 @@ import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./mem
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
-import { ago } from "./messaging/menu/nav.ts";
 import { PROMPT_HISTORY } from "./messaging/prompts.ts";
 import { MessagingDoc } from "./messaging/surface.ts";
+import { alreadyRunning } from "./messaging/update-report.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
@@ -594,7 +594,7 @@ function chatUpdates(home: string, updater: Updater | undefined): MessagingConte
       const earlier = readUpdateState(home);
       if (earlier !== undefined) {
         const live = liveness(earlier, now);
-        if (live === "running") throw new Error(`An update is already running (started ${ago(now - earlier.started)} ago).`);
+        if (live === "running") throw new Error(alreadyRunning(earlier, now));
         // The new run replaces an interrupted one, which needs no report then.
         if (live === "interrupted") patchUpdateState(home, { reported: true });
       }
@@ -603,7 +603,8 @@ function chatUpdates(home: string, updater: Updater | undefined): MessagingConte
         await launcher.launch(to, rollback);
       } catch (error) {
         try {
-          patchUpdateState(home, { state: "failed", summary: message(error), finished: Date.now() });
+          // Reported already: whoever called `start` shows its error.
+          patchUpdateState(home, { state: "failed", summary: message(error), finished: Date.now(), reported: true });
         } catch {
           // Unrecorded, the run reads as interrupted once its 60 s to start are up; the launch's error is the one to see.
         }
@@ -611,7 +612,11 @@ function chatUpdates(home: string, updater: Updater | undefined): MessagingConte
       }
     },
     state: async () => readUpdateState(home),
-    markReported: async () => patchUpdateState(home, { reported: true }),
+    markReported: async (started) => {
+      // Only the run that was reported: one started meanwhile still needs its report.
+      const state = readUpdateState(home);
+      if (state?.started === started) writeUpdateState(home, { ...state, reported: true });
+    },
   };
 }
 

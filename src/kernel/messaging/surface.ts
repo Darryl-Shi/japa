@@ -11,16 +11,20 @@ import type {
 import type { Job } from "../jobs/state.ts";
 import { message } from "../loader.ts";
 import { originOf } from "../origin.ts";
+import { liveness } from "../update-state.ts";
 import { inputOf } from "./attachments.ts";
-import { COMMANDS, createMenu, UNDELETED } from "./menu/index.ts";
+import { COMMANDS, createMenu, fitted, UNDELETED } from "./menu/index.ts";
 import { INPUT_MS } from "./menu/nav.ts";
 import { createPrompts } from "./prompts.ts";
 import { splitMessage } from "./split.ts";
+import { interruptedReport, updateReport } from "./update-report.ts";
 
 /** Owner messages arriving within this long of each other are merged into one input. */
 export const MERGE_MS = 1500;
 /** How often "typing…" is shown while a run of the adapter's own origin is active. */
 export const TYPING_MS = 4000;
+/** How often `update.json` is read for a result to report. */
+export const REPORT_MS = 2000;
 
 const EXPIRED = "That prompt expired — tap Set again.";
 
@@ -54,6 +58,9 @@ export const MessagingDoc = defineDoc<{
  * screen that waited for a secret when the daemon stopped (its `secretInput`) holds the next such text for `INPUT_MS`
  * from when it opened: that text is deleted at once and never submitted, and the owner is told to tap Set again.
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
+ * When it starts and every `REPORT_MS`, between messages, it reports an update asked from its adapter that finished
+ * or was interrupted and isn't reported yet (`updateReport`) to the chat that asked, then marks it reported; a report
+ * that can't be sent is tried again at the next poll.
  */
 export async function startMessaging(
   adapter: MessagingAdapter,
@@ -173,6 +180,41 @@ export async function startMessaging(
     if (!stopped) await messaging.saveCursor(adapter.name, r.cursor);
   };
 
+  let sent: number | undefined; // when the update this surface reported started, in case marking it failed
+  let failing: number | undefined; // when the update whose report failed (logged once) started
+  /** Reports the recorded update if it is this adapter's, has ended and isn't reported yet; then marks it reported. */
+  const report = async () => {
+    const state = await messaging.update.state();
+    if (state === undefined || state.reported || state.chat.adapter !== adapter.name) return;
+    const live = liveness(state, Date.now());
+    if (live === "running") return;
+    try {
+      if (sent !== state.started) {
+        const shown = live === "finished" ? updateReport(state, kernel.home) : interruptedReport(kernel.home);
+        await adapter.send(state.chat.chat, { ...shown, markdown: fitted(shown.markdown, adapter.maxMessageChars) });
+        sent = state.started;
+      }
+      await messaging.update.markReported(state.started);
+    } catch (error) {
+      if (!stopped && failing !== state.started) {
+        console.error(`${adapter.name}: couldn't report the update: ${message(error)}`);
+      }
+      failing = state.started;
+    }
+  };
+  let polled = false; // a poll waits its turn
+  /** Reports the update, if there is one to report, after the messages before it; a poll still waiting is enough. */
+  const poll = () => {
+    if (polled) return;
+    polled = true;
+    handled = handled
+      .then(() => {
+        polled = false;
+        return stopped ? undefined : report();
+      })
+      .catch(log);
+  };
+
   let busy = false;
   let origin: Origin | undefined; // the latest placed input's
   let typingChat: string | undefined;
@@ -209,9 +251,12 @@ export async function startMessaging(
       typingTimer = setInterval(() => typing(chat), TYPING_MS);
     }
   });
+  poll();
+  const reports = setInterval(poll, REPORT_MS);
   ready();
   return async () => {
     stopped = true;
+    clearInterval(reports);
     await stopAdapter();
     await flush();
     await secrets.stop();

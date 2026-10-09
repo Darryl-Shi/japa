@@ -1,5 +1,6 @@
 import type { Incoming, MessagingAdapter, MessagingAdapterContext, OutgoingMessage } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
+import type { Updater } from "../src/kernel/update-state.ts";
 import { bootTest, testKit } from "./helpers.ts";
 
 type Buttons = OutgoingMessage["buttons"];
@@ -75,14 +76,19 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
   return Object.assign(fake, { adapter, extension });
 }
 
-/** Boots with `fake` (owner "42" unless `settings` replaces `extensions`) and the `extra` extensions. */
+/**
+ * Boots with `fake` (owner "42" unless `settings` replaces `extensions`), the `extra` extensions and
+ * `options.updater` as the daemon's `Updater`.
+ */
 export function bootMessaging(
   fake: ReturnType<typeof fakeAdapter>,
   settings: object = {},
   extra: JapaExtension[] = [],
   kit = testKit(),
+  options: { updater?: Updater } = {},
 ) {
-  return bootTest({ extensions: { [fake.adapter.name]: { owner: "42" } }, ...settings }, [fake.extension, ...extra], kit);
+  const owned = { extensions: { [fake.adapter.name]: { owner: "42" } }, ...settings };
+  return bootTest(owned, [fake.extension, ...extra], kit, {}, options);
 }
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
