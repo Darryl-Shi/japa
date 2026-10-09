@@ -391,6 +391,42 @@ test("prompts survive a restart: none is sent again, a reply still fulfils and D
   await again.close();
 });
 
+test("a prompt in flight at the stop is saved first: after a restart none is sent again and a reply fulfils", async () => {
+  const kit = testKit();
+  script(kit.faux, () => undefined);
+  const fake = fakeAdapter();
+  const { daemon, home } = await bootMessaging(fake, { storage: { adapter: "sqlite" } }, [], kit);
+  fake.slowSends = 300;
+  await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+  await waitFor(() => fake.held);
+  await daemon.close();
+  const prompt = fake.sent.find((s) => s.markdown === PROMPT)!; // delivered, whether or not its send failed
+  const fake2 = fakeAdapter();
+  const again = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fake2.extension] });
+  await sleep(500);
+  expect(fake2.sent).toEqual([]);
+  await fake2.receive({ text: "s3cr3t", messageId: "77", replyTo: prompt.id });
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  await sleep(2000);
+  expect(await transcript(again)).not.toContain("s3cr3t");
+  await again.close();
+});
+
+test("a message arriving while the stop waits for a send is acknowledged only once the adapter has stopped", async () => {
+  const fake = fakeAdapter();
+  const { daemon } = await bootMessaging(fake);
+  fake.slowSends = 500;
+  await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+  await waitFor(() => fake.held);
+  const closed = daemon.close();
+  await sleep(100);
+  let acked: boolean | undefined; // whether the adapter had stopped when the message was acknowledged
+  const late = fake.receive({ text: "late" }).then(() => (acked = fake.closed));
+  await closed;
+  await late;
+  expect(acked).toBe(true);
+});
+
 test("Decline withdraws the request, tells the CoS, and deletes both messages", async () => {
   const fake = fakeAdapter();
   const { daemon, prompt, decline } = await prompted(fake);

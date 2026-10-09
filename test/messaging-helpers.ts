@@ -11,6 +11,8 @@ type Input = OutgoingMessage["input"];
  * id and messageId unless given), `press` the button labelled `label` in the sent message `id`, else in the newest
  * sent or edited message.
  * `holdSends` holds each send until the adapter stops, then fails it; `held` tells that a send is being held.
+ * `slowSends` makes each send take that many ms (also telling `held`); one the adapter stops meanwhile is delivered
+ * but fails, as an aborted request whose message already went out does. `closed` tells that the adapter has stopped.
  */
 export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
   let receive!: MessagingAdapterContext["receive"];
@@ -27,7 +29,9 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
     failSend: undefined as ((m: OutgoingMessage) => boolean) | undefined,
     failDelete: false,
     holdSends: false,
+    slowSends: 0,
     held: false,
+    closed: false,
     receive: (m: Partial<Incoming>) => {
       const n = String(++count);
       return receive({ chat: "42", user: "42", id: n, messageId: n, ...m });
@@ -43,7 +47,10 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
     maxMessageChars,
     start: async (c) => {
       receive = c.receive;
-      return stop;
+      return () => {
+        fake.closed = true;
+        stop();
+      };
     },
     send: async (chat, m) => {
       if (fake.holdSends) {
@@ -51,10 +58,16 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
         await stopped;
         throw new Error("stopped");
       }
+      let aborted = false;
+      if (fake.slowSends > 0) {
+        fake.held = true;
+        aborted = await Promise.race([sleep(fake.slowSends).then(() => false), stopped.then(() => true)]);
+      }
       if (fake.failSend?.(m)) throw new Error("send failed");
       const id = String(fake.sent.length + 1);
       fake.sent.push({ chat, id, ...m });
       newest = { id, buttons: m.buttons };
+      if (aborted) throw new Error("aborted");
       return id;
     },
     edit: async (chat, messageId, m) => {

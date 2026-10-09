@@ -25,6 +25,11 @@ export const MERGE_MS = 1500;
 export const TYPING_MS = 4000;
 /** How often `update.json` is read for a result to report. */
 export const REPORT_MS = 2000;
+/**
+ * How long a stop waits for the message being handled (a secret prompt being sent and saved, say) before stopping the
+ * adapter, so a send stuck retrying can't hold up the shutdown.
+ */
+export const DRAIN_MS = 5000;
 
 const EXPIRED = "That prompt expired — tap Set again.";
 
@@ -60,7 +65,9 @@ export const MessagingDoc = defineDoc<{
  * Sends the replies to its own inputs, and the proactive ones to the owner; shows "typing…" while its own run is active.
  * When it starts and every `REPORT_MS`, between messages, it reports an update asked from its adapter that finished
  * or was interrupted and isn't reported yet (`updateReport`) to the chat that asked, then marks it reported; a report
- * that can't be sent is tried again at the next poll.
+ * that can't be sent is tried again at the next poll. A stop lets the message being handled finish (up to `DRAIN_MS`)
+ * before it stops the adapter, whose in-flight requests that aborts; a message arriving meanwhile is left unhandled and
+ * acknowledged only once the adapter has stopped, so it is delivered again after the restart.
  */
 export async function startMessaging(
   adapter: MessagingAdapter,
@@ -223,9 +230,11 @@ export async function startMessaging(
 
   const jobsStream = await kernel.surface.jobs((list) => (jobs = list));
   await adapter.commands(COMMANDS);
+  let halt!: () => void;
+  const halted = new Promise<void>((resolve) => (halt = resolve)); // once the adapter is being stopped
   const stopAdapter = await adapter.start({
     receive: (m) => {
-      if (stopped) return handled;
+      if (stopped) return halted;
       handled = handled.then(() => handle(m)).catch(log);
       return handled;
     },
@@ -257,7 +266,13 @@ export async function startMessaging(
   return async () => {
     stopped = true;
     clearInterval(reports);
-    await stopAdapter();
+    // Nothing joins `handled` from here on (a receive waits for `halted`; a sync or poll does nothing once stopped).
+    let drained: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([handled, new Promise<void>((resolve) => (drained = setTimeout(resolve, DRAIN_MS)))]);
+    clearTimeout(drained);
+    const stopping = stopAdapter();
+    halt();
+    await stopping;
     await flush();
     await secrets.stop();
     await jobsStream.stop();
