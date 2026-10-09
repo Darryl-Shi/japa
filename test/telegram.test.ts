@@ -64,9 +64,17 @@ test.each([
   ["||secret||", "<tg-spoiler>secret</tg-spoiler>"],
   ["![cat](https://e.com/c.png)", '<a href="https://e.com/c.png">cat</a>'],
   ["---", "———"],
+  ["**`code`**", "<b>code</b>"],
+  ["## `config.json`", "<b>config.json</b>"],
+  ["[`code`](https://e.com)", '<a href="https://e.com">code</a>'],
+  ["||`code`||", "<tg-spoiler>code</tg-spoiler>"],
+  ["> a\n> > b", "<blockquote>a\n\nb</blockquote>"],
+  ["> `c`\n>\n> ```\n> x\n> ```", "<blockquote>c\n\nx</blockquote>"],
 ])("toHtml(%j)", (md, html) => {
-  expect(toHtml(md)).toBe(html);
-  expect(balanced(html)).toBe(true);
+  const out = toHtml(md);
+  expect(out).toBe(html);
+  expect(balanced(out)).toBe(true);
+  expect(telegramNesting(out)).toBe(true);
 });
 
 /** Whether every tag `html` opens is closed, in LIFO order, and nothing is closed that isn't open. */
@@ -78,6 +86,39 @@ function balanced(html: string): boolean {
   }
   return open.length === 0;
 }
+
+/**
+ * Whether `html` keeps Telegram's nesting rules: code and pre inside no other tag (but pre>code), nothing inside code
+ * or pre (but that pair), and no blockquote inside a blockquote.
+ */
+function telegramNesting(html: string): boolean {
+  const open: string[] = [];
+  for (const [, close, name] of html.matchAll(/<(\/?)([a-z-]+)[^>]*>/g)) {
+    if (close) {
+      open.pop();
+      continue;
+    }
+    const top = open.at(-1);
+    const preCode = name === "code" && top === "pre" && open.length === 1;
+    if ((name === "code" || name === "pre") && open.length > 0 && !preCode) return false;
+    if ((top === "code" || top === "pre") && !preCode) return false;
+    if (name === "blockquote" && open.includes("blockquote")) return false;
+    open.push(name!);
+  }
+  return true;
+}
+
+test("telegramNesting rejects code inside tags, tags inside code, and nested blockquotes", () =>
+  expect(
+    [
+      "<b><code>x</code></b>",
+      "<code><b>x</b></code>",
+      "<blockquote><pre>x</pre></blockquote>",
+      "<blockquote><blockquote>x</blockquote></blockquote>",
+      '<pre><code class="language-ts">x</code></pre>',
+      "<blockquote><b><i>x</i></b></blockquote> <code>y</code>",
+    ].map(telegramNesting),
+  ).toEqual([false, false, false, false, true, true]));
 
 test("balanced rejects misnested and unclosed tags", () =>
   expect(["<b><i>x</b></i>", "<b>x", "x</i>", "<b><i>x</i></b>"].map(balanced)).toEqual([false, false, false, true]));

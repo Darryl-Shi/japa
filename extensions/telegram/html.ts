@@ -41,39 +41,47 @@ const PLAIN: Format = {
   link: (href, label) => (label === href || `mailto:${label}` === href ? label : `${label} (${href})`),
 };
 
-/** `tokens` as blocks, a blank line apart. */
-const blocks = (tokens: Token[], f: Format) =>
+/*
+ * Telegram's nesting rules: b, i, s, tg-spoiler and a may contain each other; code and pre contain nothing (but
+ * pre>code) and sit inside nothing; a blockquote isn't nested. So the walk carries `quoted` (inside a blockquote) and
+ * `inside` (inside any tag), and writes code, pre and inner blockquotes there as their text.
+ */
+
+/** `tokens` as blocks, a blank line apart; `quoted` when inside a blockquote. */
+const blocks = (tokens: Token[], f: Format, quoted = false) =>
   tokens
-    .map((t) => block(t, f))
+    .map((t) => block(t, f, quoted))
     .filter((b) => b !== "")
     .join("\n\n");
 
 /** A block token; "" for those that show nothing (blank lines, link definitions). */
-function block(token: Token, f: Format): string {
+function block(token: Token, f: Format, quoted = false): string {
   const t = token as MarkedToken;
   switch (t.type) {
     case "space":
     case "def":
       return "";
     case "paragraph":
-      return inline(t.tokens, f);
+      return inline(t.tokens, f, quoted);
     case "text":
-      return t.tokens ? inline(t.tokens, f) : f.text(t.text);
+      return t.tokens ? inline(t.tokens, f, quoted) : f.text(t.text);
     case "heading":
-      return f.tag("b", inline(t.tokens, f));
+      return f.tag("b", inline(t.tokens, f, true));
     case "code": {
       const lang = t.lang?.split(/\s/)[0];
       const code = f.text(t.text);
+      if (quoted) return code;
       return f.tag("pre", lang ? f.tag("code", code, ` class="language-${attribute(lang)}"`) : code);
     }
     case "blockquote": {
-      const inner = blocks(t.tokens, f);
+      const inner = blocks(t.tokens, f, true);
+      if (quoted) return inner; // one level only
       return f.tag("blockquote", inner, inner.split("\n").length > 10 ? " expandable" : "");
     }
     case "list":
-      return list(t, f);
+      return list(t, f, quoted);
     case "table":
-      return f.tag("pre", f.text(table(t)));
+      return quoted ? f.text(table(t)) : f.tag("pre", f.text(table(t)));
     case "hr":
       return "———";
     case "html":
@@ -82,19 +90,19 @@ function block(token: Token, f: Format): string {
       return ""; // shown by the list item's marker
     default: {
       const g = token as Tokens.Generic;
-      return g.tokens ? inline(g.tokens, f) : f.text(g.raw);
+      return g.tokens ? inline(g.tokens, f, quoted) : f.text(g.raw);
     }
   }
 }
 
 /** A list as one line per item (`• `, `1. `, `☐ ` or `☑ `), nested lists indented two spaces per level. */
-function list(token: Tokens.List, f: Format): string {
+function list(token: Tokens.List, f: Format, quoted: boolean): string {
   const start = token.start === "" ? 1 : token.start;
   return token.items
     .map((item, i) => {
       const marker = item.task ? (item.checked ? "☑ " : "☐ ") : token.ordered ? `${start + i}. ` : "• ";
       const body = item.tokens
-        .map((t) => (t.type === "list" ? block(t, f).replace(/^/gm, "  ") : block(t, f)))
+        .map((t) => (t.type === "list" ? block(t, f, quoted).replace(/^/gm, "  ") : block(t, f, quoted)))
         .filter((b) => b !== "")
         .join("\n");
       return marker + body;
@@ -116,33 +124,33 @@ function table(token: Tokens.Table): string {
   return [lines[0]!, rule, ...lines.slice(1)].map((line) => line.trimEnd()).join("\n");
 }
 
-/** Inline tokens; raw HTML and anything unknown is kept as text. */
-function inline(tokens: Token[], f: Format): string {
+/** Inline tokens, `inside` a tag or not; raw HTML and anything unknown is kept as text. */
+function inline(tokens: Token[], f: Format, inside = false): string {
   return tokens
     .map((token) => {
-      if (token.type === "spoiler") return f.tag("tg-spoiler", inline(token.tokens!, f));
+      if (token.type === "spoiler") return f.tag("tg-spoiler", inline(token.tokens!, f, true));
       const t = token as MarkedToken;
       switch (t.type) {
         case "text":
-          return t.tokens ? inline(t.tokens, f) : f.text(t.text);
+          return t.tokens ? inline(t.tokens, f, inside) : f.text(t.text);
         case "escape":
           return f.text(t.text);
         case "strong":
-          return f.tag("b", inline(t.tokens, f));
+          return f.tag("b", inline(t.tokens, f, true));
         case "em": {
           // `***x***` lexes as em(strong(x)); written as <b><i>x</i></b>, which looks the same.
           const only = t.tokens.length === 1 ? (t.tokens[0] as MarkedToken) : undefined;
-          if (only?.type === "strong") return f.tag("b", f.tag("i", inline(only.tokens, f)));
-          return f.tag("i", inline(t.tokens, f));
+          if (only?.type === "strong") return f.tag("b", f.tag("i", inline(only.tokens, f, true)));
+          return f.tag("i", inline(t.tokens, f, true));
         }
         case "del":
-          return f.tag("s", inline(t.tokens, f));
+          return f.tag("s", inline(t.tokens, f, true));
         case "codespan":
-          return f.tag("code", f.text(t.text));
+          return inside ? f.text(t.text) : f.tag("code", f.text(t.text));
         case "br":
           return "\n";
         case "link":
-          return f.link(t.href, inline(t.tokens, f));
+          return f.link(t.href, inline(t.tokens, f, true));
         case "image":
           return f.link(t.href, f.text(t.text || t.href));
         case "checkbox":
