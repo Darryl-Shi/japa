@@ -9,7 +9,8 @@ import { ChangesDoc } from "../src/kernel/changes.ts";
 import { createSafety } from "../src/kernel/safety.ts";
 import type { Settings } from "../src/kernel/settings.ts";
 import { commit, ensureWorkspace } from "../src/kernel/workspace.ts";
-import { bootTest, stage, tempHome, waitFor } from "./helpers.ts";
+import { createWorkspaceLock } from "../src/kernel/workspace-lock.ts";
+import { bootTest, land, tempHome, waitFor } from "./helpers.ts";
 import { ask, call, script, system, texts, tool } from "./jobs-helpers.ts";
 
 /** Extension `flaky`: tool `flaky` replies `v1`, or throws when `broken`. */
@@ -38,11 +39,11 @@ const skill = (description: string) => `---\nname: s\ndescription: ${description
 
 test("an extension whose tool keeps failing is rolled back to its last known good version", { timeout: 60_000 }, async () => {
   const { daemon, faux, home } = await bootTest();
-  stage(home, "extensions/flaky/index.ts", flaky(false));
-  await tool(daemon, faux, "install", { kind: "extension", name: "flaky" });
+  land(home, "extensions/flaky/index.ts", flaky(false));
+  await daemon.reconcile();
   daemon.markGood();
-  stage(home, "extensions/flaky/index.ts", flaky(true));
-  await tool(daemon, faux, "install", { kind: "extension", name: "flaky" });
+  land(home, "extensions/flaky/index.ts", flaky(true));
+  await daemon.reconcile();
 
   script(faux, (role, text) => (role === "user" && text === "flaky" ? call("flaky", {}) : undefined));
   for (let i = 0; i < 5; i++) await ask(daemon, "flaky");
@@ -60,8 +61,8 @@ test("an extension whose tool keeps failing is rolled back to its last known goo
 
 test("an extension that keeps failing with no earlier working version is reported once", { timeout: 60_000 }, async () => {
   const { daemon, faux, home } = await bootTest();
-  stage(home, "extensions/flaky/index.ts", flaky(true));
-  await tool(daemon, faux, "install", { kind: "extension", name: "flaky" });
+  land(home, "extensions/flaky/index.ts", flaky(true));
+  await daemon.reconcile();
   daemon.markGood();
 
   script(faux, (role, text) => (role === "user" && text === "flaky" ? call("flaky", {}) : undefined));
@@ -77,11 +78,11 @@ test("an extension that keeps failing with no earlier working version is reporte
 
 test("rollback restores a skill's last known good version", async () => {
   const { daemon, faux, home } = await bootTest();
-  stage(home, "skills/s/SKILL.md", skill("Does s"));
-  await tool(daemon, faux, "install", { kind: "skill", name: "s" });
+  land(home, "skills/s/SKILL.md", skill("Does s"));
+  await daemon.reconcile();
   daemon.markGood();
-  stage(home, "skills/s/SKILL.md", skill("Does s better"));
-  await tool(daemon, faux, "install", { kind: "skill", name: "s" });
+  land(home, "skills/s/SKILL.md", skill("Does s better"));
+  await daemon.reconcile();
 
   expect(await tool(daemon, faux, "rollback", { kind: "skill", name: "s" })).toBe("Rolled back skill s.");
   expect(readFileSync(join(home, "skills", "s", "SKILL.md"), "utf8")).toBe(skill("Does s"));
@@ -118,7 +119,15 @@ test("only the latest schedule tags the last known good setup, after its own del
   const initial = head(home);
   vi.useFakeTimers();
   try {
-    const safety = createSafety({ home, settings, built: () => new Map(), reconcile: unused, root: unused, report: unused });
+    const safety = createSafety({
+      home,
+      settings,
+      built: () => new Map(),
+      reconcile: unused,
+      root: unused,
+      report: unused,
+      lock: createWorkspaceLock(),
+    });
     safety.scheduleGood();
     vi.advanceTimersByTime(8 * 60_000);
     writeFileSync(join(home, "notes.md"), "v3");
@@ -144,9 +153,48 @@ test("tool errors from packaged extensions never roll anything back", async () =
     reconcile: unused,
     root: unused,
     report: (e) => errors.push(e),
+    lock: createWorkspaceLock(),
   });
   const { afterTool } = safety.extension.hooks![0].handlers as { afterTool: (c: unknown, r: unknown) => void };
   for (let i = 0; i < 3; i++) afterTool({ name: "t" }, { isError: true });
   await new Promise((r) => setImmediate(r));
   expect(errors).toEqual([]);
+});
+
+test("auto-rollback waits for the workspace lock", async () => {
+  const home = tempHome();
+  ensureWorkspace(home); // tags the initial workspace as last known good
+  land(home, "extensions/flaky/index.ts", flaky(true));
+  const extension = defineExtension({ name: "flaky", tools: [{ name: "flaky" } as never] });
+  const lock = createWorkspaceLock();
+  let release = () => {};
+  const publishing = lock(() => new Promise<void>((resolve) => (release = resolve)));
+  const submitted: string[] = [];
+  const root = {
+    submit: async ({ content }: { content: string }) => void submitted.push(content),
+    commit: async () => {},
+  };
+  const errors: string[] = [];
+  const safety = createSafety({
+    home,
+    settings,
+    built: () => new Map([["flaky", extension]]),
+    reconcile: async () => {},
+    root: () => root as never,
+    report: (e) => errors.push(e),
+    lock,
+  });
+  const { afterTool } = safety.extension.hooks![0].handlers as { afterTool: (c: unknown, r: unknown) => void };
+  for (let i = 0; i < 2; i++) afterTool({ name: "flaky" }, { isError: true });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(existsSync(join(home, "extensions", "flaky"))).toBe(true);
+  expect(submitted).toEqual([]);
+
+  release();
+  await publishing;
+  await waitFor(() => submitted.length > 0);
+  expect(existsSync(join(home, "extensions", "flaky"))).toBe(false);
+  expect(submitted).toEqual(["[japa] I removed flaky (new since the last working setup): its tool flaky failed 2 times in a row"]);
+  expect(errors).toEqual([]);
+  safety.close();
 });

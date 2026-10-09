@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { bootTest, stage } from "./helpers.ts";
+import { bootTest, land } from "./helpers.ts";
 import { tool } from "./jobs-helpers.ts";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -18,13 +18,14 @@ test("brave_search asks for its key when it goes missing", async () => {
   await daemon.close();
 });
 
-test("brave_search still works after an extension install reloads the registry", { timeout: 60_000 }, async () => {
+test("brave_search still works after a new extension reloads the registry", { timeout: 60_000 }, async () => {
   const { daemon, faux, home } = await bootKeyed();
   const results = [{ title: "Cats", url: "https://c.example", description: "C" }];
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({ web: { results } })));
-  stage(home, "extensions/dice/index.ts",
+  land(home, "extensions/dice/index.ts",
     `import { defineJapaExtension } from "japa/sdk";\nexport default defineJapaExtension({ name: "dice", summary: "Dice", examples: ["roll"], docs: "Dice." });\n`);
-  expect(await tool(daemon, faux, "install", { kind: "extension", name: "dice" })).toBe("Installed extension dice. (change 1)");
+  expect((await daemon.reconcile()).errors).toEqual([]);
+  expect(daemon.capabilities()).toContain("- dice: ");
   expect(await tool(daemon, faux, "brave_search", { query: "cats" })).toBe("1. Cats\nhttps://c.example\nC");
   await daemon.close();
 });

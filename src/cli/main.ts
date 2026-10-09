@@ -6,7 +6,7 @@ import { runChat } from "../../extensions/gateway/chat.ts";
 import { socketPath } from "../../extensions/gateway/protocol.ts";
 import { boot } from "../kernel/boot.ts";
 import { check, CHECK_KINDS } from "../kernel/check.ts";
-import { rollBack } from "../kernel/install.ts";
+import { ROLLBACK_KINDS, rollBack } from "../kernel/rollback.ts";
 import { enterSafeMode } from "../kernel/safety.ts";
 import { narrowRequire } from "../kernel/sandbox/jobs.ts";
 import { japaHome } from "../kernel/settings.ts";
@@ -28,7 +28,7 @@ Commands:
   status   Show the model, extensions, and errors
   check <skill|worker|extension> <name>
            Check a skill, worker profile or extension in the current directory
-  rollback <skill|worker|extension> <name> [to]
+  rollback <skill|extension> <name> [to]
            Roll it back to its last known good version, or to the git ref to
   safe-mode [--default-adapters]
            Restore the last working setup, and optionally the default storage and secrets adapters
@@ -66,8 +66,8 @@ async function checkCommand(home: string): Promise<void> {
 
 async function rollback(home: string): Promise<void> {
   const [kind, name, to] = process.argv.slice(3);
-  const known = CHECK_KINDS.find((k) => k === kind);
-  if (known === undefined || name === undefined) throw new Error("Usage: japa rollback <skill|worker|extension> <name> [to]");
+  const known = ROLLBACK_KINDS.find((k) => k === kind);
+  if (known === undefined || name === undefined) throw new Error("Usage: japa rollback <skill|extension> <name> [to]");
   const sha = rollBack(home, known, name, to);
   console.log(sha === undefined ? "Nothing to roll back." : "Rolled back. Restart the daemon to apply.");
 }

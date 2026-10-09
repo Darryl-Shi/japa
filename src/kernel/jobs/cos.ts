@@ -12,7 +12,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { sandboxRefusal } from "../sandbox/jobs.ts";
 import type { Settings } from "../settings.ts";
 import type { WorkerProfile } from "../workers.ts";
-import { Anchor, BACKGROUND, jobRun } from "./run.ts";
+import { Anchor, BACKGROUND, type JobHooks, jobRun } from "./run.ts";
 import { board, byId, JobDoc, JobsDoc } from "./state.ts";
 import { WorkerExtension } from "./worker.ts";
 
@@ -24,7 +24,7 @@ export function line(m: Message): string {
   return m.role === "toolResult" ? `tool ${m.toolName}: ${text.slice(0, 200)}` : `${m.role}: ${text}`;
 }
 
-export type JobsOptions = {
+export type JobsOptions = JobHooks & {
   profiles: ReadonlyMap<string, WorkerProfile>;
   settings: Settings;
   extensions: ReadonlyMap<string, Extension>; // extension-built Pi Durable extensions, by japa extension name
@@ -70,7 +70,7 @@ export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<voi
 /** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
 export function jobsExtension(options: JobsOptions): Extension {
   const { profiles, settings } = options;
-  const { JobRun, start } = jobRun(settings);
+  const { JobRun, start } = jobRun(settings, { publish: options.publish, closeSandbox: options.closeSandbox });
 
   const jobStart = defineTool({
     name: "job_start",
@@ -141,7 +141,7 @@ export function jobsExtension(options: JobsOptions): Extension {
     description: "Stop a job: it is cancelled and reports nothing more.",
     parameters: Type.Object({ id: Type.String() }),
     execute: async ({ id }, api, context) => {
-      const { text, abort } = await api.commit(async (tx) => {
+      const { text, stopped, abort } = await api.commit(async (tx) => {
         const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[id];
         if (job === undefined) return { text: `No job ${id}.` };
         if (["done", "failed", "cancelled"].includes(job.status)) return { text: `Job ${id} already finished.` };
@@ -149,9 +149,11 @@ export function jobsExtension(options: JobsOptions): Extension {
         const abort = ["running", "needs_input"].includes(job.status) ? job.conversationId : undefined;
         job.status = "cancelled";
         job.updatedAt = Date.now();
-        return { text: `Stopped job ${id}.`, abort };
+        return { text: `Stopped job ${id}.`, stopped: true, abort };
       }, context);
       if (abort !== undefined) await (await api.conversation(abort, context))!.abort(context);
+      // With everything the job left running; its clone is kept.
+      if (stopped) options.closeSandbox(id);
       return reply(text);
     },
   });

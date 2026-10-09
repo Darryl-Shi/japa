@@ -41,14 +41,28 @@ export type JobRunInput = {
   mode: "steer" | "followUp";
   nudge?: true;
 };
-type JobRunState = { phase: "deliver" } | { phase: "report"; report?: { seq: number; content: string } };
+type Report = { seq: number; content: string };
+type JobRunState =
+  | { phase: "deliver" }
+  | { phase: "publish"; report: Report }
+  | { phase: "report"; report?: Report };
+
+export type JobHooks = {
+  /** Publishes a completed job's changes (see publish.ts); the outcome line for its report, if any. */
+  publish(job: { id: string; title: string }): Promise<string | undefined>;
+  /** Stops job `jobId`'s sandbox and every process in it; its next tool call starts another. */
+  closeSandbox(jobId: string): void;
+};
+
+/** The statuses a job ends in: its sandbox is closed then. */
+const FINAL = ["done", "failed", "cancelled"];
 
 /**
- * The `JobRun` task, which delivers one message to a job and reports the answer to the CoS (or, for a run that ended
- * without job_complete or job_ask, nudges the job once with another `JobRun`), and `start`, which starts the queued
- * jobs that fit under `jobs.maxConcurrent`.
+ * The `JobRun` task, which delivers one message to a job, publishes the job's changes when the run completed it, and
+ * reports the answer to the CoS (or, for a run that ended without job_complete or job_ask, nudges the job once with
+ * another `JobRun`), and `start`, which starts the queued jobs that fit under `jobs.maxConcurrent`.
  */
-export function jobRun(settings: Settings) {
+export function jobRun(settings: Settings, hooks: JobHooks) {
   const JobRun = defineTask<JobRunInput, JobRunState, null>({
     name: "japa.job-run",
     version: 1,
@@ -78,8 +92,24 @@ export function jobRun(settings: Settings) {
           }
           job.seq++;
           const report = { seq: job.seq, content: decision.report };
-          return { status: "running", checkpoint: { phase: "report", report } };
+          return { status: "running", checkpoint: { phase: decision.completed ? "publish" : "report", report } };
         }, context);
+      },
+      // Spec §4.3: the job's changes go live, or are kept, before its report; the report ends with the outcome line.
+      publish: async (task, runtime, context) => {
+        const { jobId } = task.input;
+        const { report } = task.state.checkpoint as Extract<JobRunState, { phase: "publish" }>;
+        // Nothing the job started may still touch its clone while it's published.
+        hooks.closeSandbox(jobId);
+        const job = (await runtime.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context))?.jobs[jobId];
+        // A job stopped (or cleared) since is not published: its clone is kept.
+        const live = job !== undefined && job.status !== "cancelled";
+        const line = live ? await hooks.publish({ id: jobId, title: job.title }) : undefined;
+        const content = line === undefined ? report.content : `${report.content}\n\n${line}`;
+        await runtime.commit(
+          () => ({ status: "running", checkpoint: { phase: "report", report: { ...report, content } } }),
+          context,
+        );
       },
       report: async (task, runtime, context) => {
         const { report } = task.state.checkpoint as Extract<JobRunState, { phase: "report" }>;
@@ -95,6 +125,9 @@ export function jobRun(settings: Settings) {
             await root.waitForIdle(context);
           }
         }
+        // A finished job's sandbox goes, with everything it left running; one waiting for an answer keeps it.
+        const job = (await runtime.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context))?.jobs[task.input.jobId];
+        if (job === undefined || FINAL.includes(job.status)) hooks.closeSandbox(task.input.jobId);
         await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
       },
     },
@@ -113,7 +146,7 @@ export function jobRun(settings: Settings) {
   return { JobRun, start };
 }
 
-type Decision = { report: string } | { nudge: true } | undefined;
+type Decision = { report: string; completed?: true } | { nudge: true } | undefined;
 
 /**
  * Updates `job` for the settled message; returns the report to post, a nudge, or nothing. A run that ends unreported
@@ -142,7 +175,7 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord, nudged
   // Only the run that called job_complete reports the job done; a later run's answer is its own.
   if (job.completed) {
     job.completed = false;
-    return { report: reportText(job, job.result!) };
+    return { report: reportText(job, job.result!), completed: true };
   }
   if (job.asked) {
     job.asked = false;

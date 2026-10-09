@@ -30,6 +30,9 @@ import { BUNDLE, inComponents, MAX_NAMED, nameable, publishable } from "./narrow
 
 type Kind = "skill" | "extension";
 
+/** Publishes a job's changes; the outcome line for its report, or undefined when there's none. */
+export type Publish = (job: { id: string; title: string }) => Promise<string | undefined>;
+
 export type PublishDeps = {
   home: string;
   packageRoot: string;
@@ -176,6 +179,21 @@ export function sandboxCheck(
   };
 }
 
+/**
+ * `publish`, but a rejection ends in an outcome line too, so the job's report still goes out:
+ * `Not live: publishing failed: <error>. Kept at <clone>.`
+ */
+export function reportingFailures(home: string, publish: Publish): Publish {
+  return async (job) => {
+    try {
+      return await publish(job);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      return `Not live: publishing failed: ${oneLine(text) || "unknown error"}. Kept at ${display(cloneDir(home, job.id))}.`;
+    }
+  };
+}
+
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const isStrings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string");
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
@@ -185,7 +203,7 @@ const optionalString = (value: unknown) => value === undefined || typeof value =
  * when there's nothing to publish (no clone, or no change left once narrowed). The clone is deleted once its changes are
  * live or when there are none, and kept otherwise.
  */
-export function createPublisher(deps: PublishDeps): (job: { id: string; title: string }) => Promise<string | undefined> {
+export function createPublisher(deps: PublishDeps): Publish {
   const { home, maxBundleBytes = 100 * MB } = deps;
 
   const isAncestor = (ancestor: string, rev: string) => {

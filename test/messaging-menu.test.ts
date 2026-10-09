@@ -24,7 +24,7 @@ import {
   updateLog,
   writeUpdateState,
 } from "../src/kernel/update-state.ts";
-import { echo, NO_BWRAP, REPO_EXTENSIONS, stage, testKit, waitFor } from "./helpers.ts";
+import { echo, land, NO_BWRAP, REPO_EXTENSIONS, testKit, waitFor } from "./helpers.ts";
 import { ask, call, idle, jobs as jobsOf, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -1294,11 +1294,11 @@ describe("extensions", { timeout: 60_000 }, () => {
   });
 
   test("an extension is rolled back from the menu after confirmation", async () => {
-    stage(home, "extensions/echo/index.ts", echo("v1"));
-    await tool(daemon, faux, "install", { kind: "extension", name: "echo" });
+    land(home, "extensions/echo/index.ts", echo("v1"));
+    await daemon.reconcile();
     daemon.markGood();
-    stage(home, "extensions/echo/index.ts", echo("v2"));
-    await tool(daemon, faux, "install", { kind: "extension", name: "echo" });
+    land(home, "extensions/echo/index.ts", echo("v2"));
+    await daemon.reconcile();
     expect(await tool(daemon, faux, "echo")).toBe("v2");
     await open("echo");
     expect(shown()).toBe("**echo · ✅ on**\n\nEchoes");

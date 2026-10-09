@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
@@ -7,7 +8,8 @@ import type { Change } from "../src/kernel/changes.ts";
 import { ensureClone } from "../src/kernel/jobs/clone.ts";
 import { linkSdk } from "../src/kernel/loader.ts";
 import { publishable } from "../src/kernel/jobs/narrow.ts";
-import { createPublisher, type PublishDeps, sandboxCheck } from "../src/kernel/jobs/publish.ts";
+import { createPublisher, type PublishDeps, reportingFailures, sandboxCheck } from "../src/kernel/jobs/publish.ts";
+import { loadSkills, skillAt } from "../src/kernel/skills.ts";
 import { jobEnv, type SandboxSpec } from "../src/kernel/sandbox/bwrap.ts";
 import { createJobSandboxes } from "../src/kernel/sandbox/jobs.ts";
 import { createWorkspaceLock } from "../src/kernel/workspace-lock.ts";
@@ -609,6 +611,17 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(existsSync(clone)).toBe(true);
   });
 
+  test("a skill named otherwise than its folder goes live: it loads from that folder", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "skills/hello/SKILL.md", "---\nname: greeting\ndescription: Greets\n---\n");
+    const { publish } = publisher(home, sandboxes.spec, {
+      loaded: (_kind, name) => skillAt(loadSkills([join(home, "skills")]).skills, join(home, "skills", name)) !== undefined,
+    });
+    expect(await publish(job)).toBe("Live: skills/hello (change 1).");
+    expect(read(home, "skills/hello/SKILL.md")).toContain("name: greeting");
+    expect(existsSync(clone)).toBe(false);
+  });
+
   test("merges while settings.json has local changes", async () => {
     const { home, clone, sandboxes } = setup();
     write(home, "settings.json", '{"local":true}\n');
@@ -864,6 +877,17 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(await check("1", "skill", "bad")).toEqual([expect.stringContaining("description is required")]);
     expect(await check("1", "skill", "real")).toEqual([expect.stringContaining("does not exist")]);
   });
+});
+
+test("a publish that throws ends in a Not live line, on one line and capped", async () => {
+  const home = join(homedir(), ".japa");
+  const publish = reportingFailures(home, async () => {
+    throw new Error(`boom\n  at ${"x".repeat(600)}.`);
+  });
+  const line = await publish(job);
+  expect(line).toBe(`Not live: publishing failed: boom at ${"x".repeat(492)}…. ${KEPT}`);
+  const quiet = reportingFailures(home, async () => "Live: skills/s (change 1).");
+  expect(await quiet(job)).toBe("Live: skills/s (change 1).");
 });
 
 test("the lock serialises, and a rejected call doesn't stop the next", async () => {

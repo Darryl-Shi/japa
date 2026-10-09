@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
-import { loadSkills } from "../src/kernel/skills.ts";
+import { loadSkills, skillAt } from "../src/kernel/skills.ts";
 import { bootErrors, NO_BWRAP, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, jobs, reported, say, textOf, texts } from "./jobs-helpers.ts";
 
@@ -21,6 +21,15 @@ function skillsIn(dir: string, skills: Record<string, string>): string {
 }
 
 const tempDir = () => mkdtempSync(join(tmpdir(), "japa-skills-"));
+
+test("skillAt finds the skill loaded from a folder, whatever its name; none for a folder another one replaced", () => {
+  const dir = skillsIn(tempDir(), { hello: skill("greeting", "Greets"), a: skill("a", "first"), z: skill("a", "last") });
+  const { skills } = loadSkills([dir]);
+  expect(skillAt(skills, join(dir, "hello"))?.name).toBe("greeting");
+  expect(skillAt(skills, join(dir, "z"))?.description).toBe("last");
+  expect(skillAt(skills, join(dir, "a"))).toBeUndefined();
+  expect(skillAt(skills, join(dir, "missing"))).toBeUndefined();
+});
 
 test("later dirs override earlier ones; a bad skill is reported and skipped", () => {
   const packaged = skillsIn(tempDir(), { a: skill("a", "packaged"), bad: "---\nname: bad\n---\n" });

@@ -19,7 +19,21 @@ import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
 import { bootErrors, bootTest, NO_BWRAP, sandboxScratch, tempHome, testKit, waitFor } from "./helpers.ts";
-import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts, tool } from "./jobs-helpers.ts";
+import {
+  ask,
+  call,
+  held,
+  idle,
+  jobs,
+  nudges,
+  queued,
+  reported,
+  say,
+  script,
+  system,
+  texts,
+  tool,
+} from "./jobs-helpers.ts";
 
 /** Each `create` of the probe extension's environments, by environment name. */
 const created: { env: string; conversationId: string }[] = [];
@@ -583,18 +597,22 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
   test("a job's bash runs in its clone", async () => {
     const { daemon, faux, home } = await bootSandboxed();
     const command = `ls "${home}/secrets"; cat "${home}/marker"; echo made > "${home}/made"`;
-    script(faux, (role, text) => {
+    // Held until the clone is looked at: completing deletes a clone with nothing to publish.
+    const hold = held();
+    script(faux, (role, text, signal) => {
       if (text === "start") return call("job_start", { title: "Look", brief: "look", worker: "coder" });
       if (text === "look") return call("bash", { command });
-      if (role === "toolResult" && text.includes("marker")) return call("job_complete", { summary: "seen" });
+      if (role === "toolResult" && text.includes("marker")) return hold.wait(call("job_complete", { summary: "seen" }), signal);
     });
     await ask(daemon, "start");
+    await waitFor(hold.started);
+    expect(readFileSync(join(home, ".jobs", "1", "made"), "utf8")).toBe("made\n");
+    expect(existsSync(join(home, "made"))).toBe(false);
+    hold.release();
     await waitFor(() => idle(daemon));
     const [result] = await jobResults(daemon);
     expect(result).toContain("the real marker");
     expect(result).not.toContain("api-key");
-    expect(readFileSync(join(home, ".jobs", "1", "made"), "utf8")).toBe("made\n");
-    expect(existsSync(join(home, "made"))).toBe(false);
     expect(await reported(daemon)).toEqual(['[job 1 "Look" done] seen']);
     await daemon.close();
   });
@@ -602,16 +620,19 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
   test("a job's file tools work on its clone, not through an environment adapter", async () => {
     created.length = 0;
     const { daemon, faux, home } = await bootSandboxed();
-    script(faux, (_role, text) => {
+    const hold = held();
+    script(faux, (_role, text, signal) => {
       if (text === "start") return call("job_start", { title: "Probe", brief: "probe" });
       if (text === "probe") return call("probe_write", { path: join(home, "job.txt") });
-      if (text === "written") return call("job_complete", { summary: "probed" });
+      if (text === "written") return hold.wait(call("job_complete", { summary: "probed" }), signal);
     });
     await ask(daemon, "start");
-    await waitFor(() => idle(daemon));
-    expect(await jobResults(daemon)).toEqual(["written", "Done."]);
+    await waitFor(hold.started);
     expect(readFileSync(join(home, ".jobs", "1", "job.txt"), "utf8")).toBe("x");
     expect(existsSync(join(home, "job.txt"))).toBe(false);
+    hold.release();
+    await waitFor(() => idle(daemon));
+    expect(await jobResults(daemon)).toEqual(["written", "Done."]);
     const job = String((await jobs(daemon))["1"]!.conversationId);
     expect(created.filter((c) => c.conversationId === job)).toEqual([]);
     await daemon.close();
@@ -709,6 +730,113 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     expect((await jobResults(again.daemon))[0]!.trim()).toBe(original);
     await again.daemon.close();
   });
+});
+
+const HELLO = "---\nname: hello\ndescription: Says hello\n---\nSay hello.\n";
+
+/** A bash command that writes `<home>/skills/hello/SKILL.md`, then prints `written`. */
+const writeHello = (home: string) =>
+  `mkdir -p "${home}/skills/hello" && cat > "${home}/skills/hello/SKILL.md" <<'EOF'\n${HELLO}EOF\necho written`;
+
+/** A bash command that leaves a process in the job's sandbox writing the time to `file` every 50 ms. */
+const heartbeat = (file: string) =>
+  `setsid sh -c 'while :; do date +%s%N > "${file}"; sleep 0.05; done' </dev/null >/dev/null 2>&1 & echo beating`;
+
+/** Whether `file` stays the same for 500 ms: whatever wrote it has stopped. */
+async function still(file: string): Promise<boolean> {
+  const before = readFileSync(file, "utf8");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  return readFileSync(file, "utf8") === before;
+}
+
+describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
+  test("a job's skill goes live when it completes", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello", worker: "coder" });
+      if (text === "hello") return call("bash", { command: writeHello(home) });
+      if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote it" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon), 50_000);
+    expect(await reported(daemon)).toEqual(['[job 1 "Hello" done] wrote it\n\nLive: skills/hello (change 1).']);
+    expect(readFileSync(join(home, "skills", "hello", "SKILL.md"), "utf8")).toBe(HELLO);
+    expect(await system(daemon, faux)).toContain("- hello: Says hello\n");
+    expect(existsSync(join(home, ".jobs", "1"))).toBe(false);
+    await daemon.close();
+  });
+
+  test("a job stopped before publish is not merged", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    const hold = held();
+    script(faux, (role, text, signal) => {
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello", worker: "coder" });
+      if (text === "hello") return call("bash", { command: writeHello(home) });
+      if (role === "toolResult" && text.trim() === "written") {
+        return hold.wait(call("job_complete", { summary: "wrote it" }), signal);
+      }
+      if (text === "stop") return call("job_stop", { id: "1" });
+    });
+    await ask(daemon, "start");
+    await waitFor(hold.started);
+    await ask(daemon, "stop");
+    hold.release();
+    await waitFor(() => idle(daemon));
+    expect((await jobs(daemon))["1"]!.status).toBe("cancelled");
+    expect(existsSync(join(home, "skills", "hello"))).toBe(false);
+    expect(readFileSync(join(home, ".jobs", "1", "skills", "hello", "SKILL.md"), "utf8")).toBe(HELLO);
+    expect(await reported(daemon)).toEqual([]);
+    await daemon.close();
+  });
+
+  test("a job's processes stop when it completes", async () => {
+    const { daemon, faux, user } = await bootSandboxed();
+    const beat = join(user, "beat");
+    const hold = held();
+    script(faux, (role, text, signal) => {
+      if (text === "start") return call("job_start", { title: "Beat", brief: "beat", worker: "coder" });
+      if (text === "beat") return call("bash", { command: heartbeat(beat) });
+      if (role === "toolResult" && text.trim() === "beating") {
+        return hold.wait(call("job_complete", { summary: "left it running" }), signal);
+      }
+    });
+    await ask(daemon, "start");
+    await waitFor(hold.started);
+    await waitFor(() => existsSync(beat));
+    expect(await still(beat)).toBe(false);
+    hold.release();
+    await waitFor(() => idle(daemon));
+    expect(await still(beat)).toBe(true);
+    await daemon.close();
+  });
+
+  test("job_stop stops a waiting job's processes", async () => {
+    const { daemon, faux, user } = await bootSandboxed();
+    const beat = join(user, "beat");
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Beat", brief: "beat", worker: "coder" });
+      if (text === "beat") return call("bash", { command: heartbeat(beat) });
+      if (role === "toolResult" && text.trim() === "beating") return call("job_ask", { question: "Stop it?" });
+      if (text === "stop") return call("job_stop", { id: "1" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    expect(await reported(daemon)).toEqual(['[job 1 "Beat" needs_input] Stop it?']);
+    // Waiting for an answer, the job keeps its sandbox.
+    expect(await still(beat)).toBe(false);
+    await ask(daemon, "stop");
+    expect((await texts(daemon.root, "toolResult")).at(-1)).toBe("Stopped job 1.");
+    expect(await still(beat)).toBe(true);
+    await daemon.close();
+  });
+});
+
+test("the CoS has no install tool", async () => {
+  const { daemon } = await bootWith();
+  const tools = (await daemon.root.agent(ctx)).tools.map((t) => t.name);
+  expect(tools).toContain("rollback");
+  expect(tools).not.toContain("install");
+  await daemon.close();
 });
 
 const badWorkers = {

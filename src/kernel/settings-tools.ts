@@ -3,6 +3,7 @@ import { configure, defineTool, type JsonObject, ROOT_CONVERSATION_ID } from "@e
 import { ChangesDoc, type Commit, type ConfigOp, logChange } from "./changes.ts";
 import type { JapaExtension } from "./extension.ts";
 import { message } from "./loader.ts";
+import type { WorkspaceLock } from "./workspace-lock.ts";
 import { revert } from "./workspace.ts";
 import {
   checkModel,
@@ -88,8 +89,11 @@ export async function setSetting(
   return `Set ${path}. (change ${id})${restart}`;
 }
 
-/** The CoS's tools to read and change settings and to list and undo changes; `reconcile` runs after undoing commits. */
-export function settingsTools(deps: SettingsDeps, reconcile: () => Promise<unknown>) {
+/**
+ * The CoS's tools to read and change settings and to list and undo changes; undoing commits reverts them, then runs
+ * `reconcile`, under `lock`.
+ */
+export function settingsTools(deps: SettingsDeps, reconcile: () => Promise<unknown>, lock: WorkspaceLock) {
   const { home, settings, changed } = deps;
 
   const settingsGet = defineTool({
@@ -136,12 +140,17 @@ export function settingsTools(deps: SettingsDeps, reconcile: () => Promise<unkno
       const { call } = change.undo;
       if (call) return reply(`To undo this, call ${call.tool} with ${JSON.stringify(call.args)}.`);
       if (change.undo.commits.length > 0) {
-        try {
-          revert(home, change.undo.commits);
-        } catch (error) {
-          return reply(`Not undone: ${message(error)}`);
-        }
-        await reconcile();
+        const { commits } = change.undo;
+        const failed = await lock(async () => {
+          try {
+            revert(home, commits);
+          } catch (error) {
+            return message(error);
+          }
+          await reconcile();
+          return undefined;
+        });
+        if (failed !== undefined) return reply(`Not undone: ${failed}`);
       }
       const { configOps } = change.undo;
       let next: Settings | undefined;

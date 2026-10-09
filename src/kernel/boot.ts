@@ -21,7 +21,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ChangesDoc, type Commit } from "./changes.ts";
+import { ChangesDoc, type Commit, logChange } from "./changes.ts";
 import {
   ACTIVATION_ORDER,
   type EnvironmentAdapter,
@@ -37,7 +37,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
-import { installTool, rollBackAndLog, rollbackTool } from "./install.ts";
+import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish.ts";
 import { byId, DAY, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
@@ -50,6 +50,7 @@ import { alreadyRunning } from "./messaging/update-report.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
+import { rollBackAndLog, rollbackTool } from "./rollback.ts";
 import {
   addSecretRequest,
   declineSecret,
@@ -69,6 +70,7 @@ import {
   sandboxRefusal,
 } from "./sandbox/jobs.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
+import { skillAt } from "./skills.ts";
 import {
   liveness,
   patchUpdateState,
@@ -76,6 +78,7 @@ import {
   type Updater,
   writeUpdateState,
 } from "./update-state.ts";
+import { createWorkspaceLock } from "./workspace-lock.ts";
 import { dirHash, ensureWorkspace } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -147,6 +150,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     );
 
     const store = storage;
+    // Spec §4.4: everything that changes the real repo takes it, one at a time.
+    const lock = createWorkspaceLock();
     const models = createModels({ credentials: secretsCredentialStore(secrets) });
     const environments = new Map<string, EnvironmentAdapter>();
     const status = (): Status => ({
@@ -219,7 +224,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           doc.promptHistory = { ...doc.promptHistory, [adapter]: history.slice(-PROMPT_HISTORY) };
         }, ctx),
       setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
-      rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),
+      rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit, lock),
       tool: runTool,
       clearFinishedJobs: () => pruneJobs(Infinity),
       changes: async () => ((await opened.snapshot(ChangesDoc, root.id, ctx))?.changes ?? []).toReversed(),
@@ -438,7 +443,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       return result;
     };
     const report = (error: string) => rt.errors.push({ name: "japa-safety", error });
-    const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root, report });
+    const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root, report, lock });
     // After an undo's commits are reverted.
     const undone = async () => {
       await reconcile();
@@ -447,14 +452,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // Aborted by `close`: cancels the pending chat sign-ins.
     const closing = new AbortController();
     const tools = [
-      ...settingsTools(settingsDeps, undone),
-      installTool(
-        home,
-        reconcile,
-        (kind, name) => (kind === "skill" ? rt.skills : rt.profiles).has(name),
-        safety.scheduleGood,
-      ),
-      rollbackTool(home, reconcile),
+      ...settingsTools(settingsDeps, undone, lock),
+      rollbackTool(home, reconcile, lock),
       // Its `<extension>.authorize` requests need no `secrets` declaration.
       connectTool({
         extensions: () => rt.extensions,
@@ -491,6 +490,25 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         (path) => `Jobs can read ${path}: it is or holds the japa home, so their sandboxes can't hide it`,
       ),
     ].map((error) => ({ name: "sandbox", error }));
+    // A completed job's changes go live from its clone (spec §4.3), checked and committed in its sandbox.
+    const publish = reportingFailures(
+      home,
+      createPublisher({
+        home,
+        packageRoot,
+        lock,
+        spec: jobs.spec,
+        check: sandboxCheck(jobs.spec, home, packageRoot),
+        reconcile,
+        // A workspace skill by its folder: its frontmatter name keys it, and may differ.
+        loaded: (kind, name) =>
+          kind === "skill"
+            ? skillAt(rt.skills, join(home, "skills", name)) !== undefined
+            : rt.extensions.some((e) => e.name === name),
+        logChange: (change) => commit((tx) => logChange(tx, change)),
+        scheduleGood: () => safety.scheduleGood(),
+      }),
+    );
     const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
     const rt = createRuntime({
       home,
@@ -509,6 +527,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       cos,
       safety: safety.extension,
       sandboxProblem: () => jobs.problem,
+      publish,
+      closeSandbox: jobs.close,
       kernel,
       messaging,
     });

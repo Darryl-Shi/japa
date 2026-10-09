@@ -12,6 +12,7 @@ import type { JapaExtension } from "../src/kernel/extension.ts";
 import { fauxKit } from "../src/kernel/kit.ts";
 import { probeSandbox } from "../src/kernel/sandbox/bwrap.ts";
 import type { Updater } from "../src/kernel/update-state.ts";
+import { commit } from "../src/kernel/workspace.ts";
 
 export const REPO_EXTENSIONS = fileURLToPath(new URL("../extensions", import.meta.url));
 
@@ -55,10 +56,14 @@ export function tempHome(settings?: object): string {
 
 export const testKit = fauxKit;
 
-/** Writes `<home>/.staging/<path>` with `text`. */
-export function stage(home: string, path: string, text: string) {
-  mkdirSync(join(home, ".staging", path, ".."), { recursive: true });
-  writeFileSync(join(home, ".staging", path), text);
+/**
+ * Writes `<home>/<path>` with `text` and commits it, as a job's changes going live would; `daemon.reconcile()` then
+ * loads it.
+ */
+export function land(home: string, path: string, text: string) {
+  mkdirSync(join(home, path, ".."), { recursive: true });
+  writeFileSync(join(home, path), text);
+  commit(home, [path], `Land ${path}`);
 }
 
 /** Extension `echo`: tool `echo` replies `reply`; its trigger fails to start while `<home>/<reply>.busy` exists. */

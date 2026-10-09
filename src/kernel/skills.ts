@@ -32,6 +32,14 @@ export function loadSkills(dirs: string[]): {
   return { skills, errors };
 }
 
+/**
+ * Of `skills`, the one loaded from folder `dir`: whatever its frontmatter name, which keys it; undefined when none is,
+ * as when another skill of the same name replaced it.
+ */
+export function skillAt(skills: ReadonlyMap<string, Skill>, dir: string): Skill | undefined {
+  return [...skills.values()].find((skill) => skill.dir === dir);
+}
+
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
 /** The skills section (all skills, or a job's own) and `skill_read`, which reads skill files on the kernel side. */

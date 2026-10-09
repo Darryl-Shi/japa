@@ -1,12 +1,17 @@
-import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import type { JsonObject } from "@earendil-works/pi-durable";
-import { readFileSync } from "node:fs";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels, type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import type { JsonObject, ToolExecutionApi } from "@earendil-works/pi-durable";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
-import { settingsSchema } from "../src/kernel/settings-tools.ts";
+import type { Change } from "../src/kernel/changes.ts";
+import { settingsSchema, settingsTools } from "../src/kernel/settings-tools.ts";
+import type { Settings } from "../src/kernel/settings.ts";
+import { createWorkspaceLock } from "../src/kernel/workspace-lock.ts";
+import { ensureWorkspace, head } from "../src/kernel/workspace.ts";
 import { defineJapaExtension, type KernelContext, Type } from "../src/sdk.ts";
-import { bootTest, NO_BWRAP, testKit, waitFor } from "./helpers.ts";
+import { bootTest, land, NO_BWRAP, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, jobs, say, script, texts } from "./jobs-helpers.ts";
 
 /** Has the CoS call `name` with `args`; returns the tool's reply. */
@@ -79,6 +84,35 @@ test("undoing a set of an existing key restores it", async () => {
   expect(userFile(home).jobs).toEqual({ maxConcurrent: 3 });
   expect(await tool(daemon, faux, "settings_get", { path: "jobs.maxConcurrent" })).toBe("3");
   await daemon.close();
+});
+
+test("change_undo reverts only once the workspace lock is free", async () => {
+  const home = tempHome();
+  ensureWorkspace(home);
+  land(home, "skills/s/SKILL.md", "---\nname: s\ndescription: Does s\n---\nDo s.");
+  const change: Change = { id: "1", at: 0, title: "Job 1: changed skills/s", howToUse: "", undo: { commits: [head(home)] } };
+  const doc = { nextId: 2, changes: [change] };
+  const api = {
+    snapshot: async () => doc,
+    commit: async (fn: (tx: unknown) => unknown) => fn({ doc: async () => doc }),
+  } as unknown as ToolExecutionApi;
+  const deps = { home, settings: {} as Settings, models: createModels(), extensions: () => [], changed: async () => {} };
+  let reconciled = 0;
+  const lock = createWorkspaceLock();
+  const undo = settingsTools(deps, async () => void reconciled++, lock).find((t) => t.name === "change_undo")!;
+  let release = () => {};
+  const publishing = lock(() => new Promise<void>((resolve) => (release = resolve)));
+
+  const undone = undo.execute({ id: "1" }, api, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(existsSync(join(home, "skills", "s"))).toBe(true);
+  expect(reconciled).toBe(0);
+  release();
+  await publishing;
+  expect((await undone).content).toEqual([{ type: "text", text: "Undid: Job 1: changed skills/s" }]);
+  expect(existsSync(join(home, "skills", "s"))).toBe(false);
+  expect(reconciled).toBe(1);
+  expect(doc.changes).toEqual([]);
 });
 
 test("extension settings are validated against its schema and visible to it immediately", async () => {

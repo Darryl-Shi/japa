@@ -3,9 +3,10 @@ import { type Conversation, defineExtension, type Extension, hook, ToolTask } fr
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { logChange } from "./changes.ts";
-import { rollBack } from "./install.ts";
 import { message } from "./loader.ts";
+import { rollBack } from "./rollback.ts";
 import { readUserSettings, saveSettings, setPath, type Settings } from "./settings.ts";
+import type { WorkspaceLock } from "./workspace-lock.ts";
 import { commit, hasTag, head, LKG, matches, restorePath, tag } from "./workspace.ts";
 
 const bootsFile = (home: string) => join(home, "boots.json");
@@ -52,7 +53,7 @@ export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapte
 /**
  * Last-known-good tagging and runtime auto-rollback: the `japa-safety` extension counts each workspace extension's
  * tool errors in a row (via `built`, the extension-built Pi Durable extensions by name) and rolls the extension back
- * to `LKG` when they reach `settings.safety.toolErrorThreshold`. Background failures go to `report`.
+ * to `LKG` when they reach `settings.safety.toolErrorThreshold`, under `lock`. Background failures go to `report`.
  */
 export function createSafety(input: {
   home: string;
@@ -61,6 +62,7 @@ export function createSafety(input: {
   reconcile: () => Promise<unknown>;
   root: () => Conversation;
   report: (error: string) => void;
+  lock: WorkspaceLock;
 }) {
   const { home, settings, report } = input;
   const failures = new Map<string, number>();
@@ -82,7 +84,9 @@ export function createSafety(input: {
     timer = setTimeout(fire, settings.safety.goodAfterMinutes * 60_000).unref();
   }
 
-  async function autoRollback(name: string, reason: string) {
+  const autoRollback = (name: string, reason: string) => input.lock(() => rollBackLocked(name, reason));
+
+  async function rollBackLocked(name: string, reason: string) {
     const sha = rollBack(home, "extension", name);
     if (sha === undefined) {
       const content = `[japa] ${name} keeps failing and has no earlier working version: ${reason}`;
