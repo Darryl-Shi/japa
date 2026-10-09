@@ -123,9 +123,7 @@ const adapter: MessagingAdapter = {
 
 export default defineJapaExtension({
   name: "telegram",
-  summary:
-    "Chat with japa on Telegram. To connect, ask the user for the secret telegram.botToken (a bot token from " +
-    "@BotFather); the bot then tells them their Telegram user id, which goes in settings extensions.telegram.owner.",
+  summary: "Chat with japa on Telegram, with /jobs, /status and /settings menus",
   secrets: [{ name: NAME, description: "Bot token from @BotFather (/newbot)" }],
   setup: (ctx) => {
     kernel = ctx;

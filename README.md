@@ -81,9 +81,10 @@ The first run walks through, in order:
    yourself), a sign-in as `<provider>.credential`, which japa refreshes as needed.
 3. **Model.** Pick the model; background jobs and memory upkeep use it too unless you say no and pick others.
 4. **Integrations.** Only those that need something from you — a Telegram bot token, a Parallel or Brave Search
-   key, a Google sign-in (see Google) — are listed: pick any to set up now (none by default), or later here or in
-   Telegram's `/settings`; until then japa doesn't see them. Anything with a default isn't asked about at all (the
-   desktop just works, see Desktop); change it later by asking the CoS.
+   key, a Google sign-in (see Google) — are listed: pick any to set up now (none by default), or later by running
+   `japa setup` again (the search keys also from Telegram's `/settings` once it's connected); until then japa doesn't
+   see them. Anything with a default isn't asked about at all (the desktop just works, see Desktop); change it later
+   by asking the CoS.
 5. **Background service.** Installs and starts `japa service` (see Running), so japa keeps running after you log
    out — no question asked; pass `--no-service` to skip it. Setup then waits for japa to answer and prints
    `japa status`; without a service manager it tells you to run `japa daemon`.

@@ -55,6 +55,9 @@ Only what agents see:
 - The capabilities text lists available extensions only. An unavailable one is
   not mentioned at all, so the CoS never offers to set it up; that happens
   through `japa setup` or `/settings` (§3.4).
+- Its skills (its `skills/` dir) are left out of the skills agents see, and
+  come back when it does. A profile naming one stays valid (`profileError`
+  checks against every extension's skills) and runs without it.
 
 Everything else is unchanged: every loaded extension still runs `setup()`, is
 installed in the registry, and activates its adapter contributions
@@ -79,7 +82,9 @@ and `/status` show it after the summary for anything not `on`.
 
 ### 2.4 When it is recomputed
 
-At boot after the tool phase; after `reconcile`; after `setSetting` and
+At boot after the tool phase (boot then reconfigures the unfinished jobs, as
+availability may have changed while japa was down); after `reconcile`; after
+`setSetting` and
 `change_undo` (through `SettingsDeps.changed`, which becomes async); after any
 secret is stored — `KernelContext.setSecret`, `surface.secrets.fulfil`, and
 the menu's secret entry (§3.4). A `japa setup` run against a live daemon takes
@@ -104,7 +109,12 @@ press, input), `nav.ts`, `settings.ts`, `extensions.ts`, `jobs.ts`.
   are, including the "couldn't delete" notice and the re-delivery drop via
   `fulfilledBy`). A command, `Cancel`, or any other button press cancels it.
   While a menu input is pending it takes precedence over a pending secret
-  request; the request is re-announced when the input ends.
+  request; the request is re-announced when the input ends, however it ends.
+  An input expires 10 minutes after it opens (`INPUT_MS`), as if cancelled.
+  A secret one is also marked on the root's `MessagingDoc`
+  (`secretInput[<adapter>]`, its open time) until it ends; after a restart,
+  the next text within those 10 minutes is deleted, never submitted, and
+  answered `That prompt expired — tap Set again.`
 - **Expiry**: the action→screen map keeps the newest 500 actions; an older
   or pre-restart button answers "This menu expired — send /settings again."
   (or `/jobs`).
@@ -243,7 +253,8 @@ one message, with Back), `‹ Back` to the same list page.
 ## 5. Errors
 
 - Availability: a secrets read that throws counts as not set; the error is
-  logged once per refresh.
+  logged once per refresh and shown in `status().errors` as
+  `{ name: <extension>, error: "secrets: <message>" }` until the next refresh.
 - Menu: any thrown error in a press or input renders as `✗ <message>` on the
   originating screen; nothing is half-applied beyond what `setSetting` and the
   tools already guarantee.
