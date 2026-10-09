@@ -41,7 +41,7 @@ force-reply or inline buttons on one message, not both). Declining withdraws the
 - `SurfaceContext.secrets` gains `decline(requestId: string): Promise<void>`: removes the request and tells the CoS
   `[secret <name> declined]` (submitted with requestId `secret-declined:<id>`, so a repeat is a no-op); throws for
   an unknown request. A sign-in's `<extension>.authorize` request is not reported this way: declining it aborts the
-  `connect` flow, which ends with `sign-in cancelled` through its usual report.
+  `connect` flow, which reports `[<extension>: couldn't connect: The sign-in was declined]` as usual.
 - `requestSecret` / `secretProvided` waiters are not resolved or rejected by a decline: they keep waiting for a value
   (e.g. Telegram's own bot token, which only `japa setup` or `japa chat` can then provide).
 
@@ -57,8 +57,8 @@ force-reply or inline buttons on one message, not both). Declining withdraws the
 - `MessagingDoc` gains `prompts: Record<string, { requestId: string; prompt: string; decline: string; chat: string }[]>`
   per adapter: the prompt and decline message ids for each prompted request, and `promptHistory: Record<string,
   string[]>`: the last 50 prompt message ids this adapter sent (§2.5).
-- **Sending.** When the pending list changes, and when the owner is first known (an owner message arrives or
-  `extensions.<adapter>.owner` is set), every pending request without a saved prompt is prompted: the prompt,
+- **Sending.** When the pending list changes, and before each owner message is handled (so prompts go out once an
+  owner is set and first writes), every pending request without a saved prompt is prompted: the prompt,
   `japa needs \`<name>\`: <why>. Reply to this message with it; I'll delete your reply at once.`, with
   `input: { placeholder: "Paste <name>" }`; then the decline message, `Don't want to provide <name>?` with
   `[Decline]`. The ids are saved before anything else happens, so a restart neither re-sends nor forgets them.
@@ -99,7 +99,7 @@ The masked prompt is unchanged, plus Ctrl-X: decline the request shown (new prot
   still works); decline tells the CoS and deletes the messages; fulfilling in `japa chat` deletes the prompt; a reply
   to a stale prompt is deleted and never submitted; a reply wins over a waiting menu input; no owner → no prompts.
 - `test/secret-requests.test.ts`: `decline` removes the request and reports it once; declining an `.authorize`
-  request ends `connect` with `sign-in cancelled`; a `requestSecret` waiter stays pending.
+  request ends `connect` with `couldn't connect: The sign-in was declined`; a `requestSecret` waiter stays pending.
 - `test/telegram.test.ts`: `force_reply` + truncated placeholder are sent; `input` with `buttons` throws; `replyTo`
   is parsed.
 - `test/gateway.test.ts`: Ctrl-X sends `decline`.
@@ -209,7 +209,7 @@ The full log of the run goes to `~/.japa/logs/update.log` (overwritten per run).
 ```ts
 update: {
   check(): Promise<{ current: string; target: string; commits: string[] }>;
-  start(chat: { adapter: string; chat: string }, to: string, rollback: boolean): Promise<void>;
+  start(chat: { adapter: string; chat: string }, from: string, to: string, rollback: boolean): Promise<void>;
   state(): Promise<UpdateState | undefined>;
   markReported(): Promise<void>;
 }
@@ -235,7 +235,7 @@ and restart rules (`restartAfterUpdate`) are unchanged. The restart now records 
 ### 4.5 Reporting
 
 The messaging surface, for its own adapter, reports an unreported finished result when it starts and whenever
-`update.json` changes (`fs.watch`, plus a 5 s poll while state is `running`): it sends the report to the recorded
+`update.json` changes (polled every 2 s): it sends the report to the recorded
 chat (only if `chat.adapter` is its own name), then `markReported()`. So the old daemon reports a failure or a
 no-restart result; the new daemon reports a success after the restart. A result for an adapter that isn't running
 stays unreported until it is.
