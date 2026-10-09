@@ -1,11 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { Module } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { statusText } from "../src/kernel/status.ts";
-import { bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
+import { bootErrors, bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
 
 test("the CoS answers in the root conversation", async () => {
   const { daemon, faux } = await bootTest();
@@ -27,6 +28,18 @@ test("the identity section reaches the model", async () => {
   ]);
   await (await daemon.root.submit({ type: "input", content: "hi" }, ctx)).wait(ctx);
   expect(systemPrompt).toContain("chief of staff");
+  await daemon.close();
+});
+
+// Jobs can write there: a dependency's missing optional `require` mustn't load code from it (see narrowRequire's test).
+test("boot narrows require's global folders to Node's lib/node: no ~/.node_modules, NODE_PATH", async () => {
+  const home = process.env.HOME;
+  const { daemon } = await bootTest();
+  // `_initPaths` refreshes this copy of the folders `require` uses.
+  const { globalPaths } = Module as unknown as { globalPaths: string[] };
+  expect(globalPaths).toEqual([resolve(dirname(process.execPath), "..", "lib", "node")]);
+  expect(process.env.NODE_PATH).toBeUndefined();
+  expect(process.env.HOME).toBe(home);
   await daemon.close();
 });
 
@@ -75,7 +88,7 @@ test("status lists the model and the extensions", async () => {
     state: "on",
   });
   expect(status.extensions.map((e) => e.name)).toContain("providers");
-  expect(status.errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });
 
@@ -109,7 +122,7 @@ test("workspace extensions load from <home>/extensions; a broken one is reported
   write("ws-broken", `throw new Error("boom");\n`);
   const daemon = await boot({ home, extensions: [kit.extension] });
   expect(daemon.status().extensions.map((e) => e.name)).toContain("ws-good");
-  expect(daemon.status().errors.map((e) => e.name)).toEqual(["ws-broken"]);
+  expect(bootErrors(daemon).map((e) => e.name)).toEqual(["ws-broken"]);
   await daemon.close();
 });
 
@@ -133,7 +146,7 @@ test("a CoS model whose provider has no key is reported, naming the env var and 
   const extension = { ...kit.extension, provides: { ...kit.extension.provides, provider: [provider] } };
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [extension] });
   const file = join(home, "secrets", `${kit.model.provider}.apiKey`);
-  expect(daemon.status().errors).toEqual([
+  expect(bootErrors(daemon)).toEqual([
     {
       name: "models",
       error:

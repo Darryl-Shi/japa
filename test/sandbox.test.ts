@@ -1,5 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  accessSync,
+  chmodSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,22 +12,25 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import {
+  jobEnv,
   probeSandbox,
   readOnlyPaths,
   runSandboxed,
   runtimeDirs,
   sandboxArgs,
   type SandboxSpec,
+  within,
 } from "../src/kernel/sandbox/bwrap.ts";
-import { tempHome } from "./helpers.ts";
+import { NO_BWRAP, tempHome } from "./helpers.ts";
 
 const ALLOWED = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
 
@@ -46,8 +52,6 @@ function withEnv<T>(name: string, value: string | undefined, fn: () => T): T {
   }
 }
 
-/** Whether the real bwrap works here; the sandbox tests are skipped where it doesn't (spec §8). */
-const NO_BWRAP = withEnv("JAPA_BWRAP", undefined, () => probeSandbox() !== undefined);
 const NO_SYSTEMD_RUN = spawnSync("systemd-run", ["--version"]).status !== 0;
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"].filter((path) => existsSync(path));
 const RUNTIME_DIR = `/run/user/${process.getuid?.()}`;
@@ -121,6 +125,7 @@ function sandbox(o: { japaHome?: string; env?: (user: string) => NodeJS.ProcessE
     readOnly: readOnlyPaths(app, user, o.env?.(user) ?? {}),
     hidden: [hidden, join(outside, "absent")],
     shared: [join(home, "desktop", "shared")],
+    env: jobEnv(),
   };
   const run = (script: string, o: { timeoutMs?: number; cwd?: string } = {}) =>
     runSandboxed(spec, ["bash", "-c", script], { timeoutMs: o.timeoutMs ?? 10_000, cwd: o.cwd });
@@ -171,8 +176,35 @@ function tempUser(): string {
 const pins = (args: string[]) =>
   args.flatMap((arg, i) => (arg === "--bind" && args[i + 1] === args[i + 2] && args[i + 1] !== "/" ? [args[i + 1]] : []));
 
+/** Those of `pins` that are `user` or under it (the writable folders above a temp user home are pinned too). */
+const pinsIn = (args: string[], user: string) => pins(args).filter((dir) => dir === user || dir.startsWith(`${user}/`));
+
+/** A spec with nothing to protect, for a japa home `/h` and a user home `/u` that don't exist. */
+const bare: SandboxSpec = {
+  home: "/h",
+  userHome: "/u",
+  clone: "/h/.jobs/1",
+  tmp: "/t",
+  readOnly: [],
+  hidden: [],
+  shared: [],
+  env: {},
+};
+
+test("jobEnv keeps the allowed variables that are set", () => {
+  const env = { PATH: "/p", HOME: "/u", TERM: undefined, FOO_SECRET: "1", ANTHROPIC_API_KEY: "k" };
+  expect(jobEnv(env)).toEqual({ PATH: "/p", HOME: "/u" });
+});
+
+test("sandboxArgs sets the allowed variables from the spec's env, not the daemon's", () => {
+  const spec = { ...bare, env: { PATH: "/job/bin", HOME: "/u", FOO_SECRET: "1" } };
+  const set = (args: string[]) => args.flatMap((arg, i) => (args[i - 1] === "--setenv" ? [`${arg}=${args[i + 1]}`] : []));
+  expect(set(sandboxArgs(spec))).toEqual(["PATH=/job/bin", "HOME=/u"]);
+  expect(set(sandboxArgs({ ...bare, env: {} }))).toEqual([]);
+});
+
 test("sandboxArgs masks each existing docker socket once, by its real path", () => {
-  const spec = { home: "/h", userHome: "/u", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] };
+  const spec = bare;
   const args = sandboxArgs(spec);
   const masked = args.flatMap((arg, i) => (arg === "/dev/null" && args[i - 1] === "--ro-bind-try" ? [args[i + 1]] : []));
   // A missing mount point would make bwrap fail ("Can't create file at /run/docker.sock").
@@ -196,6 +228,7 @@ test("sandboxArgs mounts in order: pins, link dirs, protected paths, /tmp, the c
     readOnly: readOnlyPaths(join(user, ".local", "share", "japa", "app"), user, {}),
     hidden: [join(user, "hidden")],
     shared: [join(home, "shared")],
+    env: {},
   };
   const args = sandboxArgs(spec);
   const index = (flag: string, path: string) => {
@@ -205,6 +238,7 @@ test("sandboxArgs mounts in order: pins, link dirs, protected paths, /tmp, the c
   };
   const order = [
     index("--proc", "/proc"),
+    index("--bind", user),
     index("--bind", join(user, ".config")),
     index("--bind", join(user, ".local", "share")),
     index("--ro-bind", join(user, ".config")),
@@ -223,7 +257,7 @@ test("sandboxArgs mounts in order: pins, link dirs, protected paths, /tmp, the c
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("sandboxArgs pins the existing folders between the user's home and each protected path, the job home's too", () => {
+test("sandboxArgs pins the user's home and the existing folders between it and each protected path, the job home's too", () => {
   const user = tempUser();
   for (const dir of [".config/systemd", ".local/share/japa", ".local/bin", ".local/jobs"]) {
     mkdirSync(join(user, dir), { recursive: true });
@@ -237,12 +271,15 @@ test("sandboxArgs pins the existing folders between the user's home and each pro
     readOnly: readOnlyPaths(join(user, ".local", "share", "japa", "app"), user, {}),
     hidden: [],
     shared: [],
+    env: {},
   };
   const args = sandboxArgs(spec);
-  // `.local` holds the job home, which the clone (bound later) still covers.
+  // `.local` holds the job home, which the clone (bound later) still covers; so does the user's home.
   const local = join(user, ".local");
-  expect(pins(args)).toEqual([join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
+  expect(pinsIn(args, user)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const at = (path: string) => args.findIndex((arg, i) => arg === path && args[i - 1] === "--bind");
+  expect(at(user)).toBeGreaterThan(args.indexOf("/proc"));
+  expect(at(user)).toBeLessThan(at(join(user, ".config")));
   expect(at(join(user, ".config"))).toBeGreaterThan(args.indexOf("/proc"));
   expect(at(local)).toBeLessThan(args.indexOf(spec.clone));
 });
@@ -250,28 +287,149 @@ test("sandboxArgs pins the existing folders between the user's home and each pro
 test("sandboxArgs creates missing placeholders and their folders first, and pins those folders too", () => {
   const user = tempUser();
   mkdirSync(join(user, ".config", "systemd"), { recursive: true });
-  mkdirSync(join(user, "app"));
+  // Not `app`: that would make its parent, the user's home, the protected app dir.
+  mkdirSync(join(user, "src"));
   const spec: SandboxSpec = {
     home: join(user, "japa"),
     userHome: user,
     clone: join(user, "japa", ".jobs", "1"),
     tmp: "/t",
-    readOnly: readOnlyPaths(join(user, "app"), user, {}),
+    readOnly: readOnlyPaths(join(user, "src"), user, {}),
     hidden: [],
     shared: [],
+    env: {},
   };
   const args = sandboxArgs(spec);
   const local = join(user, ".local");
   expect(readFileSync(join(local, "bin", "japa"), "utf8")).toBe("");
-  expect(pins(args)).toEqual([join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
+  expect(pinsIn(args, user)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const systemd = join(local, "share", "systemd");
   expect(args.join(" ")).toContain(`--tmpfs ${systemd} --remount-ro ${systemd}`);
 });
 
+/** A missing dir only root could create (bwrap can't make a mount point there either); undefined as root. */
+const ROOTS_ONLY =
+  process.getuid?.() === 0 || !existsSync("/usr/lib") ? undefined : `/usr/lib/japa-missing-${process.pid}`;
+
+// Node's `<prefix>/lib/node`, usually missing: in the app dir with japa's own Node, under /usr with the system's.
+test("sandboxArgs leaves out a missing protected dir inside another protected one, or only root's", () => {
+  const user = tempUser();
+  const app = join(user, "app");
+  mkdirSync(app);
+  const inApp = join(app, "node", "lib", "node");
+  const readOnly = [inApp, app, ...(ROOTS_ONLY ? [ROOTS_ONLY] : [])].map((path) => ({ path, dir: true }));
+  const args = sandboxArgs({ ...bare, userHome: user, readOnly });
+  expect(args).toContain(app);
+  expect(args.filter((arg) => arg === inApp || arg === ROOTS_ONLY)).toEqual([]);
+  expect(existsSync(join(app, "node"))).toBe(false);
+});
+
+/**
+ * A folder this user neither owns nor can write, in one it can write (the system temp dir), preferably one it can't
+ * even enter (systemd's private tmp dirs); undefined if none.
+ */
+const FOREIGN = (() => {
+  const can = (path: string, mode: number) => {
+    try {
+      accessSync(path, mode);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (process.getuid?.() === 0 || !can(tmpdir(), constants.W_OK)) return undefined;
+  const found = readdirSync(tmpdir())
+    .map((name) => join(tmpdir(), name))
+    .filter((path) => {
+      const stat = statSync(path, { throwIfNoEntry: false });
+      return stat?.isDirectory() && stat.uid !== process.getuid?.() && !can(path, constants.W_OK);
+    });
+  return found.find((path) => !can(path, constants.X_OK)) ?? found[0];
+})();
+
+// Left out (no mount point can be made in it), the path stays out of reach only while that folder can't be moved
+// away and recreated as the user's own.
+test.skipIf(FOREIGN === undefined)(
+  "sandboxArgs pins the folders above a missing protected dir it leaves out (skipped: no foreign folder in tmp)",
+  () => {
+    const path = join(FOREIGN!, "lib", "node");
+    const args = sandboxArgs({ ...bare, readOnly: [{ path, dir: true }] });
+    expect(args).not.toContain(path);
+    expect(pins(args)).toContain(FOREIGN);
+  },
+);
+
+test("sandboxArgs hides a dir with an empty tmpfs and a file with /dev/null, those that exist", () => {
+  const user = tempUser();
+  mkdirSync(join(user, "dir"));
+  writeFileSync(join(user, "file"), "secret");
+  const hidden = [join(user, "dir"), join(user, "file"), join(user, "absent")];
+  const args = sandboxArgs({ ...bare, userHome: user, hidden }).join(" ");
+  expect(args).toContain(`--tmpfs ${join(user, "dir")}`);
+  // Not `--ro-bind`: bwrap mounts that nodev, so the file couldn't be read at all.
+  expect(args).toContain(`--dev-bind /dev/null ${join(user, "file")}`);
+  expect(args).not.toContain(join(user, "absent"));
+});
+
+test("sandboxArgs pins the existing folders between the user's home and each hidden path, a missing one's too", () => {
+  const user = tempUser();
+  const secrets = join(user, ".config", "japa", "secrets");
+  mkdirSync(secrets, { recursive: true });
+  mkdirSync(join(user, "data", "db"), { recursive: true });
+  // A missing `-wal`, which the database may create later: its folders are pinned already.
+  const wal = join(user, "data", "db", "state.db-wal");
+  const args = sandboxArgs({ ...bare, userHome: user, hidden: [secrets, wal, "/elsewhere/secrets"] });
+  const config = join(user, ".config");
+  const data = join(user, "data");
+  expect(pinsIn(args, user)).toEqual([user, config, join(config, "japa"), data, join(data, "db")]);
+});
+
+test("sandboxArgs pins every writable folder above a protected or hidden path, outside the user's home too", () => {
+  const root = tempUser();
+  const user = join(root, "user");
+  const secrets = join(root, "elsewhere", "a", "secrets");
+  const app = join(root, "elsewhere", "b", "app");
+  for (const dir of [user, secrets, app]) mkdirSync(dir, { recursive: true });
+  const readOnly = [
+    { path: app, dir: true },
+    { path: "/usr/bin", dir: true },
+  ];
+  const args = sandboxArgs({ ...bare, userHome: user, readOnly, hidden: [secrets, "/elsewhere/secrets"] });
+  const elsewhere = join(root, "elsewhere");
+  expect(pinsIn(args, root)).toEqual([root, elsewhere, join(elsewhere, "a"), join(elsewhere, "b"), user]);
+  // Not `/`, nor a folder this user can't write (unless it runs as root).
+  expect(pins(args)).not.toContain("/");
+  if (process.getuid?.() !== 0) expect(pins(args)).not.toContain("/usr");
+  // Before the clone, which covers any that holds the japa home.
+  expect(args.lastIndexOf(join(elsewhere, "a"))).toBeLessThan(args.indexOf(bare.clone));
+});
+
+test("sandboxArgs pins a folder it can't write in one it can but doesn't own (sticky /tmp, a group's)", () => {
+  const locked = tempUser(); // directly in the system temp dir, which root owns
+  mkdirSync(join(locked, "secrets"));
+  chmodSync(locked, 0o555);
+  try {
+    expect(pins(sandboxArgs({ ...bare, hidden: [join(locked, "secrets")] }))).toContain(locked);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+});
+
+// Pinned, the host's /dev/shm would replace the sandbox's empty one; a mask there is pointless, or fails (/proc/1).
+test("sandboxArgs neither pins nor masks under /dev or /proc: the sandbox has its own", () => {
+  const shm = existsSync("/dev/shm") ? mkdtempSync("/dev/shm/japa-sandbox-") : undefined;
+  if (shm !== undefined) onTestFinished(() => rmSync(shm, { recursive: true, force: true }));
+  const secrets = shm === undefined ? [] : [join(shm, "secrets")];
+  for (const dir of secrets) mkdirSync(dir);
+  const readOnly = shm === undefined ? [] : [{ path: shm, dir: true }];
+  const args = sandboxArgs({ ...bare, readOnly, hidden: [...secrets, "/proc/1", "/proc/self/fd"] });
+  expect(pins(args).filter((dir) => within(dir, "/dev") || within(dir, "/proc"))).toEqual([]);
+  expect(args.filter((arg) => [...secrets, "/proc/1", "/proc/self/fd"].includes(arg))).toEqual([]);
+});
+
 test("sandboxArgs masks the runtime dirs that exist: the user's, and screen's sockets", () => {
   expect(runtimeDirs()).toEqual([`/run/user/${process.getuid?.()}`, "/run/screen"]);
-  const spec = { home: "/h", userHome: "/u", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] };
-  const args = sandboxArgs(spec);
+  const args = sandboxArgs(bare);
   const masked = args.flatMap((arg, i) => (args[i - 1] === "--tmpfs" ? [arg] : []));
   // Only existing ones: bwrap can't create a mount point under /run.
   expect(masked).toEqual(runtimeDirs().filter((path) => existsSync(path)));
@@ -288,9 +446,18 @@ test("runSandboxed resolves with the error when the sandbox can't be set up", as
     readOnly: [{ path: join(user, ".local", "bin", "japa"), dir: false }],
     hidden: [],
     shared: [],
+    env: {},
   };
   const result = await runSandboxed(spec, ["true"], { timeoutMs: 1000 });
   expect(result).toEqual({ code: null, output: expect.stringMatching(/ENOTDIR|EEXIST/), timedOut: false });
+});
+
+test("runSandboxed resolves with the error when the command can't be spawned", async () => {
+  const user = tempUser();
+  const spec = { ...bare, userHome: user };
+  // Node refuses an argument with a NUL byte before running anything.
+  const result = await runSandboxed(spec, ["echo", "a\0b"], { timeoutMs: 1000 });
+  expect(result).toEqual({ code: null, output: expect.stringContaining("null bytes"), timedOut: false });
 });
 
 describe.skipIf(NO_BWRAP)("the sandbox", () => {
@@ -353,6 +520,18 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     }
   });
 
+  test("a sandbox starts with a missing protected dir inside another protected one, or only root's", async () => {
+    const { app, spec } = sandbox();
+    const inApp = join(dirname(app), "node", "lib", "node");
+    const missing = [inApp, ...(ROOTS_ONLY ? [ROOTS_ONLY] : [])].map((path) => ({ path, dir: true }));
+    const script = `mkdir -p "${inApp}" 2>/dev/null; echo "mkdir=$?"`;
+    const result = await runSandboxed({ ...spec, readOnly: [...spec.readOnly, ...missing] }, ["bash", "-c", script], {
+      timeoutMs: 10_000,
+    });
+    expect(result).toMatchObject({ code: 0, output: expect.stringMatching(/^mkdir=[1-9]\n$/) });
+    expect(existsSync(inApp)).toBe(false);
+  });
+
   test("the folders holding protected paths can't be renamed away and recreated", async () => {
     const { user, units, run } = sandbox();
     const config = join(user, ".config");
@@ -369,6 +548,21 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(readFileSync(join(units, "japa.service"), "utf8")).toBe("unit");
     expect(existsSync(`${config}.old`)).toBe(false);
     expect(existsSync(`${local}.old`)).toBe(false);
+  });
+
+  test("the user's home can't be renamed away and recreated", async () => {
+    const { user, units, run } = sandbox();
+    const unit = join(units, "japa.service");
+    const { output } = await run(
+      [
+        `mv "${user}" "${user}.old" 2>/dev/null; echo "mv=$?"`,
+        `(mkdir -p "${units}" && echo changed > "${unit}") 2>/dev/null`,
+        "echo end",
+      ].join("; "),
+    );
+    expect(output).toMatch(/^mv=[1-9]\nend\n$/);
+    expect(existsSync(`${user}.old`)).toBe(false);
+    expect(readFileSync(unit, "utf8")).toBe("unit");
   });
 
   test("a protected path that is a symlink: its target can't be written, nor the link replaced", async () => {
@@ -414,6 +608,79 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(readFileSync(join(tmp, `${name}.var`), "utf8")).toBe("b\n");
     expect(existsSync(`/tmp/${name}`)).toBe(false);
     expect(existsSync(`/var/tmp/${name}.var`)).toBe(false);
+  });
+
+  test("hidden files read empty, and writes don't reach them", async () => {
+    const { outside, spec } = sandbox();
+    const db = join(outside, "state.db");
+    writeFileSync(db, "db-secret");
+    const script = `cat "${db}"; echo "cat=$?"; echo x > "${db}" 2>/dev/null; cat "${db}"; echo end`;
+    const { output } = await runSandboxed({ ...spec, hidden: [...spec.hidden, db] }, ["bash", "-c", script], {
+      timeoutMs: 10_000,
+    });
+    expect(output).toBe("cat=0\nend\n");
+    expect(readFileSync(db, "utf8")).toBe("db-secret");
+  });
+
+  // Renamed, the folder would take the mask with it, and a new sandbox would find nothing to hide at the old path.
+  test("the folders holding a hidden path can't be renamed", async () => {
+    const { user, spec } = sandbox();
+    const japa = join(user, ".config", "japa");
+    const secrets = join(japa, "secrets");
+    mkdirSync(secrets, { recursive: true });
+    writeFileSync(join(secrets, "key"), "hidden-secret");
+    const script = `mv "${japa}" "${japa}2" 2>/dev/null; echo "mv=$?"; ls -A "${secrets}"; echo end`;
+    const { output } = await runSandboxed({ ...spec, hidden: [...spec.hidden, secrets] }, ["bash", "-c", script], {
+      timeoutMs: 10_000,
+    });
+    expect(output).toMatch(/^mv=[1-9]\nend\n$/);
+    expect(existsSync(`${japa}2`)).toBe(false);
+    expect(readdirSync(secrets)).toEqual(["key"]);
+  });
+
+  test("writable folders holding a hidden or protected path outside the user's home can't be renamed", async () => {
+    const { outside, spec } = sandbox();
+    const root = join(outside, "elsewhere");
+    const [a, b] = [join(root, "a"), join(root, "b")];
+    const secrets = join(a, "secrets");
+    const app = join(b, "app");
+    for (const dir of [secrets, app]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(secrets, "key"), "hidden-secret");
+    writeFileSync(join(app, "main.ts"), "app");
+    const moves = [a, b, root].map((dir) => `mv "${dir}" "${dir}2" 2>/dev/null; echo "${basename(dir)}=$?"`);
+    const readOnly = [...spec.readOnly, { path: app, dir: true }];
+    const withPaths = { ...spec, hidden: [...spec.hidden, secrets], readOnly };
+    const { output } = await runSandboxed(withPaths, ["bash", "-c", `${moves.join("; ")}; echo end`], {
+      timeoutMs: 10_000,
+    });
+    expect(output).toMatch(/^a=[1-9]\nb=[1-9]\nelsewhere=[1-9]\nend\n$/);
+    for (const dir of [a, b, root]) expect(existsSync(`${dir}2`)).toBe(false);
+    expect(readdirSync(secrets)).toEqual(["key"]);
+  });
+
+  // Renaming a folder takes write access to its parent, not to itself; owning the parent, the job could chmod it.
+  test("read-only folders holding a hidden path can't be renamed in a writable parent or the user's", async () => {
+    const { outside, spec } = sandbox();
+    const root = join(outside, "elsewhere");
+    const [c, d] = [join(root, "c"), join(root, "d")];
+    const e = join(d, "e");
+    const hidden = [join(c, "secrets"), join(e, "secrets")];
+    for (const dir of hidden) mkdirSync(dir, { recursive: true });
+    for (const dir of [c, e, d]) chmodSync(dir, 0o555);
+    try {
+      const script = [
+        `mv "${c}" "${c}2" 2>/dev/null; echo "c=$?"`,
+        `chmod u+w "${d}"; mv "${e}" "${e}2" 2>/dev/null; echo "e=$?"`,
+        "echo end",
+      ].join("; ");
+      const { output } = await runSandboxed({ ...spec, hidden: [...spec.hidden, ...hidden] }, ["bash", "-c", script], {
+        timeoutMs: 10_000,
+      });
+      expect(output).toMatch(/^c=[1-9]\ne=[1-9]\nend\n$/);
+      expect([existsSync(`${c}2`), existsSync(`${e}2`)]).toEqual([false, false]);
+    } finally {
+      for (const dir of [c, `${c}2`, d, e, `${e}2`]) if (existsSync(dir)) chmodSync(dir, 0o755);
+    }
   });
 
   test("hidden dirs are empty", async () => {
@@ -514,6 +781,29 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(names.sort()).toEqual([...ALLOWED.filter((name) => process.env[name] !== undefined), "PWD"].sort());
   });
 
+  test("the daemon's environment isn't readable in /proc, not even bwrap's own", async () => {
+    const value = `japa-env-${process.pid}-${Date.now()}`;
+    process.env.JAPA_TEST_LEAK = value;
+    onTestFinished(() => void delete process.env.JAPA_TEST_LEAK);
+    const { run } = sandbox();
+    const { output } = await run("tr '\\0' '\\n' </proc/1/environ; cat /proc/*/environ 2>/dev/null; echo end");
+    expect(output).toMatch(/end\n$/);
+    expect(output).not.toContain(value);
+  });
+
+  // A spawn with the sandbox's environment would look bwrap up in the job's PATH, where a job can put its own.
+  test.skipIf(process.env.JAPA_BWRAP !== undefined)("bwrap is looked up in the daemon's PATH, not the job's", async () => {
+    const { outside, spec } = sandbox();
+    const bin = join(outside, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "bwrap"), `#!/bin/sh\ntouch "${join(outside, "ran")}"\n`, { mode: 0o755 });
+    const result = await runSandboxed({ ...spec, env: { ...spec.env, PATH: `${bin}:${spec.env.PATH}` } }, ["true"], {
+      timeoutMs: 10_000,
+    });
+    expect(result.code).toBe(0);
+    expect(existsSync(join(outside, "ran"))).toBe(false);
+  });
+
   test("processes die with the sandbox", async () => {
     const { run } = sandbox();
     const marker = `sleep 300.${process.pid}`;
@@ -525,10 +815,10 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
 
   test("timeout", async () => {
     const { run } = sandbox();
-    const started = Date.now();
+    const started = performance.now(); // not Date.now(): this host's wall clock jumps
     const result = await run("sleep 5", { timeoutMs: 200 });
     expect(result).toMatchObject({ code: null, timedOut: true });
-    expect(Date.now() - started).toBeLessThan(4000);
+    expect(performance.now() - started).toBeLessThan(4000);
   });
 
   test("output is UTF-8 across chunks, and only its last 1 MB is kept", async () => {

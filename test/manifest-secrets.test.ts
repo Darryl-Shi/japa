@@ -3,7 +3,7 @@ import type { KernelContext } from "../src/kernel/contracts.ts";
 import { type JapaExtension, secretDescription, secretNames, validateExtension } from "../src/kernel/extension.ts";
 import { discoverExtensions, loadExtensions } from "../src/kernel/loader.ts";
 import { settingsSchema } from "../src/kernel/settings-tools.ts";
-import { bootTest, REPO_EXTENSIONS } from "./helpers.ts";
+import { bootErrors, bootTest, REPO_EXTENSIONS } from "./helpers.ts";
 
 test("secretNames accepts strings and described entries", () => {
   const e = { name: "x", summary: "x", secrets: ["a.key", { name: "b.key", description: "B" }] };
@@ -30,7 +30,7 @@ test("a described secret can be read by its extension", async () => {
     },
   };
   const { daemon } = await bootTest({}, [extension]);
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   expect(kernel).toBeDefined();
   await daemon.close();
 });

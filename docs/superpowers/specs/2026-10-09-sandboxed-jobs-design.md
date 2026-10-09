@@ -62,7 +62,8 @@ pair moves into the kernel (`src/kernel/sandbox/`).
   that server.
 - **Nothing in the daemon process:** none of a job's file or shell operations run there.
 - **The `local-env` extension:** keeps serving the CoS's read-only root environment (`createEnvDispatcher`,
-  `src/kernel/env.ts`). Jobs no longer use it.
+  `src/kernel/env.ts`). Jobs no longer use it. The CoS can't read the secrets dirs, nor the paths hidden from jobs
+  (by real path).
 
 ### 3.2 What a job sees
 
@@ -71,16 +72,24 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--bind / /`: the host filesystem as the user sees it.
 - `--dev /dev`, plus `--unshare-pid` and `--proc /proc`: a separate process namespace. The daemon's memory,
   environment and other processes are invisible.
-- `--bind D D` for every directory between the user's home and a protected path (e.g. `~/.config`,
-  `~/.local/share`), so a job can't rename it away and recreate the path.
+- `--bind D D` for the user's home and every existing directory above a protected or hidden path, wherever it is
+  (`/` aside), that the user could move: one it can write, or one in a directory it can write or owns (renaming
+  takes write access to the parent). E.g. `~/.config`, `~/.local/share`. So a job can't rename it away and
+  recreate the path, or move a hidden one out of its mask. None under `/dev` or `/proc`: the sandbox has its own
+  (pinning `/dev/shm` would bring the host's in), so a hidden path there isn't masked either.
 - `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
   to secrets; jobs therefore can't patch japa itself on the host.
-  - The japa app directory (`~/.local/share/japa`, including its Node), the daemon's Node directory when it is
-    elsewhere, and the launcher (`~/.local/bin/japa`).
+  - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
+  - The daemon's Node directory, by real path, first in the daemon's `PATH`: elsewhere than the app directory with
+    nvm or a dev checkout. And that Node's `<prefix>/lib/node`, where `require` still looks last (see below);
+    `JAPA_NODE_LIB` stands in for it in tests, so no empty mount point is left in the real prefix.
   - `$XDG_CONFIG_HOME/systemd` (the unit, drop-ins and new units), `$XDG_DATA_HOME/systemd` and
     `$XDG_CONFIG_HOME/environment.d`, both at the `$XDG_*` location and the default one.
-  - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. One that is
-    a symlink: its target is protected and the link's directory is made read-only.
+  - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it; not one
+    inside another protected directory, nor one only root could create (`/usr/lib/node`), where bwrap couldn't
+    make the mount point and a job can't create it anyway. The directories above one left out are still pinned:
+    one the user can't create in (another user's, in one it can write) can't be moved away and recreated as its
+    own. One that is a symlink: its target is protected and the link's directory is made read-only.
   - Git config isn't protected: the daemon's git never reads it.
 - `--bind <home>/.jobs/<id>.tmp /tmp` and `/var/tmp`: a private temp dir, so tmux, screen and X11 sockets in `/tmp`
   are out of reach.
@@ -88,16 +97,21 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   `state.db`, `japa.sock`, `daemon.lock` and `.git`.
 - `--bind <home>/desktop/shared <home>/desktop/shared`, when the desktop extension is installed: the folder for
   exchanging files with the desktop, which is otherwise covered by the clone.
-- Hidden: `--tmpfs <settings.secrets.dir>` when its real path is outside `~/.japa`, and `--ro-bind /dev/null` over a
-  storage database file (and its `-wal`/`-shm`) configured outside `~/.japa`. bwrap itself runs with only the
-  allowed environment, so the daemon's variables aren't readable through `/proc/1/environ`.
+- `--tmpfs` over a secrets directory whose real path is outside `~/.japa` (`settings.secrets.dir`, or
+  `~/.japa/secrets` as a symlink out of it), at that real path.
+- `--dev-bind /dev/null` over a storage database outside `~/.japa` (`settings.storage.file`) and its `-wal` and
+  `-shm`, by real path: they read empty. (`--ro-bind` mounts it `nodev`, where `/dev/null` can't be opened.)
+  - A hidden path that is or holds `~/.japa` would cover the clone: it isn't hidden, and boot reports it.
+  - A sandbox doesn't start while a hidden path that existed at boot is missing (the call fails): moved away, it
+    would be found nowhere to hide.
 - `--tmpfs /run/user/<uid>` and `/run/screen`: hides the D-Bus session bus, the systemd user manager, ssh-agent,
   keyring and screen sockets. Otherwise `systemd-run --user` runs any command outside the sandbox.
 - `--ro-bind /dev/null` over the Docker sockets that exist (`/run/docker.sock`, `/var/run/docker.sock`): Docker
   access is root access.
 - `--die-with-parent`, `--new-session`.
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
-  environment. Provider API keys set as environment variables don't reach jobs.
+  environment. Provider API keys set as environment variables don't reach jobs. bwrap itself starts with only those
+  (its own environment is readable inside, at `/proc/1/environ`), found through the daemon's `PATH`.
 
 The network is shared, as now.
 
@@ -108,8 +122,12 @@ Consequences, accepted:
   later runs from his home.
 - The daemon never runs a job-controlled program outside the sandbox: git commands in a clone (narrowing,
   committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
-  global git config; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
-  directories and its Node (jobs keep the original `PATH`).
+  global git config, ignore or attributes file; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
+  directories and its Node (jobs keep the original `PATH`). CommonJS `require`'s global folders are only Node's
+  `<prefix>/lib/node` (read-only to jobs): at boot, and first in every CLI command (`japa check` boots the daemon's
+  code too), `NODE_PATH` is unset and `Module._initPaths()` runs without
+  `HOME`, so a dependency's missing optional module isn't looked for in `~/.node_modules`, `~/.node_libraries` or
+  `NODE_PATH`.
 
 ### 3.3 Lifetime
 

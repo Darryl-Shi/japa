@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { CONTRACTS, type MessagingContext } from "../src/kernel/contracts.ts";
 import { DAY, type Job, JobsDoc, type JobStatus } from "../src/kernel/jobs/state.ts";
-import { bootTest, REPO_EXTENSIONS, testKit, waitFor } from "./helpers.ts";
+import { bootTest, NO_BWRAP, REPO_EXTENSIONS, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter } from "./messaging-helpers.ts";
 
@@ -87,7 +87,7 @@ test("clearFinishedJobs removes every finished job and leaves the active ones", 
   await daemon.close();
 });
 
-test("clearFinishedJobs keeps a completed job until its report is posted", async () => {
+test.skipIf(NO_BWRAP)("clearFinishedJobs keeps a completed job until its report is posted", async () => {
   const { daemon, faux, messaging } = await bootClearing();
   const hold = held();
   script(faux, (_role, text, signal) => {
@@ -132,7 +132,7 @@ async function completedThen(end: (daemon: Daemon, release: () => void) => Promi
   return booted;
 }
 
-test("a job whose run then fails can be cleared", async () => {
+test.skipIf(NO_BWRAP)("a job whose run then fails can be cleared", async () => {
   const { daemon, messaging } = await completedThen(async (_daemon, release) => release());
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "failed", completed: false });
   expect(await reported(daemon)).toEqual(['[job 1 "Work" failed] model_error: boom']);
@@ -140,7 +140,7 @@ test("a job whose run then fails can be cleared", async () => {
   await daemon.close();
 });
 
-test("a job whose run is then aborted can be cleared", async () => {
+test.skipIf(NO_BWRAP)("a job whose run is then aborted can be cleared", async () => {
   const { daemon, messaging } = await completedThen(async (d) => {
     await (await d.harness.conversation((await jobs(d))["1"]!.conversationId, ctx))!.abort(ctx);
   });
@@ -149,7 +149,7 @@ test("a job whose run is then aborted can be cleared", async () => {
   await daemon.close();
 });
 
-test("a run whose job was cleared ends quietly", async () => {
+test.skipIf(NO_BWRAP)("a run whose job was cleared ends quietly", async () => {
   const { daemon, faux, messaging } = await bootClearing();
   const hold = held();
   script(faux, (_role, text, signal) => {

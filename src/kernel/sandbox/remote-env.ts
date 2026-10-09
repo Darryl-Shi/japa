@@ -1,5 +1,5 @@
-// An out-of-process ExecutionEnv: a client of `env-server.ts`, which runs NodeExecutionEnv in another process (the
-// desktop's container).
+// An out-of-process ExecutionEnv: a client of `env-server.ts`, which runs NodeExecutionEnv in another process (a job's
+// sandbox).
 import type { Context } from "@earendil-works/chord";
 import { err, type ExecutionEnv, ExecutionError, FileError } from "@earendil-works/pi-durable/env";
 import { spawn } from "node:child_process";
@@ -7,10 +7,21 @@ import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-export const LOST = "The desktop connection was lost";
+/** What a call answers once the server is gone: it was closed, or every process in the job's sandbox was killed. */
+export const LOST = "The job's sandbox stopped";
 /** pi-durable's `dist/env/node.js`, which `env-server.ts` loads; `dist/env/` imports only `node:` built-ins. */
 export const ENV_MODULE = createRequire(import.meta.url).resolve("@earendil-works/pi-durable/env/node");
 export const SERVER = fileURLToPath(new URL("./env-server.ts", import.meta.url));
+/** How much of a server line that failed is logged. */
+const MAX_LOGGED = 200;
+
+/** What JSON leaves as it is but a terminal or viewer acts on: DEL, C1 controls, line separators, bidi controls. */
+const UNSAFE = /[\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/** `text` as a JSON string, with the `UNSAFE` characters escaped too: safe to log. */
+function quote(text: string): string {
+  return JSON.stringify(text).replace(UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
 
 export type EnvServer = {
   call(target: { cwd: string } | { handle: number }, method: string, args: unknown[], context: Context): Promise<unknown>;
@@ -56,9 +67,16 @@ function encode(value: unknown, onCallback: (callback: Callback) => void): unkno
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encode(item, onCallback)]));
 }
 
-/** Spawns `command` as the env server; calls fail with `lost` and the server's last stderr line once it dies. */
-export function startEnvServer(command: string[], lost = LOST): EnvServer {
-  const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+/**
+ * Spawns `command` as the env server, with environment `env` (this process's when undefined); calls fail with `lost`
+ * and the server's last stderr line once it dies.
+ */
+export function startEnvServer(
+  command: string[],
+  o: { lost?: string; env?: Record<string, string> } = {},
+): EnvServer {
+  const lost = o.lost ?? LOST;
+  const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: o.env });
   const requests = new Map<number, Request>();
   let lastId = 0;
   let lastStderr = "";
@@ -97,13 +115,25 @@ export function startEnvServer(command: string[], lost = LOST): EnvServer {
   createInterface({ input: child.stderr }).on("line", (line) => {
     if (line.trim()) lastStderr = line;
   });
+  // What the server writes can come from the sandbox too (its stdout is reachable there): a line it can't have meant,
+  // or one a callback throws on, is logged and ends the connection, as if the server were lost, instead of throwing
+  // here.
   createInterface({ input: child.stdout }).on("line", (line) => {
-    const message = JSON.parse(line) as { id: number; call?: unknown[]; result?: unknown; thrown?: string };
-    const request = requests.get(message.id);
-    if (request === undefined) return; // answered after the connection was lost
-    if (message.call) request.callback!(...(decode(message.call, request.context) as unknown[]));
-    else if (message.thrown !== undefined) request.reject(new Error(message.thrown));
-    else request.resolve(decode(message.result, request.context));
+    try {
+      const message = JSON.parse(line) as { id: number; call?: unknown[]; result?: unknown; thrown?: string };
+      const request = requests.get(message.id);
+      if (request === undefined) return; // answered after the connection was lost
+      if (message.call) request.callback!(...(decode(message.call, request.context) as unknown[]));
+      else if (message.thrown !== undefined) request.reject(new Error(message.thrown));
+      else request.resolve(decode(message.result, request.context));
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      const shown = line.length > MAX_LOGGED ? `${line.slice(0, MAX_LOGGED)}\u2026` : line;
+      // Quoted, control characters escaped: both can come from the sandbox (JSON.parse's error quotes the line).
+      console.error(`The env server's connection ends, its line failed (${quote(why)}): ${quote(shown)}`);
+      onLost();
+      child.kill();
+    }
   });
   child.on("close", onLost);
   child.on("error", onLost);

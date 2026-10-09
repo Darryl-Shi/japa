@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { loadSkills } from "../src/kernel/skills.ts";
-import { tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, NO_BWRAP, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, jobs, reported, say, textOf, texts } from "./jobs-helpers.ts";
 
 const skill = (name: string, description: string, body = "Body.") =>
@@ -54,7 +54,7 @@ async function bootWithSkills(workers: Record<string, string> = {}) {
 
 const skillsSection = (system: string) => /<skills>\n([\s\S]*?)\n<\/skills>/.exec(system)?.[1];
 
-test("the root sees all skills; a job sees only its profile's", async () => {
+test.skipIf(NO_BWRAP)("the root sees all skills; a job sees only its profile's", async () => {
   const worker = ["---", "name: only-a", "description: Test", "skills: [a]", "---", "Work."].join("\n");
   const { daemon, faux } = await bootWithSkills({ "only-a": worker });
   const sections: Record<string, string | undefined> = {};
@@ -94,6 +94,6 @@ test("skill_read returns the body or a file inside the skill, and refuses others
 test("a profile naming an unknown skill is reported", async () => {
   const worker = ["---", "name: bad-skill", "description: Test", "skills: [nope]", "---", "Work."].join("\n");
   const { daemon } = await bootWithSkills({ "bad-skill": worker });
-  expect(daemon.status().errors).toEqual([{ name: "worker:bad-skill", error: 'unknown skill "nope"' }]);
+  expect(bootErrors(daemon)).toEqual([{ name: "worker:bad-skill", error: 'unknown skill "nope"' }]);
   await daemon.close();
 });

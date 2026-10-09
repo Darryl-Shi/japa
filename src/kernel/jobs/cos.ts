@@ -9,6 +9,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { sandboxRefusal } from "../sandbox/jobs.ts";
 import type { Settings } from "../settings.ts";
 import type { WorkerProfile } from "../workers.ts";
 import { Anchor, BACKGROUND, jobRun } from "./run.ts";
@@ -30,6 +31,7 @@ export type JobsOptions = {
   available: () => ReadonlySet<string>; // the names of the extensions agents may use now
   skills: Extension;
   safety: Extension;
+  sandboxProblem: () => string | undefined; // why jobs can't run here, if they can't
 };
 
 /** The agent of a job run by `profile`, with the available extensions it names (all available ones when unnamed). */
@@ -77,6 +79,8 @@ export function jobsExtension(options: JobsOptions): Extension {
       [...profiles.values()].map((p) => `${p.name}: ${p.description}`).join("\n"),
     parameters: Type.Object({ title: Type.String(), brief: Type.String(), worker: Type.Optional(Type.String()) }),
     execute: async ({ title, brief, worker: name = "general" }, api, context) => {
+      const problem = options.sandboxProblem();
+      if (problem !== undefined) return reply(sandboxRefusal(problem));
       const profile = profiles.get(name);
       if (profile === undefined) return reply(`Unknown worker "${name}". Workers: ${[...profiles.keys()].join(", ")}.`);
       const started = await api.commit(async (tx) => {
@@ -85,11 +89,7 @@ export function jobsExtension(options: JobsOptions): Extension {
         const anchor = await tx.createTask(Anchor, null, BACKGROUND);
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
         await configure(tx, child.id, agentOf(options, profile));
-        Object.assign(await tx.doc(JobDoc, child.id), {
-          jobId: id,
-          environment: profile.environment,
-          ...(profile.skills && { skills: profile.skills }),
-        });
+        Object.assign(await tx.doc(JobDoc, child.id), { jobId: id, ...(profile.skills && { skills: profile.skills }) });
         const now = Date.now();
         doc.jobs[id] = {
           id,

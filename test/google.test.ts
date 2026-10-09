@@ -8,7 +8,7 @@ import { googleRequest } from "../extensions/google/request.ts";
 import { validateExtension } from "../src/kernel/extension.ts";
 import { discoverExtensions, loadExtensions } from "../src/kernel/loader.ts";
 import { schemaProblems } from "../src/kernel/tool-schema.ts";
-import { bootTest, REPO_EXTENSIONS, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, REPO_EXTENSIONS, waitFor } from "./helpers.ts";
 import { tool } from "./jobs-helpers.ts";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -64,7 +64,7 @@ test("without its client secrets google is not set up and hidden from the CoS", 
 
 test("a booted daemon with the client lists google as not connected, with its tools", async () => {
   const { daemon } = await bootClient();
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await waitFor(() => daemon.status().extensions.some((e) => e.name === "google" && e.status === "not connected"));
   expect(daemon.status().extensions).toContainEqual({
     name: "google",

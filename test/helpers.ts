@@ -5,13 +5,32 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expect } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import type { SurfaceContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { fauxKit } from "../src/kernel/kit.ts";
+import { probeSandbox } from "../src/kernel/sandbox/bwrap.ts";
 import type { Updater } from "../src/kernel/update-state.ts";
 
 export const REPO_EXTENSIONS = fileURLToPath(new URL("../extensions", import.meta.url));
+
+/**
+ * Whether jobs can't run here: the sandbox probe fails (`JAPA_BWRAP` honoured). Tests that start a job, or expect no
+ * boot errors, are skipped then.
+ */
+export const NO_BWRAP = probeSandbox() !== undefined;
+
+/**
+ * `daemon`'s errors, but where jobs can't run (`NO_BWRAP`) without the sandbox's, which every boot reports there:
+ * that one is checked to be there, then left out.
+ */
+export function bootErrors(daemon: Daemon): ReturnType<Daemon["status"]>["errors"] {
+  const { errors } = daemon.status();
+  if (!NO_BWRAP) return errors;
+  expect(errors).toContainEqual({ name: "sandbox", error: expect.stringMatching(/^Jobs can't run: /) });
+  return errors.filter((error) => error.name !== "sandbox");
+}
 
 /** Creates a temp `japa` home dir; writes `settings.json` when `settings` is given. */
 export function tempHome(settings?: object): string {

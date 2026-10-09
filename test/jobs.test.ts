@@ -2,16 +2,26 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, test } from "vitest";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
-import { tempHome, testKit, waitFor } from "./helpers.ts";
-import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts } from "./jobs-helpers.ts";
+import { bootErrors, bootTest, NO_BWRAP, tempHome, testKit, waitFor } from "./helpers.ts";
+import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts, tool } from "./jobs-helpers.ts";
 
 /** Each `create` of the probe extension's environments, by environment name. */
 const created: { env: string; conversationId: string }[] = [];
@@ -53,7 +63,60 @@ async function bootWith(workers: Record<string, string> = {}): Promise<{ daemon:
 const profile = (name: string, lines: string[]) =>
   ["---", `name: ${name}`, "description: Test", ...lines, "---", "Work."].join("\n");
 
-test("a job runs and reports once", async () => {
+const HOME = process.env.HOME;
+
+/**
+ * Boots with the probe extension, the japa home and the user's home (`HOME`, until the test finishes) outside `/tmp`,
+ * which jobs see replaced by their own; the home has `marker` and a secret `secrets/api-key`, or with `o.vault`,
+ * `secrets` is a symlink to `<outside>/vault`, which has it. `o.storage(outside)` is the storage setting, and
+ * `o.secrets(outside)` the secrets one.
+ */
+async function bootSandboxed(
+  o: { vault?: boolean; storage?: (outside: string) => object; secrets?: (outside: string) => object } = {},
+): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string; outside: string }> {
+  const cache = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
+  mkdirSync(cache, { recursive: true });
+  const outside = mkdtempSync(join(cache, "japa-jobs-"));
+  const [home, user] = [join(outside, "home"), join(outside, "user")];
+  const secrets = o.vault ? join(outside, "vault") : join(home, "secrets");
+  mkdirSync(secrets, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  if (o.vault) symlinkSync(secrets, join(home, "secrets"));
+  mkdirSync(user);
+  writeFileSync(join(secrets, "api-key"), "sk-1");
+  writeFileSync(join(home, "marker"), "the real marker");
+  const kit = testKit();
+  const storage = o.storage?.(outside) ?? { adapter: "memory" };
+  const setting = o.secrets === undefined ? {} : { secrets: o.secrets(outside) };
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage, models: { cos: kit.model }, ...setting }));
+  process.env.HOME = user;
+  onTestFinished(() => {
+    process.env.HOME = HOME;
+    rmSync(outside, { recursive: true, force: true });
+  });
+  const daemon = await boot({ home, extensions: [kit.extension, probe] });
+  return { daemon, faux: kit.faux, home, user, outside };
+}
+
+/** Has job 1 (a coder) run `command` in bash; its result. */
+async function jobBash(daemon: Daemon, faux: FauxProviderHandle, command: string): Promise<string> {
+  script(faux, (role, text) => {
+    if (text === "start") return call("job_start", { title: "Bash", brief: "bash", worker: "coder" });
+    if (text === "bash") return call("bash", { command });
+    if (role === "toolResult" && text.includes("end")) return call("job_complete", { summary: "ran" });
+  });
+  await ask(daemon, "start");
+  await waitFor(() => idle(daemon));
+  return (await jobResults(daemon))[0]!;
+}
+
+/** The tool results of job 1's conversation. */
+async function jobResults(daemon: Daemon): Promise<string[]> {
+  const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+  return texts(job, "toolResult");
+}
+
+test.skipIf(NO_BWRAP)("a job runs and reports once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start sum") return call("job_start", { title: "Sum", brief: "Add 2 and 2" });
@@ -67,7 +130,7 @@ test("a job runs and reports once", async () => {
   await daemon.close();
 });
 
-test("a job asks with job_ask and resumes on a follow-up", async () => {
+test.skipIf(NO_BWRAP)("a job asks with job_ask and resumes on a follow-up", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
@@ -88,7 +151,7 @@ test("a job asks with job_ask and resumes on a follow-up", async () => {
   await daemon.close();
 });
 
-test("a run that ends without job_complete or job_ask is nudged, then completes", async () => {
+test.skipIf(NO_BWRAP)("a run that ends without job_complete or job_ask is nudged, then completes", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start sum") return call("job_start", { title: "Sum", brief: "Add 2 and 2" });
@@ -103,7 +166,7 @@ test("a run that ends without job_complete or job_ask is nudged, then completes"
   await daemon.close();
 });
 
-test("a nudged run can ask with job_ask", async () => {
+test.skipIf(NO_BWRAP)("a nudged run can ask with job_ask", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
@@ -117,7 +180,7 @@ test("a nudged run can ask with job_ask", async () => {
   await daemon.close();
 });
 
-test("a nudged run that ends with text reports it done", async () => {
+test.skipIf(NO_BWRAP)("a nudged run that ends with text reports it done", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
@@ -132,7 +195,7 @@ test("a nudged run that ends with text reports it done", async () => {
   await daemon.close();
 });
 
-test("an empty run is nudged; an empty nudged run fails", async () => {
+test.skipIf(NO_BWRAP)("an empty run is nudged; an empty nudged run fails", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
@@ -147,7 +210,7 @@ test("an empty run is nudged; an empty nudged run fails", async () => {
   await daemon.close();
 });
 
-test("a finished job that answers a follow-up with text is nudged, not asked", async () => {
+test.skipIf(NO_BWRAP)("a finished job that answers a follow-up with text is nudged, not asked", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
@@ -165,7 +228,7 @@ test("a finished job that answers a follow-up with text is nudged, not asked", a
   await daemon.close();
 });
 
-test("a message queued behind the nudge is decided on its own", async () => {
+test.skipIf(NO_BWRAP)("a message queued behind the nudge is decided on its own", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -189,7 +252,7 @@ test("a message queued behind the nudge is decided on its own", async () => {
   await daemon.close();
 });
 
-test("a steer queued during a run's last answer is decided on its own, without a nudge", async () => {
+test.skipIf(NO_BWRAP)("a steer queued during a run's last answer is decided on its own, without a nudge", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -210,7 +273,7 @@ test("a steer queued during a run's last answer is decided on its own, without a
   await daemon.close();
 });
 
-test("a follow-up queued during a run's last answer can ask; the job waits for the answer", async () => {
+test.skipIf(NO_BWRAP)("a follow-up queued during a run's last answer can ask; the job waits for the answer", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -232,7 +295,7 @@ test("a follow-up queued during a run's last answer can ask; the job waits for t
   await daemon.close();
 });
 
-test("a finished job nudged after a queued follow-up is running during the nudge", async () => {
+test.skipIf(NO_BWRAP)("a finished job nudged after a queued follow-up is running during the nudge", async () => {
   const { daemon, faux } = await bootWith();
   const first = held();
   const nudge = held();
@@ -257,7 +320,7 @@ test("a finished job nudged after a queued follow-up is running during the nudge
   await daemon.close();
 });
 
-test("job_progress and job_complete in one message report done once", async () => {
+test.skipIf(NO_BWRAP)("job_progress and job_complete in one message report done once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
@@ -274,7 +337,7 @@ test("job_progress and job_complete in one message report done once", async () =
   await daemon.close();
 });
 
-test("job_complete and job_ask in one message: the first ends the turn", async () => {
+test.skipIf(NO_BWRAP)("job_complete and job_ask in one message: the first ends the turn", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
@@ -292,7 +355,7 @@ test("job_complete and job_ask in one message: the first ends the turn", async (
   await daemon.close();
 });
 
-test("job_ask and job_complete in one message: the ask ends the turn", async () => {
+test.skipIf(NO_BWRAP)("job_ask and job_complete in one message: the ask ends the turn", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
@@ -320,7 +383,7 @@ test("job_message refuses an unknown job", async () => {
   await daemon.close();
 });
 
-test("a job whose model fails reports once", async () => {
+test.skipIf(NO_BWRAP)("a job whose model fails reports once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start fail") return call("job_start", { title: "Fail", brief: "Break" });
@@ -334,7 +397,7 @@ test("a job whose model fails reports once", async () => {
   await daemon.close();
 });
 
-test("a steer during a run ends in one answer and one report", async () => {
+test.skipIf(NO_BWRAP)("a steer during a run ends in one answer and one report", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -356,7 +419,7 @@ test("a steer during a run ends in one answer and one report", async () => {
   await daemon.close();
 });
 
-test("a follow-up queued before job_complete reports its own answer", async () => {
+test.skipIf(NO_BWRAP)("a follow-up queued before job_complete reports its own answer", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -381,7 +444,7 @@ test("a follow-up queued before job_complete reports its own answer", async () =
   await daemon.close();
 });
 
-test("a report withdrawn by Esc still reaches the CoS once", async () => {
+test.skipIf(NO_BWRAP)("a report withdrawn by Esc still reaches the CoS once", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -400,7 +463,7 @@ test("a report withdrawn by Esc still reaches the CoS once", async () => {
   await daemon.close();
 });
 
-test("a job interrupted by a restart finishes and reports once", async () => {
+test.skipIf(NO_BWRAP)("a job interrupted by a restart finishes and reports once", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
   const hold = held();
@@ -422,7 +485,7 @@ test("a job interrupted by a restart finishes and reports once", async () => {
   await daemon.close();
 });
 
-test("a restart during the nudge nudges once and reports once", async () => {
+test.skipIf(NO_BWRAP)("a restart during the nudge nudges once and reports once", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
   const hold = held();
@@ -444,7 +507,7 @@ test("a restart during the nudge nudges once and reports once", async () => {
   await daemon.close();
 });
 
-test("the CoS and jobs are offered their own tools", async () => {
+test.skipIf(NO_BWRAP)("the CoS and jobs are offered their own tools", async () => {
   const { daemon, faux } = await bootWith({ shell: profile("shell", ["tools: [read, bash]", "extensions: []"]) });
   const names = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
   const root = await names(daemon.root);
@@ -464,41 +527,213 @@ test("the CoS and jobs are offered their own tools", async () => {
   await daemon.close();
 });
 
-test("a job runs in its profile's environment; the CoS's is read-only", async () => {
+test("the CoS's environment is the local one, read-only", async () => {
   created.length = 0;
-  const { daemon, faux } = await bootWith({ prober: profile("prober", ["environment: probe"]) });
+  const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "probe root") return call("probe_write", { path: join(dir, "root.txt") });
-    if (text === "start probe") return call("job_start", { title: "Probe", brief: "probe job", worker: "prober" });
-    if (text === "probe job") return call("probe_write", { path: join(dir, "job.txt") });
   });
   await ask(daemon, "probe root");
   expect(await texts(daemon.root, "toolResult")).toEqual([READ_ONLY_MESSAGE]);
   expect(existsSync(join(dir, "root.txt"))).toBe(false);
-
-  await ask(daemon, "start probe");
-  await waitFor(async () => (await reported(daemon)).length > 0);
-  const job = String((await jobs(daemon))["1"]!.conversationId);
-  expect(existsSync(join(dir, "job.txt"))).toBe(true);
-  expect(created).toContainEqual({ env: "local", conversationId: String(ROOT_CONVERSATION_ID) });
-  expect(created).toContainEqual({ env: "probe", conversationId: job });
-  expect(created).not.toContainEqual({ env: "local", conversationId: job });
+  expect(created).not.toEqual([]);
+  expect(created.filter((c) => c.env !== "local" || c.conversationId !== String(ROOT_CONVERSATION_ID))).toEqual([]);
   await daemon.close();
 });
 
-test("bad worker profiles are reported and cannot be started", async () => {
-  const { daemon, faux } = await bootWith({
-    "bad-tool": profile("bad-tool", ["tools: [grep]"]),
-    "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
-    "bad-env": profile("bad-env", ["environment: nowhere"]),
-    "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
+test("job_start refuses without a sandbox", async () => {
+  const saved = process.env.JAPA_BWRAP;
+  process.env.JAPA_BWRAP = "/nonexistent";
+  onTestFinished(() => {
+    if (saved === undefined) delete process.env.JAPA_BWRAP;
+    else process.env.JAPA_BWRAP = saved;
   });
+  const { daemon, faux } = await bootTest();
+  const reply = await tool(daemon, faux, "job_start", { title: "T", brief: "b" });
+  expect(reply).toMatch(/^Jobs can't run: \S.*\. Install bubblewrap: sudo apt install bubblewrap$/);
+  expect(await jobs(daemon)).toEqual({});
+  expect(daemon.status().errors).toContainEqual({ name: "sandbox", error: reply });
+  await daemon.close();
+});
+
+test("the CoS can't read a secrets dir that is a symlink out of the home through its real path", async () => {
+  const { daemon, faux, home, outside } = await bootSandboxed({ vault: true });
+  for (const path of [join(home, "secrets", "api-key"), join(outside, "vault", "api-key")]) {
+    const reply = await tool(daemon, faux, "read", { path });
+    expect(reply).toContain("Secrets are not readable here.");
+    expect(reply).not.toContain("sk-1");
+  }
+  await daemon.close();
+});
+
+// Masked, it would cover the job's clone.
+test("a secrets dir that holds the japa home is reported: jobs can read it", async () => {
+  const { daemon, outside } = await bootSandboxed({ secrets: (outside) => ({ dir: outside }) });
+  expect(daemon.status().errors).toContainEqual({
+    name: "sandbox",
+    error: `Jobs can read ${outside}: it is or holds the japa home, so their sandboxes can't hide it`,
+  });
+  await daemon.close();
+});
+
+describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
+  test("a job still runs in its clone with a secrets dir that holds the japa home", async () => {
+    const { daemon, faux, home } = await bootSandboxed({ secrets: (outside) => ({ dir: outside }) });
+    const result = await jobBash(daemon, faux, `cat "${home}/marker"; echo; echo end`);
+    expect(result.trim()).toBe("the real marker\nend");
+    await daemon.close();
+  });
+
+  test("a job's bash runs in its clone", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    const command = `ls "${home}/secrets"; cat "${home}/marker"; echo made > "${home}/made"`;
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Look", brief: "look", worker: "coder" });
+      if (text === "look") return call("bash", { command });
+      if (role === "toolResult" && text.includes("marker")) return call("job_complete", { summary: "seen" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    const [result] = await jobResults(daemon);
+    expect(result).toContain("the real marker");
+    expect(result).not.toContain("api-key");
+    expect(readFileSync(join(home, ".jobs", "1", "made"), "utf8")).toBe("made\n");
+    expect(existsSync(join(home, "made"))).toBe(false);
+    expect(await reported(daemon)).toEqual(['[job 1 "Look" done] seen']);
+    await daemon.close();
+  });
+
+  test("a job's file tools work on its clone, not through an environment adapter", async () => {
+    created.length = 0;
+    const { daemon, faux, home } = await bootSandboxed();
+    script(faux, (_role, text) => {
+      if (text === "start") return call("job_start", { title: "Probe", brief: "probe" });
+      if (text === "probe") return call("probe_write", { path: join(home, "job.txt") });
+      if (text === "written") return call("job_complete", { summary: "probed" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    expect(await jobResults(daemon)).toEqual(["written", "Done."]);
+    expect(readFileSync(join(home, ".jobs", "1", "job.txt"), "utf8")).toBe("x");
+    expect(existsSync(join(home, "job.txt"))).toBe(false);
+    const job = String((await jobs(daemon))["1"]!.conversationId);
+    expect(created.filter((c) => c.conversationId === job)).toEqual([]);
+    await daemon.close();
+  });
+
+  test("the daemon's environment isn't readable from a job's sandbox", async () => {
+    const value = `japa-env-${process.pid}-${Date.now()}`;
+    process.env.JAPA_TEST_LEAK = value;
+    onTestFinished(() => void delete process.env.JAPA_TEST_LEAK);
+    const { daemon, faux } = await bootSandboxed();
+    const command = "tr '\\0' '\\n' </proc/1/environ; cat /proc/*/environ 2>/dev/null; echo end";
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Env", brief: "env", worker: "coder" });
+      if (text === "env") return call("bash", { command });
+      if (role === "toolResult" && text.includes("end")) return call("job_complete", { summary: "seen" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    const [result] = await jobResults(daemon);
+    expect(result).toMatch(/end\s*$/);
+    expect(result).not.toContain(value);
+    await daemon.close();
+  });
+
+  test("a secrets dir that is a symlink in the home to a dir outside it is hidden", async () => {
+    const { daemon, faux, home, outside } = await bootSandboxed({ vault: true });
+    const vault = join(outside, "vault");
+    const result = await jobBash(daemon, faux, `cat "${home}/secrets/api-key" "${vault}/api-key"; ls -A "${vault}"; echo end`);
+    expect(result).toMatch(/end\s*$/);
+    expect(result).not.toContain("sk-1");
+    expect(result).not.toMatch(/^api-key$/m);
+    await daemon.close();
+  });
+
+  test("a storage database outside the home reads empty, its -wal and -shm too", async () => {
+    const storage = (outside: string) => ({ adapter: "sqlite", file: join(outside, "db", "state.db") });
+    const { daemon, faux, outside } = await bootSandboxed({
+      storage: (outside) => {
+        mkdirSync(join(outside, "db"));
+        return storage(outside);
+      },
+    });
+    const db = storage(outside).file;
+    const files = [db, `${db}-wal`, `${db}-shm`];
+    const sizes = files.map((file) => `test -e "${file}" && echo "$(basename "${file}") $(wc -c < "${file}")"`);
+    const result = await jobBash(daemon, faux, `${sizes.join("; ")}; echo end`);
+    const host = files.filter((file) => existsSync(file));
+    expect(host.length).toBeGreaterThan(1);
+    expect(result.trim()).toBe([...host.map((file) => `${basename(file)} 0`), "end"].join("\n"));
+    expect(readFileSync(db).length).toBeGreaterThan(0);
+    await daemon.close();
+  });
+
+  test("a dead sandbox fails one call, then restarts", async () => {
+    const { daemon, faux } = await bootSandboxed();
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Die", brief: "die", worker: "coder" });
+      // The env server, bwrap's only child: with it, the whole sandbox ends.
+      if (text === "die") return call("bash", { command: "kill -9 $PPID" });
+      if (role === "toolResult" && text.includes("sandbox stopped")) return call("bash", { command: "echo ok" });
+      if (role === "toolResult" && text.trim() === "ok") return call("job_complete", { summary: "alive" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    const results = await jobResults(daemon);
+    expect(results).toHaveLength(3);
+    expect(results[0]).toContain("The job's sandbox stopped");
+    expect(results.slice(1).map((r) => r.trim())).toEqual(["ok", "Done."]);
+    await daemon.close();
+  });
+
+  test("the daemon's own PATH holds only its Node and the system dirs; a job's is the original", async () => {
+    const original = process.env.PATH;
+    const { daemon, faux } = await bootSandboxed();
+    const system = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    expect(process.env.PATH).toBe(`${dirname(process.execPath)}:${system}`);
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Path", brief: "path", worker: "coder" });
+      if (text === "path") return call("bash", { command: 'echo "$PATH"' });
+      if (role === "toolResult" && text.trim() === original) return call("job_complete", { summary: "same" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    expect((await jobResults(daemon))[0]!.trim()).toBe(original);
+    await daemon.close();
+
+    // A second boot in this process still gives jobs the original.
+    const again = await bootSandboxed();
+    script(again.faux, (_role, text) => {
+      if (text === "start") return call("job_start", { title: "Path", brief: "path", worker: "coder" });
+      if (text === "path") return call("bash", { command: 'echo "$PATH"' });
+    });
+    await ask(again.daemon, "start");
+    await waitFor(() => idle(again.daemon));
+    expect((await jobResults(again.daemon))[0]!.trim()).toBe(original);
+    await again.daemon.close();
+  });
+});
+
+const badWorkers = {
+  "bad-tool": profile("bad-tool", ["tools: [grep]"]),
+  "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
+  "bad-env": profile("bad-env", ["environment: nowhere"]),
+  "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
+};
+
+test("bad worker profiles are reported", async () => {
+  const { daemon } = await bootWith(badWorkers);
   expect(
-    daemon
-      .status()
-      .errors.map((e) => e.name)
+    bootErrors(daemon)
+      .map((e) => e.name)
       .sort(),
   ).toEqual(["worker:bad-env", "worker:bad-ext", "worker:bad-model", "worker:bad-tool"]);
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("a bad worker profile cannot be started", async () => {
+  const { daemon, faux } = await bootWith(badWorkers);
   script(faux, (_role, text) => {
     if (text === "start bad") return call("job_start", { title: "Bad", brief: "b", worker: "bad-tool" });
   });

@@ -13,7 +13,7 @@ import { boot } from "../src/kernel/boot.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
 import { lastExchange, resetRoot } from "../src/kernel/reset.ts";
 import { defineJapaExtension, defineTool, Type } from "../src/sdk.ts";
-import { bootTest, carryOver, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootTest, carryOver, NO_BWRAP, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, reported, say, script, textOf, texts } from "./jobs-helpers.ts";
 
 const entry = (kind: string, message?: object, extra: object = {}) =>
@@ -166,7 +166,7 @@ test("a steered chain resets once, after the chain settles", async () => {
   await daemon.close();
 });
 
-test("a job report resets the context like any other turn", async () => {
+test.skipIf(NO_BWRAP)("a job report resets the context like any other turn", async () => {
   const { daemon, faux } = await bootTest();
   const hold = held(); // the job reports after the turn that started it has settled and reset
   script(faux, (_role, text, signal) => {

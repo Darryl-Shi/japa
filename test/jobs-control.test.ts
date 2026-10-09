@@ -5,12 +5,12 @@ import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
-import { bootTest, waitFor } from "./helpers.ts";
+import { bootTest, NO_BWRAP, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, nudges, reported, say, script, texts } from "./jobs-helpers.ts";
 
 const statuses = async (daemon: Daemon) => Object.values(await jobs(daemon)).map((j) => j.status);
 
-test("queued jobs start in order, one at a time", async () => {
+test.skipIf(NO_BWRAP)("queued jobs start in order, one at a time", async () => {
   const { daemon, faux } = await bootTest({ jobs: { maxConcurrent: 1 } });
   const one = held();
   const two = held();
@@ -49,7 +49,7 @@ test("queued jobs start in order, one at a time", async () => {
   await daemon.close();
 });
 
-test("a stopped job stays quiet and frees its slot", async () => {
+test.skipIf(NO_BWRAP)("a stopped job stays quiet and frees its slot", async () => {
   const { daemon, faux } = await bootTest({ jobs: { maxConcurrent: 1 } });
   const hold = held();
   script(faux, (_role, text, signal) => {
@@ -70,7 +70,7 @@ test("a stopped job stays quiet and frees its slot", async () => {
   await daemon.close();
 });
 
-test("a job stopped during its nudge stays cancelled", async () => {
+test.skipIf(NO_BWRAP)("a job stopped during its nudge stays cancelled", async () => {
   const { daemon, faux } = await bootTest();
   const hold = held();
   script(faux, (_role, text, signal) => {
@@ -89,7 +89,7 @@ test("a job stopped during its nudge stays cancelled", async () => {
   await daemon.close();
 });
 
-test("a job stopped after job_ask while its turn goes on is aborted", async () => {
+test.skipIf(NO_BWRAP)("a job stopped after job_ask while its turn goes on is aborted", async () => {
   const { daemon, faux } = await bootTest();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -113,7 +113,7 @@ test("a job stopped after job_ask while its turn goes on is aborted", async () =
   await daemon.close();
 });
 
-test("job_complete racing a stop leaves the job cancelled", async () => {
+test.skipIf(NO_BWRAP)("job_complete racing a stop leaves the job cancelled", async () => {
   const { daemon, faux } = await bootTest();
   const hold = held();
   script(faux, (_role, text) => {
@@ -133,7 +133,7 @@ test("job_complete racing a stop leaves the job cancelled", async () => {
   await daemon.close();
 });
 
-test("job_ask racing a stop leaves the job cancelled", async () => {
+test.skipIf(NO_BWRAP)("job_ask racing a stop leaves the job cancelled", async () => {
   const { daemon, faux } = await bootTest();
   const hold = held();
   script(faux, (_role, text) => {
@@ -153,7 +153,7 @@ test("job_ask racing a stop leaves the job cancelled", async () => {
   await daemon.close();
 });
 
-test("job_list and job_transcript describe a finished job", async () => {
+test.skipIf(NO_BWRAP)("job_list and job_transcript describe a finished job", async () => {
   const { daemon, faux } = await bootTest();
   script(faux, (role, text) => {
     if (text === "start sum") return call("job_start", { title: "Sum", brief: "Add 2 and 2" });
@@ -178,7 +178,7 @@ test("job_list and job_transcript describe a finished job", async () => {
   await daemon.close();
 });
 
-test("the CoS's prompt shows running jobs on the board", async () => {
+test.skipIf(NO_BWRAP)("the CoS's prompt shows running jobs on the board", async () => {
   const { daemon, faux } = await bootTest();
   const hold = held();
   let prompt = "";

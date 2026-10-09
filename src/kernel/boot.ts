@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import {
   type AgentEvent,
   type Conversation,
+  type ConversationId,
   createRegistry,
   type EntryId,
   type Extension,
@@ -18,7 +19,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createModels, type Models } from "@earendil-works/pi-ai";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ChangesDoc, type Commit } from "./changes.ts";
 import {
@@ -37,7 +38,7 @@ import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
 import { installTool, rollBackAndLog, rollbackTool } from "./install.ts";
-import { byId, DAY, JobsDoc, prune } from "./jobs/state.ts";
+import { byId, DAY, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
 import { MemoryDoc } from "./memory/state.ts";
@@ -59,6 +60,14 @@ import {
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
+import {
+  createJobSandboxes,
+  hiddenPaths,
+  type JobSandboxes,
+  narrowPath,
+  narrowRequire,
+  sandboxRefusal,
+} from "./sandbox/jobs.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import {
   liveness,
@@ -101,11 +110,16 @@ export type Daemon = {
 /** Boots japa in `home`: opens storage, activates contracts, ensures the CoS root conversation, resumes work. */
 export async function boot(options: BootOptions): Promise<Daemon> {
   const { home } = options;
+  // First, before the daemon runs any program: jobs keep the environment it started with. Nor does it load code from
+  // the global folders jobs can write.
+  const jobEnv = narrowPath();
+  narrowRequire();
   mkdirSync(home, { recursive: true });
   const release = acquireLock(home);
   let runtime: Runtime | undefined;
   let storage: Storage | undefined;
   let harness: Harness | undefined;
+  let sandboxes: JobSandboxes | undefined;
 
   try {
     linkSdk(home, packageRoot);
@@ -460,6 +474,23 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         signal: closing.signal,
       }),
     ];
+    const { dir } = settings.secrets;
+    const secretsDirs = [join(home, "secrets"), ...(typeof dir === "string" ? [dir.replace(/^~/, homedir())] : [])];
+    // The clone mounted over the home hides a secrets dir inside it; one outside it, by real path, is masked. So is
+    // a storage database outside it.
+    const { file } = settings.storage;
+    const db = typeof file === "string" ? [resolve(file.replace(/^~/, homedir()))] : [];
+    // One that holds the home can't be: its mask would cover the clone.
+    const dbFiles = db.flatMap((f) => [f, `${f}-wal`, `${f}-shm`]);
+    const { hidden, holdingHome } = hiddenPaths(home, [...secretsDirs, ...dbFiles]);
+    const jobs = createJobSandboxes({ home, packageRoot, hidden, env: jobEnv });
+    sandboxes = jobs;
+    const sandboxError = [
+      ...(jobs.problem === undefined ? [] : [sandboxRefusal(jobs.problem)]),
+      ...holdingHome.map(
+        (path) => `Jobs can read ${path}: it is or holds the japa home, so their sandboxes can't hide it`,
+      ),
+    ].map((error) => ({ name: "sandbox", error }));
     const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
     const rt = createRuntime({
       home,
@@ -468,7 +499,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       settings,
       secrets,
       extensions,
-      errors: [...loaded.errors],
+      errors: [...loaded.errors, ...sandboxError],
       sources,
       hashes,
       models,
@@ -477,6 +508,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       selection,
       cos,
       safety: safety.extension,
+      sandboxProblem: () => jobs.problem,
       kernel,
       messaging,
     });
@@ -487,11 +519,24 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     if (settings.models.worker !== undefined) checkModel(models, settings.models.worker);
     if (settings.models.consolidation !== undefined) checkModel(models, settings.models.consolidation);
 
-    const { dir } = settings.secrets;
-    const secretsDirs = [join(home, "secrets"), ...(typeof dir === "string" ? [dir.replace(/^~/, homedir())] : [])];
     const keyError = await missingKey(models, model.provider, secretsDirs.at(-1)!);
     if (keyError !== undefined) rt.errors.push({ name: "models", error: keyError });
-    const env = createEnvDispatcher(environments, secretsDirs);
+    // The CoS reads through the `local` environment, installed with the environment contracts.
+    const local: EnvironmentAdapter = {
+      name: "local",
+      create: (input) => {
+        const adapter = environments.get("local");
+        if (adapter === undefined) throw new Error('No environment "local" is installed');
+        return adapter.create(input);
+      },
+    };
+    // What jobs don't see, the CoS can't read either: a secrets dir by its real path too.
+    const deny = [...secretsDirs, ...hidden];
+    const env = createEnvDispatcher(local, deny, async (conversationId: ConversationId, context) => {
+      const jobId = (await opened.snapshot(JobDoc, conversationId, context))?.jobId;
+      if (!jobId) throw new Error(`No job runs in conversation ${conversationId}`);
+      return jobs.env(String(conversationId), jobId);
+    });
     harness = await Harness.open(storage, { models, registry, env, settings: { extensions: selection } }, ctx);
     const opened = harness;
     registry.install(cos);
@@ -567,6 +612,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           await rt.dispose(isAdapter);
           clearBoots(home);
         } finally {
+          jobs.closeAll();
           release();
         }
       },
@@ -574,6 +620,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   } catch (error) {
     await runtime?.dispose(isAdapter).catch(() => {});
     await (harness ?? storage)?.close(ctx).catch(() => {});
+    sandboxes?.closeAll();
     release();
     throw error;
   }

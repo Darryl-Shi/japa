@@ -1,8 +1,8 @@
-import { type EnvTarget, type HarnessOptions, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
+import { type ConversationId, type HarnessOptions, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { err, type ExecutionEnv, ExecutionError, FileError } from "@earendil-works/pi-durable/env";
 import { resolve, sep } from "node:path";
 import type { EnvironmentAdapter } from "./contracts.ts";
-import { JobDoc } from "./jobs/state.ts";
 
 export const READ_ONLY_MESSAGE = "Read-only here: delegate changes and commands to a job.";
 
@@ -64,22 +64,16 @@ export function readOnly(env: ExecutionEnv, deny: string[]): ExecutionEnv {
 }
 
 /**
- * The Harness `env` option: the default environment, read-only and with the `deny` dirs unreadable for the CoS
- * (root); a job's own environment.
+ * The Harness `env` option: for the CoS (root), the `local` environment, read-only and with the `deny` dirs
+ * unreadable; for any other conversation, a job's, the environment `jobs` gives (its sandbox), under the call's context.
  */
 export function createEnvDispatcher(
-  environments: ReadonlyMap<string, EnvironmentAdapter>,
+  local: EnvironmentAdapter,
   deny: string[],
-  defaultName = "local",
+  jobs: (conversationId: ConversationId, context: Context) => Promise<ExecutionEnv>,
 ): NonNullable<HarnessOptions["env"]> {
-  const create = (name: string, target: EnvTarget) => {
-    const adapter = environments.get(name);
-    if (adapter === undefined) throw new Error(`No environment "${name}" is installed`);
-    return adapter.create({ conversationId: String(target.conversationId), cwd: target.cwd });
-  };
   return async (target, context) => {
-    if (target.conversationId === ROOT_CONVERSATION_ID) return readOnly(create(defaultName, target), deny);
-    const job = await target.read.snapshot(JobDoc, target.conversationId, context);
-    return create(job?.environment || defaultName, target);
+    if (target.conversationId !== ROOT_CONVERSATION_ID) return jobs(target.conversationId, context);
+    return readOnly(local.create({ conversationId: String(target.conversationId), cwd: target.cwd }), deny);
   };
 }
