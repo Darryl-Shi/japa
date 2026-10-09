@@ -1,13 +1,11 @@
 import type { ToolRegistration } from "@earendil-works/pi-durable";
-import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { desktopContainer, dockerCli } from "../extensions/desktop/container.ts";
 import { desktopExtension } from "../extensions/desktop/index.ts";
-import type { Dispose, EnvironmentAdapter } from "../src/kernel/contracts.ts";
+import type { Dispose } from "../src/kernel/contracts.ts";
 import { fakeApi, resultText, run, stubKernel } from "./desktop-helpers.ts";
 import { bootTest, waitFor } from "./helpers.ts";
 import { ask, call, reported, script } from "./jobs-helpers.ts";
@@ -57,16 +55,6 @@ describe.skipIf(process.env.JAPA_DOCKER_TESTS !== "1")("the desktop on Docker", 
       return resultText(await run(browser, { action: "evaluate", js: "document.cookie" }, api));
     };
 
-    registerEnvConformance({ describe, expect, it }, "desktop environment in the container", async (use) => {
-      const dir = `/tmp/conformance-${randomUUID()}`;
-      await dockerCli(["exec", "-u", "japa", config.name, "mkdir", dir]);
-      try {
-        await use((ext.provides!.environment![0] as EnvironmentAdapter).create({ conversationId: "c", cwd: dir }));
-      } finally {
-        await dockerCli(["exec", "-u", "japa", config.name, "rm", "-rf", dir]);
-      }
-    });
-
     test("computer click and type change a test page", async () => {
       await run(browser, { action: "navigate", url: PAGE }, api);
       await run(computer, { action: "type", text: "hello", screenshot: false }, api);
@@ -99,13 +87,13 @@ describe.skipIf(process.env.JAPA_DOCKER_TESTS !== "1")("the desktop on Docker", 
       expect(await cookie()).toContain("k=v");
     }, 300_000);
 
-    test("an operator job, with scripted model calls, opens a page and reports its heading", async () => {
+    test("a job, with scripted model calls, opens a page and reports its heading", async () => {
       const { daemon, faux, home } = await bootTest({}, [desktopExtension(config)]);
       mkdirSync(join(home, "desktop/shared"), { recursive: true });
       writeFileSync(join(home, "desktop/shared/page.html"), PAGE_HTML); // a new home recreates the container
       script(faux, (role, text) => {
         const heading = role === "toolResult" ? text.match(/heading "([^"]+)"/) : null;
-        return text === "go" ? call("job_start", { title: "Open", worker: "operator", brief: "open the page" })
+        return text === "go" ? call("job_start", { title: "Open", brief: "open the page" })
           : text === "open the page" ? call("browser", { action: "navigate", url: PAGE })
           : heading ? call("job_complete", { summary: `The heading is ${heading[1]}` })
           : undefined;

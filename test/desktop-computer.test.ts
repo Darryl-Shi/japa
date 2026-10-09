@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { beforeEach, expect, test, vi } from "vitest";
 import { computerTool } from "../extensions/desktop/computer.ts";
-import { claimDesktop } from "../extensions/desktop/lock.ts";
+import { claimDesktop, COS } from "../extensions/desktop/lock.ts";
 import { fakeApi, fakeDesktop, PNG, resultText, run } from "./desktop-helpers.ts";
 
 const SHOT = [["import", "-window", "root", "png:-"], ["xdotool", "getmouselocation", "--shell"]];
@@ -60,7 +60,7 @@ test("type sends 50-character chunks, unparsed", async () => {
 });
 
 test("zoom crops the region and scales it to 1280×800", async () => {
-  const result = await run(tool, { action: "zoom", region: [10, 20, 110, 70] }, fakeApi({ desktop: false }).api);
+  const result = await run(tool, { action: "zoom", region: [10, 20, 110, 70] }, fakeApi().api);
   expect(fake.calls[0]!.argv).toEqual(["import", "-window", "root", "-crop", "100x50+10+20", "+repage", "-resize", "1280x800", "png:-"]);
   expect(resultText(result)).toBe("zoom — cursor at 1,2");
 });
@@ -80,15 +80,26 @@ test("aborting a wait returns at once", async () => {
   expect(Date.now() - started).toBeLessThan(5000);
 });
 
-test("read actions work outside the desktop environment; the rest are refused there", async () => {
-  const { api } = fakeApi({ desktop: false });
+test("a job outside the container can act on the desktop: reads don't wait for the image, acting actions do", async () => {
+  const { api, docs } = fakeApi();
   expect((await run(tool, { action: "screenshot" }, api)).content![1]).toMatchObject({ type: "image" });
   expect(resultText(await run(tool, { action: "cursor_position" }, api))).toBe("cursor at 1,2");
   expect(resultText(await run(tool, { action: "clipboard_get" }, api))).toBe("copied");
-  fake.calls.length = 0;
-  expect(resultText(await run(tool, { action: "click", x: 1, y: 2 }, api))).toBe("This acts on the desktop — start an operator job for it.");
-  expect(fake.calls).toEqual([]);
   expect(fake.waits).toEqual([false, false, false]);
+  fake.calls.length = 0;
+  expect(resultText(await run(tool, { action: "click", x: 1, y: 2, screenshot: false }, api))).toBe("click — cursor at 1,2");
+  expect(fake.calls.map((c) => c.argv)).toContainEqual(["xdotool", "click", "--repeat", "1", "1"]);
+  expect(fake.waits).toEqual([false, false, false, true]);
+  expect(docs["japa.desktop-lock:1"]).toEqual({ job: "1" });
+});
+
+test("the chief of staff reads the desktop, and starts a job to act on it", async () => {
+  const { api, docs } = fakeApi({ conversationId: 1, job: "" });
+  expect(resultText(await run(tool, { action: "cursor_position" }, api))).toBe("cursor at 1,2");
+  fake.calls.length = 0;
+  expect(resultText(await run(tool, { action: "click", x: 1, y: 2 }, api))).toBe(COS);
+  expect(fake.calls).toEqual([]);
+  expect(docs["japa.desktop-lock:1"]?.job).toBeUndefined();
 });
 
 test("a desktop that is not ready answers as text", async () => {
@@ -112,7 +123,7 @@ test("the first acting call takes the lock; reads never do", async () => {
   expect(docs["japa.desktop-lock:1"]).toEqual({ job: "1" });
 });
 
-test("another job waits, reporting progress, until the holder finishes", async () => {
+test("a second job waits while the first holds the desktop", async () => {
   const first = fakeApi();
   await run(tool, { action: "move", x: 1, y: 2, screenshot: false }, first.api);
   const jobs = first.docs["japa.jobs:1"]!.jobs;

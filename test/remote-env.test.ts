@@ -1,12 +1,11 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ExecutionError } from "@earendil-works/pi-durable/env";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, test } from "vitest";
-import { ENV_MODULE, isDesktop, LOST, remoteEnv, SERVER, startEnvServer } from "../src/kernel/sandbox/remote-env.ts";
+import { ENV_MODULE, LOST, remoteEnv, SERVER, startEnvServer } from "../src/kernel/sandbox/remote-env.ts";
 
 const server = startEnvServer([process.execPath, SERVER, ENV_MODULE]);
 afterAll(() => server.close());
@@ -18,12 +17,6 @@ registerEnvConformance({ describe, expect, it }, "desktop environment (local ser
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("only desktop environments are marked", () => {
-  expect(isDesktop(remoteEnv(async () => server, "/", "test"))).toBe(true);
-  expect(isDesktop(new NodeExecutionEnv({ cwd: "/" }))).toBe(false);
-  expect(isDesktop(undefined)).toBe(false);
 });
 
 test("calls on a lost connection fail with the lost message", async () => {
