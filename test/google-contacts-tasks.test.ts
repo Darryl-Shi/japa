@@ -270,7 +270,7 @@ test("list: the default list's open tasks, done marks and due dates", async () =
   });
   const out = await tasks(api, { action: "list" });
   expect(calls).toEqual([
-    ["GET", "lists/%40default/tasks", { query: { showCompleted: false, showHidden: false } }],
+    ["GET", "lists/%40default/tasks", { query: { showCompleted: false, showHidden: false, maxResults: 100 } }],
   ]);
   expect(out).toBe(
     "1. [ ] Buy milk due 2026-10-12\n   id t1\n2. [x] File taxes\n   id t2\n3. [ ] (no title)\n   id t3",
@@ -280,7 +280,15 @@ test("list: the default list's open tasks, done marks and due dates", async () =
 test("list: another list, completed tasks shown", async () => {
   const { api, calls } = fake({ "GET lists/L%2F2/tasks": { items: [] } });
   expect(await tasks(api, { action: "list", list: "L/2", showCompleted: true })).toBe("No tasks.");
-  expect(calls[0][2]).toEqual({ query: { showCompleted: true, showHidden: true } });
+  expect(calls[0][2]).toEqual({ query: { showCompleted: true, showHidden: true, maxResults: 100 } });
+});
+
+test("list: a further page is noted, not fetched", async () => {
+  const { api, calls } = fake({
+    "GET lists/%40default/tasks": { items: [{ id: "t1", title: "One", status: "needsAction" }], nextPageToken: "p2" },
+  });
+  expect(await tasks(api, { action: "list" })).toBe("1. [ ] One\n   id t1\n[more tasks not shown]");
+  expect(calls).toHaveLength(1);
 });
 
 test("add: a date-only due becomes midnight UTC", async () => {

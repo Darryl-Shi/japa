@@ -49,18 +49,18 @@ async function lists(api: Api): Promise<string> {
 async function list(api: Api, args: TasksArgs): Promise<string> {
   const shown = args.showCompleted ?? false;
   // Tasks completed in the Google apps are hidden, so showing completed tasks has to show hidden ones too.
-  const found = await api.json<{ items?: Task[] }>("GET", tasksOf(args.list), {
-    query: { showCompleted: shown, showHidden: shown },
+  const found = await api.json<{ items?: Task[]; nextPageToken?: string }>("GET", tasksOf(args.list), {
+    query: { showCompleted: shown, showHidden: shown, maxResults: 100 },
   });
   const items = found?.items ?? [];
   if (items.length === 0) return "No tasks.";
-  return items
-    .map((t, i) => {
-      const mark = t.status === "completed" ? "x" : " ";
-      const due = t.due ? ` due ${t.due.slice(0, 10)}` : "";
-      return `${i + 1}. [${mark}] ${t.title || "(no title)"}${due}\n   id ${t.id}`;
-    })
-    .join("\n");
+  const lines = items.map((t, i) => {
+    const mark = t.status === "completed" ? "x" : " ";
+    const due = t.due ? ` due ${t.due.slice(0, 10)}` : "";
+    return `${i + 1}. [${mark}] ${t.title || "(no title)"}${due}\n   id ${t.id}`;
+  });
+  if (found?.nextPageToken) lines.push("[more tasks not shown]");
+  return lines.join("\n");
 }
 
 /** The task fields the caller gave, as the API's body. */
