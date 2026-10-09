@@ -12,7 +12,7 @@ import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { defineTool, Type } from "../src/sdk.ts";
 import { probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
-import { ask, call, idle, jobs, reported, say, script, texts, tool } from "./jobs-helpers.ts";
+import { ask, call, idle, jobs, reported, script, texts, tool } from "./jobs-helpers.ts";
 
 /** A secrets reader over `values`. */
 const reader = (values: Record<string, string> = {}): SecretReader => ({ get: async (name) => values[name] });
@@ -112,7 +112,11 @@ const toolNames = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) 
 const stateOf = (daemon: Daemon, name: string) => daemon.status().extensions.find((e) => e.name === name)?.state;
 
 /** Starts a job with the `pinger` profile; returns its conversation. */
-async function startPinger(daemon: Daemon, faux: FauxProviderHandle, onBrief = say("Which one?")) {
+async function startPinger(
+  daemon: Daemon,
+  faux: FauxProviderHandle,
+  onBrief = call("job_ask", { question: "Which one?" }),
+) {
   script(faux, (role, text) => {
     if (text === "start ping") return call("job_start", { title: "Ping", brief: "Ping it", worker: "pinger" });
     if (text === "Ping it") return onBrief;

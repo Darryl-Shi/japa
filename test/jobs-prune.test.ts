@@ -96,9 +96,10 @@ test("clearFinishedJobs keeps a completed job until its report is posted", async
   });
   await ask(daemon, "start work");
   await waitFor(hold.started);
-  // As job_complete leaves it, before its run's answer is reported.
+  // As job_complete leaves it, before its run's answer is reported; the held job_complete is then refused.
   await daemon.harness.commit(async (tx) => {
-    Object.assign((await tx.doc(JobsDoc, daemon.root.id)).jobs["1"]!, { status: "done", completed: true });
+    const job = (await tx.doc(JobsDoc, daemon.root.id)).jobs["1"]!;
+    Object.assign(job, { status: "done", result: "done", completed: true });
   }, ctx);
   expect(await messaging.clearFinishedJobs()).toBe(0);
   hold.release();

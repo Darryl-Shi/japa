@@ -89,6 +89,26 @@ test("job_complete racing a stop leaves the job cancelled", async () => {
   await daemon.close();
 });
 
+test("job_ask racing a stop leaves the job cancelled", async () => {
+  const { daemon, faux } = await bootTest();
+  const hold = held();
+  script(faux, (_role, text) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "Do work") return hold.wait(call("job_ask", { question: "q" }));
+  });
+  await ask(daemon, "start work");
+  await waitFor(hold.started);
+  // The stop's commit lands, but its abort has not reached the worker yet.
+  await daemon.harness.commit(async (tx) => {
+    (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs["1"]!.status = "cancelled";
+  }, ctx);
+  hold.release();
+  await waitFor(() => idle(daemon));
+  expect(await statuses(daemon)).toEqual(["cancelled"]);
+  expect(await reported(daemon)).toEqual([]);
+  await daemon.close();
+});
+
 test("job_list and job_transcript describe a finished job", async () => {
   const { daemon, faux } = await bootTest();
   script(faux, (role, text) => {

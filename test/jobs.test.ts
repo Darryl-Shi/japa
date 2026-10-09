@@ -65,11 +65,11 @@ test("a job runs and reports once", async () => {
   await daemon.close();
 });
 
-test("a job asks a question and resumes on a follow-up", async () => {
+test("a job asks with job_ask and resumes on a follow-up", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
-    if (text === "Clone it") return say("Which repo?");
+    if (text === "Clone it") return call("job_ask", { question: "Which repo?" });
     if (text === "answer") return call("job_message", { id: "1", text: "japa", mode: "followup" });
     if (role === "user" && text === "japa") return call("job_complete", { summary: "cloned" });
   });
@@ -100,6 +100,24 @@ test("job_progress and job_complete in one message report done once", async () =
   await waitFor(() => idle(daemon));
   expect(await reported(daemon)).toEqual(['[job 1 "Both" done] 2']);
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "2" });
+  await daemon.close();
+});
+
+test("job_complete and job_ask in one message: the first ends the turn", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
+    if (text === "Do both") {
+      const calls = [fauxToolCall("job_complete", { summary: "x" }), fauxToolCall("job_ask", { question: "y" })];
+      return fauxAssistantMessage(calls, { stopReason: "toolUse" });
+    }
+  });
+  await ask(daemon, "start both");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Both" done] x']);
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "x" });
+  const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+  expect(await texts(job, "toolResult")).toEqual(["Done.", "This turn already ended with job_complete."]);
   await daemon.close();
 });
 
@@ -156,7 +174,7 @@ test("a follow-up queued before job_complete reports its own answer", async () =
     if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
     if (text === "Do work") return hold.wait(call("job_complete", { summary: "first done" }), signal);
     if (text === "follow") return call("job_message", { id: "1", text: "more", mode: "followup" });
-    if (role === "user" && text === "more") return say("Which part?");
+    if (role === "user" && text === "more") return call("job_ask", { question: "Which part?" });
   });
   await ask(daemon, "start work");
   await waitFor(hold.started);
@@ -220,7 +238,9 @@ test("the CoS and jobs are offered their own tools", async () => {
   const names = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
   const root = await names(daemon.root);
   expect(root).toEqual(expect.arrayContaining(["read", "job_start", "probe_write"]));
-  for (const name of ["write", "edit", "bash", "job_progress", "job_complete"]) expect(root).not.toContain(name);
+  for (const name of ["write", "edit", "bash", "job_progress", "job_complete", "job_ask"]) {
+    expect(root).not.toContain(name);
+  }
 
   script(faux, (_role, text) => {
     if (text === "start shell") return call("job_start", { title: "Shell", brief: "Look around", worker: "shell" });
@@ -228,7 +248,7 @@ test("the CoS and jobs are offered their own tools", async () => {
   await ask(daemon, "start shell");
   const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
   const tools = await names(job);
-  expect(tools).toEqual(expect.arrayContaining(["read", "bash", "job_progress", "job_complete"]));
+  expect(tools).toEqual(expect.arrayContaining(["read", "bash", "job_progress", "job_complete", "job_ask"]));
   for (const name of ["write", "job_start", "probe_write"]) expect(tools).not.toContain(name);
   await daemon.close();
 });

@@ -14,13 +14,29 @@ const WORKER_TEXT =
   "You are working on a job for the chief of staff. Report notable progress with job_progress. " +
   "When finished, call job_complete with a short summary. If you need input, end your turn with one clear question.";
 
-/** Changes the caller's job in one commit; a job already cleared stays gone. */
-async function updateJob(api: ToolExecutionApi, context: Context, change: (job: Job) => void): Promise<void> {
-  await api.commit(async (tx) => {
+/** Changes the caller's job in one commit and returns `change`'s result; a job already cleared stays gone. */
+async function updateJob<T>(
+  api: ToolExecutionApi,
+  context: Context,
+  change: (job: Job) => T,
+): Promise<T | undefined> {
+  return api.commit(async (tx) => {
     const { jobId } = await tx.doc(JobDoc, api.conversationId);
     const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[jobId];
-    if (job !== undefined) change(job);
+    return job === undefined ? undefined : change(job);
   }, context);
+}
+
+/** The tool that already ended the job's current run, if any. */
+function ended(job: Job): "job_complete" | "job_ask" | undefined {
+  if (job.completed) return "job_complete";
+  if (job.asked) return "job_ask";
+  return undefined;
+}
+
+/** A tool reply that ends the worker's turn. */
+function terminal(text: string) {
+  return { content: [{ type: "text" as const, text }], control: { terminate: true as const } };
 }
 
 const jobProgress = defineTool({
@@ -41,13 +57,38 @@ const jobComplete = defineTool({
   description: "Finish your job with a short summary of the result.",
   parameters: Type.Object({ summary: Type.String() }),
   execute: async ({ summary }, api, context) => {
-    await updateJob(api, context, (job) => {
-      if (job.status === "cancelled") return;
+    const refusal = await updateJob(api, context, (job) => {
+      if (job.status === "cancelled") return undefined;
+      // One ending per run: a second ending call, even in the same message, changes nothing.
+      const by = ended(job);
+      if (by !== undefined) return `This turn already ended with ${by}.`;
       job.status = "done";
       job.result = summary;
       job.completed = true;
+      return undefined;
     });
-    return { content: [{ type: "text", text: "Done." }], control: { terminate: true } };
+    return terminal(refusal ?? "Done.");
+  },
+});
+
+const jobAsk = defineTool({
+  name: "job_ask",
+  description:
+    "Ask the chief of staff one clear question you need answered to continue, and end your turn. " +
+    "It answers with a follow-up message.",
+  parameters: Type.Object({ question: Type.String() }),
+  execute: async ({ question }, api, context) => {
+    const refusal = await updateJob(api, context, (job) => {
+      if (job.status === "cancelled") return undefined;
+      const by = ended(job);
+      if (by !== undefined) return `This turn already ended with ${by}.`;
+      job.status = "needs_input";
+      job.result = question;
+      job.asked = true;
+      job.updatedAt = Date.now();
+      return undefined;
+    });
+    return terminal(refusal ?? "Asked.");
   },
 });
 
@@ -55,5 +96,5 @@ const jobComplete = defineTool({
 export const WorkerExtension: Extension = defineExtension({
   name: "japa-worker",
   sections: [section("worker", () => WORKER_TEXT)],
-  tools: [jobProgress, jobComplete],
+  tools: [jobProgress, jobComplete, jobAsk],
 });
