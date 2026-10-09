@@ -84,6 +84,8 @@ describe("connect", () => {
 
     await surface().secrets.fulfil((await pending())[0]!.id, " code ");
     await vi.waitFor(async () => expect(await users()).toContain("[fake: Connected as x]"));
+    // Only the outcome reaches the CoS: no "[secret fake.authorize provided]" turn before it.
+    expect((await users()).filter((t) => t.startsWith("[secret "))).toEqual([]);
     expect(state.received).toEqual(["code"]);
     expect(existsSync(join(home, "secrets/fake.authorize"))).toBe(false);
     expect(await pending()).toEqual([]);

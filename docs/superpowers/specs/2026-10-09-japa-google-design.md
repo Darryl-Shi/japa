@@ -101,7 +101,9 @@ connect({ extension }) — Sign in to an extension that needs the user's account
   ("Send the user this link to sign in: …"), or the outcome if it already ended.
 - A `prompt` of type `secret` or `manual_code` becomes a pending secret request named `<extension>.authorize`
   with the prompt's message as its `why`, so every surface asks for it masked (Telegram deletes the message).
-  When fulfilled, the value is read from the secrets store, deleted from it at once, and returned to the flow.
+  When fulfilled, the value is read from the secrets store, deleted from it at once, and returned to the flow;
+  no `[secret … provided]` line goes to the CoS (the flow's outcome follows). `secret_request` refuses names
+  ending in `.authorize`: only `connect` makes them.
   `text` and `select` prompts are not supported in chat: they fail the flow with "sign in from japa setup".
 - When the prompt's `signal` aborts (e.g. the loopback callback won, or the flow ended), the request is withdrawn
   through a new `removeSecretRequest(name)` on the root's `SecretRequestsDoc`.

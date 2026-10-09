@@ -2,9 +2,9 @@ import { type AuthEvent, type AuthInteraction, type AuthPrompt, Type } from "@ea
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { AuthorizeContext, JapaExtension } from "./extension.ts";
 import { message } from "./loader.ts";
+import { AUTHORIZE_SUFFIX } from "./secret-requests.ts";
 
-/** The chat sign-in's secret request is named `<extension>.authorize`. */
-export const AUTHORIZE_SUFFIX = ".authorize";
+export { AUTHORIZE_SUFFIX };
 
 export type ConnectDeps = {
   extensions: () => JapaExtension[];

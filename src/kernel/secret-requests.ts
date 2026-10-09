@@ -12,6 +12,9 @@ import type { SecretsStore } from "./contracts.ts";
 
 export type SecretRequest = { id: string; name: string; why: string; at: number };
 
+/** The chat sign-in's secret request is named `<extension>.authorize`: only `connect` makes one. */
+export const AUTHORIZE_SUFFIX = ".authorize";
+
 // On the root conversation. `fulfilledBy`: the chat message that carried the latest secret fulfilled from a chat.
 export const SecretRequestsDoc = defineDoc<{ nextId: number; pending: SecretRequest[]; fulfilledBy?: string }>({
   kind: "japa.secretRequests",
@@ -55,7 +58,8 @@ export const secretRequest = defineTool({
     "Returns at once; you'll be told when it's provided. You never see the value.",
   parameters: Type.Object({ name: Type.String(), why: Type.String() }),
   execute: async ({ name, why }, api, context) => {
-    if (!SECRET_NAME.test(name)) return reply("Invalid secret name.");
+    // A sign-in's request belongs to `connect`, which consumes the answer.
+    if (!SECRET_NAME.test(name) || name.endsWith(AUTHORIZE_SUFFIX)) return reply("Invalid secret name.");
     const added = await api.commit((tx) => addSecretRequest(tx, name, why), context);
     return reply(added ? `Asked the user for ${name}. You'll be told when it's provided.` : `Already asked for ${name}.`);
   },
@@ -63,7 +67,8 @@ export const secretRequest = defineTool({
 
 /**
  * Stores `value` as the secret pending request `requestId` asked for, removes the request (recording `by`, if given: the
- * chat message that carried it) and tells the CoS; returns the secret's name.
+ * chat message that carried it) and tells the CoS, except for a sign-in's request, whose outcome `connect` reports;
+ * returns the secret's name.
  */
 export async function fulfilSecret(
   harness: Harness,
@@ -83,7 +88,9 @@ export async function fulfilSecret(
     doc.pending = doc.pending.filter((r) => r.id !== requestId);
     if (by !== undefined) doc.fulfilledBy = by;
   }, context);
-  const content = `[secret ${request.name} provided]`;
-  await root.submit({ type: "input", content, requestId: `secret:${requestId}` }, context);
+  if (!request.name.endsWith(AUTHORIZE_SUFFIX)) {
+    const content = `[secret ${request.name} provided]`;
+    await root.submit({ type: "input", content, requestId: `secret:${requestId}` }, context);
+  }
   return request.name;
 }

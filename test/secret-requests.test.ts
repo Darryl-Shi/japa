@@ -22,9 +22,11 @@ test("a secret request is listed, fulfilled into the store, and announced once w
       ? call("secret_request", { name: "svc.token", why: "to read your calendar" })
       : role === "user" && text === "bad"
         ? call("secret_request", { name: "Bad/name", why: "x" })
-        : role === "user" && text === "provider"
-          ? call("secret_request", { name: "anthropic.apiKey", why: "to think" })
-          : undefined,
+        : role === "user" && text === "sign-in"
+          ? call("secret_request", { name: "google.authorize", why: "x" })
+          : role === "user" && text === "provider"
+            ? call("secret_request", { name: "anthropic.apiKey", why: "to think" })
+            : undefined,
   );
   const events: AgentEvent[] = [];
   await surface().root.events((e) => events.push(...e));
@@ -35,9 +37,11 @@ test("a secret request is listed, fulfilled into the store, and announced once w
   await ask(daemon, "go");
   await ask(daemon, "again");
   await ask(daemon, "bad");
+  await ask(daemon, "sign-in"); // a sign-in's request is connect's
   expect(await texts(daemon.root, "toolResult")).toEqual([
     "Asked the user for svc.token. You'll be told when it's provided.",
     "Already asked for svc.token.",
+    "Invalid secret name.",
     "Invalid secret name.",
   ]);
   await vi.waitFor(() => expect(lists.at(-1)).toMatchObject([{ name: "svc.token", why: "to read your calendar" }]));
