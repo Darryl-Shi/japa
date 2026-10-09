@@ -85,7 +85,9 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   root access.
 - `--ro-bind` also over `$XDG_CONFIG_HOME/systemd` (unit drop-ins and new units). Every directory between the home
   and a protected path (e.g. `~/.config`, `~/.local/share`) is bound onto itself first, so a job can't rename it away
-  and recreate the path. A protected path that is a symlink: its target is protected and the link's directory is
+  and recreate the path. Mount order: `/`, `/dev`, `/proc`, these pinned parents, the protected paths, the private
+  `/tmp`, then the clone, shared and hidden paths — so nothing protected can cover the clone or a hidden path.
+  `$XDG_*` locations and their defaults are both protected; `/run/screen` is hidden like `/run/user/<uid>`. A protected path that is a symlink: its target is protected and the link's directory is
   made read-only. Git config isn't protected: the daemon's git never reads it.
 - `--die-with-parent`, `--new-session`.
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
