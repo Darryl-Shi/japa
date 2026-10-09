@@ -229,7 +229,8 @@ vitest, no calls to Google.
 - **Tools** (fake `fetch` recording requests, canned responses): each action's request (method, URL, query,
   body) and formatted output; truncation; the error mapping of §5; download paths and suffixing.
 - **MIME**: headers and RFC 2047 subjects, multipart with attachments, reply headers and `Re:`.
-- **Load**: the packaged extension loads with the others and passes `japa check extension google`.
+- **Load**: the packaged extension loads with the other packaged extensions and boots without errors (`japa check`
+  applies to workspace extensions).
 
 ## 7. Docs
 

@@ -260,9 +260,9 @@ client in Google Cloud Console and give japa its id and secret. It takes about t
 3. **Set up the consent screen** at [Google Auth Platform](https://console.cloud.google.com/auth/overview): click
    Get started, give it a name and your email, and pick the audience:
    - **External** (any Google account, e.g. @gmail.com). Leave it in **Testing** and, under Audience, add your own
-     address as a **test user**. In Testing, Google ends the sign-in after **7 days**: `japa status` then
-     says `sign-in expired — ask japa to reconnect`, and you connect again (below). Publishing the app avoids
-     this, but Google then wants it verified.
+     address as a **test user**. In Testing, the sign-in stops working after **7 days**: the next time japa uses
+     Google, `japa status` shows `sign-in expired — ask japa to reconnect`, and you connect again (below).
+     Publishing the app avoids this, but Google then wants it verified.
    - **Internal**, if your account is in a Google Workspace organization you administer: no test users and no
      7-day limit.
 4. **Create the client** under [Clients](https://console.cloud.google.com/auth/clients): Create client, type
@@ -271,8 +271,9 @@ client in Google Cloud Console and give japa its id and secret. It takes about t
    asks; or tell japa "connect my Google account" in `japa chat` or Telegram, give it the id and secret when it
    asks, and open the link it sends you.
 
-Signing in opens Google's consent page; allow everything it asks (japa's access is fixed: mail, Drive, calendar,
-contacts and tasks). On the machine running japa, the browser comes back to japa by itself. Anywhere else — over
+Signing in opens Google's consent page. In Testing, Google first shows a "Google hasn't verified this app" screen:
+that's your own app, so choose **Continue**. Allow everything it asks (japa's access is fixed: mail, Drive,
+calendar, contacts and tasks). On the machine running japa, the browser comes back to japa by itself. Anywhere else — over
 SSH, or from your phone — the page it lands on after you approve fails to load: that's expected. Copy that page's
 full address from the address bar and paste it where japa asks: at the prompt in `japa setup`, at the masked
 prompt in `japa chat`, or as your next message in Telegram (the bot deletes it at once).
