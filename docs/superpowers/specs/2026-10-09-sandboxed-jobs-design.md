@@ -83,8 +83,10 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   Otherwise `systemd-run --user` runs any command outside the sandbox.
 - `--ro-bind-try /dev/null` over the Docker sockets (`/run/docker.sock`, `/var/run/docker.sock`): Docker access is
   root access.
-- `--ro-bind` also over `$XDG_CONFIG_HOME/systemd` (unit drop-ins and new units), `~/.gitconfig` and
-  `$XDG_CONFIG_HOME/git` (git config the daemon's own git commands would read).
+- `--ro-bind` also over `$XDG_CONFIG_HOME/systemd` (unit drop-ins and new units). Every directory between the home
+  and a protected path (e.g. `~/.config`, `~/.local/share`) is bound onto itself first, so a job can't rename it away
+  and recreate the path. A protected path that is a symlink: its target is protected and the link's directory is
+  made read-only. Git config isn't protected: the daemon's git never reads it.
 - `--die-with-parent`, `--new-session`.
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
   environment. Provider API keys set as environment variables don't reach jobs.
