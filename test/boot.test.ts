@@ -259,7 +259,7 @@ test("boot prunes the clones and job refs of jobs that aren't active, keeping ac
   let daemon = await boot({ home, extensions: [kit.extension] });
   const now = Date.now();
   const job = (id: string, status: Job["status"]) =>
-    ({ id, title: id, brief: "", worker: "", status, createdAt: now, updatedAt: now, seq: 0, reported: [] }) as unknown as Job;
+    ({ id, title: id, brief: "", status, conversationId: 1_000_000 + Number(id), createdAt: now, updatedAt: now, seq: 0, reported: [] }) as unknown as Job; // conversations long gone
   await daemon.root.commit(async (tx) => {
     const doc = await tx.doc(JobsDoc, daemon.root.id);
     doc.jobs["1"] = job("1", "needs_input");
@@ -277,6 +277,25 @@ test("boot prunes the clones and job refs of jobs that aren't active, keeping ac
   daemon = await boot({ home, extensions: [kit.extension] });
   expect(readdirSync(jobs).sort()).toEqual(["1", "1.base", "1.tmp", "2", "2.base", "2.tmp"]);
   expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/jobs/1");
+  await daemon.close();
+});
+
+test("boot survives a stored unfinished job without a conversation", async () => {
+  const kit = testKit();
+  const home = tempHome({ models: { cos: kit.model } });
+  let daemon = await boot({ home, extensions: [kit.extension] });
+  await daemon.root.commit(async (tx) => {
+    const doc = await tx.doc(JobsDoc, daemon.root.id);
+    doc.jobs["1"] = { id: "1", title: "1", brief: "", status: "running", createdAt: 0, updatedAt: 0, seq: 0, reported: [] } as unknown as Job;
+  }, ctx);
+  await daemon.close();
+
+  daemon = await boot({ home, extensions: [kit.extension] }); // used to throw
+  let status: string | undefined;
+  await daemon.root.commit(async (tx) => {
+    status = (await tx.doc(JobsDoc, daemon.root.id)).jobs["1"]?.status;
+  }, ctx);
+  expect(status).toBe("running");
   await daemon.close();
 });
 

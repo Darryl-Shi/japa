@@ -76,13 +76,14 @@ async function availableModels(models: Models): Promise<string[]> {
 }
 
 /**
- * Re-applies each unfinished job's agent, so it picks up reloaded extensions and skills; one whose conversation is
- * gone is skipped, so it can't fail a boot.
+ * Re-applies each unfinished job's agent, so it picks up reloaded extensions and skills; one with no conversation, or
+ * whose conversation is gone, is skipped: the doc is stored data, and one bad job mustn't fail a boot.
  */
 export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<void> {
   const { jobs } = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
   for (const job of Object.values(jobs)) {
     if (!["queued", "running", "needs_input"].includes(job.status)) continue;
+    if (!Number.isSafeInteger(job.conversationId)) continue;
     if ((await tx.conversation(job.conversationId)) === undefined) continue;
     await configure(tx, job.conversationId, agentOf(options, job));
   }
