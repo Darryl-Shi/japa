@@ -87,7 +87,7 @@ The network and `/tmp` are shared, as now.
 
 ### 3.3 Lifetime
 
-- **One sandbox per job:** created at job start (or resume) and closed when the job reaches a final state (`done`,
+- **One sandbox per job:** created on the job's first tool call (also after a restart) and closed when the job reaches a final state (`done`,
   `failed`, `cancelled`).
 - **Processes:** closing the sandbox kills every process the job started (`--die-with-parent` on the server, and the
   PID namespace ends with it).
@@ -114,7 +114,9 @@ The network and `/tmp` are shared, as now.
    real `.git` (hidden in the sandbox). `.jobs/` is added to the workspace `.gitignore`.
 2. Create `<clone>/node_modules/japa` as `linkSdk` does for the real workspace, so `japa/sdk` imports and
    `japa check` work inside the job.
-3. Record the starting commit on the job (`JobDoc.base`).
+3. The starting commit is the clone's `origin/main` (set by `git clone`, and not fetchable from inside the sandbox,
+   where the real repo is hidden). The clone is made on the job's first tool call, so `job_start` itself writes
+   nothing to disk.
 
 ### 4.2 While the job runs
 
@@ -125,10 +127,11 @@ The network and `/tmp` are shared, as now.
 
 ### 4.3 Going live
 
-When a job's `job_complete` is accepted, the job stays `completing` until these steps are settled. Then its report is
+When a job's `job_complete` is accepted, its `JobRun` task runs these steps in a `publish` phase, between deciding
+the report and posting it ("completing" below means that phase; `JobStatus` is unchanged). Then its report is
 delivered.
 
-1. **Narrow.** In the clone, restore every path outside `extensions/` and `skills/` to `JobDoc.base` and list them
+1. **Narrow.** In the clone, restore every path outside `extensions/` and `skills/` to the starting commit and list them
    as dropped. If nothing is left changed, delete the clone and stop. Otherwise commit with the message
    `Job <n>: <title>` (author `japa`).
 2. **Check.** For each changed `extensions/<name>` or `skills/<name>`, including deletions, run `japa check` inside
@@ -136,7 +139,7 @@ delivered.
 3. **Merge.** Take the workspace lock (§4.4); the sandbox's job is done with the clone by now, and §3.3 closes the
    sandbox only after these steps. In the real repo, `git fetch <clone> HEAD`, then
    `git merge --no-ff -m "Job <n>: <title>" FETCH_HEAD`.
-   - Git merges against `JobDoc.base`, so changes made to `main` since the job started are kept.
+   - Git merges against the starting commit, so changes made to `main` since the job started are kept.
    - On a conflict: `git merge --abort`, report the conflicting paths, nothing changes.
 4. **Load.** Reconcile.
    - If a changed component fails to load: `git revert -m 1` the merge commit, reconcile again, and report the load
@@ -176,7 +179,7 @@ brief.
 
 - **Clones kept after a failure:** those of jobs that ended `failed` or `cancelled`, or that didn't go live, are
   kept for 7 days.
-- **Pruning:** at boot and daily, japa deletes kept clones older than that, and orphaned clones (no matching job).
+- **Pruning:** at boot and with the hourly job pruning, japa deletes kept clones older than that, and orphaned clones (no matching job).
 
 ## 5. One kind of job
 
@@ -259,7 +262,8 @@ job_start({ title, brief, model?, thinking? })
 
 ### 6.1 Always clean
 
-Only these change the real working tree, each under the workspace lock, each ending in a commit:
+Only these change the real `extensions/` and `skills/` (the components the daemon loads), each under the workspace
+lock, each ending in a commit. `settings.json` keeps changing through the settings tools, as now:
 
 - going live;
 - `rollback`;
@@ -270,7 +274,7 @@ Only these change the real working tree, each under the workspace lock, each end
 At every boot, before loading anything:
 
 1. If `MERGE_HEAD` or `REVERT_HEAD` exists, abort that operation.
-2. If the tree has uncommitted changes outside ignored paths (edits made by hand or by an older version), commit
+2. If `extensions/` or `skills/` has uncommitted changes (edits made by hand or by an older version), commit
    them as `Edits made outside japa` and log a change for it. They are what was running, because the daemon loaded
    the working tree.
 
@@ -287,18 +291,18 @@ On the first boot of this version:
 3. **Adopt hand edits:** run §6.1. On hermes this commits the uncommitted `extensions/sudocode` edits.
 4. **Old job records:** `Job.worker` and `JobDoc.environment`/`skills` in stored documents are tolerated and
    ignored.
-5. **Resumed jobs:** a job resumed after the upgrade gets its clone and sandbox then, with `JobDoc.base` = the
-   current `HEAD`.
-6. **Leftover profiles:** a leftover `~/.japa/workers/` is ignored. `/status` notes once that it's no longer used.
+5. **Resumed jobs:** a job resumed after the upgrade gets its clone and sandbox on its next tool call, starting from
+   the current `HEAD`.
+6. **Leftover profiles:** a leftover `~/.japa/workers/` is ignored. `/status` notes that it's no longer used while it exists.
 
 ## 7. Failures
 
 | Failure | Behaviour |
 |---|---|
 | bwrap missing or broken | `job_start` refuses with how to fix it; `/status` shows it (§3.4). |
-| Clone fails at job start | The job fails to start with the reason. |
-| Sandbox server dies mid-job | The job's tools fail with "the job's sandbox stopped: <last stderr line>". The job can't continue and ends `failed`; its clone is kept. |
-| Daemon crash while going live | At boot an unfinished merge is aborted (§6.1). The `completing` job runs §4.3 again. If its commit is already an ancestor of `HEAD`, the merge is skipped and it goes on to load and report. |
+| Clone fails | The job's first tool call fails with the reason; the next call tries again. |
+| Sandbox server dies mid-job | The tool call in flight fails with "The job's sandbox stopped: <last stderr line>"; the next call starts a new sandbox on the same clone (background processes are gone). |
+| Daemon crash while going live | At boot an unfinished merge is aborted (§6.1). The job's `JobRun` resumes its `publish` phase and runs §4.3 again. If its commit is already an ancestor of `HEAD`, the merge is skipped and it goes on to load and report. |
 | `check` hangs | A 10-minute timeout per component counts as a failed check. |
 | Going live while rolling back or undoing | Serialised by the workspace lock. |
 
