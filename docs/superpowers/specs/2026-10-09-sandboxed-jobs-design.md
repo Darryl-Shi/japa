@@ -75,7 +75,8 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   `~/.local/share`), so a job can't rename it away and recreate the path.
 - `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
   to secrets; jobs therefore can't patch japa itself on the host.
-  - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
+  - The japa app directory (`~/.local/share/japa`, including its Node), the daemon's Node directory when it is
+    elsewhere, and the launcher (`~/.local/bin/japa`).
   - `$XDG_CONFIG_HOME/systemd` (the unit, drop-ins and new units), `$XDG_DATA_HOME/systemd` and
     `$XDG_CONFIG_HOME/environment.d`, both at the `$XDG_*` location and the default one.
   - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. One that is
@@ -87,7 +88,9 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   `state.db`, `japa.sock`, `daemon.lock` and `.git`.
 - `--bind <home>/desktop/shared <home>/desktop/shared`, when the desktop extension is installed: the folder for
   exchanging files with the desktop, which is otherwise covered by the clone.
-- `--tmpfs <settings.secrets.dir>`, when the secrets directory is configured outside `~/.japa`.
+- Hidden: `--tmpfs <settings.secrets.dir>` when its real path is outside `~/.japa`, and `--ro-bind /dev/null` over a
+  storage database file (and its `-wal`/`-shm`) configured outside `~/.japa`. bwrap itself runs with only the
+  allowed environment, so the daemon's variables aren't readable through `/proc/1/environ`.
 - `--tmpfs /run/user/<uid>` and `/run/screen`: hides the D-Bus session bus, the systemd user manager, ssh-agent,
   keyring and screen sockets. Otherwise `systemd-run --user` runs any command outside the sandbox.
 - `--ro-bind /dev/null` over the Docker sockets that exist (`/run/docker.sock`, `/var/run/docker.sock`): Docker
