@@ -418,6 +418,52 @@ test("any other refresh failure is an error with Google's reason, and keeps the 
   expect(await isConnected(store)).toBe(true);
 });
 
+test("a refresh Google doesn't answer gives up after 30 s, and keeps the sign-in", async () => {
+  const hung = createServer(() => {}); // reads the request, never replies
+  await new Promise<void>((resolve) => hung.listen(0, "127.0.0.1", resolve));
+  closers.push(
+    () =>
+      new Promise((resolve) => {
+        hung.close(() => resolve());
+        hung.closeAllConnections();
+      }),
+  );
+  const base = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`;
+  const timeouts: number[] = [];
+  const timeout = new AbortController();
+  const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    timeouts.push(ms);
+    return timeout.signal;
+  });
+  try {
+    const store = memoryStore({ ...CLIENT, "google.token": storedToken(NOW + 3_000_000) });
+    const endpoints = { authorize: `${base}/auth`, token: `${base}/token`, userinfo: `${base}/userinfo` };
+    const tokens = createTokens(store, { endpoints, now: () => NOW });
+    const pending = tokens.refresh().catch((e: unknown) => e);
+    await vi.waitFor(() => expect(timeouts).toEqual([30_000]));
+    timeout.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    const error = (await pending) as Error;
+    expect(error).not.toBeInstanceOf(NotSignedIn);
+    expect(error.message).toBe("Couldn't reach Google: no reply in 30 s");
+    expect(JSON.parse(store.map.get("google.token")!).expired).toBeUndefined();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("the sign-in's code exchange and account lookup each have a 30 s limit", async () => {
+  const google = await fakeGoogle();
+  const spy = vi.spyOn(AbortSignal, "timeout");
+  try {
+    const flow = await start(memoryStore(CLIENT), google.endpoints);
+    await flow.paste(`http://127.0.0.1:1/?code=c3&state=${flow.state}`);
+    expect(await flow.result).toBe("Connected as me@example.com");
+    expect(spy.mock.calls.map((call) => call[0])).toEqual([30_000, 30_000]);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 test("access() without a token or without the client is not signed in", async () => {
   const google = await fakeGoogle();
   const reason = (store: Store) =>

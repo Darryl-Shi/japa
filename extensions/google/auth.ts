@@ -124,17 +124,26 @@ type Reply = {
 /** Node's fetch reports "fetch failed" with the reason in `cause`. */
 const reason = (error: unknown) => ((error as Error).cause as Error | undefined)?.message ?? (error as Error).message;
 
-/** A request to Google; its JSON reply whatever the status. Network failures name their cause. */
+/** How long one request to Google's sign-in endpoints may take, reply body included. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * A request to Google; its JSON reply whatever the status. Network failures and a reply slower than 30 s name
+ * their cause; the caller's `signal` aborting rethrows its reason.
+ */
 async function call(url: string, init: RequestInit): Promise<{ ok: boolean; status: number; body: Reply }> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
   let response: Response;
+  let body: Reply;
   try {
-    response = await fetch(url, init);
+    response = await fetch(url, { ...init, signal });
+    body = (await response.json().catch(() => ({}))) as Reply;
+    signal.throwIfAborted(); // a body cut short by an abort is no reply
   } catch (error) {
     init.signal?.throwIfAborted();
-    throw new Error(`Couldn't reach Google: ${reason(error)}`);
+    throw new Error(`Couldn't reach Google: ${timeout.aborted ? "no reply in 30 s" : reason(error)}`);
   }
-  const body = (await response.json().catch(() => ({}))) as Reply;
-  init.signal?.throwIfAborted();
   return { ok: response.ok, status: response.status, body };
 }
 
