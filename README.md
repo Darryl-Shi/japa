@@ -22,8 +22,9 @@ newer (with npm), puts a `japa` launcher in `~/.local/bin`, and runs `japa setup
 `~/.local/bin` isn't on your PATH yet, it adds it in your shell's rc file (`~/.bashrc`, `~/.zshrc` or
 `~/.config/fish/config.fish`, from `$SHELL`) and prints "open a new shell or run: export PATH=...". Setup needs a
 terminal: without one (e.g. in CI) the installer skips it and tells you to run `japa setup` to finish.
-Supports Linux and macOS, x64 or arm64 (WSL counts as Linux); needs `git`, `tar`, and `curl` or `wget` — a missing
-one is named, along with how to install it.
+Runs on Linux only, x64 or arm64 (WSL works; macOS is refused); needs `git`, `tar`, and `curl` or `wget` — a missing
+one is named, along with how to install it. Jobs also need bubblewrap (`sudo apt install bubblewrap`): `japa setup`
+checks that it works and, if not, says how to install it.
 
 To pass flags through the pipe, use `sh -s --`:
 
@@ -149,21 +150,21 @@ the request, which tells the CoS you said no.
 
 ### Service
 
-`japa service <subcommand>` manages the background service — a systemd user unit on Linux, a launchd agent on
-macOS — so japa keeps running after you log out. `japa setup` offers to install it; this is the same thing by hand.
+`japa service <subcommand>` manages the background service — a systemd user unit — so japa keeps running after you
+log out. `japa setup` offers to install it; this is the same thing by hand.
 It runs the `japa` launcher or, when the launcher doesn't run this checkout (one you `npm link`ed, say), this
 checkout's `src/cli/main.ts` directly on the Node you installed the service with; either way with the PATH (and
 `JAPA_HOME`, if set) of the shell you installed it from.
 
 | Subcommand | What it does |
 | --- | --- |
-| `install` | Write and enable the unit/agent, then start it (while `japa daemon` runs in the foreground it's written and enabled but not started, with an error telling you to stop the foreground daemon) |
+| `install` | Write and enable the unit, then start it (while `japa daemon` runs in the foreground it's written and enabled but not started, with an error telling you to stop the foreground daemon) |
 | `uninstall` | Stop and remove it |
 | `start`, `stop`, `restart` | Control it (`start` is refused while `japa daemon` runs in the foreground) |
 | `status` | The service manager's state, then `japa status` if the socket answers |
-| `logs` | Tail its log (`journalctl --user -u japa -f` on Linux, `~/.japa/logs/daemon.log` on macOS) |
+| `logs` | Tail its log (`journalctl --user -u japa -f`) |
 
-Needs a systemd user session on Linux (`systemctl --user`); on WSL, add `systemd=true` under `[boot]` in
+Needs a systemd user session (`systemctl --user`); on WSL, add `systemd=true` under `[boot]` in
 `/etc/wsl.conf` and run `wsl --shutdown` to turn it on. Without it, `japa service install` explains why instead of
 failing, and you run `japa daemon` yourself.
 
@@ -252,8 +253,8 @@ secret, and the bot deletes it at once; anything else you send goes to the CoS a
 be open at once; answer them in any order. `Decline` withdraws the request and tells the CoS you said no.
 
 `/update` updates japa from the chat. It checks for new commits and lists them, with `Update now` and
-`Cancel`. `Update now` runs `japa update` outside the daemon (a transient systemd unit when the Linux
-service is running, a detached process otherwise, including on macOS), which restarts the service; the
+`Cancel`. `Update now` runs `japa update` outside the daemon (a transient systemd unit when the
+service is running, a detached process otherwise), which restarts the service; the
 result — updated, failed and rolled back, or already up to date — is reported back in the chat you asked
 from, with a `Roll back` button that returns to the commit you were on (it asks first, and works offline,
 except when the two commits' dependencies differ: it reinstalls them, which needs the network). While one
@@ -342,7 +343,7 @@ workers/             worker profiles the CoS installed (git-tracked)
 secrets/             secrets, one file per secret      (ignored by git)
 attachments/         images received over Telegram, files from Google (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
-logs/                service log (macOS only) and update.log, `/update`'s log (ignored by git)
+logs/                update.log, `/update`'s log (ignored by git)
 update.json          the last `/update`: how it went and whether it's been reported (ignored by git)
 setup.json           extensions `japa setup` and `japa update` have already told you about (ignored by git)
 state.db             conversations, jobs, memory, change log (SQLite; ignored by git)

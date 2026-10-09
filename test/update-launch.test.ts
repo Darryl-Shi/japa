@@ -93,7 +93,6 @@ function service(state: "active" | "inactive", answer: { code: number; stderr: s
     customHome: false,
     path: "/usr/bin",
     user: "alice",
-    uid: 1000,
     exec,
   };
   mkdirSync(dirname(unitPath(env)), { recursive: true });

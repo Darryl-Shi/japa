@@ -2,6 +2,7 @@
 // `--non-interactive`, env-var-driven mode (design spec §4, §5.2).
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { askedSecretNames } from "../kernel/extension.ts";
+import { probeSandbox } from "../kernel/sandbox/bwrap.ts";
 import { checkModel, loadSettings, readUserSettings, saveSettings, setPath } from "../kernel/settings.ts";
 import { statusText } from "../kernel/status.ts";
 import { configurable, configureStep, markOffered, unseen, type Unseen } from "./configure.ts";
@@ -193,12 +194,26 @@ async function runNonInteractive(ctx: SetupContext, o: SetupOptions): Promise<nu
   return 0;
 }
 
+/** What setup says, before anything else, on macOS: japa runs on Linux only. */
+const LINUX_ONLY = "japa runs on Linux only (WSL works).";
+
+/** Says how to install bubblewrap when `bwrap --ro-bind / / true` fails: jobs need it, the CoS doesn't. */
+function bubblewrapStep(o: SetupOptions): void {
+  const reason = probeSandbox();
+  if (reason !== undefined) o.log(`Jobs need bubblewrap: ${reason}. Install it with: sudo apt install bubblewrap`);
+}
+
 /** Runs the wizard in `home`, returning its exit code. `p` is unused (and may be undefined) outside the
- * interactive first-run/rerun flows. */
+ * interactive first-run/rerun flows. Refuses (1) on macOS: japa runs on Linux only. */
 export async function runSetup(home: string, p: Prompter | undefined, o: SetupOptions): Promise<number> {
+  if (o.serviceEnv.platform === "darwin") {
+    o.log(LINUX_ONLY);
+    return 1;
+  }
   const ctx = await openSetupContext(home, o.extensionDirs);
 
   if (o.whatsNew) return runWhatsNew(ctx, p, o);
+  bubblewrapStep(o);
   if (!o.interactive) return runNonInteractive(ctx, o);
 
   if (p === undefined) throw new Error("interactive setup needs a Prompter");
@@ -210,6 +225,11 @@ export async function runSetup(home: string, p: Prompter | undefined, o: SetupOp
 /** The `japa setup` CLI entry point: parses flags, drives `runSetup` with a real terminal prompter when
  * interactive, and turns a cancelled prompt into the documented message and exit code. */
 export async function setupCommand(home: string, args: string[]): Promise<void> {
+  if (process.platform === "darwin") {
+    console.error(LINUX_ONLY); // before the wizard's frame, which would otherwise end in "All set"
+    process.exitCode = 1;
+    return;
+  }
   const interactive = !args.includes("--non-interactive") && process.stdin.isTTY === true;
   const prompter = interactive ? clackPrompter() : undefined;
   const o: SetupOptions = {

@@ -206,9 +206,12 @@ done
 say "Checking platform"
 case "$(uname -s)" in
   Linux) OS=linux ;;
-  Darwin) OS=darwin ;;
+  Darwin)
+    say_err "japa runs on Linux only (WSL works)."
+    exit 1
+    ;;
   *)
-    say_err "japa supports Linux and macOS on x64 or arm64"
+    say_err "japa supports Linux on x64 or arm64"
     exit 1
     ;;
 esac
@@ -216,7 +219,7 @@ case "$(uname -m)" in
   x86_64 | amd64) ARCH=x64 ;;
   arm64 | aarch64) ARCH=arm64 ;;
   *)
-    say_err "japa supports Linux and macOS on x64 or arm64"
+    say_err "japa supports Linux on x64 or arm64"
     exit 1
     ;;
 esac
@@ -225,14 +228,14 @@ esac
 say "Checking prerequisites"
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    say_err "$1 is required. Install it with: apt install $2 | dnf install $3 | brew install $4"
+    say_err "$1 is required. Install it with: apt install $2 | dnf install $3"
     exit 1
   fi
 }
-require_cmd git git git git
-require_cmd tar tar tar gnu-tar
+require_cmd git git git
+require_cmd tar tar tar
 if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-  say_err "curl or wget is required. Install one with: apt install curl | dnf install curl | brew install curl"
+  say_err "curl or wget is required. Install one with: apt install curl | dnf install curl"
   exit 1
 fi
 

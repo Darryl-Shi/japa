@@ -1,4 +1,4 @@
-// `japa service`: a systemd user unit (Linux) or launchd agent (macOS) running `japa daemon` in the background.
+// `japa service`: a systemd user unit running `japa daemon` in the background (japa runs on Linux only).
 // Setup, update and uninstall call the functions below directly; `serviceCommand` is the `japa service <...>` CLI
 // dispatcher (see docs/superpowers/specs/2026-10-08-japa-install-design.md §7).
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,13 +20,8 @@ export type ServiceEnv = {
   customHome: boolean;
   path: string;
   user: string;
-  /** Numeric uid, for launchctl's `gui/<uid>` domain. */
-  uid: number;
   exec: Exec;
 };
-
-/** The launchd label and the systemd unit's description name. */
-const LABEL = "dev.japa.daemon";
 
 /**
  * The command line that runs `layout.app`'s daemon: the launcher when it points at that checkout, else `node` on its
@@ -48,17 +43,12 @@ export function serviceEnv(layout: Layout): ServiceEnv {
     customHome: process.env.JAPA_HOME !== undefined,
     path: process.env.PATH ?? "",
     user: process.env.USER ?? String(process.getuid?.() ?? ""),
-    uid: process.getuid?.() ?? 0,
     exec,
   };
 }
 
 export function unitPath(env: ServiceEnv): string {
   return join(env.configHome, "systemd", "user", "japa.service");
-}
-
-export function plistPath(env: ServiceEnv): string {
-  return join(env.userHome, "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
 /** Quotes `s` as a systemd unit value: wraps it in `"..."`, escaping `\` and `"`, and `%` (a specifier) as `%%`. */
@@ -90,47 +80,6 @@ export function unitText(env: ServiceEnv): string {
   return `${lines.join("\n")}\n`;
 }
 
-function xmlEscape(s: string): string {
-  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
-}
-
-/** The launchd agent plist's text (design doc §7.2). */
-export function plistText(env: ServiceEnv): string {
-  const logPath = join(env.japaHome, "logs", "daemon.log");
-  const envVars: [string, string][] = [["PATH", env.path]];
-  if (env.customHome) envVars.push(["JAPA_HOME", env.japaHome]);
-  const envXml = envVars.map(([k, v]) => `\t\t<key>${xmlEscape(k)}</key>\n\t\t<string>${xmlEscape(v)}</string>`).join("\n");
-  const argsXml = env.command.map((arg) => `\t\t<string>${xmlEscape(arg)}</string>`).join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-\t<key>Label</key>
-\t<string>${LABEL}</string>
-\t<key>ProgramArguments</key>
-\t<array>
-${argsXml}
-\t</array>
-\t<key>RunAtLoad</key>
-\t<true/>
-\t<key>KeepAlive</key>
-\t<dict>
-\t\t<key>SuccessfulExit</key>
-\t\t<false/>
-\t</dict>
-\t<key>EnvironmentVariables</key>
-\t<dict>
-${envXml}
-\t</dict>
-\t<key>StandardOutPath</key>
-\t<string>${xmlEscape(logPath)}</string>
-\t<key>StandardErrorPath</key>
-\t<string>${xmlEscape(logPath)}</string>
-</dict>
-</plist>
-`;
-}
-
 const WSL_HINT =
   'systemd is not running for your user (WSL: add "[boot]\\nsystemd=true" to /etc/wsl.conf and run "wsl --shutdown"); run "japa daemon" yourself';
 
@@ -140,33 +89,22 @@ export async function unavailable(env: ServiceEnv): Promise<string | undefined> 
     const r = await env.exec("systemctl", ["--user", "show-environment"]);
     return r.code === 0 ? undefined : WSL_HINT;
   }
-  if (env.platform === "darwin") return undefined;
   return "no supported service manager";
 }
 
-/** Whether the unit or plist file is on disk. */
+/** Whether the unit file is on disk. */
 export function isInstalled(env: ServiceEnv): boolean {
-  if (env.platform === "linux") return existsSync(unitPath(env));
-  if (env.platform === "darwin") return existsSync(plistPath(env));
-  return false;
+  return env.platform === "linux" && existsSync(unitPath(env));
 }
 
 /**
- * The service's state: "inactive" only when stopped (systemd's inactive; launchd's job not loaded, as `stop` leaves
- * it), "failed" when it should run but doesn't (failed, auto-restarting, or loaded but not running).
+ * The service's state: "inactive" only when stopped (systemd's inactive), "failed" when it should run but doesn't
+ * (failed, or auto-restarting).
  */
 export async function serviceState(env: ServiceEnv): Promise<"active" | "inactive" | "failed" | "not installed"> {
   if (!isInstalled(env)) return "not installed";
-  if (env.platform === "linux") {
-    const state = (await env.exec("systemctl", ["--user", "is-active", "japa"])).stdout.trim();
-    return state === "active" || state === "inactive" ? state : "failed";
-  }
-  if (env.platform === "darwin") {
-    const r = await env.exec("launchctl", ["print", `gui/${env.uid}/${LABEL}`]);
-    if (r.code !== 0) return "inactive";
-    return /^\s*state = running\s*$/m.test(r.stdout) ? "active" : "failed";
-  }
-  return "not installed";
+  const state = (await env.exec("systemctl", ["--user", "is-active", "japa"])).stdout.trim();
+  return state === "active" || state === "inactive" ? state : "failed";
 }
 
 /** Writes `path` (creating its directory) only when its content differs from `text`; whether it wrote. */
@@ -178,41 +116,24 @@ function writeIfChanged(path: string, text: string): boolean {
 }
 
 /**
- * Installs the unit/plist (rewriting it, and reloading systemd, only when its content changed), enables and starts
- * it, and keeps it running after logout. `log` receives the "enable lingering yourself" line when that fails.
+ * Installs the unit (rewriting it, and reloading systemd, only when its content changed), enables and starts it, and
+ * keeps it running after logout. `log` receives the "enable lingering yourself" line when that fails.
  */
 export async function installService(env: ServiceEnv, log: (s: string) => void): Promise<void> {
-  if (env.platform === "linux") {
-    if (writeIfChanged(unitPath(env), unitText(env))) await env.exec("systemctl", ["--user", "daemon-reload"]);
-    await env.exec("systemctl", ["--user", "enable", "japa"]);
-    await startService(env, log);
-    const linger = await env.exec("loginctl", ["enable-linger", env.user]);
-    if (linger.code !== 0) log(`to keep japa running after you log out: sudo loginctl enable-linger ${env.user}`);
-    return;
-  }
-  if (env.platform === "darwin") {
-    const path = plistPath(env);
-    // launchd doesn't create StandardOutPath's directory: without it the job can't open its log and won't start.
-    mkdirSync(join(env.japaHome, "logs"), { recursive: true });
-    // A changed plist must take effect even if the job is currently loaded: bootout (ignore failure) before
-    // ensuring it's running. An unchanged plist only needs the unconditional "ensure running" step below.
-    if (writeIfChanged(path, plistText(env))) await env.exec("launchctl", ["bootout", `gui/${env.uid}`, path]);
-    await startService(env, log);
-  }
+  if (env.platform !== "linux") return;
+  if (writeIfChanged(unitPath(env), unitText(env))) await env.exec("systemctl", ["--user", "daemon-reload"]);
+  await env.exec("systemctl", ["--user", "enable", "japa"]);
+  await startService(env, log);
+  const linger = await env.exec("loginctl", ["enable-linger", env.user]);
+  if (linger.code !== 0) log(`to keep japa running after you log out: sudo loginctl enable-linger ${env.user}`);
 }
 
-/** Stops, disables and removes the unit/plist. */
+/** Stops, disables and removes the unit. */
 export async function uninstallService(env: ServiceEnv, log: (s: string) => void): Promise<void> {
-  if (env.platform === "linux") {
-    await env.exec("systemctl", ["--user", "disable", "--now", "japa"]);
-    rmSync(unitPath(env), { force: true });
-    await env.exec("systemctl", ["--user", "daemon-reload"]);
-    return;
-  }
-  if (env.platform === "darwin") {
-    await env.exec("launchctl", ["bootout", `gui/${env.uid}`, plistPath(env)]);
-    rmSync(plistPath(env), { force: true });
-  }
+  if (env.platform !== "linux") return;
+  await env.exec("systemctl", ["--user", "disable", "--now", "japa"]);
+  rmSync(unitPath(env), { force: true });
+  await env.exec("systemctl", ["--user", "daemon-reload"]);
 }
 
 /** Refuses with the foreground message while `daemon.lock` is held by a live process the service manager didn't start. */
@@ -221,29 +142,19 @@ export async function startService(env: ServiceEnv, log: (s: string) => void): P
     const pid = foregroundPid(env.japaHome);
     if (pid !== undefined) throw new Error(`japa is already running in the foreground (pid ${pid}); stop it first`);
   }
-  if (env.platform === "linux") {
-    await env.exec("systemctl", ["--user", "start", "japa"]);
-  } else if (env.platform === "darwin") {
-    const r = await env.exec("launchctl", ["bootstrap", `gui/${env.uid}`, plistPath(env)]);
-    // A loaded-but-stopped job (KeepAlive.SuccessfulExit is false, so a non-zero exit leaves it loaded) makes
-    // bootstrap fail because it's already loaded; kickstart (no -k, so it won't kill an already-running job) starts it.
-    if (r.code !== 0) await env.exec("launchctl", ["kickstart", `gui/${env.uid}/${LABEL}`]);
-  }
+  if (env.platform === "linux") await env.exec("systemctl", ["--user", "start", "japa"]);
 }
 
 export async function stopService(env: ServiceEnv): Promise<void> {
   if (env.platform === "linux") await env.exec("systemctl", ["--user", "stop", "japa"]);
-  else if (env.platform === "darwin") await env.exec("launchctl", ["bootout", `gui/${env.uid}`, plistPath(env)]);
 }
 
 export async function restartService(env: ServiceEnv): Promise<void> {
   if (env.platform === "linux") await env.exec("systemctl", ["--user", "restart", "japa"]);
-  else if (env.platform === "darwin") await env.exec("launchctl", ["kickstart", "-k", `gui/${env.uid}/${LABEL}`]);
 }
 
-export function logsCommand(env: ServiceEnv): [string, string[]] {
-  if (env.platform === "linux") return ["journalctl", ["--user", "-u", "japa", "-f"]];
-  return ["tail", ["-f", join(env.japaHome, "logs", "daemon.log")]];
+export function logsCommand(): [string, string[]] {
+  return ["journalctl", ["--user", "-u", "japa", "-f"]];
 }
 
 /**
@@ -292,7 +203,7 @@ export async function serviceCommand(home: string, args: string[]): Promise<void
     case "status":
       return statusAction(env, home, log);
     case "logs": {
-      const [cmd, cmdArgs] = logsCommand(env);
+      const [cmd, cmdArgs] = logsCommand();
       await env.exec(cmd, cmdArgs, { stdio: "inherit" });
       return;
     }

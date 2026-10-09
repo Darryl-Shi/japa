@@ -32,7 +32,7 @@ Commands:
   safe-mode [--default-adapters]
            Restore the last working setup, and optionally the default storage and secrets adapters
   service <install|uninstall|start|stop|restart|status|logs>
-           Run japa in the background: a systemd user service (Linux) or launchd agent (macOS)
+           Run japa in the background: a systemd user service
   setup [--non-interactive] [--no-service]
            Configure models, extensions and the background service
   update [--check] [--branch <b>] [--to <sha>] [--no-restart]

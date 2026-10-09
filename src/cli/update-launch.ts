@@ -19,7 +19,7 @@ export type LaunchDeps = {
 /**
  * How to run `japa update --to <to> --from-chat` (with `--ff-only` unless it's a Roll back). Under the active systemd
  * service: as a transient unit, outside `japa.service`'s cgroup, which its restart would kill, logging to
- * update.log. Otherwise (macOS, a foreground daemon, no service): a detached process, in its own session.
+ * update.log. Otherwise (a foreground daemon, no service): a detached process, in its own session.
  */
 export function launchPlan(o: {
   platform: NodeJS.Platform;

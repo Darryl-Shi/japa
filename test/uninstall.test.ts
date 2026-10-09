@@ -31,7 +31,6 @@ function fakeServiceEnv(overrides: Partial<ServiceEnv> = {}): ServiceEnv {
     customHome: false,
     path: "",
     user: "alice",
-    uid: 1000,
     exec: fakeExec().exec,
     ...overrides,
   };

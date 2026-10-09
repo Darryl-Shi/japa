@@ -298,18 +298,36 @@ test("a --dir whose app/ is a git checkout of something else is refused, keeping
   expect(existsSync(join(dir, "node"))).toBe(false);
 });
 
-test("an unsupported platform is refused", () => {
+/** Runs install.sh with `uname -s` answering `os`, returning its result and the home and install dir it was given. */
+function installOn(os: string) {
   const fakeBin = tmp();
-  writeFileSync(join(fakeBin, "uname"), "#!/bin/sh\necho FreeBSD\n");
+  writeFileSync(join(fakeBin, "uname"), `#!/bin/sh\necho ${os}\n`);
   chmodSync(join(fakeBin, "uname"), 0o755);
   const home = tmp();
   const dir = join(tmp(), "d");
   const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh" };
+  return { result: runInstall(["--dir", dir, "--non-interactive", "--skip-setup"], env), home, dir };
+}
 
-  const result = runInstall(["--dir", dir, "--non-interactive", "--skip-setup"], env);
+test("an unsupported platform is refused", () => {
+  const { result } = installOn("FreeBSD");
 
   expect(result.status).not.toBe(0);
-  expect(result.output).toContain("japa supports Linux and macOS on x64 or arm64");
+  expect(result.output).toContain("japa supports Linux on x64 or arm64");
+});
+
+test("macOS is refused: Linux only", () => {
+  const { result, home, dir } = installOn("Darwin");
+
+  expect(result.status).toBe(1);
+  expect(result.output).toContain("japa runs on Linux only (WSL works).");
+  expect(existsSync(dir)).toBe(false);
+  expect(existsSync(join(home, ".local", "bin", "japa"))).toBe(false);
+});
+
+test("install.sh has no macOS paths left", () => {
+  const text = readFileSync(INSTALL_SH, "utf8");
+  expect(text).not.toMatch(/darwin|brew|macOS/);
 });
 
 test("an install dir with a space and a quote still produces a working launcher", () => {
@@ -347,7 +365,7 @@ test("a system node below the minimum triggers a private download the launcher t
   const home = tmp();
   const dir = join(tmp(), "d");
   const version = "24.14.1"; // test/fixtures/mini-japa/.node-version
-  const dist = `${process.platform}-${process.arch}`; // matches install.sh's OS-ARCH naming (linux|darwin, x64|arm64)
+  const dist = `${process.platform}-${process.arch}`; // matches install.sh's OS-ARCH naming (linux, x64|arm64)
 
   const { tarball, name } = buildFakeNodeTarball(tmp(), version, dist);
   const bytes = readFileSync(tarball);

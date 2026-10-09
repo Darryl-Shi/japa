@@ -851,7 +851,6 @@ function service(state: "active" | "activating" | "failed" | "inactive" | "not i
     customHome: false,
     path: "/usr/bin",
     user: "alice",
-    uid: 1000,
     exec,
   };
   if (state !== "not installed") {

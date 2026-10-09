@@ -23,8 +23,8 @@ export function major(version: string): number {
 
 /** nodejs.org's dist name for `platform`/`arch`, e.g. `linux-x64`. */
 export function nodeDist(platform: NodeJS.Platform, arch: string): string {
-  if ((platform !== "linux" && platform !== "darwin") || (arch !== "x64" && arch !== "arm64")) {
-    throw new Error("japa supports Linux and macOS on x64 or arm64");
+  if (platform !== "linux" || (arch !== "x64" && arch !== "arm64")) {
+    throw new Error("japa supports Linux on x64 or arm64");
   }
   return `${platform}-${arch}`;
 }

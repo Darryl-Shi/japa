@@ -54,8 +54,10 @@ test("major accepts v-prefixed and bare versions", () => {
 
 test("nodeDist", () => {
   expect(nodeDist("linux", "x64")).toBe("linux-x64");
-  expect(nodeDist("darwin", "arm64")).toBe("darwin-arm64");
-  expect(() => nodeDist("win32", "x64")).toThrow("japa supports Linux and macOS on x64 or arm64");
+  expect(nodeDist("linux", "arm64")).toBe("linux-arm64");
+  expect(() => nodeDist("darwin", "arm64")).toThrow("japa supports Linux on x64 or arm64");
+  expect(() => nodeDist("win32", "x64")).toThrow("japa supports Linux on x64 or arm64");
+  expect(() => nodeDist("linux", "ia32")).toThrow("japa supports Linux on x64 or arm64");
 });
 
 test("verifySha256 rejects a mismatch and a missing entry", () => {
@@ -63,14 +65,14 @@ test("verifySha256 rejects a mismatch and a missing entry", () => {
   const file = join(dir, "node-v9.9.9-linux-x64.tar.gz");
   writeFileSync(file, "fake tarball bytes");
   const hash = createHash("sha256").update(readFileSync(file)).digest("hex");
-  const shasums = `${hash}  node-v9.9.9-linux-x64.tar.gz\n${"0".repeat(64)}  node-v9.9.9-darwin-arm64.tar.gz\n`;
+  const shasums = `${hash}  node-v9.9.9-linux-x64.tar.gz\n${"0".repeat(64)}  node-v9.9.9-linux-arm64.tar.gz\n`;
 
   expect(() => verifySha256(file, shasums, "node-v9.9.9-linux-x64.tar.gz")).not.toThrow();
-  expect(() => verifySha256(file, shasums, "node-v9.9.9-darwin-arm64.tar.gz")).toThrow(
-    "checksum mismatch for node-v9.9.9-darwin-arm64.tar.gz",
+  expect(() => verifySha256(file, shasums, "node-v9.9.9-linux-arm64.tar.gz")).toThrow(
+    "checksum mismatch for node-v9.9.9-linux-arm64.tar.gz",
   );
-  expect(() => verifySha256(file, shasums, "node-v9.9.9-darwin-x64.tar.gz")).toThrow(
-    "node-v9.9.9-darwin-x64.tar.gz is not in SHASUMS256.txt",
+  expect(() => verifySha256(file, shasums, "node-v9.9.9-linux-ppc64le.tar.gz")).toThrow(
+    "node-v9.9.9-linux-ppc64le.tar.gz is not in SHASUMS256.txt",
   );
 });
 

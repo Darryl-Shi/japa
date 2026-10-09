@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { markOffered } from "../src/cli/configure.ts";
 import { openSetupContext } from "../src/cli/context.ts";
 import type { Exec, ExecResult } from "../src/cli/exec.ts";
@@ -56,7 +56,6 @@ function makeServiceEnv(overrides: Partial<ServiceEnv> = {}): ServiceEnv {
     customHome: false,
     path: "/usr/bin:/bin",
     user: "alice",
-    uid: 1000,
     exec: fakeExec().exec,
     ...overrides,
   };
@@ -111,6 +110,56 @@ async function seedModels(home: string): Promise<void> {
   await runSetup(home, p, makeOptions());
   p.done();
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+test("setup refuses on macOS, before touching anything", async () => {
+  const home = tempHome();
+  const logs: string[] = [];
+
+  const code = await runSetup(
+    home,
+    undefined,
+    makeOptions({ interactive: false, serviceEnv: makeServiceEnv({ platform: "darwin" }), log: (s) => logs.push(s) }),
+  );
+
+  expect(code).toBe(1);
+  expect(logs).toEqual(["japa runs on Linux only (WSL works)."]);
+  expect(existsSync(join(home, "setup.json"))).toBe(false);
+});
+
+test("setup says how to install bubblewrap when it doesn't work, and carries on", async () => {
+  vi.stubEnv("JAPA_BWRAP", "/nonexistent");
+  const home = tempHome();
+  const probe = await openSetupContext(home, [REPO_EXTENSIONS]);
+  const modelId = probe.models.getModels("anthropic")[0]!.id;
+  const logs: string[] = [];
+
+  const code = await runSetup(
+    home,
+    undefined,
+    makeOptions({ interactive: false, env: { JAPA_PROVIDER: "anthropic", JAPA_MODEL: modelId }, log: (s) => logs.push(s) }),
+  );
+
+  expect(code).toBe(0);
+  expect(logs.filter((l) => l.startsWith("Jobs need bubblewrap: "))).toHaveLength(1);
+  expect(logs.find((l) => l.startsWith("Jobs need bubblewrap: "))).toMatch(
+    /^Jobs need bubblewrap: \S.*\. Install it with: sudo apt install bubblewrap$/,
+  );
+  expect(readSettings(home).models.cos).toEqual({ provider: "anthropic", modelId });
+});
+
+test("setup says nothing about bubblewrap when it works", async () => {
+  vi.stubEnv("JAPA_BWRAP", "true"); // `true --ro-bind / / true` exits 0, as a working bwrap does
+  const home = tempHome();
+  const logs: string[] = [];
+
+  await runSetup(home, undefined, makeOptions({ interactive: false, log: (s) => logs.push(s) }));
+
+  expect(logs.some((l) => l.includes("bubblewrap"))).toBe(false);
+});
 
 test("first run writes models, key and extension choices, and reports no service manager", async () => {
   const home = tempHome();
