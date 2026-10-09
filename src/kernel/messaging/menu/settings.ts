@@ -4,6 +4,7 @@ import type { KernelContext, MessagingContext } from "../../contracts.ts";
 import { getPath, type Settings } from "../../settings.ts";
 import { extensionsMenu } from "./extensions.ts";
 import { ago, type Button, type Nav, type Page } from "./nav.ts";
+import { schedulesMenu } from "./schedules.ts";
 
 const ROLES = [
   ["CoS", "cos"],
@@ -54,6 +55,7 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
     });
 
   const extensions = extensionsMenu(nav, messaging, home);
+  const schedules = schedulesMenu(nav, messaging, home);
 
   // Each role's model; an unset Worker or Consolidation uses the CoS's.
   const models: Page = async (outcome) => {
@@ -113,17 +115,6 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
     const confirm = nav.confirm(`Undo "${c.title}"?`, "Undo", () => messaging.undoChange(c.id), recent, change(c));
     const rows = [[nav.button("Undo", confirm)]];
     return nav.screen({ title: `Change ${c.id}`, body, rows, back: recent, home, outcome });
-  };
-
-  const schedules: Page = async (outcome) => {
-    const list = ((await messaging.tool("schedule_list", {}))?.details ?? []) as { id: string; label: string }[];
-    const remove = (id: string) => async () => textOf(await messaging.tool("schedule_remove", { id }));
-    const items = list.map(({ id, label }) => {
-      const page = nav.confirm(`Remove schedule "${label}"?`, "Remove", remove(id), schedules, schedules);
-      return [label, page] as const;
-    });
-    const body = list.length === 0 ? "No schedules." : undefined;
-    return nav.paged({ title: "Schedules", body, items, back: home, home, outcome });
   };
 
   return home;

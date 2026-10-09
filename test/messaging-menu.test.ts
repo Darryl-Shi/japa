@@ -281,17 +281,105 @@ test("long lists are paged 8 at a time", async () => {
   expect(labels()).toEqual(first);
 });
 
-test("a schedule is removed from the menu after confirmation", async () => {
-  await tool(daemon, faux, "schedule_add", { text: "water plants", cron: "0 9 * * *" });
-  await fake.receive({ command: "settings" });
-  await fake.press("Schedules");
-  await fake.press("water plants (0 9 * * *)");
-  expect(fake.edited.at(-1)!.markdown).toBe('**Remove schedule "water plants (0 9 * * *)"?**');
-  expect(labels()).toEqual(["Remove", "Cancel"]);
-  await fake.press("Remove");
-  expect(fake.edited.at(-1)!.markdown).toBe("✓ Removed schedule 1.\n\n**Schedules**\n\nNo schedules.");
-  expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
-  expect(await tool(daemon, faux, "changes_list")).toMatch(/Removed schedule "water plants"/);
+describe("schedules", { timeout: 30_000 }, () => {
+  const WATER = "water plants (0 9 * * *)";
+  const local = (time: number) => new Date(time).toLocaleString();
+  /** The `next` time of schedule `id`, from `schedule_list`'s details. */
+  const nextOf = async (id: string) => {
+    const details = (await hook.messaging!.tool("schedule_list", {}))!.details as { id: string; next: number }[];
+    return details.find((s) => s.id === id)!.next;
+  };
+  /** Adds the water plants schedule and opens its detail screen. */
+  async function openWater() {
+    await tool(daemon, faux, "schedule_add", { text: "water plants", cron: "0 9 * * *" });
+    await fake.receive({ command: "settings" });
+    await fake.press("Schedules");
+    expect(labels()).toEqual([WATER, "‹ Back", "⌂ Home"]);
+    await fake.press(WATER);
+  }
+
+  test("a schedule's detail shows its text, how it repeats and its next time", async () => {
+    await openWater();
+    const next = await nextOf("1");
+    expect(fake.edited.at(-1)!.markdown).toBe(`**Schedule 1**\n\nwater plants\nRepeats: 0 9 * * *\nNext: ${local(next)}`);
+    expect(labels()).toEqual(["Pause", "Remove", "‹ Back", "⌂ Home"]);
+    await fake.press("‹ Back");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Schedules**");
+  });
+
+  test("a once schedule's detail shows when it fires", async () => {
+    const at = new Date(Date.now() + 86_400_000).toISOString();
+    await tool(daemon, faux, "schedule_add", { text: "call mum", at });
+    await fake.receive({ command: "settings" });
+    await fake.press("Schedules");
+    const when = local(Date.parse(at));
+    await fake.press(`call mum (${when})`);
+    expect(fake.edited.at(-1)!.markdown).toBe(`**Schedule 1**\n\ncall mum\nOnce: ${when}\nNext: ${when}`);
+  });
+
+  test("Pause pauses a schedule, marked ⏸ in the list; Resume resumes it", async () => {
+    await openWater();
+    await fake.press("Pause");
+    expect(fake.edited.at(-1)!.markdown).toBe(
+      "✓ Paused schedule 1.\n\n**Schedule 1**\n\nwater plants\nRepeats: 0 9 * * *\nPaused",
+    );
+    expect(labels()).toEqual(["Resume", "Remove", "‹ Back", "⌂ Home"]);
+    expect(await tool(daemon, faux, "schedule_list")).toMatch(/water plants \(paused\)$/);
+    await fake.press("‹ Back");
+    expect(labels()).toEqual([`⏸ ${WATER}`, "‹ Back", "⌂ Home"]);
+    await fake.press(`⏸ ${WATER}`);
+    await fake.press("Resume");
+    const next = local(await nextOf("1"));
+    expect(fake.edited.at(-1)!.markdown).toBe(
+      `✓ Resumed schedule 1: next at ${next}.\n\n**Schedule 1**\n\nwater plants\nRepeats: 0 9 * * *\nNext: ${next}`,
+    );
+    expect(labels()).toEqual(["Pause", "Remove", "‹ Back", "⌂ Home"]);
+    await fake.press("‹ Back");
+    expect(labels()).toEqual([WATER, "‹ Back", "⌂ Home"]);
+    expect(await tool(daemon, faux, "changes_list")).toMatch(/Resumed schedule "water plants"/);
+  });
+
+  test("a schedule is removed from its detail after confirmation; Cancel goes back to the detail", async () => {
+    await openWater();
+    await fake.press("Remove");
+    expect(fake.edited.at(-1)!.markdown).toBe(`**Remove schedule "${WATER}"?**`);
+    expect(labels()).toEqual(["Remove", "Cancel"]);
+    await fake.press("Cancel");
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*Schedule 1\*\*/);
+    await fake.press("Remove");
+    await fake.press("Remove");
+    expect(fake.edited.at(-1)!.markdown).toBe("✓ Removed schedule 1.\n\n**Schedules**\n\nNo schedules.");
+    expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
+    expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
+    expect(await tool(daemon, faux, "changes_list")).toMatch(/Removed schedule "water plants"/);
+  });
+
+  test("a schedule gone meanwhile shows the list with ✗", async () => {
+    await openWater();
+    await tool(daemon, faux, "schedule_remove", { id: "1" });
+    await fake.press("Pause");
+    expect(fake.edited.at(-1)!.markdown).toBe("✗ No schedule 1.\n\n**Schedules**\n\nNo schedules.");
+    expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
+    await tool(daemon, faux, "schedule_add", { text: "feed cat", cron: "0 8 * * *" });
+    await fake.press("‹ Back");
+    await fake.press("Schedules");
+    await tool(daemon, faux, "schedule_remove", { id: "2" });
+    await fake.press("feed cat (0 8 * * *)");
+    expect(fake.edited.at(-1)!.markdown).toBe("✗ No schedule 2.\n\n**Schedules**\n\nNo schedules.");
+  });
+
+  test("without schedules, or without the schedule tools, the list says No schedules.", async () => {
+    await fake.receive({ command: "settings" });
+    await fake.press("Schedules");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Schedules**\n\nNo schedules.");
+    expect(labels()).toEqual(["‹ Back", "⌂ Home"]);
+    const f = fakeAdapter();
+    const menu = createMenu(f.adapter, fakeKernel, { tool: settingsGet } as unknown as MessagingContext, () => []);
+    await menu.command({ ...msg, command: "settings" });
+    await presser(menu, f)("Schedules");
+    expect(f.edited.at(-1)!.markdown).toBe("**Schedules**\n\nNo schedules.");
+    expect(f.edited.at(-1)!.buttons!.flat().map((b) => b.label)).toEqual(["‹ Back", "⌂ Home"]);
+  });
 });
 
 test("outcomeLine: Not changed: X is ✗ X; another No or Not reply is ✗; anything else ✓", () => {
