@@ -5,6 +5,7 @@ import {
   CALENDAR_DESCRIPTION,
   calendar,
   calendarParameters,
+  midnight,
 } from "../extensions/google/calendar.ts";
 import { schemaProblems } from "../src/kernel/tool-schema.ts";
 
@@ -146,8 +147,11 @@ test("list: all-day events show the date (and the last day for several)", async 
   );
 });
 
-test("list: from, to, query and calendar pass through; bare dates are that day's start", async () => {
-  const { api, calls } = fake({ "GET calendars/team%23x%40group.calendar.google.com/events": { items: [] } });
+test("list: from, to, query and calendar pass through; a bare date is midnight in the calendar's zone", async () => {
+  const { api, calls } = fake({
+    "GET calendars/team%23x%40group.calendar.google.com": { timeZone: "America/Los_Angeles" },
+    "GET calendars/team%23x%40group.calendar.google.com/events": { items: [] },
+  });
   const out = await calendar(
     api,
     {
@@ -161,23 +165,55 @@ test("list: from, to, query and calendar pass through; bare dates are that day's
   );
   expect(out).toBe("No events.");
   expect(calls).toEqual([
+    ["GET", "calendars/team%23x%40group.calendar.google.com", { query: { fields: "timeZone" } }],
     [
       "GET",
       "calendars/team%23x%40group.calendar.google.com/events",
-      { query: { timeMin: "2026-11-01T00:00:00Z", timeMax: "2026-11-03T09:00:00-05:00", q: "dentist", ...LIST } },
+      {
+        query: { timeMin: "2026-11-01T00:00:00-07:00", timeMax: "2026-11-03T09:00:00-05:00", q: "dentist", ...LIST },
+      },
     ],
   ]);
 });
 
 test("list: a from without a to looks 7 days ahead of it; a bad from is a reply", async () => {
   const { api, calls } = fake({ "GET calendars/primary/events": { items: [] } });
-  await calendar(api, { action: "list", from: "2026-11-01" }, now);
+  await calendar(api, { action: "list", from: "2026-11-01", timeZone: "Europe/Paris" }, now);
+  // The given zone: no lookup of the calendar's.
+  expect(calls).toHaveLength(1);
   expect(calls[0][2]).toMatchObject({
-    query: { timeMin: "2026-11-01T00:00:00Z", timeMax: "2026-11-08T00:00:00.000Z" },
+    query: { timeMin: "2026-11-01T00:00:00+01:00", timeMax: "2026-11-07T23:00:00.000Z" },
   });
   await expect(calendar(api, { action: "list", from: "next week" }, now)).rejects.toThrow(
     new GoogleError("Not a date or time: next week"),
   );
+});
+
+test("list: a bare date in Los Angeles is local midnight there; times alone fetch no zone", async () => {
+  const { api, calls } = fake({
+    "GET calendars/primary": { timeZone: "America/Los_Angeles" },
+    "GET calendars/primary/events": { items: [] },
+  });
+  await calendar(api, { action: "list", from: "2026-10-16", to: "2026-10-17" }, now);
+  expect(calls.map((c) => c[1])).toEqual(["calendars/primary", "calendars/primary/events"]);
+  expect(calls[1][2]).toMatchObject({
+    query: { timeMin: "2026-10-16T00:00:00-07:00", timeMax: "2026-10-17T00:00:00-07:00" },
+  });
+  calls.length = 0;
+  await calendar(api, { action: "list", from: "2026-10-16T09:00:00Z", to: "2026-10-17T09:00:00Z" }, now);
+  expect(calls.map((c) => c[1])).toEqual(["calendars/primary/events"]);
+});
+
+test("midnight: the zone's offset at that local midnight, across DST changes", () => {
+  expect(midnight("2026-10-16", "America/Los_Angeles")).toBe("2026-10-16T00:00:00-07:00");
+  // DST starts 2026-03-08 and ends 2026-11-01 at 2 AM in Los Angeles: midnight is before each change.
+  expect(midnight("2026-03-08", "America/Los_Angeles")).toBe("2026-03-08T00:00:00-08:00");
+  expect(midnight("2026-03-09", "America/Los_Angeles")).toBe("2026-03-09T00:00:00-07:00");
+  expect(midnight("2026-11-01", "America/Los_Angeles")).toBe("2026-11-01T00:00:00-07:00");
+  expect(midnight("2026-11-02", "America/Los_Angeles")).toBe("2026-11-02T00:00:00-08:00");
+  expect(midnight("2026-07-01", "Asia/Kathmandu")).toBe("2026-07-01T00:00:00+05:45");
+  expect(midnight("2026-07-01", "UTC")).toBe("2026-07-01T00:00:00+00:00");
+  expect(() => midnight("2026-07-01", "Mars/Olympus")).toThrow(new GoogleError("Unknown time zone: Mars/Olympus"));
 });
 
 test("create: dates make an all-day event, attendees become objects", async () => {
@@ -294,8 +330,9 @@ test("delete: DELETE the event", async () => {
   await expect(calendar(api, { action: "delete" }, now)).rejects.toThrow(new GoogleError("delete needs id"));
 });
 
-test("freebusy: primary by default, busy times in UTC without a zone", async () => {
+test("freebusy: primary by default, bare dates in the user's zone, busy times in UTC without a zone", async () => {
   const { api, calls } = fake({
+    "GET calendars/primary": { timeZone: "America/Los_Angeles" },
     "POST freeBusy": {
       calendars: {
         primary: {
@@ -309,10 +346,17 @@ test("freebusy: primary by default, busy times in UTC without a zone", async () 
   });
   const out = await calendar(api, { action: "freebusy", from: "2026-10-09", to: "2026-10-10" }, now);
   expect(calls).toEqual([
+    ["GET", "calendars/primary", { query: { fields: "timeZone" } }],
     [
       "POST",
       "freeBusy",
-      { body: { timeMin: "2026-10-09T00:00:00Z", timeMax: "2026-10-10T00:00:00Z", items: [{ id: "primary" }] } },
+      {
+        body: {
+          timeMin: "2026-10-09T00:00:00-07:00",
+          timeMax: "2026-10-10T00:00:00-07:00",
+          items: [{ id: "primary" }],
+        },
+      },
     ],
   ]);
   expect(out).toBe(
@@ -357,8 +401,8 @@ test("freebusy: several people in a given zone; free and unavailable calendars",
   );
 });
 
-test("freebusy: the asked zone formats times when the response has none", async () => {
-  const { api } = fake({
+test("freebusy: the asked zone sets bare dates' midnight and formats times when the response has none", async () => {
+  const { api, calls } = fake({
     "POST freeBusy": {
       calendars: { primary: { busy: [{ start: "2026-10-09T15:00:00Z", end: "2026-10-09T16:00:00Z" }] } },
     },
@@ -369,6 +413,10 @@ test("freebusy: the asked zone formats times when the response has none", async 
     now,
   );
   expect(out).toBe("primary: busy Oct 10, 2026, 12:00 AM–Oct 10, 2026, 1:00 AM");
+  expect(calls).toHaveLength(1);
+  expect(calls[0][2]).toMatchObject({
+    body: { timeMin: "2026-10-09T00:00:00+09:00", timeMax: "2026-10-10T00:00:00+09:00" },
+  });
 });
 
 test("freebusy needs from and to", async () => {

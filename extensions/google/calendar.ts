@@ -32,14 +32,15 @@ export type CalendarArgs = Static<typeof calendarParameters>;
 export const CALENDAR_DESCRIPTION = [
   "The user's Google Calendar. Actions:",
   "calendars — the user's calendars and their ids",
-  'list { from?, to?, calendar? = "primary", query? } — events, by default the next 7 days; event ids and times ' +
-    "in the calendar's time zone",
+  'list { from?, to?, calendar? = "primary", query?, timeZone? } — events, by default the next 7 days; event ids ' +
+    "and times in the calendar's time zone",
   "create { summary, start, end, attendees?, location?, description?, timeZone?, calendar? } — YYYY-MM-DD dates " +
     "make an all-day event (end is the day after the last); RFC 3339 times otherwise",
   "update { id, calendar?, summary?, start?, end?, attendees?, location?, description?, timeZone? } — only the " +
     "given fields change; attendees replaces the list",
   "delete { id, calendar? }",
   "freebusy { from, to, emails?, timeZone? } — busy times of people's calendars (default the user's)",
+  "A bare YYYY-MM-DD in from or to is that day's midnight in timeZone, else in the calendar's time zone.",
   "Event ids come from earlier list results; calendar ids from calendars. Attendees are emailed on create, update " +
     "and delete.",
 ].join("\n");
@@ -65,8 +66,53 @@ const formatter = (timeZone: string, time = true) => {
   return (date: Date) => format.format(date).replace(/[\u202f\u00a0]/g, " ");
 };
 
-/** A bare date is that day's start (UTC); anything else is passed on as given. */
-const toTime = (value: string) => (DATE.test(value) ? `${value}T00:00:00Z` : value);
+/** `timeZone`'s offset from UTC at `instant`, in minutes. */
+function offsetMinutes(instant: Date, timeZone: string): number {
+  let name: string;
+  try {
+    const format = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" });
+    name = format.formatToParts(instant).find((part) => part.type === "timeZoneName")?.value ?? "GMT";
+  } catch {
+    throw new GoogleError(`Unknown time zone: ${timeZone}`);
+  }
+  // "GMT-07:00", "GMT+05:45", or "GMT" for UTC itself.
+  const match = /^GMT([+-])(\d{1,2}):?(\d{2})?$/.exec(name);
+  if (!match) return 0;
+  return (match[1] === "-" ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3] ?? 0));
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** A bare date's local midnight in `timeZone`, as RFC 3339 with the zone's offset at that moment. */
+export function midnight(date: string, timeZone: string): string {
+  const utc = new Date(`${date}T00:00:00Z`).getTime();
+  // The offset at UTC midnight, then at the local midnight it points to: right across a DST change that day.
+  const guess = offsetMinutes(new Date(utc), timeZone);
+  const offset = offsetMinutes(new Date(utc - guess * 60_000), timeZone);
+  const abs = Math.abs(offset);
+  return `${date}T00:00:00${offset < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
+/**
+ * The values with each bare date turned into local midnight: in `timeZone` when given, else in the calendar's zone,
+ * fetched only when a bare date is there. Anything else passes on as given.
+ */
+async function toTimes<T extends string | undefined>(
+  api: Api,
+  values: T[],
+  timeZone: string | undefined,
+  calendar = "primary",
+): Promise<T[]> {
+  if (!values.some((value) => value !== undefined && DATE.test(value))) return values;
+  let zone = timeZone;
+  if (!zone) {
+    const found = await api.json<{ timeZone?: string }>("GET", `${BASE}/calendars/${encodeURIComponent(calendar)}`, {
+      query: { fields: "timeZone" },
+    });
+    zone = found?.timeZone ?? "UTC";
+  }
+  return values.map((value) => (value !== undefined && DATE.test(value) ? midnight(value, zone) : value) as T);
+}
 
 /** A date or a time as the API's start/end. */
 const when = (value: string, timeZone?: string): When =>
@@ -100,8 +146,9 @@ function span(event: Event, timeZone: string): string {
 }
 
 async function list(api: Api, args: CalendarArgs, now: () => Date): Promise<string> {
-  const timeMin = args.from ? toTime(args.from) : now().toISOString();
-  let timeMax = args.to ? toTime(args.to) : undefined;
+  const [from, to] = await toTimes(api, [args.from, args.to], args.timeZone, args.calendar);
+  const timeMin = from ?? now().toISOString();
+  let timeMax = to;
   if (!timeMax) {
     const start = new Date(timeMin).getTime();
     if (Number.isNaN(start)) throw new GoogleError(`Not a date or time: ${args.from}`);
@@ -166,9 +213,10 @@ type Busy = { busy?: { start: string; end: string }[]; errors?: { reason?: strin
 async function freebusy(api: Api, args: CalendarArgs): Promise<string> {
   if (!args.from || !args.to) throw new GoogleError("freebusy needs from and to");
   const ids = args.emails && args.emails.length > 0 ? args.emails : ["primary"];
+  const [timeMin, timeMax] = await toTimes(api, [args.from, args.to], args.timeZone);
   const body = {
-    timeMin: toTime(args.from),
-    timeMax: toTime(args.to),
+    timeMin,
+    timeMax,
     ...(args.timeZone ? { timeZone: args.timeZone } : {}),
     items: ids.map((id) => ({ id })),
   };
