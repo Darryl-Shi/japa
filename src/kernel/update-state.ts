@@ -47,11 +47,17 @@ const STATES: readonly string[] = ["running", "updated", "up to date", "failed"]
 
 /** A running update with no pid this long after it started never got going. */
 const START_MS = 60_000;
+/**
+ * A running update still running this long after it started is taken as interrupted: `japa update` takes minutes, so
+ * its pid, if alive, is another process's that reused it after an unrecorded death; without this it would block
+ * `/update` for good.
+ */
+const STUCK_MS = 60 * 60_000;
 
 export const updateFile = (home: string) => join(home, "update.json");
 export const updateLog = (home: string) => join(home, "logs", "update.log");
 
-/** Whether `value` has the fields every reader relies on. */
+/** Whether `value` has the fields every reader relies on; a pid, when there is one, is a positive integer. */
 function isUpdateState(value: unknown): value is UpdateState {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const s = value as Record<string, unknown>;
@@ -60,6 +66,7 @@ function isUpdateState(value: unknown): value is UpdateState {
     typeof s.state === "string" &&
     STATES.includes(s.state) &&
     typeof s.started === "number" &&
+    (s.pid === undefined || (Number.isInteger(s.pid) && (s.pid as number) > 0)) &&
     typeof chat === "object" &&
     chat !== null &&
     typeof chat.adapter === "string" &&
@@ -95,13 +102,17 @@ export function patchUpdateState(home: string, patch: Partial<UpdateState>): voi
   if (state !== undefined) writeUpdateState(home, { ...state, ...patch });
 }
 
-/** "running", "interrupted" (its pid is dead, or it has none 60 s after it started) or "finished". */
+/**
+ * "running", "interrupted" (its pid is dead, it has none 60 s after it started, or it started over `STUCK_MS` ago) or
+ * "finished".
+ */
 export function liveness(
   state: UpdateState,
   now: number,
   alive: (pid: number) => boolean = isAlive,
 ): "running" | "interrupted" | "finished" {
   if (state.state !== "running") return "finished";
+  if (now - state.started > STUCK_MS) return "interrupted";
   if (state.pid === undefined) return now - state.started > START_MS ? "interrupted" : "running";
   return alive(state.pid) ? "running" : "interrupted";
 }

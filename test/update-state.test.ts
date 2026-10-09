@@ -38,6 +38,16 @@ test("a missing, empty or corrupt update.json reads as undefined", () => {
   }
 });
 
+test("an update.json whose pid isn't a positive integer reads as undefined", () => {
+  const home = tmp();
+  for (const pid of [0, -1, 1.5, "7", null]) {
+    writeFileSync(updateFile(home), JSON.stringify({ ...STATE, pid }));
+    expect(readUpdateState(home), String(pid)).toBeUndefined();
+  }
+  writeFileSync(updateFile(home), JSON.stringify({ ...STATE, pid: 7 }));
+  expect(readUpdateState(home)).toEqual({ ...STATE, pid: 7 });
+});
+
 test("write then read round-trips, via a temp file in the same directory", () => {
   const home = tmp();
   writeFileSync(updateFile(home), "old\n");
@@ -82,6 +92,13 @@ test("liveness: a live pid runs, a dead one is interrupted, no pid is interrupte
   for (const state of ["updated", "up to date", "failed"] as const) {
     expect(liveness({ ...STATE, state, pid: 8 }, now, alive), state).toBe("finished");
   }
+});
+
+test("liveness: a running update started over an hour ago is interrupted, even with a live pid", () => {
+  const alive = () => true;
+  expect(liveness({ ...STATE, pid: 7 }, STATE.started + 3_599_000, alive)).toBe("running");
+  expect(liveness({ ...STATE, pid: 7 }, STATE.started + 3_601_000, alive)).toBe("interrupted");
+  expect(liveness({ ...STATE, state: "updated", pid: 7 }, STATE.started + 3_601_000, alive)).toBe("finished");
 });
 
 test("liveness checks the pid itself by default", () => {
