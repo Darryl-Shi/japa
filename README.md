@@ -252,12 +252,13 @@ secret, and the bot deletes it at once; anything else you send goes to the CoS a
 be open at once; answer them in any order. `Decline` withdraws the request and tells the CoS you said no.
 
 `/update` updates japa from the chat. It checks for new commits and lists them, with `Update now` and
-`Cancel`. `Update now` runs `japa update` outside the daemon (a transient systemd unit when the service is
-running, a detached process otherwise), which restarts the service; the result — updated, failed and rolled back, or
-already up to date — is reported back in the chat you asked from, with a `Roll back` button that returns to
-the commit you were on (it asks first, and works offline). While one runs, `/update` says so. Progress is
-recorded in `~/.japa/update.json` and logged to `~/.japa/logs/update.log`. It needs japa running as the
-service or `japa daemon`; with a foreground daemon, the report asks you to restart it yourself.
+`Cancel`. `Update now` runs `japa update` outside the daemon (a transient systemd unit when the Linux
+service is running, a detached process otherwise, including on macOS), which restarts the service; the
+result — updated, failed and rolled back, or already up to date — is reported back in the chat you asked
+from, with a `Roll back` button that returns to the commit you were on (it asks first, and works offline).
+While one runs, `/update` says so. Progress is recorded in `~/.japa/update.json` and logged to
+`~/.japa/logs/update.log`. It needs japa running as the service or `japa daemon`; with a foreground daemon,
+the report asks you to restart it yourself.
 
 ## Desktop
 
