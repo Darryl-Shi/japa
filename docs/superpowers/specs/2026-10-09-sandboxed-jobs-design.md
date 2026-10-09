@@ -132,14 +132,15 @@ Consequences, accepted:
 
 ### 4.1 At job start
 
-1. `git clone --local <home> <home>/.jobs/<id>` at `HEAD` (objects are hardlinked, not shared through alternates). The real tree is always clean
+1. `git clone --local --no-hardlinks <home> <home>/.jobs/<id>` at `HEAD` (objects are copied: no shared inodes, no
+   alternates). Also `<home>/.jobs/<id>.tmp`, the job's private `/tmp`. The real tree is always clean
    (§6.1), so `HEAD` is exactly what's installed. A `--local` clone holds its own objects, so it works without the
    real `.git` (hidden in the sandbox). `.jobs/` is added to the workspace `.gitignore`.
 2. Create `<clone>/node_modules/japa` as `linkSdk` does for the real workspace, so `japa/sdk` imports and
    `japa check` work inside the job.
-3. The starting commit is the clone's `origin/main` (set by `git clone`, and not fetchable from inside the sandbox,
-   where the real repo is hidden). The clone is made on the job's first tool call, so `job_start` itself writes
-   nothing to disk.
+3. The starting commit is written to `<home>/.jobs/<id>.base`, outside the clone, and the clone's `origin` remote is
+   removed: inside the sandbox a job could `git fetch` and move `origin/main`. The clone is made on the job's first
+   tool call, so `job_start` itself writes nothing to disk.
 
 ### 4.2 While the job runs
 
