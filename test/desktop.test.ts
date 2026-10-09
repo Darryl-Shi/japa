@@ -6,7 +6,7 @@ import { OMITTED, recentImagesOnly } from "../extensions/desktop/images.ts";
 import { desktopExtension } from "../extensions/desktop/index.ts";
 import { LockDoc } from "../extensions/desktop/lock.ts";
 import { fakeDocker, testConfig } from "./desktop-helpers.ts";
-import { bootTest, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, NO_BWRAP, waitFor } from "./helpers.ts";
 import { ask, call, reported, say, script } from "./jobs-helpers.ts";
 
 test("only the 3 newest screenshots stay in the model's context", () => {
@@ -42,7 +42,7 @@ test("the chief of staff's glances: the model sees 3 screenshots, storage keeps 
 
 test("a default install loads the desktop without touching Docker", async () => {
   const { daemon } = await bootTest();
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   expect(daemon.status().extensions).toContainEqual({ name: "desktop",
     summary: "Gives me my own computer: a desktop with a browser and apps that I can see and operate",
     provides: ["tool"], status: "noVNC: http://127.0.0.1:6080/vnc.html (password: secret desktop.vncPassword)", state: "on" });
@@ -79,7 +79,7 @@ test("the desktop extension provides no environment", () => {
   expect((ext.provides!.tool as ToolRegistration[]).map((t) => t.name)).toEqual(["computer", "browser"]);
 });
 
-test("a job outside the container can act on the desktop", async () => {
+test.skipIf(NO_BWRAP)("a job outside the container can act on the desktop", async () => {
   const fake = fakeDocker();
   const { daemon, faux } = await bootTest({}, [desktopExtension(testConfig(fake.docker))]);
   script(faux, (role, text) =>

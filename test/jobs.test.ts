@@ -19,9 +19,8 @@ import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
-import { probeSandbox } from "../src/kernel/sandbox/bwrap.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
-import { bootTest, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, NO_BWRAP, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts, tool } from "./jobs-helpers.ts";
 
 /** Each `create` of the probe extension's environments, by environment name. */
@@ -64,8 +63,6 @@ async function bootWith(workers: Record<string, string> = {}): Promise<{ daemon:
 const profile = (name: string, lines: string[]) =>
   ["---", `name: ${name}`, "description: Test", ...lines, "---", "Work."].join("\n");
 
-/** Whether bwrap works here; the tests that run a job's tools in its sandbox are skipped where it doesn't. */
-const NO_BWRAP = probeSandbox() !== undefined;
 const HOME = process.env.HOME;
 
 /**
@@ -117,7 +114,7 @@ async function jobResults(daemon: Daemon): Promise<string[]> {
   return texts(job, "toolResult");
 }
 
-test("a job runs and reports once", async () => {
+test.skipIf(NO_BWRAP)("a job runs and reports once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start sum") return call("job_start", { title: "Sum", brief: "Add 2 and 2" });
@@ -131,7 +128,7 @@ test("a job runs and reports once", async () => {
   await daemon.close();
 });
 
-test("a job asks with job_ask and resumes on a follow-up", async () => {
+test.skipIf(NO_BWRAP)("a job asks with job_ask and resumes on a follow-up", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
@@ -152,7 +149,7 @@ test("a job asks with job_ask and resumes on a follow-up", async () => {
   await daemon.close();
 });
 
-test("a run that ends without job_complete or job_ask is nudged, then completes", async () => {
+test.skipIf(NO_BWRAP)("a run that ends without job_complete or job_ask is nudged, then completes", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start sum") return call("job_start", { title: "Sum", brief: "Add 2 and 2" });
@@ -167,7 +164,7 @@ test("a run that ends without job_complete or job_ask is nudged, then completes"
   await daemon.close();
 });
 
-test("a nudged run can ask with job_ask", async () => {
+test.skipIf(NO_BWRAP)("a nudged run can ask with job_ask", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
@@ -181,7 +178,7 @@ test("a nudged run can ask with job_ask", async () => {
   await daemon.close();
 });
 
-test("a nudged run that ends with text reports it done", async () => {
+test.skipIf(NO_BWRAP)("a nudged run that ends with text reports it done", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
@@ -196,7 +193,7 @@ test("a nudged run that ends with text reports it done", async () => {
   await daemon.close();
 });
 
-test("an empty run is nudged; an empty nudged run fails", async () => {
+test.skipIf(NO_BWRAP)("an empty run is nudged; an empty nudged run fails", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
@@ -211,7 +208,7 @@ test("an empty run is nudged; an empty nudged run fails", async () => {
   await daemon.close();
 });
 
-test("a finished job that answers a follow-up with text is nudged, not asked", async () => {
+test.skipIf(NO_BWRAP)("a finished job that answers a follow-up with text is nudged, not asked", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
@@ -229,7 +226,7 @@ test("a finished job that answers a follow-up with text is nudged, not asked", a
   await daemon.close();
 });
 
-test("a message queued behind the nudge is decided on its own", async () => {
+test.skipIf(NO_BWRAP)("a message queued behind the nudge is decided on its own", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -253,7 +250,7 @@ test("a message queued behind the nudge is decided on its own", async () => {
   await daemon.close();
 });
 
-test("a steer queued during a run's last answer is decided on its own, without a nudge", async () => {
+test.skipIf(NO_BWRAP)("a steer queued during a run's last answer is decided on its own, without a nudge", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -274,7 +271,7 @@ test("a steer queued during a run's last answer is decided on its own, without a
   await daemon.close();
 });
 
-test("a follow-up queued during a run's last answer can ask; the job waits for the answer", async () => {
+test.skipIf(NO_BWRAP)("a follow-up queued during a run's last answer can ask; the job waits for the answer", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -296,7 +293,7 @@ test("a follow-up queued during a run's last answer can ask; the job waits for t
   await daemon.close();
 });
 
-test("a finished job nudged after a queued follow-up is running during the nudge", async () => {
+test.skipIf(NO_BWRAP)("a finished job nudged after a queued follow-up is running during the nudge", async () => {
   const { daemon, faux } = await bootWith();
   const first = held();
   const nudge = held();
@@ -321,7 +318,7 @@ test("a finished job nudged after a queued follow-up is running during the nudge
   await daemon.close();
 });
 
-test("job_progress and job_complete in one message report done once", async () => {
+test.skipIf(NO_BWRAP)("job_progress and job_complete in one message report done once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
     if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
@@ -338,7 +335,7 @@ test("job_progress and job_complete in one message report done once", async () =
   await daemon.close();
 });
 
-test("job_complete and job_ask in one message: the first ends the turn", async () => {
+test.skipIf(NO_BWRAP)("job_complete and job_ask in one message: the first ends the turn", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
@@ -356,7 +353,7 @@ test("job_complete and job_ask in one message: the first ends the turn", async (
   await daemon.close();
 });
 
-test("job_ask and job_complete in one message: the ask ends the turn", async () => {
+test.skipIf(NO_BWRAP)("job_ask and job_complete in one message: the ask ends the turn", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start both") return call("job_start", { title: "Both", brief: "Do both" });
@@ -384,7 +381,7 @@ test("job_message refuses an unknown job", async () => {
   await daemon.close();
 });
 
-test("a job whose model fails reports once", async () => {
+test.skipIf(NO_BWRAP)("a job whose model fails reports once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "start fail") return call("job_start", { title: "Fail", brief: "Break" });
@@ -398,7 +395,7 @@ test("a job whose model fails reports once", async () => {
   await daemon.close();
 });
 
-test("a steer during a run ends in one answer and one report", async () => {
+test.skipIf(NO_BWRAP)("a steer during a run ends in one answer and one report", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -420,7 +417,7 @@ test("a steer during a run ends in one answer and one report", async () => {
   await daemon.close();
 });
 
-test("a follow-up queued before job_complete reports its own answer", async () => {
+test.skipIf(NO_BWRAP)("a follow-up queued before job_complete reports its own answer", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -445,7 +442,7 @@ test("a follow-up queued before job_complete reports its own answer", async () =
   await daemon.close();
 });
 
-test("a report withdrawn by Esc still reaches the CoS once", async () => {
+test.skipIf(NO_BWRAP)("a report withdrawn by Esc still reaches the CoS once", async () => {
   const { daemon, faux } = await bootWith();
   const hold = held();
   script(faux, (role, text, signal) => {
@@ -464,7 +461,7 @@ test("a report withdrawn by Esc still reaches the CoS once", async () => {
   await daemon.close();
 });
 
-test("a job interrupted by a restart finishes and reports once", async () => {
+test.skipIf(NO_BWRAP)("a job interrupted by a restart finishes and reports once", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
   const hold = held();
@@ -486,7 +483,7 @@ test("a job interrupted by a restart finishes and reports once", async () => {
   await daemon.close();
 });
 
-test("a restart during the nudge nudges once and reports once", async () => {
+test.skipIf(NO_BWRAP)("a restart during the nudge nudges once and reports once", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
   const hold = held();
@@ -508,7 +505,7 @@ test("a restart during the nudge nudges once and reports once", async () => {
   await daemon.close();
 });
 
-test("the CoS and jobs are offered their own tools", async () => {
+test.skipIf(NO_BWRAP)("the CoS and jobs are offered their own tools", async () => {
   const { daemon, faux } = await bootWith({ shell: profile("shell", ["tools: [read, bash]", "extensions: []"]) });
   const names = async (c: Conversation) => (await c.agent(ctx)).tools.map((t) => t.name);
   const root = await names(daemon.root);
@@ -543,8 +540,12 @@ test("the CoS's environment is the local one, read-only", async () => {
 });
 
 test("job_start refuses without a sandbox", async () => {
+  const saved = process.env.JAPA_BWRAP;
   process.env.JAPA_BWRAP = "/nonexistent";
-  onTestFinished(() => void delete process.env.JAPA_BWRAP);
+  onTestFinished(() => {
+    if (saved === undefined) delete process.env.JAPA_BWRAP;
+    else process.env.JAPA_BWRAP = saved;
+  });
   const { daemon, faux } = await bootTest();
   const reply = await tool(daemon, faux, "job_start", { title: "T", brief: "b" });
   expect(reply).toMatch(/^Jobs can't run: \S.*\. Install bubblewrap: sudo apt install bubblewrap$/);
@@ -685,7 +686,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
   });
 });
 
-test("bad worker profiles are reported and cannot be started", async () => {
+test.skipIf(NO_BWRAP)("bad worker profiles are reported and cannot be started", async () => {
   const { daemon, faux } = await bootWith({
     "bad-tool": profile("bad-tool", ["tools: [grep]"]),
     "bad-ext": profile("bad-ext", ["extensions: [nope]"]),
@@ -693,9 +694,8 @@ test("bad worker profiles are reported and cannot be started", async () => {
     "bad-model": profile("bad-model", ["model: { provider: nope, modelId: none }"]),
   });
   expect(
-    daemon
-      .status()
-      .errors.map((e) => e.name)
+    bootErrors(daemon)
+      .map((e) => e.name)
       .sort(),
   ).toEqual(["worker:bad-env", "worker:bad-ext", "worker:bad-model", "worker:bad-tool"]);
   script(faux, (_role, text) => {

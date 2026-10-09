@@ -5,7 +5,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
-import { bootTest, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, NO_BWRAP, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, say, script, textOf, texts } from "./jobs-helpers.ts";
 
 const g = globalThis as { echoLog?: string[] };
@@ -77,7 +77,7 @@ test("a removed extension's tools are gone", async () => {
   await daemon.close();
 });
 
-test("a running job gets a new extension's tools", async () => {
+test.skipIf(NO_BWRAP)("a running job gets a new extension's tools", async () => {
   const { daemon, faux, home } = await bootTest();
   const work = held();
   script(faux, (_role, text, signal) => {
@@ -96,7 +96,7 @@ test("a running job gets a new extension's tools", async () => {
   await daemon.close();
 });
 
-test("new skills and workers are picked up", async () => {
+test.skipIf(NO_BWRAP)("new skills and workers are picked up", async () => {
   const { daemon, faux, home } = await bootTest();
   write(home, "skills/notes/SKILL.md", "---\nname: notes\ndescription: Take notes\n---\nWrite them down.");
   write(home, "workers/scribe.md", "---\nname: scribe\ndescription: Writes\n---\nWrite.");
@@ -137,7 +137,7 @@ test("a broken extension is reported and the rest still works", async () => {
 
   write(home, "extensions/broken/index.ts", `export default { name: "broken", summary: "Fixed" };\n`);
   await daemon.reconcile();
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });
 

@@ -11,7 +11,7 @@ import type { JapaExtension } from "../src/kernel/extension.ts";
 import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { defineTool, Type } from "../src/sdk.ts";
-import { probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, NO_BWRAP, probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, idle, jobs, reported, script, texts, tool } from "./jobs-helpers.ts";
 
 /** A secrets reader over `values`. */
@@ -133,7 +133,7 @@ test("an unconfigured extension is hidden from the CoS and its status says not s
   expect(daemon.capabilities()).not.toContain("demo");
   expect(stateOf(daemon, "demo")).toBe("not set up");
   expect(statusText(daemon.status())).toMatch(/^  demo — demo summary \(not set up\)$/m);
-  expect(daemon.status().errors).toEqual([]); // the profile naming demo stays valid
+  expect(bootErrors(daemon)).toEqual([]); // the profile naming demo stays valid
   await daemon.close();
 });
 
@@ -146,7 +146,7 @@ test("a configured extension is offered to the CoS and its status says nothing m
   await daemon.close();
 });
 
-test("a job whose profile names an unavailable extension runs without it", async () => {
+test.skipIf(NO_BWRAP)("a job whose profile names an unavailable extension runs without it", async () => {
   const { daemon, faux } = await bootWith([demoExtension().extension]);
   const job = await startPinger(daemon, faux, call("job_complete", { summary: "done" }));
   expect(await toolNames(job)).not.toContain("demo_ping");
@@ -155,7 +155,7 @@ test("a job whose profile names an unavailable extension runs without it", async
   await daemon.close();
 });
 
-test("a job whose profile names an available extension gets its tools", async () => {
+test.skipIf(NO_BWRAP)("a job whose profile names an available extension gets its tools", async () => {
   const { daemon, faux } = await bootWith([demoExtension().extension], {}, { "demo.key": "k" });
   const job = await startPinger(daemon, faux, call("job_complete", { summary: "done" }));
   expect(await toolNames(job)).toContain("demo_ping");
@@ -253,7 +253,7 @@ test("the adapters of an unconfigured extension still activate", async () => {
   await daemon.close();
 });
 
-test("a running job loses a hidden extension's tools", async () => {
+test.skipIf(NO_BWRAP)("a running job loses a hidden extension's tools", async () => {
   const { daemon, faux } = await bootWith([demoExtension().extension], {}, { "demo.key": "k" });
   const job = await startPinger(daemon, faux);
   await waitFor(async () => (await reported(daemon)).length === 1);
@@ -273,7 +273,7 @@ test("a running job loses a hidden extension's tools", async () => {
   await daemon.close();
 });
 
-test("a job spanning a restart gets the extensions available at boot", async () => {
+test.skipIf(NO_BWRAP)("a job spanning a restart gets the extensions available at boot", async () => {
   const kit = testKit();
   const demo = demoExtension();
   const settings = { storage: { adapter: "sqlite" } };
@@ -300,13 +300,13 @@ test("an unavailable extension's skills are hidden and come back with it; a prof
   const { daemon, faux } = await bootWith([demoExtension().extension], { extensions: { desktop: { enabled: false } } });
   const skill = () => tool(daemon, faux, "skill_read", { name: "using-the-desktop" });
   expect(stateOf(daemon, "desktop")).toBe("off");
-  expect(daemon.status().errors).toEqual([]); // desk names the desktop's skill
+  expect(bootErrors(daemon)).toEqual([]); // desk names the desktop's skill
   expect(await skill()).toMatch(/^No skill "using-the-desktop"/);
   await tool(daemon, faux, "settings_set", { path: "extensions.desktop.enabled", value: true });
   expect(await skill()).not.toMatch(/^No skill/);
   await tool(daemon, faux, "settings_set", { path: "extensions.desktop.enabled", value: false });
   expect(await skill()).toMatch(/^No skill "using-the-desktop"/);
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });
 

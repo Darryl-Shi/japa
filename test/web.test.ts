@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "vitest";
 import { htmlToText } from "../extensions/web/html.ts";
-import { bootTest } from "./helpers.ts";
+import { bootErrors, bootTest } from "./helpers.ts";
 import { tool } from "./jobs-helpers.ts";
 
 test("htmlToText drops script and style, strips tags, decodes entities and collapses whitespace", () => {
@@ -43,6 +43,6 @@ test("web provides only web_fetch, needs no secret, and a leftover extensions.we
   expect((web.provides?.tool as { name: string }[]).map((t) => t.name)).toEqual(["web_fetch"]);
   expect(web.secrets).toBeUndefined();
   const { daemon } = await bootTest({ extensions: { web: { engine: "fake" } } });
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });

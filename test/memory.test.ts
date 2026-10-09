@@ -10,7 +10,7 @@ import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { MemoryDoc } from "../src/kernel/memory/state.ts";
 import { defineJapaExtension, defineTool, Type } from "../src/sdk.ts";
-import { bootTest, waitFor } from "./helpers.ts";
+import { bootTest, NO_BWRAP, waitFor } from "./helpers.ts";
 import { ask, call, idle, reported, say, textOf, texts } from "./jobs-helpers.ts";
 
 /** Answers each request with `respond(role, text)` of its last non-system message, or "ok"; returns the system prompts. */
@@ -60,7 +60,7 @@ test("a too-long or duplicate fact is refused", async () => {
   await daemon.close();
 });
 
-test("memory_search finds a done job's result", async () => {
+test.skipIf(NO_BWRAP)("memory_search finds a done job's result", async () => {
   const { daemon, faux } = await bootTest();
   run(faux, (_role, text) => {
     if (text === "start") return call("job_start", { title: "Report", brief: "Write the report" });
@@ -91,7 +91,7 @@ const big = defineJapaExtension({
   },
 });
 
-test("tool results are capped in the CoS's requests only", async () => {
+test.skipIf(NO_BWRAP)("tool results are capped in the CoS's requests only", async () => {
   const { daemon, faux } = await bootTest({}, [big]);
   const seen: string[] = [];
   run(faux, (role, text) => {

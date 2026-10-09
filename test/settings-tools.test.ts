@@ -6,7 +6,7 @@ import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { settingsSchema } from "../src/kernel/settings-tools.ts";
 import { defineJapaExtension, type KernelContext, Type } from "../src/sdk.ts";
-import { bootTest, testKit, waitFor } from "./helpers.ts";
+import { bootTest, NO_BWRAP, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, jobs, say, script, texts } from "./jobs-helpers.ts";
 
 /** Has the CoS call `name` with `args`; returns the tool's reply. */
@@ -18,7 +18,7 @@ async function tool(daemon: Daemon, faux: FauxProviderHandle, name: string, args
 
 const userFile = (home: string) => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
 
-test("settings_set updates the file and the live value, and logs a change", async () => {
+test.skipIf(NO_BWRAP)("settings_set updates the file and the live value, and logs a change", async () => {
   const { daemon, faux, home } = await bootTest();
   expect(await tool(daemon, faux, "settings_set", { path: "jobs.maxConcurrent", value: 2 })).toBe(
     "Set jobs.maxConcurrent. (change 1)",

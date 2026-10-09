@@ -14,7 +14,7 @@ import { expect, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { reflectDelay, unreflectedTurns } from "../src/kernel/memory/reflect.ts";
 import { applyFactOps, MemoryDoc } from "../src/kernel/memory/state.ts";
-import { bootTest, carryOver, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, carryOver, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, say, textOf, texts } from "./jobs-helpers.ts";
 
 type Respond = (
@@ -316,6 +316,6 @@ test("the upgrade notice is delivered once and sets the cursor", async () => {
 
 test("leftover context settings are ignored", async () => {
   const { daemon } = await bootTest({ context: { resetTokens: 20000, idleResetHours: 2 } });
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });

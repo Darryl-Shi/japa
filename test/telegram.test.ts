@@ -9,7 +9,7 @@ import { toHtml, toPlain, visibleLength } from "../extensions/telegram/html.ts";
 import telegram from "../extensions/telegram/index.ts";
 import type { Dispose, Incoming, MessagingAdapter } from "../src/kernel/contracts.ts";
 import { SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
-import { bootTest, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, waitFor } from "./helpers.ts";
 import { texts } from "./jobs-helpers.ts";
 import { sleep } from "./messaging-helpers.ts";
 import { fakeBotApi, kernelStub, startTelegram } from "./telegram-helpers.ts";
@@ -406,7 +406,7 @@ test("polling logs errors and carries on", async () => {
 test("a default install has Telegram dormant: no error, no pending secret request", async () => {
   const { daemon } = await bootTest();
   expect(daemon.status().extensions.map((e) => e.name)).toContain("telegram");
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   expect((await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending).toEqual([]);
   expect(fake.calls).toEqual([]);
   await daemon.close();

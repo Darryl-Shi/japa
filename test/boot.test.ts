@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { statusText } from "../src/kernel/status.ts";
-import { bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
+import { bootErrors, bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
 
 test("the CoS answers in the root conversation", async () => {
   const { daemon, faux } = await bootTest();
@@ -75,7 +75,7 @@ test("status lists the model and the extensions", async () => {
     state: "on",
   });
   expect(status.extensions.map((e) => e.name)).toContain("providers");
-  expect(status.errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });
 
@@ -109,7 +109,7 @@ test("workspace extensions load from <home>/extensions; a broken one is reported
   write("ws-broken", `throw new Error("boom");\n`);
   const daemon = await boot({ home, extensions: [kit.extension] });
   expect(daemon.status().extensions.map((e) => e.name)).toContain("ws-good");
-  expect(daemon.status().errors.map((e) => e.name)).toEqual(["ws-broken"]);
+  expect(bootErrors(daemon).map((e) => e.name)).toEqual(["ws-broken"]);
   await daemon.close();
 });
 
@@ -133,7 +133,7 @@ test("a CoS model whose provider has no key is reported, naming the env var and 
   const extension = { ...kit.extension, provides: { ...kit.extension.provides, provider: [provider] } };
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [extension] });
   const file = join(home, "secrets", `${kit.model.provider}.apiKey`);
-  expect(daemon.status().errors).toEqual([
+  expect(bootErrors(daemon)).toEqual([
     {
       name: "models",
       error:

@@ -7,7 +7,7 @@ import { type ServerMessage, socketPath } from "../extensions/gateway/protocol.t
 import { boot } from "../src/kernel/boot.ts";
 import type { Status } from "../src/kernel/contracts.ts";
 import type { SecretRequest } from "../src/kernel/secret-requests.ts";
-import { bootTest, probe, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, NO_BWRAP, probe, tempHome, testKit, waitFor } from "./helpers.ts";
 import { call, script, texts } from "./jobs-helpers.ts";
 
 test("attach, submit, and receive the answer", async () => {
@@ -39,7 +39,7 @@ test("the gateway submits with its origin and still shows input from other surfa
   await daemon.close();
 });
 
-test("attach streams the job board", async () => {
+test.skipIf(NO_BWRAP)("attach streams the job board", async () => {
   const { daemon, faux, home } = await bootTest();
   script(faux, (_role, text) => (text === "start sum" ? call("job_start", { title: "Sum", brief: "Add" }) : undefined));
   const client = await connect(home);
@@ -161,6 +161,6 @@ test("a stale socket file is replaced", async () => {
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
   writeFileSync(socketPath(home), "");
   const daemon = await boot({ home, extensions: [kit.extension] });
-  expect(daemon.status().errors).toEqual([]);
+  expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
 });

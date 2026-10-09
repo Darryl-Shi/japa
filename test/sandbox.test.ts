@@ -25,7 +25,7 @@ import {
   sandboxArgs,
   type SandboxSpec,
 } from "../src/kernel/sandbox/bwrap.ts";
-import { tempHome } from "./helpers.ts";
+import { NO_BWRAP, tempHome } from "./helpers.ts";
 
 const ALLOWED = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
 
@@ -47,8 +47,6 @@ function withEnv<T>(name: string, value: string | undefined, fn: () => T): T {
   }
 }
 
-/** Whether the real bwrap works here; the sandbox tests are skipped where it doesn't (spec §8). */
-const NO_BWRAP = withEnv("JAPA_BWRAP", undefined, () => probeSandbox() !== undefined);
 const NO_SYSTEMD_RUN = spawnSync("systemd-run", ["--version"]).status !== 0;
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"].filter((path) => existsSync(path));
 const RUNTIME_DIR = `/run/user/${process.getuid?.()}`;

@@ -24,7 +24,7 @@ import {
   updateLog,
   writeUpdateState,
 } from "../src/kernel/update-state.ts";
-import { echo, REPO_EXTENSIONS, stage, testKit, waitFor } from "./helpers.ts";
+import { echo, NO_BWRAP, REPO_EXTENSIONS, stage, testKit, waitFor } from "./helpers.ts";
 import { ask, call, idle, jobs as jobsOf, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -372,7 +372,7 @@ describe("jobs", { timeout: 30_000 }, () => {
     expect(labels().slice(-2)).toEqual(["1/2", "›"]);
   });
 
-  test("a job started by the CoS is listed and its detail shown", async () => {
+  test.skipIf(NO_BWRAP)("a job started by the CoS is listed and its detail shown", async () => {
     script(faux, (_role, text) => (text === "start sum" ? call("job_start", { title: "Sum", brief: "Add" }) : undefined));
     await ask(daemon, "start sum");
     await waitFor(async () => (await reported(daemon)).length > 0 && (await idle(daemon)) && fake.sent.length > 0);
