@@ -170,6 +170,13 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         root.commit(async (tx) => {
           (await tx.doc(SecretRequestsDoc, root.id)).fulfilledBy = by;
         }, ctx),
+      secretInput: async (adapter) => (await opened.snapshot(MessagingDoc, root.id, ctx))?.secretInput?.[adapter],
+      saveSecretInput: (adapter, at) =>
+        root.commit(async (tx) => {
+          const doc = await tx.doc(MessagingDoc, root.id);
+          if (at !== undefined) doc.secretInput = { ...doc.secretInput, [adapter]: at };
+          else if (doc.secretInput !== undefined) delete doc.secretInput[adapter];
+        }, ctx),
       setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
       rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),
       tool: runTool,

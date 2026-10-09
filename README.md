@@ -235,7 +235,8 @@ brief and its progress, result, question or reason, and `Clear finished` clears 
 go by themselves after `jobs.keepFinishedDays`). `/status` shows the model, extensions (and which aren't
 on) and errors. `/settings` sets models, extensions (secrets, settings, on/off, rollback), schedules
 (pause, resume, remove) and general settings, and undoes recent changes; a value you type there goes to
-the menu, not the CoS, and a secret is deleted at once. Photos and image files are saved under
+the menu, not the CoS, and a secret is deleted at once (a prompt left 10 minutes expires; your next
+message goes to the CoS again). Photos and image files are saved under
 `~/.japa/attachments/` and handed to the CoS. When japa needs a secret, it asks in the chat: send it as
 your next message, and the bot deletes the message at once.
 

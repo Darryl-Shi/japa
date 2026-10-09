@@ -145,6 +145,10 @@ export type MessagingContext = {
   secretFulfilledBy(): Promise<string | undefined>;
   /** Records `by` (`<adapter>:<id>`) as the chat message that carried the latest secret, as `secretFulfilledBy`. */
   recordSecretMessage(by: string): Promise<void>;
+  /** When the menu screen waiting for a secret in `adapter`'s chat opened; it may be from before a restart. */
+  secretInput(adapter: string): Promise<number | undefined>;
+  /** Saves `opened` as `adapter`'s `secretInput`, or clears it when undefined. */
+  saveSecretInput(adapter: string, opened: number | undefined): Promise<void>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;
   /** Rolls a workspace extension back to its last known good version, as the `rollback` tool; its reply. */

@@ -4,12 +4,14 @@ import { message } from "../../loader.ts";
 export type Button = { label: string; action: string };
 /** A screen: renders with `outcome`, a pre-formatted first line, if given. */
 export type Page = (outcome?: string) => Promise<OutgoingMessage>;
-/** A value a screen asked for: the owner's next text, applied, then `then` shown with the outcome. */
-export type Input = { secret: boolean; apply: (text: string) => Promise<string>; then: Page };
+/** A value a screen asked for (at `opened`): the owner's next text, applied, then `then` shown with the outcome. */
+export type Input = { secret: boolean; apply: (text: string) => Promise<string>; then: Page; opened: number };
 export type Nav = ReturnType<typeof createNav>;
 
 /** Buttons per page of a list. */
 export const PAGE = 8;
+/** How long a screen waits for a typed value; then the wait ends as if cancelled. */
+export const INPUT_MS = 10 * 60_000;
 /** Actions kept; older buttons expire. */
 const KEEP = 500;
 const NOT_CHANGED = "Not changed: ";
@@ -137,7 +139,7 @@ export function createNav(scope: "s" | "j", run: string) {
         const send = "Send the new value as your next message.";
         const body = prompt === undefined ? send : `${prompt}\n\n${send}`;
         const shown = nav.screen({ title, body, rows: [[nav.button("Cancel", cancel)]], outcome });
-        input = { secret, apply, then };
+        input = { secret, apply, then, opened: Date.now() };
         return shown;
       },
 

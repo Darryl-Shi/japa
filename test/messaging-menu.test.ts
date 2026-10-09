@@ -9,12 +9,14 @@ import { ChangesDoc, logChange } from "../src/kernel/changes.ts";
 import type { Incoming, KernelContext, MessagingContext } from "../src/kernel/contracts.ts";
 import { type Job, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { COMMANDS, createMenu } from "../src/kernel/messaging/menu/index.ts";
-import { ago, dur, type Nav, outcomeLine, type Page } from "../src/kernel/messaging/menu/nav.ts";
+import { ago, dur, INPUT_MS, type Nav, outcomeLine, type Page } from "../src/kernel/messaging/menu/nav.ts";
+import { MessagingDoc } from "../src/kernel/messaging/surface.ts";
+import { boot } from "../src/kernel/boot.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { addSecretRequest, SecretRequestsDoc } from "../src/kernel/secret-requests.ts";
 import { defineTool, Type } from "../src/sdk.ts";
 import { statusText } from "../src/kernel/status.ts";
-import { echo, stage, testKit, waitFor } from "./helpers.ts";
+import { echo, REPO_EXTENSIONS, stage, testKit, waitFor } from "./helpers.ts";
 import { ask, call, idle, jobs as jobsOf, reported, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -102,6 +104,8 @@ function typed(secret = false) {
 }
 
 const PROMPT = "japa needs `svc.token`: to sync. Send it as your next message; I'll delete it at once.";
+/** The open time of the fake adapter's secret input marker, if any. */
+const marker = async () => (await daemon.harness.snapshot(MessagingDoc, ROOT_CONVERSATION_ID, ctx))?.secretInput?.fake;
 const prompts = () => fake.sent.filter((s) => s.markdown === PROMPT).length;
 const transcript = async () => JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items);
 
@@ -851,6 +855,101 @@ describe("typed input", { timeout: 30_000 }, () => {
     expect(prompts()).toBe(1);
   });
 
+  test("an input expires 10 minutes after it opens: the next text goes to the CoS, then a held request is asked for", async () => {
+    const got = typed();
+    const real = Date.now.bind(Date);
+    let offset = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => real() + offset);
+    try {
+      await fake.receive({ command: "settings" });
+      await fake.press("Input");
+      offset = INPUT_MS - 5000;
+      await fake.receive({ text: "a" });
+      expect(got).toEqual(["a"]);
+      await fake.press("Input");
+      await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+      await sleep(500);
+      expect(prompts()).toBe(0);
+      offset += INPUT_MS;
+      await fake.receive({ text: "yes" });
+      await waitFor(async () => (await texts(daemon.root, "user")).includes("yes"));
+      expect(got).toEqual(["a"]);
+      await waitFor(() => prompts() === 1);
+      await fake.receive({ messageId: "77", text: "s3cr3t" });
+      expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("an expired secret input's marker is cleared and the next text goes to the CoS", async () => {
+    const got = typed(true);
+    const real = Date.now.bind(Date);
+    let offset = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => real() + offset);
+    try {
+      await fake.receive({ command: "settings" });
+      await fake.press("Input");
+      expect(await marker()).toBeTypeOf("number");
+      offset = INPUT_MS;
+      await fake.receive({ text: "hello" });
+      await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
+      expect(got).toEqual([]);
+      expect(fake.deleted).toEqual([]);
+      expect(await marker()).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test("a secret input's marker is cleared when it is applied, cancelled, or ended by a command or a press", async () => {
+    typed(true);
+    type Sent = (typeof fake.sent)[number];
+    const enders = [
+      () => fake.receive({ text: "s3cr3t" }),
+      () => fake.press("Cancel"),
+      () => fake.receive({ command: "status" }),
+      (home: Sent) => fake.receive({ action: home.buttons![0]![0]!.action, messageId: home.id }),
+    ];
+    for (const end of enders) {
+      await fake.receive({ command: "settings" });
+      const home = fake.sent.at(-1)!;
+      await fake.press("Input");
+      expect(await marker()).toBeTypeOf("number");
+      await end(home);
+      expect(await marker()).toBeUndefined();
+    }
+  });
+
+  test("a held secret request is asked for even when ending the input fails to show", async () => {
+    typed();
+    const edit = fake.adapter.edit;
+    const enders = [
+      () => fake.receive({ text: "value" }),
+      () => fake.press("Cancel"),
+      () => {
+        fake.failSend = (m) => m.markdown === "**Settings**";
+        return fake.receive({ command: "settings" });
+      },
+    ];
+    for (const [i, end] of enders.entries()) {
+      fake.adapter.edit = edit;
+      fake.failSend = undefined;
+      await fake.receive({ command: "settings" });
+      await fake.press("Input");
+      await daemon.root.commit((tx) => addSecretRequest(tx, `svc${i}.token`, "to sync"), ctx);
+      await sleep(300);
+      expect(fake.sent.some((s) => s.markdown.startsWith(`japa needs \`svc${i}.token\``))).toBe(false);
+      fake.adapter.edit = async () => {
+        throw new Error("edit failed");
+      };
+      await end();
+      await waitFor(() => fake.sent.some((s) => s.markdown.startsWith(`japa needs \`svc${i}.token\``)));
+      await fake.receive({ messageId: `7${i}`, text: `s3cr3t${i}` });
+      expect(readFileSync(join(home, `secrets/svc${i}.token`), "utf8")).toBe(`s3cr3t${i}`);
+    }
+  });
+
   test("a secret request made during a menu input is asked for when a command ends the input", async () => {
     const got = typed();
     await fake.receive({ command: "settings" });
@@ -976,6 +1075,73 @@ describe("extensions", { timeout: 60_000 }, () => {
     for (const m of [...fake.sent, ...fake.edited]) expect(m.markdown).not.toContain("s3cr3t");
     await sleep(500);
     expect(await transcript()).not.toContain("s3cr3t");
+  });
+
+  describe("a secret prompt open when the daemon stopped", () => {
+    const EXPIRED = "That prompt expired — tap Set again.";
+    /**
+     * Boots on sqlite storage with `demo`, opens Set demo.key, runs `meanwhile`, then restarts the daemon with a fresh
+     * adapter.
+     */
+    async function askThenRestart(meanwhile?: () => Promise<unknown>) {
+      const kit = testKit();
+      const d = demo();
+      await daemon.close();
+      fake = fakeAdapter();
+      ({ daemon, faux, home } = await bootMessaging(fake, { storage: { adapter: "sqlite" } }, [d.extension], kit));
+      await open("demo");
+      await fake.press("Set demo.key");
+      expect(await marker()).toBeTypeOf("number");
+      await meanwhile?.();
+      await daemon.close();
+      fake = fakeAdapter();
+      daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fake.extension, d.extension] });
+    }
+
+    test("the next text within 10 minutes is deleted, never submitted, and the owner told to tap Set again", async () => {
+      await askThenRestart(() => daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx));
+      await sleep(500);
+      expect(prompts()).toBe(0); // held back, as by the input
+      await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
+      expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
+      expect(fake.sent.map((s) => s.markdown)).toEqual([EXPIRED, PROMPT]);
+      expect(await marker()).toBeUndefined();
+      expect(existsSync(join(home, "secrets", "demo.key"))).toBe(false);
+      await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" }); // delivered again
+      expect(fake.deleted).toHaveLength(2);
+      await fake.receive({ messageId: "78", text: "tok" });
+      expect(readFileSync(join(home, "secrets", "svc.token"), "utf8")).toBe("tok");
+      await fake.receive({ text: "hello" });
+      await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
+      expect(await transcript()).not.toContain("s3cr3t");
+    });
+
+    test("after 10 minutes the marker is just cleared and the next text goes to the CoS", async () => {
+      const real = Date.now.bind(Date);
+      let offset = 0;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => real() + offset);
+      try {
+        await askThenRestart(async () => {
+          offset = INPUT_MS;
+        });
+        await fake.receive({ text: "hello" });
+        await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
+        expect(fake.deleted).toEqual([]);
+        expect(fake.sent.map((s) => s.markdown)).not.toContain(EXPIRED);
+        expect(await marker()).toBeUndefined();
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test("a command ends it: the marker is cleared and the next text goes to the CoS", async () => {
+      await askThenRestart();
+      await fake.receive({ command: "status" });
+      expect(await marker()).toBeUndefined();
+      await fake.receive({ text: "hello" });
+      await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
+      expect(fake.deleted).toEqual([]);
+    });
   });
 
   test("setting a requested secret from the menu fulfils the request", async () => {

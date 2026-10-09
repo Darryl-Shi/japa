@@ -5,7 +5,7 @@ import { message } from "../../loader.ts";
 import { statusText } from "../../status.ts";
 import { splitMessage } from "../split.ts";
 import { jobsMenu } from "./jobs.ts";
-import { createNav, outcomeLine, type Nav, type Page } from "./nav.ts";
+import { createNav, INPUT_MS, outcomeLine, type Nav, type Page } from "./nav.ts";
 import { settingsMenu } from "./settings.ts";
 
 export const COMMANDS = [
@@ -16,7 +16,8 @@ export const COMMANDS = [
 
 export const HELP = `Commands:\n${COMMANDS.map((c) => `/${c.name} — ${c.description}`).join("\n")}`;
 
-const UNDELETED = "Couldn't delete your message — please delete it yourself.";
+/** Told to the owner when their message carrying a secret can't be deleted. */
+export const UNDELETED = "Couldn't delete your message — please delete it yourself.";
 /** Room left after whole paragraphs below which the next one isn't cut in. */
 const MIN_FILL = 20;
 
@@ -34,7 +35,9 @@ function fitted(markdown: string, max: number): string {
 
 /**
  * Answers the owner's commands, their presses of the buttons it sends, and the values its screens ask for. Buttons
- * carry a per-run token, so those from before a restart expire. A command or any press cancels a pending input.
+ * carry a per-run token, so those from before a restart expire. A command or any press cancels a pending input, and
+ * one waiting `INPUT_MS` expires. While a secret one waits, its open time is saved as the adapter's `secretInput`
+ * (before its screen is shown), so a restart can't send that secret to the CoS.
  */
 export function createMenu(
   adapter: MessagingAdapter,
@@ -49,11 +52,30 @@ export function createMenu(
     ["jobs", [navs.j, jobsMenu(navs.j, jobs, messaging)]],
   ]);
   let at: { chat: string; messageId: string } | undefined; // the message showing the pending input's screen
+  let marked: number | undefined; // the saved `secretInput`
+  // The nav whose screen waits for a value, expired or not.
   const waiting = () => (navs.s.pending() !== undefined ? navs.s : navs.j.pending() !== undefined ? navs.j : undefined);
+  const live = () => {
+    const input = waiting()?.pending();
+    return input !== undefined && Date.now() - input.opened < INPUT_MS;
+  };
   const cancelInput = () => {
     navs.s.cancel();
     navs.j.cancel();
     at = undefined;
+  };
+  /** Saves the open time of the secret input waiting as `secretInput`, or clears it; cancels an input it can't save. */
+  const mark = async () => {
+    const input = waiting()?.pending();
+    const opened = input?.secret ? input.opened : undefined;
+    if (opened === marked) return;
+    try {
+      await messaging.saveSecretInput(adapter.name, opened);
+    } catch (error) {
+      cancelInput();
+      throw error;
+    }
+    marked = opened;
   };
   const fit = (m: OutgoingMessage) => ({ ...m, markdown: fitted(m.markdown, adapter.maxMessageChars) });
   const failed = (error: unknown): OutgoingMessage => ({ markdown: `✗ ${message(error)}` });
@@ -66,6 +88,7 @@ export function createMenu(
       if (home !== undefined) shown = await home[0].show(home[1]).catch(failed);
       else if (m.command === "status") shown = { markdown: statusText(kernel.surface.status()) };
       else shown = { markdown: HELP };
+      await mark();
       const messageId = await adapter.send(m.chat, fit(shown));
       if (waiting() !== undefined) at = { chat: m.chat, messageId };
     },
@@ -78,12 +101,21 @@ export function createMenu(
       const again = token === run && scope === "j" ? "/jobs" : "/settings";
       const expired = { markdown: `This menu expired — send ${again} again.` };
       const shown = opened === undefined ? expired : await opened.catch(failed);
+      await mark();
       await adapter.edit(m.chat, m.messageId, fit(shown));
       if (waiting() !== undefined) at = { chat: m.chat, messageId: m.messageId };
     },
 
-    /** Whether a screen is waiting for the owner's next text. */
-    pendingInput: () => waiting() !== undefined,
+    /** Whether a screen is waiting for the owner's next text, and has for less than `INPUT_MS`. */
+    pendingInput: live,
+
+    /** Ends an input that waited `INPUT_MS`, as if cancelled; whether there was one. */
+    async expire() {
+      if (waiting() === undefined || live()) return false;
+      cancelInput();
+      await mark();
+      return true;
+    },
 
     /**
      * Gives the owner's text `m` to the screen waiting for it: deleted first when secret (recorded as fulfilling a
@@ -108,6 +140,7 @@ export function createMenu(
       nav.cancel(input);
       if (waiting() === undefined) at = undefined;
       const shown = fit(await nav.show(input.then, outcome).catch(failed));
+      await mark();
       if (where.messageId === undefined) {
         const messageId = await adapter.send(where.chat, shown);
         if (waiting() !== undefined) at = { chat: where.chat, messageId };
@@ -117,7 +150,5 @@ export function createMenu(
       }
     },
 
-    /** Stops waiting for a typed value. */
-    cancelInput,
   };
 }
