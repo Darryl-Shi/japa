@@ -1,9 +1,9 @@
 # japa
 
 japa is a personal chief of staff: a long-running AI agent (the "CoS") you chat with, which delegates work to
-background jobs, remembers what matters, and runs reminders and schedules. It extends itself: it writes new skills,
-worker profiles and extensions into its own git-tracked workspace, checks and installs them, and rolls them back
-when they break.
+background jobs, remembers what matters, and runs reminders and schedules. It extends itself: its jobs write new skills
+and extensions into a private copy of its git-tracked workspace, and those that pass their checks are merged in
+when the job finishes; it rolls them back when they break.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ newer (with npm), puts a `japa` launcher in `~/.local/bin`, and runs `japa setup
 `~/.local/bin` isn't on your PATH yet, it adds it in your shell's rc file (`~/.bashrc`, `~/.zshrc` or
 `~/.config/fish/config.fish`, from `$SHELL`) and prints "open a new shell or run: export PATH=...". Setup needs a
 terminal: without one (e.g. in CI) the installer skips it and tells you to run `japa setup` to finish.
-Runs on Linux only, x64 or arm64 (WSL works; macOS is refused); needs `git`, `tar`, and `curl` or `wget` — a missing
+Runs on Linux only, x64 or arm64 (WSL works); needs `git`, `tar`, and `curl` or `wget` — a missing
 one is named, along with how to install it. Jobs also need bubblewrap (`sudo apt install bubblewrap`): `japa setup`
 checks that it works and, if not, says how to install it.
 
@@ -97,7 +97,8 @@ it.
 The wizard covers models, sign-in, integrations and the service. Other settings — `jobs.*`,
 `context.toolResultTokens`, `memory.*`, `safety.*`, `storage.adapter`, `secrets.adapter` — aren't in it; edit
 `~/.japa/settings.json` directly, use Telegram's `/settings`, or ask the CoS. `jobs.keepFinishedDays` (default `7`)
-is how many days finished jobs stay listed before they're cleared.
+is how many days finished jobs stay listed before they're cleared; `jobs.thinking` (default `medium`) is how hard
+jobs think unless the CoS picks otherwise for one.
 
 An extension that needs a secret or a required setting stays hidden from japa — the CoS and its jobs don't know it
 exists — until it's set up, with `japa setup` or `/settings` → Extensions. `extensions.<name>.enabled: false` hides
@@ -177,13 +178,40 @@ Other commands:
 | `japa service <install\|uninstall\|start\|stop\|restart\|status\|logs>` | Manage the background service, see Service above |
 | `japa update [--check] [--branch <b>] [--to <sha>] [--no-restart]` | Upgrade japa, see Updating |
 | `japa uninstall [--purge]` | Remove japa, see Updating |
-| `japa check <skill\|worker\|extension> <name>` | Checks a skill, worker profile or extension in the current directory (the CoS runs this in `~/.japa/.staging`) |
-| `japa rollback <skill\|worker\|extension> <name> [to]` | Rolls it back to its last known good version, or to the git ref `to`; restart the daemon to apply |
-| `japa safe-mode [--default-adapters]` | Restores the last working extensions, skills and workers, and optionally the default storage and secrets adapters |
+| `japa check <skill\|extension> <name>` | Checks a skill or extension in the current directory (a job runs this in its copy of `~/.japa`, and japa runs it before the job's changes go live) |
+| `japa rollback <skill\|extension> <name> [to]` | Rolls it back to its last known good version, or to the git ref `to`; restart the daemon to apply |
+| `japa safe-mode [--default-adapters]` | Restores the last working extensions and skills, and optionally the default storage and secrets adapters |
 | `japa --version` | Print the installed version and git commit |
 
 japa enters safe mode by itself after three crashes within five minutes. A setup that has run for
 `safety.goodAfterMinutes` is tagged as the last known good one.
+
+## Jobs
+
+The CoS hands anything longer than a quick lookup to a background job: an agent with `read`, `write`, `edit` and
+`bash`, every skill and every extension's tools, on the worker model (`models.worker`, else the CoS's) at
+`jobs.thinking`. At most `jobs.maxConcurrent` run at once. Jobs need bubblewrap (`bwrap`); without it, japa runs but
+refuses to start jobs, and `japa status` says why.
+
+Each job runs in a bubblewrap sandbox. It sees your files and the network as you do, except:
+
+- `~/.japa` is the job's own clone of it (made at `~/.japa/.jobs/<id>`), without your secrets, `state.db` or japa's
+  socket; `~/.japa/desktop/shared` is the real shared folder.
+- `/tmp` and `/var/tmp` are private to the job.
+- japa's install directory, the `japa` launcher, and your systemd user units and `environment.d` are read-only, so a
+  job can't change what japa runs with your secrets.
+- `sudo` and other setuid programs don't work, and Docker, `systemctl --user`, the D-Bus session bus and the ssh
+  agent are out of reach. A job can't install system packages or start services that outlive it.
+- It gets only `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ` and `TERM` from japa's environment, so provider keys
+  set as environment variables don't reach it.
+
+When a job finishes, its changes under `~/.japa/extensions/` and `~/.japa/skills/` go live: each changed one is
+checked with `japa check` in the sandbox, then merged into `~/.japa` (a three-way merge, so changes made since the
+job started are kept), loaded and logged as one change you can undo. Anything else it changed in `~/.japa` is
+dropped. Its report to the CoS ends with the outcome: `Live: <paths> (change <id>).`, or `Not live: <why>. Kept at
+~/.japa/.jobs/<id>.` when the check failed, the merge conflicted or the change failed to load (then it's reverted),
+plus `Dropped: <paths>.` when it changed other files. While a job's changes go live it can't be messaged. A kept
+clone is deleted after 7 days.
 
 ## Updating
 
@@ -210,7 +238,7 @@ it restarts the service if it's running (a service you stopped stays stopped), o
 
 Re-running `install.sh` does the same thing: it detects an existing install and runs `japa update` instead of
 cloning again (writing the launcher first if it's missing or points at another install). Your `~/.japa` data —
-settings, secrets, extensions, skills, workers — is never touched by an update, except to record which extensions
+settings, secrets, extensions, skills — is never touched by an update, except to record which extensions
 it has told you about.
 
 You can also update from Telegram (or any messaging extension) with `/update`, as described under Telegram.
@@ -264,8 +292,8 @@ the report asks you to restart it yourself.
 
 ## Desktop
 
-japa has its own computer: a Linux desktop with Chromium in a Docker container, which operator jobs use to get
-things done on websites and in programs. There's nothing to set up: when japa starts, it builds the desktop's image
+japa has its own computer: a Linux desktop with Chromium in a Docker container, which jobs use, one at a time, to
+get things done on websites and in programs. There's nothing to set up: when japa starts, it builds the desktop's image
 (a few minutes, the first time) and starts it in the background, so it's ready when first needed. It needs Docker,
 installed and usable by the user running japa (on Linux: `sudo usermod -aG docker $USER`, then log in again);
 `japa status` shows the desktop's line under the `desktop` extension, including what's wrong if it can't start.
@@ -273,7 +301,8 @@ installed and usable by the user running japa (on Linux: `sudo usermod -aG docke
 - **Watch or take over** in noVNC: `ssh -L 6080:localhost:6080 <server>`, then open
   `http://localhost:6080/vnc.html`; or set `extensions.desktop.bind` to a Tailscale address. The password is in
   `~/.japa/secrets/desktop.vncPassword`.
-- **Files** are exchanged in `~/.japa/desktop/shared` (`/home/japa/shared` on the desktop).
+- **Files** are exchanged in `~/.japa/desktop/shared` (`/home/japa/shared` on the desktop); a job uploads a file in
+  the browser by putting it there and uploading `~/shared/<name>`.
 - **Settings** (`extensions.desktop`), all optional: `cpus` (default `2`), `memory` (`"4g"`), `shm` (`"2g"`),
   `bind` (`"127.0.0.1"`) and `autostart` (`true`; `false` builds and starts it on first use instead). A change recreates the container on the next use and keeps its home (`/home/japa`, with the
   browser's logins; those from the last ~30 s before a stop, recreate or reboot may be lost, as Chromium commits
@@ -336,10 +365,9 @@ Everything japa *does* lives in `~/.japa`, or in `$JAPA_HOME` when set. It is a 
 
 ```
 settings.json        your settings
-extensions/          extensions the CoS installed      (git-tracked)
-skills/              skills the CoS installed          (git-tracked)
-workers/             worker profiles the CoS installed (git-tracked)
-.staging/            git worktree (branch `staging`) where the CoS builds things before installing them
+extensions/          extensions jobs built             (git-tracked)
+skills/              skills jobs built                 (git-tracked)
+.jobs/               each job's clone of ~/.japa and its private /tmp; failed ones kept 7 days (ignored by git)
 secrets/             secrets, one file per secret      (ignored by git)
 attachments/         images received over Telegram, files from Google (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
@@ -351,14 +379,15 @@ japa.sock            the socket `japa chat` and `japa status` connect to
 boots.json, daemon.lock, .cache/, node_modules/   runtime files
 ```
 
-The tag `japa-lkg` marks the last known good commit. `git log` in `~/.japa` shows every install and rollback.
+The tag `japa-lkg` marks the last known good commit. `git log` in `~/.japa` shows every job's merge, undo and rollback.
 
 ## Extending
 
 Ask the CoS: "when I say standup, draft my standup from my notes", or "add a tool that ...". It picks a mechanism
-(skill, worker profile or extension), builds it in a background job, checks it, installs it and tells you how to
-use it; "undo that" reverts it. The procedures it follows are in `skills/`:
-`choosing-a-mechanism`, `building-skills`, `building-workers`, `building-extensions` and `reporting-changes`.
+(skill or extension) and builds it in a background job; when the job finishes, the change goes live if its check
+passes (see Jobs), and the CoS tries it and tells you how to use it; "undo that" reverts it. The procedures it
+follows are in `skills/`: `choosing-a-mechanism`, `writing-job-briefs`, `building-skills`, `building-extensions` and
+`reporting-changes`.
 Extensions import only from `japa/sdk` (`src/sdk.ts`); the packaged ones in `extensions/` are examples.
 
 ## Development

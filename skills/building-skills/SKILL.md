@@ -8,9 +8,13 @@ description: Use when writing or changing a skill (a SKILL.md procedure that age
 A skill is written know-how: how to do a procedure with tools that already exist. If it needs a new
 tool, it's an extension (see `building-extensions`).
 
+Your `~/.japa` is a private copy for this job. When you finish, your changes under
+`~/.japa/skills/<name>` go live if `japa check` passes (below); changes elsewhere in `~/.japa` are
+dropped. You don't install anything yourself.
+
 ## Format
 
-Write `skills/<name>/SKILL.md` in the current directory (the staging copy of `~/.japa`):
+Write `~/.japa/skills/<name>/SKILL.md`:
 
 ```markdown
 ---
@@ -42,11 +46,10 @@ Only files inside the skill's directory can be read this way.
 ## Scripts
 
 A skill may ship scripts, such as `skills/<name>/scripts/report.sh`, for steps that are better done
-by code. Only agents with `bash` (workers such as `coder`) can run them; the chief of staff cannot run
-commands. Refer to a script by its path relative to the skill's directory, `scripts/<file>`, the
-same path `skill_read` takes; that directory is `skills/<name>/` in japa's home or in the bundling
-extension. Keep
-scripts small, with no dependencies beyond the system.
+by code. Jobs can run them with `bash`; the chief of staff cannot run commands. Refer to a script by
+its path relative to the skill's directory, `scripts/<file>`, the same path `skill_read` takes; that
+directory is `skills/<name>/` in japa's home or in the bundling extension. Keep scripts small, with
+no dependencies beyond the system: a job can't install system packages.
 
 ## Skills in an extension
 
@@ -55,11 +58,11 @@ extension.
 
 ## Check
 
-From the staging directory, run
+From `~/.japa`, run
 
 ```
-../node_modules/japa/src/cli/main.ts check skill <name>
+japa check skill <name>
 ```
 
-(the same as `japa check skill <name>` run there). It checks that SKILL.md exists, that `name` matches
-the directory and that `description` is present, and prints `ok` when it passes.
+It checks that SKILL.md exists, that `name` matches the directory and that `description` is present,
+and prints `ok` when it passes. The same check runs when you finish: if it fails, nothing goes live.

@@ -1,4 +1,4 @@
-// The one-operator lock: jobs act on the desktop one at a time.
+// The desktop lock: jobs act on the desktop one at a time.
 import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { setTimeout as sleep } from "node:timers/promises";

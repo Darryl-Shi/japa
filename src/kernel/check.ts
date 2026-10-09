@@ -17,7 +17,7 @@ const packaged = join(packageRoot, "extensions");
 
 export const CHECK_KINDS = ["skill", "extension"] as const;
 
-/** The problems with the skill or extension `name` in `dir` (the workspace or staging root); `[]` passes. */
+/** The problems with the skill or extension `name` in `dir` (the workspace or a job's clone of it); `[]` passes. */
 export async function check(
   kind: (typeof CHECK_KINDS)[number],
   name: string,

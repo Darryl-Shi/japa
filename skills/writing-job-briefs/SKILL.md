@@ -1,16 +1,16 @@
 ---
 name: writing-job-briefs
-description: Use when starting background jobs with job_start, to write a good brief, pick the worker, run jobs in parallel and follow up.
+description: Use when starting background jobs with job_start, to write a good brief, pick a model if needed, run jobs in parallel and follow up.
 ---
 
 # Writing job briefs
 
-A worker sees only its brief, its profile's instructions and its tools, not this conversation or
-the user's memory. Put everything it needs in the brief.
+A job sees only its brief, its instructions and its tools, not this conversation or the user's
+memory. Put everything it needs in the brief.
 
 ## A good brief
 
-`job_start({ title, brief, worker })`, where `title` is a few words for the jobs board, and the brief
+`job_start({ title, brief })`, where `title` is a few words for the jobs board, and the brief
 contains:
 
 1. **Goal:** what to achieve and why, in one or two sentences.
@@ -25,23 +25,39 @@ Example: "Goal: find three dentists near the user accepting new patients. Contex
 Leith, Edinburgh and prefers Saturday appointments. Constraints: research only; don't contact
 anyone. Done: a list with name, address, phone, Saturday hours and a source URL for each."
 
-## Choosing the worker
+## What a job can do
 
-Pick by description from the workers in your capabilities: for example `researcher` for web research,
-`coder` for changing files and running commands, `builder` for building japa's own skills, workers
-and extensions, and `general` (the default when `worker` is omitted) for the rest. If none fits and
-the need recurs, consider a new worker profile.
+Every job has `read`, `write`, `edit` and `bash`, every skill and every extension's tools. It runs in
+a sandbox:
+
+- It sees the user's files and the network, but its own copy of `~/.japa` (without japa's secrets
+  or database) and its own `/tmp`. Name the directory to work in.
+- It can't use `sudo` (so no system packages), Docker, `systemctl --user` or the ssh agent, and
+  can't change japa's own program or service. Ask the user for those.
+- What it changes under `~/.japa/extensions` and `~/.japa/skills` goes live when it finishes, if it
+  passes `japa check`; its report then ends with `Live: …` or `Not live: …`. Its other changes to
+  `~/.japa` are dropped and listed as `Dropped: …`. Settings change through `settings_set`, not jobs.
+- To retry a job that ended `Not live: … Kept at <path>.`, start a new job with what failed. A job
+  can't see `<path>` (its own `~/.japa` covers it): read the files that matter there yourself and put
+  them, or what to change, in the brief.
+
+## Model and thinking
+
+A job runs on the worker model (`models.worker`, else the chief of staff's) and thinks at
+`jobs.thinking`. Pass `model: "<provider>/<modelId>"` or `thinking` (`off` to `xhigh`) only when the
+work needs a stronger or cheaper setup than that.
 
 ## Parallel jobs
 
 Independent pieces of work go in separate jobs started together, one per question, source or
 project. Don't split steps that depend on each other. At most `jobs.maxConcurrent` jobs (a setting)
-run at once; the rest queue. Start only one `builder` job at a time.
+run at once; the rest queue.
 
 ## Following up
 
 - `job_list` shows every job and its status; `job_transcript({ id, tail })` shows its last messages.
-- `job_message({ id, text, mode: "steer" })` redirects a running job.
+- `job_message({ id, text, mode: "steer" })` redirects a running job. A job whose changes are going
+  live can't be messaged until its report arrives.
 - When a job reports back with a question (it needs input), or you want more from a finished job,
   answer with `job_message({ id, text, mode: "followup" })`.
 - `job_stop({ id })` cancels a job that is no longer needed; it reports nothing more.

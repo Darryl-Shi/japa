@@ -14,7 +14,6 @@ test("the packaged skills are the default set", () => {
   expect(skills.sort()).toEqual([
     "building-extensions",
     "building-skills",
-    "building-workers",
     "choosing-a-mechanism",
     "reporting-changes",
     "research",
@@ -29,6 +28,28 @@ test("every packaged skill passes japa check", async () => {
 
 test("there are no packaged worker profiles", () => {
   expect(existsSync(join(packageRoot, "workers"))).toBe(false);
+});
+
+/** Every SKILL.md under `dir`'s skill directories. */
+const skillFiles = (dir: string) =>
+  existsSync(dir) ? readdirSync(dir).map((s) => join(dir, s, "SKILL.md")).filter((f) => existsSync(f)) : [];
+
+test("no packaged text mentions staging, install, worker profiles or operator jobs", () => {
+  const texts = [
+    ...files,
+    ...readdirSync(join(packageRoot, "extensions")).flatMap((e) => skillFiles(join(packageRoot, "extensions", e, "skills"))),
+    join(packageRoot, "src/kernel/identity.md"),
+    join(packageRoot, "src/kernel/jobs/worker.ts"),
+  ];
+  expect(texts.length).toBeGreaterThan(files.length + 2);
+  const stale = /\.staging|staging copy|install\(|`install`|worker profile|`?operator`? job|`?builder`? job|\.\.\/node_modules/i;
+  const hits = texts.flatMap((file) =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => stale.test(line))
+      .map((line) => `${file}: ${line}`),
+  );
+  expect(hits).toEqual([]);
 });
 
 test("every tool name the skills mention exists", async () => {
