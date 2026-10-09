@@ -1,7 +1,7 @@
 // Each job's sandbox: an env server under bwrap, on the job's own clone of the japa home, started on the job's first
 // tool call and again after it stops. All of a job's file and shell operations run there, none in the daemon.
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { cloneDir, cloneTmp, ensureClone } from "../jobs/clone.ts";
@@ -57,17 +57,24 @@ export function narrowPath(): Record<string, string> {
  * Which of `paths` (secrets dirs, the storage database and its `-wal` and `-shm`) the clone mounted over `home`
  * doesn't cover: those whose real path isn't inside the home's, by real path. A path inside the home can be a
  * symlink to one outside it. A missing one is kept, resolved as far as it exists: a sandbox hides it once it exists.
+ * Those that are the home or hold it are `holdingHome` instead: a mask there would cover the clone, so they can't be.
  */
-export function hiddenPaths(home: string, paths: string[]): string[] {
+export function hiddenPaths(home: string, paths: string[]): { hidden: string[]; holdingHome: string[] } {
   const realHome = realPath(home) ?? resolve(home);
-  const real = paths.flatMap((path) => realPath(resolve(path)) ?? []); // none behind a symlink loop
-  return [...new Set(real.filter((path) => !within(path, realHome)))];
+  const real = [...new Set(paths.flatMap((path) => realPath(resolve(path)) ?? []))]; // none behind a symlink loop
+  return {
+    hidden: real.filter((path) => !within(realHome, path) && !within(path, realHome)),
+    holdingHome: real.filter((path) => within(realHome, path)),
+  };
 }
 
 /**
  * The jobs' sandboxes for japa home `home`: each mounts the job's clone over it, and its own temp dir at /tmp; japa's
  * code at `packageRoot`, what the daemon runs and its Node dir `nodeDir` (the first in its PATH) are read-only, and
  * the `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
+ *
+ * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (from outside the user's
+ * home, where its folders aren't pinned), it would be found nowhere to hide, and read where it went.
  */
 export function createJobSandboxes(o: {
   home: string;
@@ -80,6 +87,7 @@ export function createJobSandboxes(o: {
   const nodeDir = o.nodeDir ?? realpathSync(dirname(process.execPath));
   const problem = probeSandbox();
   const servers = new Map<string, EnvServer>();
+  const present = o.hidden.filter((path) => existsSync(path));
 
   const spec = (jobId: string): SandboxSpec => ({
     home,
@@ -97,6 +105,8 @@ export function createJobSandboxes(o: {
     if (problem !== undefined) throw new Error(sandboxRefusal(problem));
     const running = servers.get(jobId);
     if (running !== undefined && !running.closed) return running;
+    const missing = present.find((path) => !existsSync(path));
+    if (missing !== undefined) throw new Error(`The job's sandbox can't start: ${missing} is missing`);
     ensureClone(home, packageRoot, jobId);
     const s = spec(jobId);
     // bwrap gets only the sandbox's environment: its own is readable in the sandbox, at /proc/1/environ.

@@ -310,6 +310,19 @@ test("sandboxArgs hides a dir with an empty tmpfs and a file with /dev/null, tho
   expect(args).not.toContain(join(user, "absent"));
 });
 
+test("sandboxArgs pins the existing folders between the user's home and each hidden path, a missing one's too", () => {
+  const user = tempUser();
+  const secrets = join(user, ".config", "japa", "secrets");
+  mkdirSync(secrets, { recursive: true });
+  mkdirSync(join(user, "data", "db"), { recursive: true });
+  // A missing `-wal`, which the database may create later: its folders are pinned already.
+  const wal = join(user, "data", "db", "state.db-wal");
+  const args = sandboxArgs({ ...bare, userHome: user, hidden: [secrets, wal, "/elsewhere/secrets"] });
+  const config = join(user, ".config");
+  const data = join(user, "data");
+  expect(pins(args)).toEqual([user, config, join(config, "japa"), data, join(data, "db")]);
+});
+
 test("sandboxArgs masks the runtime dirs that exist: the user's, and screen's sockets", () => {
   expect(runtimeDirs()).toEqual([`/run/user/${process.getuid?.()}`, "/run/screen"]);
   const args = sandboxArgs(bare);
@@ -491,6 +504,22 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     });
     expect(output).toBe("cat=0\nend\n");
     expect(readFileSync(db, "utf8")).toBe("db-secret");
+  });
+
+  // Renamed, the folder would take the mask with it, and a new sandbox would find nothing to hide at the old path.
+  test("the folders holding a hidden path can't be renamed", async () => {
+    const { user, spec } = sandbox();
+    const japa = join(user, ".config", "japa");
+    const secrets = join(japa, "secrets");
+    mkdirSync(secrets, { recursive: true });
+    writeFileSync(join(secrets, "key"), "hidden-secret");
+    const script = `mv "${japa}" "${japa}2" 2>/dev/null; echo "mv=$?"; ls -A "${secrets}"; echo end`;
+    const { output } = await runSandboxed({ ...spec, hidden: [...spec.hidden, secrets] }, ["bash", "-c", script], {
+      timeoutMs: 10_000,
+    });
+    expect(output).toMatch(/^mv=[1-9]\nend\n$/);
+    expect(existsSync(`${japa}2`)).toBe(false);
+    expect(readdirSync(secrets)).toEqual(["key"]);
   });
 
   test("hidden dirs are empty", async () => {

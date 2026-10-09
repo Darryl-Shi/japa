@@ -68,10 +68,11 @@ const HOME = process.env.HOME;
 /**
  * Boots with the probe extension, the japa home and the user's home (`HOME`, until the test finishes) outside `/tmp`,
  * which jobs see replaced by their own; the home has `marker` and a secret `secrets/api-key`, or with `o.vault`,
- * `secrets` is a symlink to `<outside>/vault`, which has it. `o.storage(outside)` is the storage setting.
+ * `secrets` is a symlink to `<outside>/vault`, which has it. `o.storage(outside)` is the storage setting, and
+ * `o.secrets(outside)` the secrets one.
  */
 async function bootSandboxed(
-  o: { vault?: boolean; storage?: (outside: string) => object } = {},
+  o: { vault?: boolean; storage?: (outside: string) => object; secrets?: (outside: string) => object } = {},
 ): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string; outside: string }> {
   const cache = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
   mkdirSync(cache, { recursive: true });
@@ -86,7 +87,8 @@ async function bootSandboxed(
   writeFileSync(join(home, "marker"), "the real marker");
   const kit = testKit();
   const storage = o.storage?.(outside) ?? { adapter: "memory" };
-  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage, models: { cos: kit.model } }));
+  const secretsSetting = o.secrets === undefined ? {} : { secrets: o.secrets(outside) };
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage, models: { cos: kit.model }, ...secretsSetting }));
   process.env.HOME = user;
   onTestFinished(() => {
     process.env.HOME = HOME;
@@ -554,7 +556,24 @@ test("job_start refuses without a sandbox", async () => {
   await daemon.close();
 });
 
+// Masked, it would cover the job's clone.
+test("a secrets dir that holds the japa home is reported: jobs can read it", async () => {
+  const { daemon, outside } = await bootSandboxed({ secrets: (outside) => ({ dir: outside }) });
+  expect(daemon.status().errors).toContainEqual({
+    name: "sandbox",
+    error: `Jobs can read ${outside}: it is or holds the japa home, so their sandboxes can't hide it`,
+  });
+  await daemon.close();
+});
+
 describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
+  test("a job still runs in its clone with a secrets dir that holds the japa home", async () => {
+    const { daemon, faux, home } = await bootSandboxed({ secrets: (outside) => ({ dir: outside }) });
+    const result = await jobBash(daemon, faux, `cat "${home}/marker"; echo; echo end`);
+    expect(result.trim()).toBe("the real marker\nend");
+    await daemon.close();
+  });
+
   test("a job's bash runs in its clone", async () => {
     const { daemon, faux, home } = await bootSandboxed();
     const command = `ls "${home}/secrets"; cat "${home}/marker"; echo made > "${home}/made"`;

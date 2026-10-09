@@ -173,7 +173,7 @@ export function readOnlyPaths(
 
 /**
  * Where the read-only paths are mounted: `pinned` dirs are bound onto themselves (a mount point can't be renamed, so
- * the protected paths under them can't be moved away and recreated); a protected symlink's directory is in
+ * the protected paths under them, and the hidden ones, can't be moved away and recreated); a protected symlink's directory is in
  * `readOnlyDirs`, so the link can't be replaced, and its target in `paths`, by real path. A missing protected file is
  * created empty, and a missing dir's parents, before the pins are computed, so the folders they need are pinned too;
  * `missing` dirs get a read-only tmpfs.
@@ -200,9 +200,11 @@ function readOnlyMounts(spec: SandboxSpec) {
     paths.push({ path, dir, missing: missing && dir });
   }
   // Every parent, the japa home's too: the clone, bound after them, still covers it. The user's home as well, which
-  // could otherwise be renamed away whole where its own parent is writable.
+  // could otherwise be renamed away whole where its own parent is writable. A hidden path's too: renamed, a folder
+  // would take the mask with it, and the next sandbox would find nothing to hide where it was.
   const home = realPath(spec.userHome) ?? spec.userHome;
-  const parents = [...readOnlyDirs, ...paths.map(({ path }) => path)].flatMap((path) => between(home, path));
+  const protectedPaths = [...readOnlyDirs, ...paths.map(({ path }) => path), ...spec.hidden];
+  const parents = protectedPaths.flatMap((path) => between(home, path));
   const pinned = new Set([...(existsSync(home) ? [home] : []), ...parents]);
   // Parents first: binding one covers the mounts already under it.
   return { pinned: [...pinned].sort(), readOnlyDirs: [...readOnlyDirs].sort(), paths };

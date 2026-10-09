@@ -71,8 +71,8 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--bind / /`: the host filesystem as the user sees it.
 - `--dev /dev`, plus `--unshare-pid` and `--proc /proc`: a separate process namespace. The daemon's memory,
   environment and other processes are invisible.
-- `--bind D D` for every directory between the user's home and a protected path (e.g. `~/.config`,
-  `~/.local/share`), so a job can't rename it away and recreate the path.
+- `--bind D D` for every directory between the user's home and a protected or hidden path (e.g. `~/.config`,
+  `~/.local/share`), so a job can't rename it away and recreate the path, or move a hidden one out of its mask.
 - `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
   to secrets; jobs therefore can't patch japa itself on the host.
   - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
@@ -93,6 +93,9 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   `~/.japa/secrets` as a symlink out of it), at that real path.
 - `--dev-bind /dev/null` over a storage database outside `~/.japa` (`settings.storage.file`) and its `-wal` and
   `-shm`, by real path: they read empty. (`--ro-bind` mounts it `nodev`, where `/dev/null` can't be opened.)
+  - A hidden path that is or holds `~/.japa` would cover the clone: it isn't hidden, and boot reports it.
+  - A sandbox doesn't start while a hidden path that existed at boot is missing (the call fails): moved away, it
+    would be found nowhere to hide.
 - `--tmpfs /run/user/<uid>` and `/run/screen`: hides the D-Bus session bus, the systemd user manager, ssh-agent,
   keyring and screen sockets. Otherwise `systemd-run --user` runs any command outside the sandbox.
 - `--ro-bind /dev/null` over the Docker sockets that exist (`/run/docker.sock`, `/var/run/docker.sock`): Docker
