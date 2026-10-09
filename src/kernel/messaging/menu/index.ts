@@ -98,7 +98,7 @@ export function createMenu(
       const [token, scope] = m.action!.split(":");
       const nav = token === run && (scope === "s" || scope === "j") ? navs[scope] : undefined;
       const opened = nav?.open(m.action!);
-      const again = token === run && scope === "j" ? "/jobs" : "/settings";
+      const again = scope === "j" ? "/jobs" : "/settings";
       const expired = { markdown: `This menu expired — send ${again} again.` };
       const shown = opened === undefined ? expired : await opened.catch(failed);
       await mark();

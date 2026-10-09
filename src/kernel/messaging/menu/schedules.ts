@@ -1,5 +1,5 @@
 import type { MessagingContext } from "../../contracts.ts";
-import type { Nav, Page } from "./nav.ts";
+import { type Nav, PAGE, type Page } from "./nav.ts";
 
 /** A schedule as `schedule_list`'s details give it. */
 type Schedule = { id: string; text: string; cron?: string; at?: number; next: number; paused: boolean; label: string };
@@ -20,18 +20,21 @@ export function schedulesMenu(nav: Nav, messaging: MessagingContext, home: Page)
     return (result.content![0] as { text: string }).text;
   };
 
-  const list: Page = async (outcome) => {
+  // Page `page` of the list, built afresh each time it is shown.
+  const list = (page: number): Page => async (outcome) => {
     const all = await schedules();
-    const items = all.map((s) => [`${s.paused ? "⏸ " : ""}${s.label}`, detail(s.id)] as const);
+    const items = all.map((s, i) => [`${s.paused ? "⏸ " : ""}${s.label}`, detail(s.id, Math.floor(i / PAGE))] as const);
     const body = all.length === 0 ? "No schedules." : undefined;
-    return nav.paged({ title: "Schedules", body, items, back: home, home, outcome });
+    return nav.paged({ title: "Schedules", body, items, page, render: list, back: home, home, outcome });
   };
 
-  // One gone meanwhile (removed, or a once one that fired) shows the list instead.
-  const detail = (id: string): Page => async (outcome) => {
+  // A schedule listed on page `page`, which Back returns to; one gone meanwhile (removed, or a once one that fired)
+  // shows the list instead.
+  const detail = (id: string, page: number): Page => async (outcome) => {
+    const back = list(page);
     const s = (await schedules()).find((x) => x.id === id);
-    if (s === undefined) return list(`✗ No schedule ${id}.`);
-    const self = detail(id);
+    if (s === undefined) return back(`✗ No schedule ${id}.`);
+    const self = detail(id, page);
     const body = [
       s.text,
       s.cron === undefined ? `Once: ${local(s.at!)}` : `Repeats: ${s.cron}`,
@@ -39,10 +42,10 @@ export function schedulesMenu(nav: Nav, messaging: MessagingContext, home: Page)
     ].join("\n");
     const [label, tool] = s.paused ? ["Resume", "schedule_resume"] : ["Pause", "schedule_pause"];
     const toggle = nav.act(label, run(tool, id), self);
-    const remove = nav.confirm(`Remove schedule "${s.label}"?`, "Remove", run("schedule_remove", id), list, self);
+    const remove = nav.confirm(`Remove schedule "${s.label}"?`, "Remove", run("schedule_remove", id), back, self);
     const rows = [[toggle], [nav.button("Remove", remove)]];
-    return nav.screen({ title: `Schedule ${id}`, body, rows, back: list, home, outcome });
+    return nav.screen({ title: `Schedule ${id}`, body, rows, back, home, outcome });
   };
 
-  return list;
+  return list(0);
 }

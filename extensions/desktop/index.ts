@@ -68,7 +68,10 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
       shm: Type.Optional(Type.String({ description: 'Shared memory, e.g. "2g" (default "2g")' })),
       bind: Type.Optional(Type.String({ description: 'Address noVNC listens on (default "127.0.0.1")' })),
       autostart: Type.Optional(
-        Type.Boolean({ description: "Build and start the desktop when japa starts, rather than on first use (default true)" }),
+        Type.Boolean({
+          description: "Build and start the desktop when japa starts, rather than on first use (default true)",
+          default: true,
+        }),
       ),
     }),
     status: () => (kernel ? desktop.status() : undefined),

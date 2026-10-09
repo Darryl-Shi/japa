@@ -1,9 +1,11 @@
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionInfo, MessagingContext } from "../../contracts.ts";
-import type { Button, Nav, Page } from "./nav.ts";
+import { type Button, type Nav, PAGE, type Page } from "./nav.ts";
 
 const LABELS = { on: "✅ on", "not set up": "⚪ not set up", off: "⏸ off" } as const;
 const ROLLBACK = "Roll back to last known good";
+/** Settings shown but not offered for editing: a mistyped `owner` would shut its owner out of the chat. */
+const READ_ONLY = new Set(["owner"]);
 
 type Property = TSchema & {
   type?: string;
@@ -63,18 +65,23 @@ function detailBody(e: ExtensionInfo): string | undefined {
 
 /**
  * The Extensions list and each extension's screen: its secrets typed in (deleted at once), its settings from its
- * schema, turning it off or on, and rolling a workspace one back. `home` is the Settings home.
+ * schema (`owner` only shown), turning it off or on, and rolling a workspace one back. `home` is the Settings home.
  */
 export function extensionsMenu(nav: Nav, messaging: MessagingContext, home: Page): Page {
-  const list: Page = async (outcome) => {
-    const items = (await messaging.extensions()).map((e) => [`${e.name} · ${stateLabel(e)}`, detail(e.name)] as const);
-    return nav.paged({ title: "Extensions", items, back: home, home, outcome });
+  // Page `page` of the list, built afresh each time it is shown.
+  const list = (page: number): Page => async (outcome) => {
+    const items = (await messaging.extensions()).map(
+      (e, i) => [`${e.name} · ${stateLabel(e)}`, detail(e.name, Math.floor(i / PAGE))] as const,
+    );
+    return nav.paged({ title: "Extensions", items, page, render: list, back: home, home, outcome });
   };
 
-  const detail = (name: string): Page => async (outcome) => {
+  // An extension listed on page `page`, which Back returns to.
+  const detail = (name: string, page: number): Page => async (outcome) => {
     const e = (await messaging.extensions()).find((x) => x.name === name);
     if (e === undefined) throw new Error(`No extension ${name}.`);
-    const self = detail(name);
+    const self = detail(name, page);
+    const back = list(page);
     const path = (prop: string) => `extensions.${name}.${prop}`;
     const rows: Button[][] = e.secrets.map((s) => {
       const apply = (text: string) => messaging.setSecret(name, s.name, text);
@@ -83,11 +90,14 @@ export function extensionsMenu(nav: Nav, messaging: MessagingContext, home: Page
       return [nav.button(title, ask)];
     });
     for (const [prop, schema] of properties(e)) {
+      if (READ_ONLY.has(prop)) continue;
       const current = e.values[prop] ?? schema.default;
       const choices = choicesOf(schema);
       if (schema.type === "boolean") {
+        // Unset without a default, it reads `not set` and is set on.
+        const shown = current === undefined ? "not set" : current === true ? "on" : "off";
         const set = () => messaging.setSetting(path(prop), current !== true);
-        rows.push([nav.act(`${prop}: ${current === true ? "on" : "off"}`, set, self)]);
+        rows.push([nav.act(`${prop}: ${shown}`, set, self)]);
       } else if (choices !== undefined) {
         rows.push([nav.button(prop, choose(name, prop, choices, current, self))]);
       } else {
@@ -106,11 +116,11 @@ export function extensionsMenu(nav: Nav, messaging: MessagingContext, home: Page
     if (e.state === "off") rows.push([nav.act("Turn on", () => messaging.setSetting(path("enabled"), undefined), self)]);
     if (e.workspace) {
       const rollback = () => messaging.rollback(name);
-      const confirm = nav.confirm(`Roll back ${name} to last known good?`, ROLLBACK, rollback, list, self);
+      const confirm = nav.confirm(`Roll back ${name} to last known good?`, ROLLBACK, rollback, back, self);
       rows.push([nav.button(ROLLBACK, confirm)]);
     }
     const title = `${name} · ${stateLabel(e)}`;
-    return nav.screen({ title, body: detailBody(e), rows, back: list, home, outcome });
+    return nav.screen({ title, body: detailBody(e), rows, back, home, outcome });
   };
 
   // A setting's choices, the current one ticked; choosing one sets it and goes back to the extension.
@@ -123,5 +133,5 @@ export function extensionsMenu(nav: Nav, messaging: MessagingContext, home: Page
       return nav.paged({ title: prop, items, back, home, outcome });
     };
 
-  return list;
+  return list(0);
 }

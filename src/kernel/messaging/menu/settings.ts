@@ -3,7 +3,7 @@ import type { Change } from "../../changes.ts";
 import type { KernelContext, MessagingContext } from "../../contracts.ts";
 import { getPath, type Settings } from "../../settings.ts";
 import { extensionsMenu } from "./extensions.ts";
-import { ago, type Button, type Nav, type Page } from "./nav.ts";
+import { ago, type Button, type Nav, PAGE, type Page } from "./nav.ts";
 import { schedulesMenu } from "./schedules.ts";
 
 const ROLES = [
@@ -49,7 +49,7 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
         [nav.button("Extensions", extensions)],
         [nav.button("Schedules", schedules)],
         [nav.button("General", general)],
-        [nav.button("Recent changes", recent)],
+        [nav.button("Recent changes", recent(0))],
       ],
       outcome,
     });
@@ -76,19 +76,22 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
     const auth = await Promise.all(list.map((p) => kernel.models.checkAuth(p.id).catch(() => undefined)));
     const items: (readonly [string, Page] | Button)[] = list
       .filter((_, i) => auth[i] !== undefined)
-      .map((p) => [p.id, modelsOf(role, p.id)] as const);
+      .map((p) => [p.id, modelsOf(role, p.id, 0)] as const);
     const useCos = () => messaging.setSetting(`models.${role}`, undefined);
     if (role !== "cos") items.unshift(nav.act("Use CoS model", useCos, models));
     return nav.paged({ title: "Choose a provider", items, back: models, home, outcome });
   };
-  const modelsOf = (role: Role, provider: string): Page => async (outcome) => {
+  // Page `page` of `provider`'s models, built afresh each time it is shown; only its own buttons are made, as a
+  // provider can have more models than buttons are kept.
+  const modelsOf = (role: Role, provider: string, page: number): Page => async (outcome) => {
     const now = (await current()).models[role];
     const set = (modelId: string) => () => messaging.setSetting(`models.${role}`, { provider, modelId });
     const items = kernel.models.getModels(provider).map((m) => {
       const tick = now?.provider === provider && now.modelId === m.id ? "✓ " : "";
-      return nav.act(`${tick}${m.id}`, set(m.id), models);
+      return [`${tick}${m.id}`, nav.perform(set(m.id), models)] as const;
     });
-    return nav.paged({ title: "Choose a model", items, back: providers(role), home, outcome });
+    const render = (p: number) => modelsOf(role, provider, p);
+    return nav.paged({ title: "Choose a model", items, page, render, back: providers(role), home, outcome });
   };
 
   // A button per setting, asking for its new value as typed text, which the settings validator converts.
@@ -102,19 +105,24 @@ export function settingsMenu(nav: Nav, kernel: KernelContext, messaging: Messagi
     return nav.screen({ title: "General", rows, back: home, home, outcome });
   };
 
-  const recent: Page = async (outcome) => {
+  // Page `page` of the newest changes, built afresh each time it is shown.
+  const recent = (page: number): Page => async (outcome) => {
     const changes = (await messaging.changes()).slice(0, RECENT);
     const now = Date.now();
-    const items = changes.map((c) => [`${c.id} ${c.title} · ${ago(now - c.at)}`, change(c)] as const);
+    const items = changes.map(
+      (c, i) => [`${c.id} ${c.title} · ${ago(now - c.at)}`, change(c, Math.floor(i / PAGE))] as const,
+    );
     const body = changes.length === 0 ? "No changes yet." : undefined;
-    return nav.paged({ title: "Recent changes", body, items, back: home, home, outcome });
+    return nav.paged({ title: "Recent changes", body, items, page, render: recent, back: home, home, outcome });
   };
-  const change = (c: Change): Page => async (outcome) => {
+  // A change listed on page `page`, which Back returns to.
+  const change = (c: Change, page: number): Page => async (outcome) => {
+    const back = recent(page);
     const when = new Date(c.at).toLocaleString();
     const body = [`${c.title}\n${when}`, c.howToUse].filter((p) => p !== "").join("\n\n");
-    const confirm = nav.confirm(`Undo "${c.title}"?`, "Undo", () => messaging.undoChange(c.id), recent, change(c));
+    const confirm = nav.confirm(`Undo "${c.title}"?`, "Undo", () => messaging.undoChange(c.id), back, change(c, page));
     const rows = [[nav.button("Undo", confirm)]];
-    return nav.screen({ title: `Change ${c.id}`, body, rows, back: recent, home, outcome });
+    return nav.screen({ title: `Change ${c.id}`, body, rows, back, home, outcome });
   };
 
   return home;

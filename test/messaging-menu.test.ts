@@ -384,10 +384,14 @@ test("an unknown command gets the help list and never reaches the CoS", async ()
   expect(await texts(daemon.root, "user")).toEqual([]);
 });
 
-test("a button from before a restart says the menu expired", async () => {
+test("a button from before a restart says the menu expired, naming its command", async () => {
   const job = jobOf("1", { title: "Sum" });
-  const menus = [1, 2].map(() => createMenu(fake.adapter, {} as KernelContext, {} as MessagingContext, () => [job]));
+  const messaging = { tool: settingsGet } as unknown as MessagingContext;
+  const menus = [1, 2].map(() => createMenu(fake.adapter, fakeKernel, messaging, () => [job]));
   for (const menu of menus) await menu.command({ ...msg, command: "jobs" });
+  await menus[1]!.press({ ...msg, action: fake.sent.at(-2)!.buttons![0]![0]!.action });
+  expect(fake.edited.at(-1)!.markdown).toBe("This menu expired — send /jobs again.");
+  for (const menu of menus) await menu.command({ ...msg, command: "settings" });
   await menus[1]!.press({ ...msg, action: fake.sent.at(-2)!.buttons![0]![0]!.action });
   expect(fake.edited.at(-1)!.markdown).toBe("This menu expired — send /settings again.");
 });
@@ -496,7 +500,58 @@ test("long lists are paged 8 at a time", async () => {
   expect(labels()).toEqual(first);
 });
 
+test("a provider with more models than buttons are kept makes buttons for the page shown only", async () => {
+  await reboot(testKit({ models: Array.from({ length: 600 }, (_, i) => ({ id: `m${i + 1}` })) }));
+  await fake.receive({ command: "settings" });
+  const home = fake.sent.at(-1)!;
+  await fake.press("Models");
+  for (const label of ["CoS", "faux"]) await fake.press(label);
+  const first = ["✓ m1", ...Array.from({ length: 7 }, (_, i) => `m${i + 2}`), "1/75", "›", "‹ Back", "⌂ Home"];
+  expect(labels()).toEqual(first);
+  await fake.press("›");
+  await fake.press("m9");
+  expect(fake.edited.at(-1)!.markdown).toBe(`✓ Set models.cos. (change 1)\n\n${MODELS.replace("faux/a", "faux/m9")}`);
+  for (const label of ["CoS", "faux"]) await fake.press(label);
+  expect(labels()[0]).toBe("m1");
+  await fake.press("›");
+  expect(labels()[0]).toBe("✓ m9");
+  await fake.press("‹ Back");
+  expect(fake.edited.at(-1)!.markdown).toBe("**Choose a provider**");
+  await fake.receive({ action: home.buttons![1]![0]!.action, messageId: home.id });
+  expect(fake.edited.at(-1)!.markdown).toBe("**Extensions**");
+});
+
+test("Back from an extension opened on page 2 returns to page 2; paging shows the list as it is now", async () => {
+  await fake.receive({ command: "settings" });
+  await fake.press("Extensions");
+  expect(labels()).toContain("fake · ✅ on");
+  await fake.press("›");
+  const page2 = labels();
+  expect(page2).toContain("2/2");
+  await fake.press(page2[0]!);
+  await fake.press("‹ Back");
+  expect(labels()).toEqual(page2);
+  await hook.messaging!.setSetting("extensions.fake.enabled", false);
+  await fake.press("‹");
+  expect(labels()).toContain("fake · ⏸ off");
+});
+
 describe("schedules", { timeout: 30_000 }, () => {
+  test("Back from a schedule opened on page 2 returns to page 2; paging shows the list as it is now", async () => {
+    const add = (i: number) => hook.messaging!.tool("schedule_add", { text: `s${i}`, cron: "0 9 * * *" });
+    await fake.receive({ command: "settings" });
+    for (let i = 1; i <= 9; i++) await add(i);
+    await fake.press("Schedules");
+    await fake.press("›");
+    expect(labels()).toEqual(["s9 (0 9 * * *)", "‹", "2/2", "‹ Back", "⌂ Home"]);
+    await fake.press("s9 (0 9 * * *)");
+    await fake.press("‹ Back");
+    expect(labels()).toEqual(["s9 (0 9 * * *)", "‹", "2/2", "‹ Back", "⌂ Home"]);
+    await add(10);
+    await fake.press("2/2");
+    expect(labels()).toEqual(["s9 (0 9 * * *)", "s10 (0 9 * * *)", "‹", "2/2", "‹ Back", "⌂ Home"]);
+  });
+
   const WATER = "water plants (0 9 * * *)";
   const local = (time: number) => new Date(time).toLocaleString();
   /** The `next` time of schedule `id`, from `schedule_list`'s details. */
@@ -733,6 +788,21 @@ describe("recent changes", { timeout: 30_000 }, () => {
     expect(fake.edited.at(-1)!.markdown).toMatch(/^✗ No schedule 1\.\n\n\*\*Recent changes\*\*$/);
     expect(labels()).toContain('1 Scheduled "water plants" (0 9 * * *) · <1m');
     expect(await tool(daemon, faux, "schedule_list")).toBe("No schedules.");
+  });
+
+  test("Back from a change opened on page 2 returns to page 2", async () => {
+    await daemon.root.commit(async (tx) => {
+      for (let i = 1; i <= 10; i++) await logChange(tx, { title: `Change ${i}`, howToUse: "", undo: { commits: [] } });
+    }, ctx);
+    await fake.receive({ command: "settings" });
+    await fake.press("Recent changes");
+    await fake.press("›");
+    const page2 = labels();
+    expect(page2.slice(0, 2).map((l) => l.split(" ")[0])).toEqual(["2", "1"]);
+    await fake.press(page2[0]!);
+    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*Change 2\*\*/);
+    await fake.press("‹ Back");
+    expect(labels()).toEqual(page2);
   });
 
   test("only the 10 newest changes are listed, newest first", async () => {
@@ -1036,6 +1106,30 @@ describe("extensions", { timeout: 60_000 }, () => {
     await open("broken");
     expect(shown()).toBe("**broken · ⚠️ error**\n\nError: manifest name must match directory");
     expect(labels()).toEqual(["Roll back to last known good", "‹ Back", "⌂ Home"]);
+  });
+
+  test("a messaging extension's owner is shown, never offered for editing", async () => {
+    await open("fake");
+    expect(shown()).toBe('**fake · ✅ on**\n\nFake chat\n\nSettings:\n- owner: "42"');
+    expect(labels()).toEqual(["Turn off", "‹ Back", "⌂ Home"]);
+  });
+
+  test("an unset boolean without a default reads not set and is set on; with one it reads the default", async () => {
+    const quiet: JapaExtension = {
+      name: "quiet",
+      summary: "Quiet",
+      settings: Type.Object({ hush: Type.Optional(Type.Boolean()) }),
+    };
+    await reboot(testKit(), [quiet]);
+    await open("quiet");
+    expect(shown()).toBe("**quiet · ✅ on**\n\nQuiet\n\nSettings:\n- hush: not set");
+    expect(labels()).toEqual(["hush: not set", "Turn off", "‹ Back", "⌂ Home"]);
+    await fake.press("hush: not set");
+    expect(shown()).toMatch(/^✓ Set extensions\.quiet\.hush\. \(change 1\)\n\n.+\n- hush: true$/s);
+    expect(labels()[0]).toBe("hush: on");
+    await open("desktop");
+    expect(shown()).toContain("- autostart: default (true)");
+    expect(labels()).toContain("autostart: on");
   });
 
   test("the detail shows secrets as set or not set, never their value, and each setting", async () => {

@@ -66,9 +66,12 @@ export function createNav(scope: "s" | "j", run: string) {
     /** A button showing `page`. */
     button: (label: string, page: Page): Button => register(label, () => nav.show(page)),
 
+    /** A screen that runs `run`, then shows `then` with its reply (or error) as the outcome. */
+    perform: (run: () => Promise<string>, then: Page): Page => async () =>
+      nav.show(then, await Promise.resolve().then(run).then(outcomeLine, failed)),
+
     /** A button running `run`, then showing `then` with its reply (or error) as the outcome. */
-    act: (label: string, run: () => Promise<string>, then: Page): Button =>
-      register(label, async () => nav.show(then, await Promise.resolve().then(run).then(outcomeLine, failed))),
+    act: (label: string, run: () => Promise<string>, then: Page): Button => nav.button(label, nav.perform(run, then)),
 
     /** `[outcome\n\n]**title**[\n\nbody]`, `rows`, then a footer row of `‹ Back` and `⌂ Home`, when given. */
     screen({ title, body, rows, back, home, outcome }: {
