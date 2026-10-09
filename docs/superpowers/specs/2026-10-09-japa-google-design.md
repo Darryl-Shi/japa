@@ -77,8 +77,9 @@ an `auth_url`, `info` or `progress` event); `japa/sdk` re-exports them, with `Au
 
 ### 3.2 In `japa setup`
 
-`configureExtension` asks for the extension's secrets as today, then, when it has `authorize`: if `connected()`,
-asks "Sign in again?" (default No); otherwise "Sign in now?" (default Yes). A yes runs `run` through the existing
+`configureExtension` asks for the extension's secrets as today, then, when it has `authorize`: if a secret it asks
+for is still unset, notes "Sign in to <name> once its secrets are set: rerun japa setup or ask japa." and offers no
+sign-in; if `connected()`, asks "Sign in again?" (default No); otherwise "Sign in now?" (default Yes). A yes runs `run` through the existing
 `interactionFor` adapter (`models-step.ts`, moved to a shared module), which prints the link, opens it when the
 machine has a browser and lets the user paste into a `manual_code` prompt while the flow's own loopback listener
 waits. The result line is shown with `note`; a failure with `warn`, and setup asks whether to try again.

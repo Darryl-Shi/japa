@@ -222,9 +222,10 @@ function failingProperty(error: string, extensionName: string): string {
 }
 
 /**
- * Offers to sign in to `e` (design spec §3.2): again (default No) when it's connected, else now (default Yes). The
- * flow runs through the terminal; a failure says why and asks whether to try again. Quitting at one of its
- * prompts aborts the flow (and its loopback listener) and rethrows `Cancelled`. Returns whether it signed in.
+ * Offers to sign in to `e` (design spec §3.2): again (default No) when it's connected, else now (default Yes); not
+ * while a secret setup asks for is unset (the sign-in needs it), saying so instead. The flow runs through the
+ * terminal; a failure says why and asks whether to try again. Quitting at one of its prompts aborts the flow (and
+ * its loopback listener) and rethrows `Cancelled`. Returns whether it signed in.
  */
 async function signIn(
   ctx: SetupContext,
@@ -232,6 +233,12 @@ async function signIn(
   e: JapaExtension,
   openUrl: (url: string) => void,
 ): Promise<boolean> {
+  for (const name of askedSecretNames(e)) {
+    if ((await ctx.secrets.get(name)) === undefined) {
+      p.note(`Sign in to ${e.name} once its secrets are set: rerun japa setup or ask japa.`);
+      return false;
+    }
+  }
   const authorize = e.authorize!;
   const actx = authorizeContext(ctx, e);
   const yes = (await authorize.connected(actx))

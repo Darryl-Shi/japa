@@ -278,6 +278,7 @@ test("configuring an extension with authorize signs in after its secrets", async
 
 test("an extension already signed in asks to sign in again, default no", async () => {
   const ctx = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  await ctx.secrets.set("signin.id", "id-1");
   await ctx.secrets.set("signin.tok", "old");
   const { signin, state } = signinExtension();
   const p = scripted([
@@ -290,6 +291,18 @@ test("an extension already signed in asks to sign in again, default no", async (
   expect(saved).toBe(false);
   p.done();
   expect(state.runs).toBe(0);
+});
+
+test("with a secret still unset, setup says to sign in later instead of offering it", async () => {
+  const ctx = await openSetupContext(tempHome(), [REPO_EXTENSIONS]);
+  const { signin, state } = signinExtension();
+  const p = scripted([["Client id", ENTER]]);
+
+  expect(await configureExtension(ctx, p, signin, { openUrl: () => {} })).toBe(false);
+
+  p.done();
+  expect(state.runs).toBe(0);
+  expect(p.notes).toContain("Sign in to signin once its secrets are set: rerun japa setup or ask japa.");
 });
 
 test("a failed sign-in says why and offers to try again", async () => {
