@@ -9,24 +9,24 @@ import {
   constants,
   existsSync,
   fstatSync,
+  fsyncSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readSync,
   renameSync,
   rmSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, relative } from "node:path";
 import type { Change } from "../changes.ts";
 import type { LoadError } from "../loader.ts";
-import { runSandboxed, type SandboxSpec } from "../sandbox/bwrap.ts";
+import { runSandboxed, type SandboxSpec, within } from "../sandbox/bwrap.ts";
 import type { WorkspaceLock } from "../workspace-lock.ts";
 import { git, gitError, gitPaths, head } from "../workspace.ts";
 import { cloneBase, cloneDir, cloneMarker, removeClone } from "./clone.ts";
-import { BUNDLE, inComponents } from "./narrow.ts";
+import { BUNDLE, inComponents, publishable } from "./narrow.ts";
 
 type Kind = "skill" | "extension";
 
@@ -44,19 +44,25 @@ export type PublishDeps = {
   scheduleGood(): void;
 };
 
+/** Paths named on an outcome line (see `listed`), and how many more there are. */
+type Listed = { named: string[]; more: number };
+
 /**
  * What publishing a job did to the real repo, in `cloneMarker` (outside the clone, which the job can write): its merge
- * commit, the paths it dropped, then the change logged for it, or the line it ended with once the merge was reverted.
- * A job resumed in publish after a restart goes on from there, and never merges twice.
+ * commit, the components it changed, the paths it dropped, then the change logged for it, or the line it ended with
+ * once the merge was reverted. A job resumed in publish after a restart goes on from there, and never merges twice.
  */
-type Marker = { merge: string; dropped: string[]; change?: string; reverted?: string };
+type Marker = { merge: string; components: string[]; dropped: Listed; change?: string; reverted?: string };
 
 /** How long `japa check` may run, per component. */
 const CHECK_TIMEOUT_MS = 600_000;
 /** How long committing and bundling a job's changes in its sandbox may take. */
 const NARROW_TIMEOUT_MS = 120_000;
-/** How many dropped paths an outcome line names. */
-const SHOWN = 10;
+/** The largest bundle of a job's changes the daemon reads. */
+const MAX_BUNDLE = 100 * 1024 * 1024;
+/** How many paths an outcome line names, and how long each may be. */
+const MAX_NAMED = 50;
+const MAX_PATH = 300;
 
 /** Characters that would break, or disguise, an outcome line: controls, line separators and bidi overrides. */
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
@@ -70,6 +76,28 @@ function oneLine(text: string, max = 500): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/** `path` for the user: under their home, from `~`. */
+function display(path: string): string {
+  const user = homedir();
+  return show(within(path, user) ? join("~", relative(user, path)) : path);
+}
+
+/** Of `paths`, the first 50 that are non-empty strings, on one line, of 300 characters at most; the rest are counted. */
+function listed(paths: unknown[]): Listed {
+  const valid = paths.filter(
+    (path): path is string => typeof path === "string" && path !== "" && path.length <= MAX_PATH && !/[\0\r\n]/.test(path),
+  );
+  const named = valid.slice(0, MAX_NAMED);
+  return { named, more: paths.length - named.length };
+}
+
+/** `a, b and 2 more`, or `3 paths` when none is named. */
+function listText({ named, more }: Listed): string {
+  const shown = named.map(show).join(", ");
+  if (more === 0) return shown;
+  return shown === "" ? `${more} ${more === 1 ? "path" : "paths"}` : `${shown} and ${more} more`;
+}
+
 /** The components (`extensions/<x>`, `skills/<x>`) `paths` are in (each is in one); sorted, each once. */
 const componentsOf = (paths: string[]) => [...new Set(paths.map((path) => path.split("/", 2).join("/")))].sort();
 
@@ -79,15 +107,19 @@ function parts(component: string): [Kind, string] {
   return [dir === "extensions" ? "extension" : "skill", name];
 }
 
+/** A bundle over `MAX_BUNDLE`. */
+class TooLarge extends Error {}
+
 /**
- * Copies `path`, which must be a regular file (not a symlink to one, nor a FIFO to wait on), to new file `dest`: as many
- * bytes as it had when opened, though the job may still be writing it.
+ * Copies `path`, which must be a regular file (not a symlink to one, nor a FIFO to wait on) of 100 MB at most, in size
+ * and on disk, to new file `dest`: as many bytes as it had when opened, though the job may still be writing it.
  */
-function copyRegular(path: string, dest: string): void {
+function copyBundle(path: string, dest: string): void {
   const from = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(from);
     if (!stat.isFile()) throw new Error(`${basename(path)} is not a regular file`);
+    if (Math.max(stat.size, stat.blocks * 512) > MAX_BUNDLE) throw new TooLarge(`${basename(path)} is too large`);
     const to = openSync(dest, "wx", 0o600);
     try {
       const buffer = Buffer.alloc(1024 * 1024);
@@ -128,6 +160,10 @@ export function sandboxCheck(
   };
 }
 
+const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+const isStrings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string");
+const optionalString = (value: unknown) => value === undefined || typeof value === "string";
+
 /**
  * Publishes job `id`'s changes to extensions/ and skills/ (spec §4.3); the outcome line for its report, or undefined
  * when there's nothing to publish (no clone, or no change left once narrowed). The clone is deleted once its changes are
@@ -156,52 +192,86 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
   const inTree = (rev: string, path: string) =>
     gitPaths(home, "--literal-pathspecs", "ls-tree", "-z", "--name-only", rev, "--", path).length > 0;
 
+  /** Job `id`'s marker; undefined when there's none, or it's empty or garbled (a write cut short, say). */
   function readMarker(id: string): Marker | undefined {
+    let text: string;
     try {
-      return JSON.parse(readFileSync(cloneMarker(home, id), "utf8")) as Marker;
+      text = readFileSync(cloneMarker(home, id), "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
+    try {
+      const m = JSON.parse(text) as Marker;
+      const valid =
+        typeof m.merge === "string" &&
+        SHA.test(m.merge) &&
+        isStrings(m.components) &&
+        isStrings(m.dropped?.named) &&
+        Number.isInteger(m.dropped.more) &&
+        optionalString(m.change) &&
+        optionalString(m.reverted);
+      return valid ? m : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
+  /** Replaces job `id`'s marker, durably: written and synced aside, renamed over, and the rename synced. */
   function writeMarker(id: string, marker: Marker): void {
     const file = cloneMarker(home, id);
-    writeFileSync(`${file}.new`, JSON.stringify(marker));
+    const fd = openSync(`${file}.new`, "w", 0o600);
+    try {
+      writeSync(fd, JSON.stringify(marker));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(`${file}.new`, file);
+    const dir = openSync(dirname(file), "r");
+    try {
+      fsyncSync(dir);
+    } finally {
+      closeSync(dir);
+    }
   }
 
-  /** Commits and bundles the job's changes in its sandbox (narrow.ts): what it dropped and whether there's a bundle. */
+  /**
+   * Commits and bundles the job's changes in its sandbox (narrow.ts): what it dropped and whether there's a bundle.
+   * The folders the sandbox mounts in the home, which bwrap makes there, are dropped without a word.
+   */
   async function narrowInSandbox(id: string, base: string, message: string) {
+    const spec = deps.spec(id);
+    const quiet = spec.shared.filter((path) => path !== home && within(path, home)).map((path) => relative(home, path));
     const script = join(deps.packageRoot, "src", "kernel", "jobs", "narrow.ts");
     // `/tmp` in the sandbox is the job's own temp dir, `spec.tmp` on the host.
-    const command = [process.execPath, "--disable-warning=ExperimentalWarning", script, base, message, "/tmp"];
-    const { code, output, timedOut } = await runSandboxed(deps.spec(id), command, {
-      timeoutMs: NARROW_TIMEOUT_MS,
-      cwd: home,
-    });
+    const node = [process.execPath, "--disable-warning=ExperimentalWarning", script];
+    const command = [...node, base, message, "/tmp", ...quiet];
+    const { code, output, timedOut } = await runSandboxed(spec, command, { timeoutMs: NARROW_TIMEOUT_MS, cwd: home });
     if (timedOut) return { error: "timed out after 2 minutes" };
     if (code === 0) {
       try {
         const result = JSON.parse(output.trim().split("\n").at(-1) ?? "") as { dropped?: unknown; bundle?: unknown };
         const { dropped, bundle } = result;
-        if (Array.isArray(dropped) && dropped.every((p) => typeof p === "string") && typeof bundle === "boolean") {
-          return { dropped: dropped as string[], bundle };
-        }
+        // From the job's sandbox: its git can say anything.
+        if (Array.isArray(dropped) && typeof bundle === "boolean") return { dropped: listed(dropped), bundle };
       } catch {}
     }
     return { error: oneLine(output) || `it exited with ${code}` };
   }
 
-  /** Fetches the job's bundle at `path` (in its temp dir, which it can write) to `ref` in the real repo; its commit. */
+  /**
+   * Fetches the job's bundle at `path` (in its temp dir, which it can write) to `ref` in the real repo, without tags or
+   * submodules; its commit.
+   */
   function fetchBundle(path: string, ref: string): string {
     const dir = mkdtempSync(join(tmpdir(), "japa-publish-"));
     try {
       const bundle = join(dir, BUNDLE);
-      copyRegular(path, bundle);
+      copyBundle(path, bundle);
       git(home, "bundle", "verify", "-q", bundle);
-      const fetch = ["fetch", "-q", "--no-auto-gc", "--no-write-fetch-head", bundle, `+HEAD:${ref}`];
-      git(home, "-c", "transfer.fsckObjects=true", ...fetch);
+      const fetch = ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--no-write-fetch-head"];
+      git(home, "-c", "transfer.fsckObjects=true", ...fetch, bundle, `+HEAD:${ref}`);
       return git(home, "rev-parse", "--verify", `${ref}^{commit}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -214,14 +284,30 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
     return merges.map((line) => line.split(" ")).find((shas) => shas[2] === sha)?.[0];
   }
 
+  /** Whether HEAD's own line since `merge` has git's revert of it: one made just before a restart. */
+  const revertedSince = (merge: string) =>
+    git(
+      home,
+      "log",
+      "--first-parent",
+      "--no-merges",
+      "--fixed-strings",
+      `--grep=This reverts commit ${merge}`,
+      "--format=%H",
+      `${merge}..HEAD`,
+    ) !== "";
+
   /**
    * Under the lock, once merged: reconciles, and reverts the merge if a component it changed that still exists fails to
-   * load; else logs the change (once) and schedules the good tag.
+   * load; else logs the change (once) and schedules the good tag. A merge already reverted is only reported.
    */
-  async function load(id: string, base: string, marker: Marker, notLive: (reason: string) => string) {
-    const components = componentsOf(
-      gitPaths(home, "diff", "--name-only", "--no-renames", "-z", base, `${marker.merge}^2`),
-    );
+  async function load(id: string, marker: Marker, notLive: (reason: string) => string) {
+    const { components } = marker;
+    if (marker.change === undefined && revertedSince(marker.merge)) {
+      const line = notLive(`${components.map(show).join(", ")} failed to load. Reverted`);
+      writeMarker(id, { ...marker, reverted: line });
+      return { line, live: false };
+    }
     const { errors, notices = [] } = await deps.reconcile();
     const failures = components
       .filter((component) => inTree(marker.merge, component))
@@ -229,7 +315,7 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
         const [kind, name] = parts(component);
         const failed = errors.filter((e) => e.name === (kind === "extension" ? name : `skill:${name}`)).map((e) => e.error);
         if (kind === "skill" && failed.length === 0 && !deps.loaded("skill", name)) failed.push("did not load");
-        return failed.length > 0 ? [`${show(component)} failed to load: ${show(failed.join("; "))}`] : [];
+        return failed.length > 0 ? [`${show(component)} failed to load: ${oneLine(failed.join("; "))}`] : [];
       });
     if (failures.length > 0) {
       try {
@@ -250,34 +336,35 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
       writeMarker(id, { ...marker, change });
     }
     deps.scheduleGood();
-    const { dropped } = marker;
-    const more = dropped.length > SHOWN ? ` and ${dropped.length - SHOWN} more` : "";
+    const dropped = listText(marker.dropped);
     const line = [
       `Live: ${components.map(show).join(", ")} (change ${change}).`,
-      ...(dropped.length > 0 ? [`Dropped: ${dropped.slice(0, SHOWN).map(show).join(", ")}${more}.`] : []),
+      ...(dropped === "" ? [] : [`Dropped: ${dropped}.`]),
       ...notices,
     ];
     return { line: line.join(" "), live: true };
   }
 
   return async ({ id, title }) => {
-    const base = cloneBase(home, id);
-    if (base === undefined || !existsSync(cloneDir(home, id))) return undefined; // no tool call, so no clone
-    const notLive = (reason: string) => `Not live: ${reason}. Kept at ~/.japa/.jobs/${id}.`;
+    const clone = cloneDir(home, id);
+    const notLive = (reason: string) => `Not live: ${reason}. Kept at ${display(clone)}.`;
     /** Under the lock, `load`; then the clone goes if the changes are live. */
     const finish = async (merge: () => Marker | string) => {
       const { line, live } = await deps.lock(async () => {
         const marker = merge();
-        return typeof marker === "string" ? { line: marker, live: false } : load(id, base, marker, notLive);
+        return typeof marker === "string" ? { line: marker, live: false } : load(id, marker, notLive);
       });
       if (live) removeClone(home, id);
       return line;
     };
 
+    // Before looking for the clone: deleting it, after going live, ends with the marker.
     const marker = readMarker(id);
     if (marker?.reverted !== undefined) return marker.reverted;
     if (marker !== undefined) return finish(() => marker);
 
+    const base = cloneBase(home, id);
+    if (base === undefined || !existsSync(clone)) return undefined; // no tool call, so no clone
     const message = `Job ${id}: ${title}`;
     const narrowed = await narrowInSandbox(id, base, message);
     if ("error" in narrowed) return notLive(`couldn't commit the job's changes: ${narrowed.error}`);
@@ -291,13 +378,17 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
       try {
         sha = fetchBundle(join(deps.spec(id).tmp, BUNDLE), ref);
       } catch (error) {
+        if (error instanceof TooLarge) return notLive("the job's changes are too large (over 100 MB)");
         return notLive(`couldn't commit the job's changes: ${oneLine(gitError(error))}`);
       }
       if (!isAncestor(base, sha)) return notLive("the job's history doesn't start from its base");
       // Narrowed in the job's sandbox, and checked again here: the job's git, and its clone, are its own.
       const changed = gitPaths(home, "diff", "--name-only", "--no-renames", "-z", base, sha);
-      const outside = changed.find((path) => !inComponents(path));
-      if (outside !== undefined) return notLive(`the job changed ${show(outside)} outside extensions/ and skills/`);
+      const odd = changed.find((path) => !publishable(path));
+      if (odd !== undefined) {
+        const where = inComponents(odd) ? ", which japa doesn't publish" : " outside extensions/ and skills/";
+        return notLive(`the job changed ${listText(listed([odd]))}${where}`);
+      }
       if (changed.length === 0) {
         removeClone(home, id);
         return undefined;
@@ -317,11 +408,15 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
           } catch (error) {
             const conflicts = gitPaths(home, "diff", "--name-only", "-z", "--diff-filter=U");
             if (exists("MERGE_HEAD")) git(home, "merge", "--abort");
-            if (conflicts.length > 0) return notLive(`${conflicts.map(show).join(", ")} changed since this job started`);
+            if (conflicts.length > 0) return notLive(`${listText(listed(conflicts))} changed since this job started`);
             return notLive(`couldn't merge the job's changes: ${oneLine(gitError(error))}`);
           }
+          // "Already up to date": the job's commit was in HEAD's history, though not by a merge of the job's.
+          if (!exists("HEAD^2") || git(home, "rev-parse", "HEAD^2") !== sha) {
+            return notLive(`the job's commit is already in ${display(home)}`);
+          }
         }
-        const merged: Marker = { merge: earlier ?? head(home), dropped: narrowed.dropped };
+        const merged: Marker = { merge: earlier ?? head(home), components: componentsOf(changed), dropped: narrowed.dropped };
         writeMarker(id, merged);
         return merged;
       });

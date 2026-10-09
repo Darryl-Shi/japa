@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type JapaExtension, validateExtension } from "./extension.ts";
 
@@ -43,24 +43,4 @@ export async function loadExtensions(found: FoundExtension[]): Promise<{ extensi
   return { extensions, errors };
 }
 
-/**
- * Ensures `<home>/node_modules/japa` is a symlink to `packageRoot`, so extensions can import "japa/sdk",
- * and that `<home>/package.json` exists (written as `{"type":"module"}` if absent) so Node loads extensions as ESM.
- */
-export function linkSdk(home: string, packageRoot: string): void {
-  const pkg = join(home, "package.json");
-  if (!existsSync(pkg)) {
-    mkdirSync(home, { recursive: true });
-    writeFileSync(pkg, `{"type":"module"}\n`);
-  }
-  const link = join(home, "node_modules", "japa");
-  const target = resolve(packageRoot);
-  try {
-    if (readlinkSync(link) === target) return;
-  } catch {
-    // missing, or not a symlink: (re)create below
-  }
-  mkdirSync(join(home, "node_modules"), { recursive: true });
-  rmSync(link, { recursive: true, force: true });
-  symlinkSync(target, link, "dir");
-}
+export { linkSdk } from "./sdk-link.ts";

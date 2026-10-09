@@ -39,7 +39,7 @@ const baseFile = (home: string, jobId: string) => `${cloneDir(home, jobId)}.base
 export const cloneMarker = (home: string, jobId: string) => `${cloneDir(home, jobId)}.merged`;
 
 /** The suffixes of the files kept next to a clone. */
-const SIDE_FILES = [".base", ".tmp", ".merged"];
+const SIDE_FILES = [".base", ".tmp", ".merged.new", ".merged"];
 
 /** The commit job `jobId`'s clone started from; undefined without a clone. */
 export function cloneBase(home: string, jobId: string): string | undefined {
@@ -88,7 +88,7 @@ function removeTree(path: string): void {
   rmSync(path, { recursive: true, force: true });
 }
 
-/** Deletes job `jobId`'s clone, then its `.base`, `.tmp` and `.merged`; those missing are skipped. */
+/** Deletes job `jobId`'s clone, then its `.base`, `.tmp` and, last, `.merged` (and its `.new`); those missing are skipped. */
 export function removeClone(home: string, jobId: string): void {
   const clone = cloneDir(home, jobId);
   for (const path of [clone, ...SIDE_FILES.map((suffix) => `${clone}${suffix}`)]) removeTree(path);
@@ -104,7 +104,7 @@ export function pruneClones(home: string, keep: (jobId: string) => boolean, now 
   if (!existsSync(dir)) return;
   const old = (path: string) => statSync(path).mtimeMs < now - KEEP_MS;
   const names = readdirSync(dir);
-  const ids = new Set(names.map((name) => name.replace(/\.(base|tmp|merged)$/, "")));
+  const ids = new Set(names.map((name) => name.replace(/\.(base|tmp|merged|merged\.new)$/, "")));
   for (const id of ids) {
     const clone = join(dir, id);
     try {

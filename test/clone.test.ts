@@ -196,7 +196,9 @@ test("pruneClones removes a clone's merge marker with it, and orphaned ones", ()
   for (const id of ["1", "2"]) ensureClone(home, packageRoot, id);
   const jobs = join(home, ".jobs");
   expect(cloneMarker(home, "1")).toBe(join(jobs, "1.merged"));
+  // `.merged.new`: one being written when the daemon stopped.
   for (const id of ["1", "2", "3"]) writeFileSync(cloneMarker(home, id), "{}");
+  for (const id of ["1", "3"]) writeFileSync(`${cloneMarker(home, id)}.new`, "{");
   pruneClones(home, (id) => id === "2");
   expect(readdirSync(jobs).sort()).toEqual(["2", "2.base", "2.merged", "2.tmp"]);
 });
@@ -206,6 +208,7 @@ test("removeClone deletes a clone with its base, temp dir and marker, and folder
   for (const id of ["1", "2"]) ensureClone(home, packageRoot, id);
   const jobs = join(home, ".jobs");
   writeFileSync(cloneMarker(home, "1"), "{}");
+  writeFileSync(`${cloneMarker(home, "1")}.new`, "{");
   mkdirSync(join(jobs, "1", "locked"));
   writeFileSync(join(jobs, "1", "locked", "f"), "x");
   chmodSync(join(jobs, "1", "locked"), 0o000);
