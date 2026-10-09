@@ -216,6 +216,9 @@ the flag and without a tty behaves the same way.
 `src/cli/update.ts`. Usage:
 `japa update [--check] [--branch <b>] [--to <sha>] [--no-restart]`.
 It works on the checkout containing the running `main.ts`.
+An update can also be started from chat with `/update` (it runs
+`japa update --to <sha> --from-chat`); see
+`2026-10-09-japa-chat-update-markdown-secret-prompts-design.md` §4.
 
 ### 5.1 Steps
 
