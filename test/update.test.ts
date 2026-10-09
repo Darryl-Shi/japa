@@ -454,6 +454,34 @@ test("--to checks out an older commit", async () => {
   expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
 });
 
+test("offline, --to (a Roll back) goes to a commit the checkout has; --ff-only, no --to or an unknown commit still fail", async () => {
+  const c = checkout();
+  const first = head(c.app);
+  push(c, "two", { README: "two\n" });
+  git(c.app, "fetch", "-q", "origin", "main");
+  git(c.app, "merge", "-q", "--ff-only", "origin/main");
+  const two = head(c.app);
+  git(c.app, "remote", "set-url", "origin", join(c.root, "missing.git")); // unreachable
+  const unreachable = /^could not fetch origin main: /;
+
+  for (const options of [{ to: first, ffOnly: true }, {}, { to: "f".repeat(40) }]) {
+    const failing = harness(c, { options });
+    await expect(update(failing.o, failing.deps)).rejects.toThrow(unreachable);
+    await expect(update(failing.o, failing.deps)).rejects.toBeInstanceOf(UpdateFailed);
+    expect(head(c.app)).toBe(two);
+    expect(failing.calls).toEqual([]);
+  }
+
+  const h = harness(c, { options: { to: first } });
+  expect(await update(h.o, h.deps)).toBe("updated");
+
+  expect(head(c.app)).toBe(first);
+  expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
+  expect(readFileSync(join(c.app, "README"), "utf8")).toBe("one\n");
+  expect(h.logs[0]).toMatch(/^could not fetch origin main: [\s\S]+; rolling back with what's here$/);
+  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+});
+
 test("--to --ff-only fast-forwards to exactly that commit, not the branch tip", async () => {
   const c = checkout();
   const two = push(c, "two", { README: "two\n" });

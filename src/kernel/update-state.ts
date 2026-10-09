@@ -37,6 +37,8 @@ export type UpdateCheck = { current: string; target: string; commits: string[] }
 /** Checks for and launches updates, for the chat's /update (injected by the CLI, which owns `japa update`). */
 export type Updater = {
   check(): Promise<UpdateCheck>;
+  /** The full sha the checkout is on, without fetching: a Roll back needs no network. */
+  current(): Promise<string>;
   /** Starts `japa update --to <to> --from-chat` detached: fast-forward only, unless it's a Roll back. */
   launch(to: string, rollback: boolean): Promise<void>;
 };

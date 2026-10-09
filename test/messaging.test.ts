@@ -696,7 +696,11 @@ describe("update reporting", () => {
 
   test("a corrupt update.json reports nothing and /update still works", async () => {
     const fake = fakeAdapter();
-    const updater = { check: async () => ({ current: FROM, target: FROM, commits: [] }), launch: async () => {} };
+    const updater = {
+      check: async () => ({ current: FROM, target: FROM, commits: [] }),
+      current: async () => FROM,
+      launch: async () => {},
+    };
     const { daemon, home } = await bootMessaging(fake, {}, [], testKit(), { updater });
     writeFileSync(join(home, "update.json"), "{ not json");
     await sleep(2500);

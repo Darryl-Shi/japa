@@ -18,7 +18,8 @@ export type UpdateOptions = {
   branch?: string;
   to?: string;
   /** With `to`: only fast-forward to it, refusing on diverged history as a plain update does (a chat-started update;
-   * without it `to` moves the branch there, which is how a Roll back goes back). */
+   * without it `to` moves the branch there, which is how a Roll back goes back -- even offline, to a commit the
+   * checkout has). */
   ffOnly?: boolean;
   check: boolean;
   restart: boolean;
@@ -179,9 +180,15 @@ async function commitsBetween(app: string, old: string, target: string, max?: nu
 
 /**
  * Steps 1-2 (design doc §5.1): the branch to stand on and the sha to come back to, then a fetch of origin's `branch`
- * (by default the current one) and the target commit -- `to`, or origin's tip. Changes nothing else.
+ * (by default the current one) and the target commit -- `to`, or origin's tip. Changes nothing else. A fetch that
+ * fails is fatal, except for a Roll back (`to` without `ffOnly`) to a commit the checkout has: that goes ahead,
+ * logged, as it needs no network.
  */
-async function locate(app: string, branch?: string, to?: string) {
+async function locate(
+  app: string,
+  o: { branch?: string; to?: string; ffOnly?: boolean; log?: (s: string) => void } = {},
+) {
+  const { branch, to } = o;
   const git = gitIn(app);
   const branchRef = await git("symbolic-ref", "--short", "HEAD");
   if (branchRef.code !== 0) throw new UpdateFailed("not on a branch");
@@ -190,9 +197,14 @@ async function locate(app: string, branch?: string, to?: string) {
   const old = (await git("rev-parse", "HEAD")).stdout.trim();
 
   const fetched = await git("fetch", "origin", on);
-  if (fetched.code !== 0) throw new UpdateFailed(`could not fetch origin ${on}: ${reason(fetched)}`);
   const wanted = to ?? `origin/${on}`;
   const resolved = await git("rev-parse", "--verify", `${wanted}^{commit}`);
+  if (fetched.code !== 0) {
+    const failed = `could not fetch origin ${on}: ${reason(fetched)}`;
+    const rollingBack = to !== undefined && o.ffOnly !== true;
+    if (!rollingBack || resolved.code !== 0) throw new UpdateFailed(failed);
+    o.log?.(`${failed}; rolling back with what's here`);
+  }
   if (resolved.code !== 0) throw new UpdateFailed(`no such commit: ${wanted}`);
   return { original, branch: on, old, target: resolved.stdout.trim() };
 }
@@ -200,7 +212,7 @@ async function locate(app: string, branch?: string, to?: string) {
 /** What `japa update` would bring in (design doc §4.3): fetches origin's `branch` and lists its new commits, changing
  * nothing else. Throws `UpdateFailed` as `update` does. */
 export async function checkForUpdate(app: string, branch?: string): Promise<UpdateCheck> {
-  const { old, target } = await locate(app, branch);
+  const { old, target } = await locate(app, { branch });
   return { current: old, target, commits: await commitsBetween(app, old, target) };
 }
 
@@ -260,7 +272,7 @@ async function updateCheckout(
   };
 
   // 1-2. Preflight (a branch to stand on and the sha to come back to), fetch, and pick the target commit.
-  const { original, branch, old, target } = await locate(o.app, o.branch, o.to);
+  const { original, branch, old, target } = await locate(o.app, o);
   /** `--branch` naming another branch asks to stand on it, which an update always does -- even if its code is current. */
   const switched = branch !== original;
 

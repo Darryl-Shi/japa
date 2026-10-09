@@ -65,10 +65,19 @@ async function spawnDetached(plan: LaunchPlan, log: string, run: LaunchDeps["spa
 
 /** The daemon's `Updater` for the checkout at `app` and the japa home `home`. */
 export function chatUpdater(app: string, home: string, overrides: Partial<LaunchDeps> = {}): Updater {
+  const envOf = () => overrides.env ?? serviceEnv(layoutOf(app));
   return {
     check: () => checkForUpdate(app),
+    current: async () => {
+      const r = await envOf().exec("git", ["-C", app, "rev-parse", "HEAD"]);
+      if (r.code !== 0) {
+        const said = r.stderr.trim();
+        throw new Error(`git rev-parse HEAD exited with code ${r.code}${said === "" ? "" : `: ${said}`}`);
+      }
+      return r.stdout.trim();
+    },
     launch: async (to, rollback) => {
-      const env = overrides.env ?? serviceEnv(layoutOf(app));
+      const env = envOf();
       const log = updateLog(home);
       mkdirSync(dirname(log), { recursive: true });
       writeFileSync(log, ""); // one run per log

@@ -1319,13 +1319,23 @@ describe("update", { timeout: 30_000 }, () => {
   const CHAT = { adapter: "fake", chat: "42" };
   const UPDATING = "Updating… japa will restart and report back here.";
   const CONFIRM = "**Roll back to aaaaaaa? japa will restart.**";
-  // What the fake `Updater`'s check answers and its launch throws, and the launches it was asked for.
+  // What the fake `Updater`'s check and current answer (and how often they were asked), what its launch throws, and
+  // the launches it was asked for.
   let check: () => Promise<UpdateCheck>;
+  let current: () => Promise<string>;
+  let asked: { check: number; current: number };
   let launchError: Error | undefined;
   let launches: [string, boolean][];
   let kit: ReturnType<typeof testKit>;
   const updater: Updater = {
-    check: () => check(),
+    check: () => {
+      asked.check++;
+      return check();
+    },
+    current: () => {
+      asked.current++;
+      return current();
+    },
     launch: async (to, rollback) => {
       launches.push([to, rollback]);
       if (launchError !== undefined) throw launchError;
@@ -1347,8 +1357,14 @@ describe("update", { timeout: 30_000 }, () => {
     reported: false,
   });
 
+  const offline = async (): Promise<UpdateCheck> => {
+    throw new Error("could not fetch origin main: unable to access");
+  };
+
   beforeEach(async () => {
     check = oneCommit;
+    current = async () => A;
+    asked = { check: 0, current: 0 };
     launchError = undefined;
     launches = [];
     kit = testKit();
@@ -1481,11 +1497,11 @@ describe("update", { timeout: 30_000 }, () => {
     expect(launches).toEqual([[B, false]]);
   });
 
-  test("Roll back asks first, then launches the previous commit as a rollback", async () => {
+  test("Roll back asks first, then launches the previous commit as a rollback, from the commit japa is on", async () => {
     writeUpdateState(home, updated());
     const report = await nextSent(0);
     expect(report.buttons).toEqual([[{ label: "Roll back", action: `rb:${A}` }]]);
-    check = async () => ({ current: B, target: B, commits: [] });
+    current = async () => B;
     await fake.press("Roll back");
     const confirm = fake.sent.at(-1)!; // a message of its own: the report stays
     expect(confirm.markdown).toBe(CONFIRM);
@@ -1503,6 +1519,36 @@ describe("update", { timeout: 30_000 }, () => {
     expect(readUpdateState(home)).toMatchObject({ state: "running", chat: CHAT, from: B, to: A, rollback: true, reported: false });
   });
 
+  test("Roll back works offline: it never fetches", async () => {
+    writeUpdateState(home, updated());
+    await nextSent(0);
+    check = offline;
+    current = async () => B;
+    await fake.press("Roll back");
+    await fake.press("Roll back");
+    expect(fake.edited.at(-1)!.markdown).toBe(UPDATING);
+    expect(launches).toEqual([[A, true]]);
+    expect(readUpdateState(home)).toMatchObject({ state: "running", from: B, to: A, rollback: true });
+    expect(asked).toEqual({ check: 0, current: 1 });
+  });
+
+  test("Roll back pressed while an update runs says so, and asks and launches nothing", async () => {
+    writeUpdateState(home, updated());
+    await nextSent(0);
+    await fake.press("Roll back");
+    const confirm = fake.sent.at(-1)!;
+    writeUpdateState(home, { ...updated(), state: "running", pid: process.pid, finished: undefined }); // started meanwhile
+    await fake.press("Roll back");
+    expect(fake.edited.at(-1)).toMatchObject({
+      messageId: confirm.id,
+      markdown: `✗ An update is already running (started <1m ago).\n\n${CONFIRM}`,
+    });
+    expect(fake.edited.at(-1)!.markdown).toContain("An update is already running (started");
+    expect(asked).toEqual({ check: 0, current: 0 });
+    expect(launches).toEqual([]);
+    expect(readUpdateState(home)).toMatchObject({ state: "running", pid: process.pid });
+  });
+
   test("the Roll back button still works after a restart; the confirm screen's buttons expire", async () => {
     writeUpdateState(home, updated());
     const rollBack = (await nextSent(0)).buttons![0]![0]!.action;
@@ -1517,7 +1563,7 @@ describe("update", { timeout: 30_000 }, () => {
     await fake.receive({ action: "rb:not-a-sha", messageId: "9" });
     expect(fake.edited.at(-1)).toMatchObject({ messageId: "9", markdown: "This menu expired — send /update again." });
     expect(launches).toEqual([]);
-    check = async () => ({ current: B, target: B, commits: [] });
+    current = async () => B;
     await fake.receive({ action: rollBack, messageId: "1" });
     expect(fake.sent.at(-1)!.markdown).toBe(CONFIRM);
     await fake.press("Roll back");

@@ -194,6 +194,8 @@ export type MessagingContext = {
     /** What an update would bring in. Throws `Updating from chat isn't available: japa wasn't started as a daemon.`
      * without an updater, as `start` does. */
     check(): Promise<UpdateCheck>;
+    /** The full sha japa's checkout is on, without fetching; throws as `check` does without an updater. */
+    current(): Promise<string>;
     /**
      * Records an update to `to` (from `from`, asked in `chat`) as running, then launches it. Refuses (throws `An update
      * is already running (started <ago> ago).`) while one runs; a launch that throws leaves it failed, its error the

@@ -587,6 +587,7 @@ function chatUpdates(home: string, updater: Updater | undefined): MessagingConte
   };
   return {
     check: async () => need().check(),
+    current: async () => need().current(),
     start: async (chat, from, to, rollback) => {
       const launcher = need();
       // No await until the new state is written: a second start, meanwhile, must see it.

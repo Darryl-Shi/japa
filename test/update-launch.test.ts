@@ -174,11 +174,29 @@ test("an update that can't be spawned is an error", async () => {
   await expect(chatUpdater("/opt/japa/app", tmp(), { env, spawn }).launch(TO, false)).rejects.toThrow("spawn /gone/node ENOENT");
 });
 
-/** A fake `Updater`: `check` finds one new commit; `launch` records its arguments, then runs `launched`. */
+test("current is the checkout's commit, from git without fetching", async () => {
+  const { env } = service("inactive");
+  const calls: { cmd: string; args: string[] }[] = [];
+  const answers = [{ code: 0, stdout: `${FROM}\n`, stderr: "" }, { code: 128, stdout: "", stderr: "fatal: not a git repository\n" }];
+  env.exec = async (cmd, args) => {
+    calls.push({ cmd, args });
+    return answers.shift()!;
+  };
+  const updater = chatUpdater("/opt/japa/app", tmp(), { env, spawn: fakeSpawn().spawn });
+
+  expect(await updater.current()).toBe(FROM);
+  await expect(updater.current()).rejects.toThrow("git rev-parse HEAD exited with code 128: fatal: not a git repository");
+
+  expect(calls).toEqual([1, 2].map(() => ({ cmd: "git", args: ["-C", "/opt/japa/app", "rev-parse", "HEAD"] })));
+});
+
+/** A fake `Updater`: `check` finds one new commit, `current` is FROM; `launch` records its arguments, then runs
+ * `launched`. */
 function fakeUpdater(launched: () => Promise<void> = async () => {}) {
   const launches: [string, boolean][] = [];
   const updater: Updater = {
     check: async () => ({ current: FROM, target: TO, commits: ["bbbbbbb two"] }),
+    current: async () => FROM,
     launch: async (to, rollback) => {
       launches.push([to, rollback]);
       await launched();
@@ -256,12 +274,13 @@ test("a launch that throws leaves the state failed with its reason, reported (th
   await daemon.close();
 });
 
-test("check asks the updater, and markReported marks the recorded update reported, if it is the one reported", async () => {
+test("check and current ask the updater; markReported marks the recorded update reported, if it is the one reported", async () => {
   const { updater } = fakeUpdater();
   const { daemon, home, update } = await bootUpdating(updater);
   expect(await update.state()).toBeUndefined();
 
   expect(await update.check()).toEqual({ current: FROM, target: TO, commits: ["bbbbbbb two"] });
+  expect(await update.current()).toBe(FROM);
   await update.markReported(1); // nothing recorded: nothing to mark
   expect(await update.state()).toBeUndefined();
   await update.start(CHAT, FROM, TO, false);
@@ -279,6 +298,7 @@ test("without an updater, check says it isn't available", async () => {
   const unavailable = "Updating from chat isn't available: japa wasn't started as a daemon.";
 
   await expect(update.check()).rejects.toThrow(unavailable);
+  await expect(update.current()).rejects.toThrow(unavailable);
   await expect(update.start(CHAT, FROM, TO, false)).rejects.toThrow(unavailable);
 
   expect(await update.state()).toBeUndefined();

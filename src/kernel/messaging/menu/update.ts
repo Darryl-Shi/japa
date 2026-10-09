@@ -57,12 +57,15 @@ export function updateMenu(
 
 /**
  * The confirmation a report's Roll back button asks, in `chat`: `Roll back` starts the update back to `to` (from the
- * commit japa is on now) as a Roll back; `Cancel` ends it.
+ * commit japa is on now) as a Roll back; `Cancel` ends it. Rolling back never fetches, so it works offline, and while
+ * an update runs it refuses before touching the checkout.
  */
 export function rollbackConfirm(nav: Nav, messaging: MessagingContext, chat: Chat, to: string): Page {
   const roll: Page = async () => {
-    const { current } = await messaging.update.check();
-    await messaging.update.start(chat, current, to, true);
+    const state = await messaging.update.state();
+    const now = Date.now();
+    if (state !== undefined && liveness(state, now) === "running") throw new Error(alreadyRunning(state, now));
+    await messaging.update.start(chat, await messaging.update.current(), to, true);
     return UPDATING;
   };
   const cancel: Page = async () => ({ markdown: "Roll back cancelled." });
