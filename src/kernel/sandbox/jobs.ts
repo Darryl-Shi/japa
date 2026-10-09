@@ -75,7 +75,10 @@ export function createJobSandboxes(o: {
     const running = servers.get(jobId);
     if (running !== undefined && !running.closed) return running;
     ensureClone(home, packageRoot, jobId);
-    const started = startEnvServer([bwrap(), ...sandboxArgs(spec(jobId)), process.execPath, SERVER, ENV_MODULE], LOST);
+    const s = spec(jobId);
+    // bwrap gets only the sandbox's environment: its own is readable in the sandbox, at /proc/1/environ.
+    const command = [bwrap(), ...sandboxArgs(s), process.execPath, SERVER, ENV_MODULE];
+    const started = startEnvServer(command, { lost: LOST, env: s.env });
     servers.set(jobId, started);
     return started;
   };

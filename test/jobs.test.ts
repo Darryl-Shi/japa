@@ -563,6 +563,25 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     await daemon.close();
   });
 
+  test("the daemon's environment isn't readable from a job's sandbox", async () => {
+    const value = `japa-env-${process.pid}-${Date.now()}`;
+    process.env.JAPA_TEST_LEAK = value;
+    onTestFinished(() => void delete process.env.JAPA_TEST_LEAK);
+    const { daemon, faux } = await bootSandboxed();
+    const command = "tr '\\0' '\\n' </proc/1/environ; cat /proc/*/environ 2>/dev/null; echo end";
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Env", brief: "env", worker: "coder" });
+      if (text === "env") return call("bash", { command });
+      if (role === "toolResult" && text.includes("end")) return call("job_complete", { summary: "seen" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    const [result] = await jobResults(daemon);
+    expect(result).toMatch(/end\s*$/);
+    expect(result).not.toContain(value);
+    await daemon.close();
+  });
+
   test("a dead sandbox fails one call, then restarts", async () => {
     const { daemon, faux } = await bootSandboxed();
     script(faux, (role, text) => {

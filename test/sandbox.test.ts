@@ -569,6 +569,29 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(names.sort()).toEqual([...ALLOWED.filter((name) => process.env[name] !== undefined), "PWD"].sort());
   });
 
+  test("the daemon's environment isn't readable in /proc, not even bwrap's own", async () => {
+    const value = `japa-env-${process.pid}-${Date.now()}`;
+    process.env.JAPA_TEST_LEAK = value;
+    onTestFinished(() => void delete process.env.JAPA_TEST_LEAK);
+    const { run } = sandbox();
+    const { output } = await run("tr '\\0' '\\n' </proc/1/environ; cat /proc/*/environ 2>/dev/null; echo end");
+    expect(output).toMatch(/end\n$/);
+    expect(output).not.toContain(value);
+  });
+
+  // A spawn with the sandbox's environment would look bwrap up in the job's PATH, where a job can put its own.
+  test.skipIf(process.env.JAPA_BWRAP !== undefined)("bwrap is looked up in the daemon's PATH, not the job's", async () => {
+    const { outside, spec } = sandbox();
+    const bin = join(outside, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "bwrap"), `#!/bin/sh\ntouch "${join(outside, "ran")}"\n`, { mode: 0o755 });
+    const result = await runSandboxed({ ...spec, env: { ...spec.env, PATH: `${bin}:${spec.env.PATH}` } }, ["true"], {
+      timeoutMs: 10_000,
+    });
+    expect(result.code).toBe(0);
+    expect(existsSync(join(outside, "ran"))).toBe(false);
+  });
+
   test("processes die with the sandbox", async () => {
     const { run } = sandbox();
     const marker = `sleep 300.${process.pid}`;
@@ -580,10 +603,10 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
 
   test("timeout", async () => {
     const { run } = sandbox();
-    const started = Date.now();
+    const started = performance.now(); // not Date.now(): this host's wall clock jumps
     const result = await run("sleep 5", { timeoutMs: 200 });
     expect(result).toMatchObject({ code: null, timedOut: true });
-    expect(Date.now() - started).toBeLessThan(4000);
+    expect(performance.now() - started).toBeLessThan(4000);
   });
 
   test("output is UTF-8 across chunks, and only its last 1 MB is kept", async () => {

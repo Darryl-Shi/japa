@@ -2,7 +2,17 @@
 // its own /tmp, japa's own code and the config it runs under read-only, and nothing of the daemon's processes or
 // environment, nor a socket (the user's runtime dir, Docker's) that would run a command outside it.
 import { type ChildProcessByStdio, spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -35,8 +45,23 @@ export type SandboxSpec = {
   env: Record<string, string>;
 };
 
-/** The bwrap binary: `JAPA_BWRAP`, or `bwrap` on the PATH. */
-export const bwrap = () => process.env.JAPA_BWRAP ?? "bwrap";
+/**
+ * The bwrap binary: `JAPA_BWRAP`, or `bwrap` as found in the daemon's own PATH; throws when there is none. Resolved
+ * here: bwrap is spawned with the sandbox's environment, so a spawn would look it up in the job's PATH, where a job
+ * can put its own.
+ */
+export function bwrap(): string {
+  const command = process.env.JAPA_BWRAP ?? "bwrap";
+  if (command.includes("/")) return command;
+  for (const dir of (process.env.PATH ?? "").split(":").filter((dir) => isAbsolute(dir))) {
+    const path = join(dir, command);
+    try {
+      accessSync(path, constants.X_OK);
+      if (statSync(path).isFile()) return path;
+    } catch {}
+  }
+  throw new Error(`${command}: not found in ${process.env.PATH ?? "an empty PATH"}`);
+}
 
 /** The variables of `env` a sandbox may get: `PATH HOME USER SHELL LANG TZ TERM`, those that are set. */
 export function jobEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
@@ -107,7 +132,13 @@ function between(home: string, path: string): string[] {
 
 /** Why `bwrap --ro-bind / / true` fails here (stderr's last line, or the spawn error); undefined when it works. */
 export function probeSandbox(): string | undefined {
-  const result = spawnSync(bwrap(), ["--ro-bind", "/", "/", "true"], { encoding: "utf8", timeout: 10_000 });
+  let command: string;
+  try {
+    command = bwrap();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  const result = spawnSync(command, ["--ro-bind", "/", "/", "true"], { encoding: "utf8", timeout: 10_000 });
   if (result.error) return result.error.message;
   if (result.status === 0) return undefined;
   return result.stderr.trim().split("\n").at(-1) || `bwrap exited with ${result.status ?? result.signal}`;
@@ -220,8 +251,12 @@ export function runSandboxed(
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
       // Setting it up touches the host (realpath, placeholders): EACCES, ENOTDIR, a race. And spawn throws, before
-      // running anything, on an argument with a NUL byte.
-      child = spawn(bwrap(), [...sandboxArgs(spec, o.cwd), ...command], { stdio: ["ignore", "pipe", "pipe"] });
+      // running anything, on an argument with a NUL byte. bwrap gets only the sandbox's environment: its own is
+      // readable in the sandbox, at /proc/1/environ.
+      child = spawn(bwrap(), [...sandboxArgs(spec, o.cwd), ...command], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: spec.env,
+      });
     } catch (error) {
       resolve({ code: null, output: error instanceof Error ? error.message : String(error), timedOut: false });
       return;

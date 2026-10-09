@@ -31,7 +31,7 @@ test("calls on a lost connection fail with the lost message", async () => {
 });
 
 test("a lost server's calls fail with the message it was started with", async () => {
-  const doomed = startEnvServer([process.execPath, "-e", "process.exit(3)"], "The test server stopped");
+  const doomed = startEnvServer([process.execPath, "-e", "process.exit(3)"], { lost: "The test server stopped" });
   const env = remoteEnv(async () => doomed, tmpdir(), "test");
   const read = await env.readTextFile("x", ctx);
   expect(read).toMatchObject({ ok: false, error: { message: expect.stringContaining("The test server stopped") } });

@@ -57,9 +57,16 @@ function encode(value: unknown, onCallback: (callback: Callback) => void): unkno
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encode(item, onCallback)]));
 }
 
-/** Spawns `command` as the env server; calls fail with `lost` and the server's last stderr line once it dies. */
-export function startEnvServer(command: string[], lost = LOST): EnvServer {
-  const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+/**
+ * Spawns `command` as the env server, with environment `env` (this process's when undefined); calls fail with `lost`
+ * and the server's last stderr line once it dies.
+ */
+export function startEnvServer(
+  command: string[],
+  o: { lost?: string; env?: Record<string, string> } = {},
+): EnvServer {
+  const lost = o.lost ?? LOST;
+  const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: o.env });
   const requests = new Map<number, Request>();
   let lastId = 0;
   let lastStderr = "";
