@@ -9,9 +9,9 @@ import { createNav, outcomeLine, type Nav, type Page } from "./nav.ts";
 import { settingsMenu } from "./settings.ts";
 
 export const COMMANDS = [
-  { name: "jobs", description: "Running and recent jobs" },
+  { name: "jobs", description: "Jobs: progress, results and cleanup" },
   { name: "status", description: "Model, extensions and errors" },
-  { name: "settings", description: "Models, schedules and extensions" },
+  { name: "settings", description: "Models, extensions, schedules, general settings and changes" },
 ];
 
 export const HELP = `Commands:\n${COMMANDS.map((c) => `/${c.name} — ${c.description}`).join("\n")}`;

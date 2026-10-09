@@ -100,7 +100,7 @@ export function jobsMenu(nav: Nav, jobs: () => Job[], messaging: MessagingContex
     const confirm = nav.confirm(`Clear ${finished(done.length)}?`, "Clear", clear, list(0), list(page));
     const rows = done.length > 0 ? [[nav.button("Clear finished", confirm)]] : [];
     const body = all.length === 0 ? "No jobs." : counts(all);
-    return nav.paged({ title: "Jobs", body, items, page, rows, outcome });
+    return nav.paged({ title: "Jobs", body, items, page, rows, render: list, outcome });
   };
   return list(0);
 }

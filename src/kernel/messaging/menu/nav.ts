@@ -86,7 +86,7 @@ export function createNav(scope: "s" | "j", run: string) {
 
     /**
      * A screen of one button per item, `PAGE` to a page, with a row `‹` · `p/n` · `›` when there is more than one, then
-     * `rows`.
+     * `rows`. Those buttons show `render(p)` when given, so a live list is rebuilt, else this screen again at page `p`.
      */
     paged(options: {
       title: string;
@@ -94,14 +94,15 @@ export function createNav(scope: "s" | "j", run: string) {
       items: (readonly [string, Page] | Button)[];
       page?: number;
       rows?: Button[][];
+      render?: (page: number) => Page;
       back?: Page;
       home?: Page;
       outcome?: string;
     }): OutgoingMessage {
-      const { items, page: wanted = 0, rows: extra = [], ...rest } = options;
+      const { items, page: wanted = 0, rows: extra = [], render, ...rest } = options;
       const pages = Math.max(1, Math.ceil(items.length / PAGE));
       const page = Math.min(Math.max(wanted, 0), pages - 1);
-      const at = (p: number): Page => async (outcome) => nav.paged({ ...options, page: p, outcome });
+      const at = render ?? ((p: number): Page => async (outcome) => nav.paged({ ...options, page: p, outcome }));
       const rows = items
         .slice(page * PAGE, (page + 1) * PAGE)
         .map((item) => [Array.isArray(item) ? nav.button(item[0], item[1]) : (item as Button)]);

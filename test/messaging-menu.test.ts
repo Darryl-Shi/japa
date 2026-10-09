@@ -23,7 +23,19 @@ import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 const hook = vi.hoisted(() => ({
   ask: undefined as ((nav: Nav, home: Page) => Page) | undefined,
   messaging: undefined as MessagingContext | undefined,
+  jobs: undefined as (() => Job[]) | undefined,
 }));
+// `hook.jobs` is the newest menu's jobs, as the surface last saw them.
+vi.mock("../src/kernel/messaging/menu/jobs.ts", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/kernel/messaging/menu/jobs.ts")>();
+  return {
+    ...real,
+    jobsMenu: (...args: Parameters<typeof real.jobsMenu>) => {
+      hook.jobs = args[1];
+      return real.jobsMenu(...args);
+    },
+  };
+});
 vi.mock("../src/kernel/messaging/menu/settings.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/kernel/messaging/menu/settings.ts")>();
   return {
@@ -148,14 +160,14 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 describe("jobs", { timeout: 30_000 }, () => {
-  /** Replaces the root's jobs with `list`, then waits until the surface has them. */
+  /** Replaces the root's jobs with `list` (in id order), then waits until the surface has them. */
   async function seed(list: Job[]) {
     await daemon.root.commit(async (tx) => {
       const doc = await tx.doc(JobsDoc, daemon.root.id);
       doc.jobs = Object.fromEntries(list.map((j) => [j.id, j]));
       doc.nextId = list.length + 1;
     }, ctx);
-    await sleep(100);
+    await waitFor(() => JSON.stringify(hook.jobs!()) === JSON.stringify(list));
   }
   /** Sends /jobs; returns the list it shows. */
   async function openJobs() {
@@ -326,6 +338,27 @@ describe("jobs", { timeout: 30_000 }, () => {
     expect(labels().slice(-2)).toEqual(["1/2", "›"]);
   });
 
+  test("paging rebuilds the list from the jobs as they are now; Cancel from Clear on page 2 returns to page 2", async () => {
+    await seed(Array.from({ length: 10 }, (_, i) => jobOf(String(i + 1))));
+    await openJobs();
+    await seed([...Array.from({ length: 8 }, (_, i) => jobOf(String(i + 1))), jobOf("9", { status: "done", updatedAt: Date.now() - 3 * HOUR })]);
+    await fake.press("›");
+    const page2 = "**Jobs**\n\n8 running · 1 finished";
+    expect(fake.edited.at(-1)!.markdown).toBe(page2);
+    expect(labels()).toEqual(["✅ #9 t9 · 3h", "‹", "2/2", "Clear finished"]);
+    await fake.press("Clear finished");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Clear 1 finished job?**");
+    await fake.press("Cancel");
+    expect(fake.edited.at(-1)!.markdown).toBe(page2);
+    expect(labels()).toEqual(["✅ #9 t9 · 3h", "‹", "2/2", "Clear finished"]);
+    await seed(Array.from({ length: 9 }, (_, i) => jobOf(String(i + 1))));
+    await fake.press("2/2");
+    expect(fake.edited.at(-1)!.markdown).toBe("**Jobs**\n\n9 running");
+    expect(labels()).toEqual(["🔄 #9 t9 · <1m", "‹", "2/2"]);
+    await fake.press("‹");
+    expect(labels().slice(-2)).toEqual(["1/2", "›"]);
+  });
+
   test("a job started by the CoS is listed and its detail shown", async () => {
     script(faux, (_role, text) => (text === "start sum" ? call("job_start", { title: "Sum", brief: "Add" }) : undefined));
     await ask(daemon, "start sum");
@@ -340,7 +373,8 @@ describe("jobs", { timeout: 30_000 }, () => {
 test("an unknown command gets the help list and never reaches the CoS", async () => {
   await fake.receive({ command: "start" });
   expect(fake.sent.at(-1)!.markdown).toBe(
-    "Commands:\n/jobs — Running and recent jobs\n/status — Model, extensions and errors\n/settings — Models, schedules and extensions",
+    "Commands:\n/jobs — Jobs: progress, results and cleanup\n/status — Model, extensions and errors\n" +
+      "/settings — Models, extensions, schedules, general settings and changes",
   );
   await sleep(2000);
   expect(await texts(daemon.root, "user")).toEqual([]);
