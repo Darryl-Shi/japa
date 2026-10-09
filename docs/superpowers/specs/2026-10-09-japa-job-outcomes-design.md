@@ -78,8 +78,11 @@ Then, in order:
 
 1. `completed` → clear it; report `done` with `result` (as today).
 2. `asked` → clear it; report `needs_input` with `result`.
-3. The run was not a nudge → **nudge**: in the same commit, create a `JobRun` with
-   `{ text: NUDGE, mode: "followUp", nudge: true }`; the job stays `running`; nothing is reported.
+3. The run was not a nudge → if the job's conversation already has another run or a queued input (`pi.live`'s
+   `run`, or a non-write `pi.inbox` item), nothing: that message's turn is decided on its own, and a nudge would
+   reach the worker after it. Otherwise **nudge**: in the same commit, create a `JobRun` with
+   `{ text: NUDGE, mode: "followUp", nudge: true }`; the job is `running` (a follow-up queued before the previous
+   run's `job_complete` or `job_ask` starts with the job `done` or `needs_input`); nothing is reported.
 4. The run was a nudge → the answer's text (its text blocks joined, then trimmed) is non-empty: `status = "done"`,
    `result` = the text; empty: `status = "failed"`, `result = "the worker ended its turn without a reply"`. Report.
 

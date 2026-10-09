@@ -145,7 +145,8 @@ export function jobsExtension(options: JobsOptions): Extension {
         const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[id];
         if (job === undefined) return { text: `No job ${id}.` };
         if (["done", "failed", "cancelled"].includes(job.status)) return { text: `Job ${id} already finished.` };
-        const abort = job.status === "running" ? job.conversationId : undefined;
+        // A needs_input job's turn may still be going: job_ask beside another call doesn't end it.
+        const abort = ["running", "needs_input"].includes(job.status) ? job.conversationId : undefined;
         job.status = "cancelled";
         job.updatedAt = Date.now();
         return { text: `Stopped job ${id}.`, abort };

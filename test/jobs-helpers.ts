@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { type Conversation, type JsonObject, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { Daemon } from "../src/kernel/boot.ts";
+import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 
 export const call = (name: string, args: Record<string, string>) =>
@@ -44,6 +45,18 @@ export async function texts(conversation: Conversation, role: string): Promise<s
 
 export async function jobs(daemon: Daemon) {
   return (await daemon.harness.snapshot(JobsDoc, ROOT_CONVERSATION_ID, ctx))!.jobs;
+}
+
+/** How many times job 1 was nudged. */
+export async function nudges(daemon: Daemon): Promise<number> {
+  const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+  return (await texts(job, "user")).filter((t) => t === NUDGE).length;
+}
+
+/** Whether a message to job 1 is queued behind its run. */
+export async function queued(daemon: Daemon): Promise<boolean> {
+  const job = (await jobs(daemon))["1"]!.conversationId;
+  return (await daemon.harness.inspect(ctx)).submissions.some((s) => s.conversationId === job && s.status === "queued");
 }
 
 export async function ask(daemon: Daemon, text: string) {

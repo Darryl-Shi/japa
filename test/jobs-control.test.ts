@@ -1,12 +1,12 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { getSystemMessageText } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getSystemMessageText } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { bootTest, waitFor } from "./helpers.ts";
-import { ask, call, held, idle, jobs, reported, say, script, texts } from "./jobs-helpers.ts";
+import { ask, call, held, idle, jobs, nudges, reported, say, script, texts } from "./jobs-helpers.ts";
 
 const statuses = async (daemon: Daemon) => Object.values(await jobs(daemon)).map((j) => j.status);
 
@@ -83,6 +83,31 @@ test("a job stopped during its nudge stays cancelled", async () => {
   await waitFor(hold.started);
   await ask(daemon, "stop 1");
   await waitFor(() => idle(daemon));
+  expect(await statuses(daemon)).toEqual(["cancelled"]);
+  expect(await reported(daemon)).toEqual([]);
+  expect(await nudges(daemon)).toBe(1);
+  await daemon.close();
+});
+
+test("a job stopped after job_ask while its turn goes on is aborted", async () => {
+  const { daemon, faux } = await bootTest();
+  const hold = held();
+  script(faux, (role, text, signal) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "stop 1") return call("job_stop", { id: "1" });
+    // A turn ends only if every call of the round ends it, so job_progress keeps this one going.
+    if (text === "Do work") {
+      const calls = [fauxToolCall("job_ask", { question: "q" }), fauxToolCall("job_progress", { note: "n" })];
+      return fauxAssistantMessage(calls, { stopReason: "toolUse" });
+    }
+    if (role === "toolResult" && (text === "Asked." || text === "Noted.")) return hold.wait(say("x"), signal);
+  });
+  await ask(daemon, "start work");
+  await waitFor(hold.started);
+  expect(await statuses(daemon)).toEqual(["needs_input"]);
+  await ask(daemon, "stop 1");
+  await waitFor(() => idle(daemon));
+  expect((await texts(daemon.root, "toolResult")).at(-1)).toBe("Stopped job 1.");
   expect(await statuses(daemon)).toEqual(["cancelled"]);
   expect(await reported(daemon)).toEqual([]);
   await daemon.close();

@@ -3,6 +3,8 @@ import {
   type ConversationId,
   AssistantEntry,
   defineTask,
+  InboxDoc,
+  LiveDoc,
   ROOT_CONVERSATION_ID,
   type SettledSubmissionRecord,
   type Tx,
@@ -65,7 +67,9 @@ export function jobRun(settings: Settings) {
           const job = doc.jobs[jobId];
           const decision = job === undefined ? undefined : await decide(tx, job, settled, task.input.nudge === true);
           await start(tx, doc.jobs);
-          if (job === undefined || decision === undefined) return { status: "running", checkpoint: { phase: "report" } };
+          if (job === undefined || decision === undefined) {
+            return { status: "running", checkpoint: { phase: "report" } };
+          }
           job.updatedAt = Date.now();
           if ("nudge" in decision) {
             const nudge = { jobId, conversationId, text: NUDGE, mode: "followUp", nudge: true } as const;
@@ -115,7 +119,8 @@ type Decision = { report: string } | { nudge: true } | undefined;
  * Updates `job` for the settled message; returns the report to post, a nudge, or nothing. A run that ends unreported
  * (stopped, aborted or failed) clears `completed`, which would otherwise keep the job from being pruned, and `asked`,
  * which would otherwise refuse the next run's ending call. A run that ends without job_complete or job_ask is nudged
- * (the job stays `running`); a nudged run that ends so is `done` with its text, or `failed` if it has none.
+ * (the job is `running` again), unless the job already has another message running or queued, which is decided on its
+ * own; a nudged run that ends so is `done` with its text, or `failed` if it has none.
  */
 async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord, nudged: boolean): Promise<Decision> {
   const aborted = settled.status === "unanswered" && settled.reason === "aborted";
@@ -143,7 +148,13 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord, nudged
     job.asked = false;
     return { report: reportText(job, job.result!) };
   }
-  if (!nudged) return { nudge: true };
+  if (!nudged) {
+    // Another message already running or queued is decided on its own; a nudge would reach the worker after it.
+    if (await busy(tx, job.conversationId)) return undefined;
+    // A follow-up queued before the last run's ending call starts with the job `done` or `needs_input`.
+    job.status = "running";
+    return { nudge: true };
+  }
   const text = answer.content
     .flatMap((c) => (c.type === "text" ? [c.text] : []))
     .join("")
@@ -151,4 +162,10 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord, nudged
   job.status = text === "" ? "failed" : "done";
   job.result = text === "" ? "the worker ended its turn without a reply" : text;
   return { report: reportText(job, job.result) };
+}
+
+/** Whether a job's conversation has a run, or an input queued for one. */
+async function busy(tx: Tx, conversationId: ConversationId): Promise<boolean> {
+  if ((await tx.doc(LiveDoc, conversationId)).run !== undefined) return true;
+  return (await tx.doc(InboxDoc, conversationId)).items.some((item) => item.mode !== "write");
 }
