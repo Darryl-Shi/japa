@@ -62,7 +62,7 @@ describe("extensions", { timeout: 60_000 }, () => {
     const { daemon, faux, home } = await bootTest();
     land(home, "extensions/echo/index.ts", echo("v1"));
     await daemon.reconcile();
-    daemon.markGood();
+    await daemon.markGood();
     land(home, "extensions/echo/index.ts", echo("v2"));
     await daemon.reconcile();
     expect(await tool(daemon, faux, "echo")).toBe("v2");

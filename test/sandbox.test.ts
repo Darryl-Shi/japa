@@ -29,7 +29,7 @@ import {
   type SandboxSpec,
   within,
 } from "../src/kernel/sandbox/bwrap.ts";
-import { NO_BWRAP, sandboxScratch, tempHome } from "./helpers.ts";
+import { NO_BWRAP, sandboxScratch, tempHome, waitFor } from "./helpers.ts";
 
 const ALLOWED = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
 
@@ -811,6 +811,32 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     const result = await run("sleep 5", { timeoutMs: 200 });
     expect(result).toMatchObject({ code: null, timedOut: true });
     expect(performance.now() - started).toBeLessThan(4000);
+  });
+
+  test("an abort kills the sandbox at once, with every process in it, and rejects", async () => {
+    const { spec, outside } = sandbox();
+    const marker = `sleep 301.${process.pid}`;
+    onTestFinished(() => void spawnSync("pkill", ["-f", marker]));
+    const ran = join(outside, "ran");
+    const controller = new AbortController();
+    const script = `${marker} >/dev/null 2>&1 & echo x > "${ran}"; sleep 30`;
+    const run = runSandboxed(spec, ["bash", "-c", script], { timeoutMs: 60_000, signal: controller.signal });
+    await waitFor(() => existsSync(ran));
+    const started = performance.now();
+    controller.abort();
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(performance.now() - started).toBeLessThan(4000);
+    expect(spawnSync("pgrep", ["-f", marker], { encoding: "utf8" }).stdout).toBe("");
+  });
+
+  test("a run already aborted runs nothing", async () => {
+    const { spec, outside } = sandbox();
+    const ran = join(outside, "ran");
+    const signal = AbortSignal.abort();
+    await expect(runSandboxed(spec, ["touch", ran], { timeoutMs: 10_000, signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(existsSync(ran)).toBe(false);
   });
 
   test("output is UTF-8 across chunks, and only its last 1 MB is kept", async () => {

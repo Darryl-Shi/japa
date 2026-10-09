@@ -87,6 +87,23 @@ test("clearFinishedJobs removes every finished job and leaves the active ones", 
   await daemon.close();
 });
 
+test("clearFinishedJobs keeps a job going live", async () => {
+  const { daemon, messaging } = await bootClearing();
+  await seed(daemon, [["done", Date.now()]]);
+  const going = (publishing: number | undefined) =>
+    daemon.root.commit(async (tx) => {
+      const job = (await tx.doc(JobsDoc, daemon.root.id)).jobs["1"]!;
+      if (publishing === undefined) delete job.publishing;
+      else job.publishing = publishing;
+    }, ctx);
+  await going(1);
+  expect(await messaging.clearFinishedJobs()).toBe(0);
+  expect(Object.keys(await jobs(daemon))).toEqual(["1"]);
+  await going(undefined);
+  expect(await messaging.clearFinishedJobs()).toBe(1);
+  await daemon.close();
+});
+
 test.skipIf(NO_BWRAP)("clearFinishedJobs keeps a completed job until its report is posted", async () => {
   const { daemon, faux, messaging } = await bootClearing();
   const hold = held();

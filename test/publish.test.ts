@@ -10,11 +10,11 @@ import { linkSdk } from "../src/kernel/loader.ts";
 import { publishable } from "../src/kernel/jobs/narrow.ts";
 import { createPublisher, type PublishDeps, reportingFailures, sandboxCheck } from "../src/kernel/jobs/publish.ts";
 import { loadSkills, skillAt } from "../src/kernel/skills.ts";
-import { jobEnv, type SandboxSpec } from "../src/kernel/sandbox/bwrap.ts";
+import { jobEnv, runSandboxed, type SandboxSpec } from "../src/kernel/sandbox/bwrap.ts";
 import { createJobSandboxes } from "../src/kernel/sandbox/jobs.ts";
 import { createWorkspaceLock } from "../src/kernel/workspace-lock.ts";
 import { ensureWorkspace } from "../src/kernel/workspace.ts";
-import { NO_BWRAP, sandboxScratch } from "./helpers.ts";
+import { NO_BWRAP, sandboxScratch, waitFor } from "./helpers.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -139,7 +139,7 @@ const FALLOCATE = (() => {
 })();
 
 const KEPT = "Kept at ~/.japa/.jobs/1.";
-const job = { id: "1", title: "t" };
+const job = { id: "1", title: "t", seq: 1 };
 
 describe.skipIf(NO_BWRAP)("publish", () => {
   test("nothing changed: undefined, clone deleted; a job without a clone: undefined", async () => {
@@ -151,7 +151,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(git(home, "rev-parse", "HEAD")).toBe(base);
     expect(calls).toMatchObject({ changes: [], check: [], reconciles: 0 });
     // Job 2 never made a tool call, so it has no clone.
-    expect(await publish({ id: "2", title: "t" })).toBeUndefined();
+    expect(await publish({ id: "2", title: "t", seq: 1 })).toBeUndefined();
   });
 
   test("only changes outside the components: undefined, clone deleted, the real tree unchanged", async () => {
@@ -603,7 +603,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     write(clone2, "skills/t/SKILL.md", "---\nname: t\ndescription: T\n---\n");
     write(clone2, "skills/u/SKILL.md", "---\nname: u\ndescription: U\n---\n");
     const quiet = publisher(home, sandboxes.spec, { loaded: () => false });
-    expect(await quiet.publish({ id: "2", title: "t" })).toBe(
+    expect(await quiet.publish({ id: "2", title: "t", seq: 1 })).toBe(
       "Not live: skills/t failed to load: did not load; skills/u failed to load: did not load. Reverted. " +
         "Kept at ~/.japa/.jobs/2.",
     );
@@ -737,7 +737,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     const clone2 = ensureClone(home, packageRoot, "2");
     write(clone2, "a\nb.md", "n\n");
     write(clone2, "extensions/e/index.ts", "changed again\n");
-    expect(await publish({ id: "2", title: "t" })).toBe("Live: extensions/e (change 2). Dropped: 1 path.");
+    expect(await publish({ id: "2", title: "t", seq: 1 })).toBe("Live: extensions/e (change 2). Dropped: 1 path.");
   });
 
   test("a job whose clone was deleted, but not its marker, is still reported", async () => {
@@ -824,7 +824,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     const title = `it's "quoted" $(touch "${outside}/pwned") \`touch "${outside}/pwned2"\` $HOME; echo hi`;
     write(clone, "extensions/e/index.ts", "changed\n");
     const { publish, calls } = publisher(home, sandboxes.spec);
-    expect(await publish({ id: "1", title })).toBe("Live: extensions/e (change 1).");
+    expect(await publish({ id: "1", title, seq: 1 })).toBe("Live: extensions/e (change 1).");
     expect(git(home, "log", "-1", "--format=%B", "HEAD")).toBe(`Job 1: ${title}`);
     expect(git(home, "log", "-1", "--format=%B", "HEAD^2")).toBe(`Job 1: ${title}`);
     expect(calls.changes[0]?.title).toBe("Job 1: changed extensions/e");
@@ -876,6 +876,117 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(await check("1", "skill", "ok")).toEqual([]);
     expect(await check("1", "skill", "bad")).toEqual([expect.stringContaining("description is required")]);
     expect(await check("1", "skill", "real")).toEqual([expect.stringContaining("does not exist")]);
+    await expect(check("1", "skill", "ok", AbortSignal.abort())).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("a stopped job merges nothing: its clone is kept, and the line says so", async () => {
+    const { home, clone, sandboxes, base } = setup();
+    write(clone, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\n");
+    const { publish, calls } = publisher(home, sandboxes.spec);
+    expect(await publish({ ...job, stopped: true })).toBe(`Not live: the job was stopped. ${KEPT}`);
+    expect(git(home, "rev-parse", "HEAD")).toBe(base);
+    expect(read(clone, "skills/s/SKILL.md")).toContain("name: s");
+    expect(calls).toMatchObject({ check: [], reconciles: 0, changes: [] });
+    // Job 2 never made a tool call, so it has no clone.
+    expect(await publish({ id: "2", title: "t", seq: 1, stopped: true })).toBeUndefined();
+  });
+
+  test("a stopped job whose merge was made before a restart goes on: it is live", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "extensions/e/index.ts", "changed\n");
+    let stopped = false;
+    const { publish } = publisher(home, sandboxes.spec, {
+      logChange: async () => {
+        if (stopped) return "1";
+        stopped = true;
+        throw new Error("stopped");
+      },
+    });
+    await expect(publish(job)).rejects.toThrow("stopped");
+    expect(await publish({ ...job, stopped: true })).toBe("Live: extensions/e (change 1).");
+    expect(existsSync(clone)).toBe(false);
+  });
+
+  // The job's earlier commits are in the real history, merged then reverted: they stay reverted.
+  test("a publish for a later report starts afresh, merging what changed since a reverted one", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "skills/s/SKILL.md", "not a skill\n");
+    let errors = [{ name: "skill:s", error: "no frontmatter" }];
+    const { publish } = publisher(home, sandboxes.spec, { reconcile: async () => ({ errors }) });
+    expect(await publish(job)).toBe(`Not live: skills/s failed to load: no frontmatter. Reverted. ${KEPT}`);
+    expect(await publish(job)).toBe(`Not live: skills/s failed to load: no frontmatter. Reverted. ${KEPT}`);
+    // A follow-up adds skill t, and completes the job again.
+    write(clone, "skills/t/SKILL.md", "---\nname: t\ndescription: T\n---\n");
+    errors = [];
+    expect(await publish({ ...job, seq: 2 })).toBe("Live: skills/t (change 1).");
+    expect(read(home, "skills/t/SKILL.md")).toContain("name: t");
+    expect(existsSync(join(home, "skills", "s"))).toBe(false);
+    expect(existsSync(clone)).toBe(false);
+  });
+
+  test("an abort mid-check rejects at once and merges nothing; publishing again goes live", async () => {
+    const { outside, home, clone, sandboxes, base } = setup();
+    write(clone, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\n");
+    const checking = join(outside, "checking");
+    const controller = new AbortController();
+    const { publish } = publisher(home, sandboxes.spec, {
+      check: async (jobId, _kind, _name, signal) => {
+        const command = ["bash", "-c", `touch "${checking}"; sleep 30`];
+        await runSandboxed(sandboxes.spec(jobId), command, { timeoutMs: 60_000, signal });
+        return [];
+      },
+    });
+    const publishing = publish(job, controller.signal);
+    await waitFor(() => existsSync(checking));
+    const started = performance.now();
+    controller.abort();
+    await expect(publishing).rejects.toMatchObject({ name: "AbortError" });
+    expect(performance.now() - started).toBeLessThan(4000);
+    expect(git(home, "rev-parse", "HEAD")).toBe(base);
+    expect(git(home, "for-each-ref", "refs/japa")).toBe("");
+    expect(existsSync(join(home, ".jobs", "1.merged"))).toBe(false);
+    expect(await publisher(home, sandboxes.spec).publish(job)).toBe("Live: skills/s (change 1).");
+  });
+
+  test("an abort mid-commit rejects at once", async () => {
+    const { outside, home, clone, sandboxes, base } = setup();
+    write(clone, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\n");
+    const committing = join(outside, "committing");
+    const controller = new AbortController();
+    const spec = withGit(outside, sandboxes.spec, `touch "${committing}"; sleep 30`);
+    const publishing = publisher(home, spec).publish(job, controller.signal);
+    await waitFor(() => existsSync(committing));
+    const started = performance.now();
+    controller.abort();
+    await expect(publishing).rejects.toMatchObject({ name: "AbortError" });
+    expect(performance.now() - started).toBeLessThan(4000);
+    expect(git(home, "rev-parse", "HEAD")).toBe(base);
+  });
+
+  test("an abort while waiting for the lock merges nothing", async () => {
+    const { home, clone, sandboxes, base } = setup();
+    write(clone, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\n");
+    const lock = createWorkspaceLock();
+    let release = () => {};
+    const held = lock(() => new Promise<void>((resolve) => (release = resolve)));
+    let checked = false;
+    const controller = new AbortController();
+    const { publish } = publisher(home, sandboxes.spec, {
+      lock,
+      check: async () => {
+        checked = true;
+        return [];
+      },
+    });
+    const publishing = publish(job, controller.signal);
+    await waitFor(() => checked);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    controller.abort();
+    release();
+    await held;
+    await expect(publishing).rejects.toMatchObject({ name: "AbortError" });
+    expect(git(home, "rev-parse", "HEAD")).toBe(base);
+    expect(existsSync(join(home, ".jobs", "1.merged"))).toBe(false);
   });
 });
 
@@ -888,6 +999,15 @@ test("a publish that throws ends in a Not live line, on one line and capped", as
   expect(line).toBe(`Not live: publishing failed: boom at ${"x".repeat(492)}…. ${KEPT}`);
   const quiet = reportingFailures(home, async () => "Live: skills/s (change 1).");
   expect(await quiet(job)).toBe("Live: skills/s (change 1).");
+});
+
+test("a publish aborted (the daemon closing) still rejects: it resumes after the restart", async () => {
+  const home = join(homedir(), ".japa");
+  const publish = reportingFailures(home, async (_job, signal) => {
+    signal!.throwIfAborted();
+    return "Live: skills/s (change 1).";
+  });
+  await expect(publish(job, AbortSignal.abort())).rejects.toMatchObject({ name: "AbortError" });
 });
 
 test("the lock serialises, and a rejected call doesn't stop the next", async () => {

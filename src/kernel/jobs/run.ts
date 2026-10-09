@@ -10,6 +10,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { Settings } from "../settings.ts";
+import type { PublishJob } from "./publish.ts";
 import { type Job, JobsDoc, promote, reportText } from "./state.ts";
 
 // Both tasks belong to the root conversation and are background: the CoS's Esc and idle waits skip them.
@@ -48,8 +49,11 @@ type JobRunState =
   | { phase: "report"; report?: Report };
 
 export type JobHooks = {
-  /** Publishes a completed job's changes (see publish.ts); the outcome line for its report, if any. */
-  publish(job: { id: string; title: string }): Promise<string | undefined>;
+  /**
+   * Publishes the changes of a job done (see publish.ts); the outcome line for its report, if any. Rejects once
+   * `signal` aborts: the run's, when the daemon closes; the run then goes on in `publish` after the restart.
+   */
+  publish(job: PublishJob, signal: AbortSignal): Promise<string | undefined>;
   /** Stops job `jobId`'s sandbox and every process in it; its next tool call starts another. */
   closeSandbox(jobId: string): void;
 };
@@ -58,9 +62,13 @@ export type JobHooks = {
 const FINAL = ["done", "failed", "cancelled"];
 
 /**
- * The `JobRun` task, which delivers one message to a job, publishes the job's changes when the run completed it, and
+ * The `JobRun` task, which delivers one message to a job, publishes the job's changes when the run left it done, and
  * reports the answer to the CoS (or, for a run that ended without job_complete or job_ask, nudges the job once with
  * another `JobRun`), and `start`, which starts the queued jobs that fit under `jobs.maxConcurrent`.
+ *
+ * From the decision to publish until its report is posted, the job is `publishing` (the report's seq): its sandbox
+ * doesn't start, `job_message` refuses it, and it isn't pruned. A run that leaves the job done meanwhile (a follow-up
+ * queued before) publishes nothing itself: its sandbox couldn't start.
  */
 export function jobRun(settings: Settings, hooks: JobHooks) {
   const JobRun = defineTask<JobRunInput, JobRunState, null>({
@@ -92,19 +100,23 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
           }
           job.seq++;
           const report = { seq: job.seq, content: decision.report };
-          return { status: "running", checkpoint: { phase: decision.completed ? "publish" : "report", report } };
+          if (!decision.completed || job.publishing !== undefined) {
+            return { status: "running", checkpoint: { phase: "report", report } };
+          }
+          job.publishing = job.seq;
+          return { status: "running", checkpoint: { phase: "publish", report } };
         }, context);
       },
       // Spec §4.3: the job's changes go live, or are kept, before its report; the report ends with the outcome line.
       publish: async (task, runtime, context) => {
         const { jobId } = task.input;
         const { report } = task.state.checkpoint as Extract<JobRunState, { phase: "publish" }>;
-        // Nothing the job started may still touch its clone while it's published.
+        // Nothing the job started may still touch its clone while it's published; `publishing` keeps it from starting.
         hooks.closeSandbox(jobId);
         const job = (await runtime.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context))?.jobs[jobId];
-        // A job stopped (or cleared) since is not published: its clone is kept.
-        const live = job !== undefined && job.status !== "cancelled";
-        const line = live ? await hooks.publish({ id: jobId, title: job.title }) : undefined;
+        // A job stopped since is not published: its clone is kept.
+        const published = { id: jobId, title: job?.title ?? "", seq: report.seq, stopped: job?.status === "cancelled" };
+        const line = job === undefined ? undefined : await hooks.publish(published, runtime.signal);
         const content = line === undefined ? report.content : `${report.content}\n\n${line}`;
         await runtime.commit(
           () => ({ status: "running", checkpoint: { phase: "report", report: { ...report, content } } }),
@@ -112,7 +124,12 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
         );
       },
       report: async (task, runtime, context) => {
+        const { jobId } = task.input;
         const { report } = task.state.checkpoint as Extract<JobRunState, { phase: "report" }>;
+        // A finished job's sandbox goes first (spec §3.3), with everything it left running; one waiting for an answer
+        // keeps it.
+        const job = (await runtime.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context))?.jobs[jobId];
+        if (job === undefined || FINAL.includes(job.status)) hooks.closeSandbox(jobId);
         if (report !== undefined) {
           const root = (await runtime.conversation(ROOT_CONVERSATION_ID, context))!;
           // Esc withdraws queued inputs; a report withdrawn before the CoS saw it is posted again once the CoS is
@@ -125,15 +142,25 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
             await root.waitForIdle(context);
           }
         }
-        // A finished job's sandbox goes, with everything it left running; one waiting for an answer keeps it.
-        const job = (await runtime.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context))?.jobs[task.input.jobId];
-        if (job === undefined || FINAL.includes(job.status)) hooks.closeSandbox(task.input.jobId);
-        await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+        await runtime.commit(async (tx) => {
+          await donePublishing(tx, jobId, report);
+          return { status: "terminal", outcome: { status: "completed", result: null } };
+        }, context);
       },
     },
-    abort: (_task, runtime, context) =>
-      runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+    abort: (task, runtime, context) =>
+      runtime.commit(async (tx) => {
+        const { checkpoint } = task.state;
+        await donePublishing(tx, task.input.jobId, "report" in checkpoint ? checkpoint.report : undefined);
+        return { status: "terminal", outcome: { status: "aborted" } };
+      }, context),
   });
+
+  /** Ends job `jobId`'s `publishing` when it's for `report`: its run's. */
+  async function donePublishing(tx: Tx, jobId: string, report: Report | undefined): Promise<void> {
+    const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[jobId];
+    if (job !== undefined && report !== undefined && job.publishing === report.seq) delete job.publishing;
+  }
 
   async function start(tx: Tx, jobs: Record<string, Job>): Promise<void> {
     for (const job of promote(jobs, settings.jobs.maxConcurrent)) {
@@ -146,6 +173,7 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
   return { JobRun, start };
 }
 
+/** `completed`: the run left the job done, so its changes are published before its report. */
 type Decision = { report: string; completed?: true } | { nudge: true } | undefined;
 
 /**
@@ -194,7 +222,7 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord, nudged
     .trim();
   job.status = text === "" ? "failed" : "done";
   job.result = text === "" ? "the worker ended its turn without a reply" : text;
-  return { report: reportText(job, job.result) };
+  return text === "" ? { report: reportText(job, job.result) } : { report: reportText(job, job.result), completed: true };
 }
 
 /** Whether a job's conversation has a run, or an input queued for one. */

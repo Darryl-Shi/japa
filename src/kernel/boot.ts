@@ -38,7 +38,7 @@ import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
 import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish.ts";
-import { byId, DAY, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
+import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
 import { MemoryDoc } from "./memory/state.ts";
@@ -105,8 +105,8 @@ export type Daemon = {
   reflect(): Promise<void>;
   /** Reloads the changed workspace extensions, skills and worker profiles; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
-  /** Tags the workspace's HEAD as last known good. */
-  markGood(): void;
+  /** Tags the workspace's HEAD as last known good, under the workspace lock. */
+  markGood(): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -482,7 +482,17 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // One that holds the home can't be: its mask would cover the clone.
     const dbFiles = db.flatMap((f) => [f, `${f}-wal`, `${f}-shm`]);
     const { hidden, holdingHome } = hiddenPaths(home, [...secretsDirs, ...dbFiles]);
-    const jobs = createJobSandboxes({ home, packageRoot, hidden, env: jobEnv });
+    const jobs = createJobSandboxes({
+      home,
+      packageRoot,
+      hidden,
+      env: jobEnv,
+      // A job going live: its clone is being published (see run.ts).
+      refuse: async (jobId) => {
+        const job = (await opened.snapshot(JobsDoc, ROOT_CONVERSATION_ID, ctx))?.jobs[jobId];
+        return job?.publishing === undefined ? undefined : goingLive(jobId);
+      },
+    });
     sandboxes = jobs;
     const sandboxError = [
       ...(jobs.problem === undefined ? [] : [sandboxRefusal(jobs.problem)]),

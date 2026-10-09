@@ -13,7 +13,7 @@ import { sandboxRefusal } from "../sandbox/jobs.ts";
 import type { Settings } from "../settings.ts";
 import type { WorkerProfile } from "../workers.ts";
 import { Anchor, BACKGROUND, type JobHooks, jobRun } from "./run.ts";
-import { board, byId, JobDoc, JobsDoc } from "./state.ts";
+import { board, byId, goingLive, JobDoc, JobsDoc } from "./state.ts";
 import { WorkerExtension } from "./worker.ts";
 
 const reply = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -122,6 +122,8 @@ export function jobsExtension(options: JobsOptions): Extension {
         if (job === undefined) return `No job ${id}.`;
         if (job.status === "queued") return `Job ${id} hasn't started yet.`;
         if (job.status === "cancelled") return `Job ${id} was stopped.`;
+        // Its sandbox couldn't start: its clone is being published.
+        if (job.publishing !== undefined) return goingLive(id);
         job.status = "running";
         job.updatedAt = Date.now();
         const input = {

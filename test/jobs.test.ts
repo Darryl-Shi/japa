@@ -17,6 +17,7 @@ import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
+import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
 import { bootErrors, bootTest, NO_BWRAP, sandboxScratch, tempHome, testKit, waitFor } from "./helpers.ts";
 import {
@@ -85,7 +86,14 @@ const HOME = process.env.HOME;
  */
 async function bootSandboxed(
   o: { vault?: boolean; storage?: (outside: string) => object; secrets?: (outside: string) => object } = {},
-): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string; outside: string }> {
+): Promise<{
+  daemon: Daemon;
+  faux: FauxProviderHandle;
+  home: string;
+  user: string;
+  outside: string;
+  kit: ReturnType<typeof testKit>;
+}> {
   const outside = sandboxScratch("japa-jobs-");
   const [home, user] = [join(outside, "home"), join(outside, "user")];
   const secrets = o.vault ? join(outside, "vault") : join(home, "secrets");
@@ -105,7 +113,7 @@ async function bootSandboxed(
     rmSync(outside, { recursive: true, force: true });
   });
   const daemon = await boot({ home, extensions: [kit.extension, probe] });
-  return { daemon, faux: kit.faux, home, user, outside };
+  return { daemon, faux: kit.faux, home, user, outside, kit };
 }
 
 /** Has job 1 (a coder) run `command` in bash; its result. */
@@ -827,6 +835,176 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
     await ask(daemon, "stop");
     expect((await texts(daemon.root, "toolResult")).at(-1)).toBe("Stopped job 1.");
     expect(await still(beat)).toBe(true);
+    await daemon.close();
+  });
+});
+
+/**
+ * Extension `slow`: importing it writes the time to `beat` every 50 ms until `gate` exists, so its `japa check`, which
+ * imports it first, waits too.
+ */
+const SLOW = (beat: string, gate: string) => `import { existsSync, writeFileSync } from "node:fs";
+import { defineJapaExtension } from "japa/sdk";
+
+while (!existsSync(${JSON.stringify(gate)})) {
+  writeFileSync(${JSON.stringify(beat)}, String(performance.now()));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+export default defineJapaExtension({ name: "slow", summary: "Slow", examples: ["slow"], docs: "Slow." });
+`;
+
+/** A bash command that writes extension `slow` (see `SLOW`) to `<home>/extensions/slow`, then prints `written`. */
+const writeSlow = (home: string, beat: string, gate: string) =>
+  `mkdir -p "${home}/extensions/slow" && cat > "${home}/extensions/slow/index.ts" <<'EOF'\n${SLOW(beat, gate)}EOF\necho written`;
+
+/** Whether `promise` settles within `ms`. */
+const settlesWithin = (promise: Promise<unknown>, ms: number) =>
+  Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms))]);
+
+/**
+ * Boots sandboxed on sqlite storage, and has job 1 ("Slow") write extension `slow` and complete: its publish then waits
+ * in `japa check` until `gate` exists, which the test makes when it finishes, if not before. Returns once the check
+ * waits.
+ */
+async function slowJob() {
+  const booted = await bootSandboxed({ storage: () => ({ adapter: "sqlite" }) });
+  const { daemon, faux, home, user } = booted;
+  const [beat, gate] = [join(user, "beat"), join(user, "gate")];
+  onTestFinished(() => {
+    if (existsSync(user)) writeFileSync(gate, "");
+  });
+  script(faux, (role, text) => {
+    if (text === "start") return call("job_start", { title: "Slow", brief: "slow", worker: "coder" });
+    if (text === "slow") return call("bash", { command: writeSlow(home, beat, gate) });
+    if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote it" });
+  });
+  await ask(daemon, "start");
+  await waitFor(() => existsSync(beat), 30_000);
+  return { ...booted, beat, gate };
+}
+
+describe.skipIf(NO_BWRAP)("going live, slowly", { timeout: 120_000 }, () => {
+  test("a daemon closing mid-check stops the publish at once; after a restart, it goes live", async () => {
+    const { daemon, home, kit, beat, gate } = await slowJob();
+    expect(await settlesWithin(daemon.close(), 5000)).toBe(true);
+    expect(await still(beat)).toBe(true);
+    expect(existsSync(join(home, "extensions", "slow"))).toBe(false);
+
+    writeFileSync(gate, "");
+    const again = await boot({ home, extensions: [kit.extension, probe] });
+    await waitFor(() => idle(again), 90_000);
+    expect(await reported(again)).toEqual(['[job 1 "Slow" done] wrote it\n\nLive: extensions/slow (change 1).']);
+    expect(again.capabilities()).toContain("- slow: ");
+    expect(existsSync(join(home, ".jobs", "1"))).toBe(false);
+    await again.close();
+  });
+
+  test("a job stopped before its publish runs is not merged; its report says where it's kept", async () => {
+    const { daemon, home, kit } = await slowJob();
+    // As no tool can: job_stop refuses a done job, and job_message one going live.
+    await daemon.harness.commit(async (tx) => {
+      (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs["1"]!.status = "cancelled";
+    }, ctx);
+    expect(await settlesWithin(daemon.close(), 5000)).toBe(true);
+
+    const again = await boot({ home, extensions: [kit.extension, probe] });
+    await waitFor(() => idle(again), 60_000);
+    const clone = join(home, ".jobs", "1");
+    expect(await reported(again)).toEqual([
+      `[job 1 "Slow" done] wrote it\n\nNot live: the job was stopped. Kept at ${clone}.`,
+    ]);
+    expect(existsSync(join(clone, "extensions", "slow", "index.ts"))).toBe(true);
+    expect(existsSync(join(home, "extensions", "slow"))).toBe(false);
+    expect((await jobs(again))["1"]).toMatchObject({ status: "cancelled" });
+    expect((await jobs(again))["1"]!.publishing).toBeUndefined();
+    await again.close();
+  });
+
+  test("while a job goes live, job_message is refused and a queued follow-up's tools fail", async () => {
+    const booted = await bootSandboxed();
+    const { daemon, faux, home, user } = booted;
+    const [beat, gate] = [join(user, "beat"), join(user, "gate")];
+    onTestFinished(() => {
+      if (existsSync(user)) writeFileSync(gate, "");
+    });
+    const GOING_LIVE = "Job 1 is going live; message it after its report.";
+    const first = held();
+    const more = held();
+    script(faux, (role, text, signal) => {
+      if (text === "start") return call("job_start", { title: "Slow", brief: "slow", worker: "coder" });
+      if (text === "slow") return call("bash", { command: writeSlow(home, beat, gate) });
+      if (role === "toolResult" && text.trim() === "written") {
+        return first.wait(call("job_complete", { summary: "wrote it" }), signal);
+      }
+      if (text === "follow") return call("job_message", { id: "1", text: "more", mode: "followup" });
+      if (role === "user" && text === "more") {
+        return more.wait(call("bash", { command: `echo touched > "${home}/touched"` }), signal);
+      }
+      // The job's bash failing; the CoS's job_message replies with just the text.
+      if (role === "toolResult" && text.includes(GOING_LIVE) && text !== GOING_LIVE) {
+        return call("job_complete", { summary: "couldn't" });
+      }
+      if (text === "again") return call("job_message", { id: "1", text: "again", mode: "followup" });
+    });
+    await ask(daemon, "start");
+    await waitFor(first.started);
+    await ask(daemon, "follow"); // queued behind the run that completes the job
+    await waitFor(() => queued(daemon));
+    first.release();
+    await waitFor(() => existsSync(beat), 30_000); // publishing: its check waits
+    expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", publishing: 1 });
+
+    await ask(daemon, "again");
+    expect((await texts(daemon.root, "toolResult")).at(-1)).toBe(GOING_LIVE);
+    more.release();
+    await waitFor(async () => (await jobResults(daemon)).some((result) => result.includes(GOING_LIVE)));
+    expect(existsSync(join(home, ".jobs", "1", "touched"))).toBe(false);
+
+    writeFileSync(gate, "");
+    await waitFor(() => idle(daemon), 90_000);
+    expect(await reported(daemon)).toContain('[job 1 "Slow" done] wrote it\n\nLive: extensions/slow (change 1).');
+    expect((await jobs(daemon))["1"]!.publishing).toBeUndefined();
+    expect(existsSync(join(home, "touched"))).toBe(false);
+    await daemon.close();
+  });
+});
+
+describe.skipIf(NO_BWRAP)("finishing", { timeout: 60_000 }, () => {
+  test("a failed job's processes stop before its report is posted", async () => {
+    const { daemon, faux, user } = await bootSandboxed();
+    const beat = join(user, "beat");
+    const report = held();
+    script(faux, (role, text, signal) => {
+      if (text === "start") return call("job_start", { title: "Beat", brief: "beat", worker: "coder" });
+      if (text === "beat") return call("bash", { command: heartbeat(beat) });
+      if (role === "toolResult" && text.trim() === "beating") {
+        return fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom" });
+      }
+      if (role === "user" && text.startsWith('[job 1 "Beat" failed]')) return report.wait(say("noted"), signal);
+    });
+    await ask(daemon, "start");
+    await waitFor(report.started);
+    expect(await still(beat)).toBe(true);
+    report.release();
+    await waitFor(() => idle(daemon));
+    expect(await reported(daemon)).toEqual(['[job 1 "Beat" failed] model_error: boom']);
+    await daemon.close();
+  });
+
+  test("a job done after its nudge publishes too", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello", worker: "coder" });
+      if (text === "hello") return call("bash", { command: writeHello(home) });
+      if (role === "toolResult" && text.trim() === "written") return say("I wrote it");
+      if (text === NUDGE) return say("Wrote skills/hello");
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon), 50_000);
+    expect(await reported(daemon)).toEqual(['[job 1 "Hello" done] Wrote skills/hello\n\nLive: skills/hello (change 1).']);
+    expect(readFileSync(join(home, "skills", "hello", "SKILL.md"), "utf8")).toBe(HELLO);
+    expect(await nudges(daemon)).toBe(1);
     await daemon.close();
   });
 });

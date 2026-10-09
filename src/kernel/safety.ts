@@ -54,6 +54,10 @@ export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapte
  * Last-known-good tagging and runtime auto-rollback: the `japa-safety` extension counts each workspace extension's
  * tool errors in a row (via `built`, the extension-built Pi Durable extensions by name) and rolls the extension back
  * to `LKG` when they reach `settings.safety.toolErrorThreshold`, under `lock`. Background failures go to `report`.
+ *
+ * Tagging takes `lock` too: a publish merged and still loading may yet be reverted. And a version's errors are its
+ * own: once another version loaded (a publish's fix, say, while the rollback waited for the lock), the count starts
+ * again, and a rollback decided for the old one is dropped.
  */
 export function createSafety(input: {
   home: string;
@@ -65,26 +69,25 @@ export function createSafety(input: {
   lock: WorkspaceLock;
 }) {
   const { home, settings, report } = input;
-  const failures = new Map<string, number>();
+  /** Each extension's tool errors in a row, and the version (its built extension) they came from. */
+  const failures = new Map<string, { version: Extension; count: number }>();
   let timer: NodeJS.Timeout | undefined;
 
-  const markGood = () => tag(home, LKG);
+  const markGood = () => input.lock(async () => tag(home, LKG));
 
   /** Tags `LKG` at HEAD `goodAfterMinutes` after the latest call, unless an auto-rollback happens first; resets `name`'s failures. */
   function scheduleGood(name?: string) {
     if (name !== undefined) failures.delete(name);
     clearTimeout(timer);
-    const fire = () => {
-      try {
-        markGood();
-      } catch (err) {
-        report(`tagging the last known good setup: ${message(err)}`);
-      }
-    };
+    const fire = () => markGood().catch((err) => report(`tagging the last known good setup: ${message(err)}`));
     timer = setTimeout(fire, settings.safety.goodAfterMinutes * 60_000).unref();
   }
 
-  const autoRollback = (name: string, reason: string) => input.lock(() => rollBackLocked(name, reason));
+  /** Under the lock, rolls `name` back, unless `version` is no longer the one loaded. */
+  const autoRollback = (name: string, version: Extension, reason: string) =>
+    input.lock(async () => {
+      if (input.built().get(name) === version) await rollBackLocked(name, reason);
+    });
 
   async function rollBackLocked(name: string, reason: string) {
     const sha = rollBack(home, "extension", name);
@@ -107,15 +110,18 @@ export function createSafety(input: {
     hooks: [
       hook(ToolTask, {
         afterTool: (call, result) => {
-          const name = [...input.built()].find(([, e]) => e.tools?.some((t) => t.name === call.name))?.[0];
-          if (name === undefined || !existsSync(join(home, "extensions", name))) return undefined;
-          const count = result.isError ? (failures.get(name) ?? 0) + 1 : 0;
-          failures.set(name, count);
+          const found = [...input.built()].find(([, e]) => e.tools?.some((t) => t.name === call.name));
+          if (found === undefined || !existsSync(join(home, "extensions", found[0]))) return undefined;
+          const [name, version] = found;
+          const earlier = failures.get(name);
+          const count = result.isError ? (earlier?.version === version ? earlier.count : 0) + 1 : 0;
+          failures.set(name, { version, count });
           if (count >= settings.safety.toolErrorThreshold) {
             failures.delete(name);
             // Outside the tool task: reconciling reconfigures the conversations this task runs in.
             const reason = `its tool ${call.name} failed ${count} times in a row`;
-            setImmediate(() => autoRollback(name, reason).catch((err) => report(`auto-rollback of ${name}: ${message(err)}`)));
+            const failed = (err: unknown) => report(`auto-rollback of ${name}: ${message(err)}`);
+            setImmediate(() => autoRollback(name, version, reason).catch(failed));
           }
           return undefined;
         },

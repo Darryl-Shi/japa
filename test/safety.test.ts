@@ -41,7 +41,7 @@ test("an extension whose tool keeps failing is rolled back to its last known goo
   const { daemon, faux, home } = await bootTest();
   land(home, "extensions/flaky/index.ts", flaky(false));
   await daemon.reconcile();
-  daemon.markGood();
+  await daemon.markGood();
   land(home, "extensions/flaky/index.ts", flaky(true));
   await daemon.reconcile();
 
@@ -63,7 +63,7 @@ test("an extension that keeps failing with no earlier working version is reporte
   const { daemon, faux, home } = await bootTest();
   land(home, "extensions/flaky/index.ts", flaky(true));
   await daemon.reconcile();
-  daemon.markGood();
+  await daemon.markGood();
 
   script(faux, (role, text) => (role === "user" && text === "flaky" ? call("flaky", {}) : undefined));
   const notices = async () => (await texts(daemon.root, "user")).filter((t) => t.startsWith("[japa] flaky keeps failing"));
@@ -80,7 +80,7 @@ test("rollback restores a skill's last known good version", async () => {
   const { daemon, faux, home } = await bootTest();
   land(home, "skills/s/SKILL.md", skill("Does s"));
   await daemon.reconcile();
-  daemon.markGood();
+  await daemon.markGood();
   land(home, "skills/s/SKILL.md", skill("Does s better"));
   await daemon.reconcile();
 
@@ -113,10 +113,11 @@ const unused = () => {
   throw new Error("unused");
 };
 
-test("only the latest schedule tags the last known good setup, after its own delay", () => {
+test("only the latest schedule tags the last known good setup, after its own delay", async () => {
   const home = tempHome();
   ensureWorkspace(home);
   const initial = head(home);
+  const lock = createWorkspaceLock();
   vi.useFakeTimers();
   try {
     const safety = createSafety({
@@ -126,7 +127,7 @@ test("only the latest schedule tags the last known good setup, after its own del
       reconcile: unused,
       root: unused,
       report: unused,
-      lock: createWorkspaceLock(),
+      lock,
     });
     safety.scheduleGood();
     vi.advanceTimersByTime(8 * 60_000);
@@ -134,12 +135,50 @@ test("only the latest schedule tags the last known good setup, after its own del
     commit(home, ["notes.md"], "v3");
     safety.scheduleGood();
     vi.advanceTimersByTime(2 * 60_000);
+    await lock(async () => {}); // after any tagging that fired
     expect(lkg(home)).toBe(initial);
     vi.advanceTimersByTime(8 * 60_000);
+    await lock(async () => {});
     expect(lkg(home)).toBe(head(home));
   } finally {
     vi.useRealTimers();
   }
+});
+
+// Not while a publish has merged and is still loading, for one: a revert may follow.
+test("tagging the last known good setup waits for the workspace lock, scheduled or not", async () => {
+  const home = tempHome();
+  ensureWorkspace(home);
+  const initial = head(home);
+  const lock = createWorkspaceLock();
+  const safety = createSafety({ home, settings, built: () => new Map(), reconcile: unused, root: unused, report: unused, lock });
+  land(home, "notes.md", "v2");
+  let release = () => {};
+  let publishing = lock(() => new Promise<void>((resolve) => (release = resolve)));
+  const marking = safety.markGood();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(lkg(home)).toBe(initial);
+  release();
+  await publishing;
+  await marking;
+  expect(lkg(home)).toBe(head(home));
+
+  land(home, "notes.md", "v3");
+  vi.useFakeTimers();
+  try {
+    safety.scheduleGood();
+    publishing = lock(() => new Promise<void>((resolve) => (release = resolve)));
+    vi.advanceTimersByTime(10 * 60_000);
+  } finally {
+    vi.useRealTimers();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(lkg(home)).not.toBe(head(home));
+  release();
+  await publishing;
+  await lock(async () => {});
+  expect(lkg(home)).toBe(head(home));
+  safety.close();
 });
 
 test("tool errors from packaged extensions never roll anything back", async () => {
@@ -196,5 +235,77 @@ test("auto-rollback waits for the workspace lock", async () => {
   expect(existsSync(join(home, "extensions", "flaky"))).toBe(false);
   expect(submitted).toEqual(["[japa] I removed flaky (new since the last working setup): its tool flaky failed 2 times in a row"]);
   expect(errors).toEqual([]);
+  safety.close();
+});
+
+/** A root that records what is submitted to it. */
+function recordingRoot() {
+  const submitted: string[] = [];
+  const root = { submit: async ({ content }: { content: string }) => void submitted.push(content), commit: async () => {} };
+  return { submitted, root: () => root as never };
+}
+
+const flakyTools = () => defineExtension({ name: "flaky", tools: [{ name: "flaky" } as never] });
+
+test("an auto-rollback waiting for the lock is dropped once another version of the extension loaded", async () => {
+  const home = tempHome();
+  ensureWorkspace(home);
+  land(home, "extensions/flaky/index.ts", flaky(true));
+  let loaded = flakyTools();
+  const lock = createWorkspaceLock();
+  let release = () => {};
+  const publishing = lock(() => new Promise<void>((resolve) => (release = resolve)));
+  const { submitted, root } = recordingRoot();
+  const errors: string[] = [];
+  const safety = createSafety({
+    home,
+    settings,
+    built: () => new Map([["flaky", loaded]]),
+    reconcile: async () => {},
+    root,
+    report: (e) => errors.push(e),
+    lock,
+  });
+  const { afterTool } = safety.extension.hooks![0].handlers as { afterTool: (c: unknown, r: unknown) => void };
+  for (let i = 0; i < 2; i++) afterTool({ name: "flaky" }, { isError: true });
+  await new Promise((resolve) => setTimeout(resolve, 50)); // the auto-rollback waits for the lock
+  // The publish holding it merges a fix, and loads it.
+  land(home, "extensions/flaky/index.ts", flaky(false));
+  loaded = flakyTools();
+  release();
+  await publishing;
+  await lock(async () => {}); // after the auto-rollback's turn
+  expect(readFileSync(join(home, "extensions", "flaky", "index.ts"), "utf8")).toBe(flaky(false));
+  expect(submitted).toEqual([]);
+  expect(errors).toEqual([]);
+  safety.close();
+});
+
+test("a new version of an extension counts its tool errors from zero", async () => {
+  const home = tempHome();
+  ensureWorkspace(home);
+  land(home, "extensions/flaky/index.ts", flaky(true));
+  let loaded = flakyTools();
+  const lock = createWorkspaceLock();
+  const { submitted, root } = recordingRoot();
+  const safety = createSafety({
+    home,
+    settings,
+    built: () => new Map([["flaky", loaded]]),
+    reconcile: async () => {},
+    root,
+    report: unused,
+    lock,
+  });
+  const { afterTool } = safety.extension.hooks![0].handlers as { afterTool: (c: unknown, r: unknown) => void };
+  afterTool({ name: "flaky" }, { isError: true });
+  loaded = flakyTools();
+  afterTool({ name: "flaky" }, { isError: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await lock(async () => {});
+  expect(submitted).toEqual([]);
+  afterTool({ name: "flaky" }, { isError: true });
+  await waitFor(() => submitted.length > 0);
+  expect(submitted).toEqual(["[japa] I removed flaky (new since the last working setup): its tool flaky failed 2 times in a row"]);
   safety.close();
 });

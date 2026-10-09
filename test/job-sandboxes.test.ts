@@ -30,7 +30,7 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
  * `<outside>/vault`, which has a `key`, and the missing `<outside>/absent`. All closed and removed when the test
  * finishes.
  */
-function setup(o: { node?: boolean } = {}) {
+function setup(o: { node?: boolean; refuse?: (jobId: string) => Promise<string | undefined> } = {}) {
   const outside = sandboxScratch("japa-job-sandboxes-");
   const [home, user, node] = [join(outside, "home"), join(outside, "user"), join(outside, "node")];
   const [vault, absent] = [join(outside, "vault"), join(outside, "absent")];
@@ -42,7 +42,14 @@ function setup(o: { node?: boolean } = {}) {
   const nodeLib = join(outside, "prefix", "lib", "node");
   mkdirSync(dirname(nodeLib), { recursive: true });
   const nodeDirs = o.node ? { nodeDir: node, nodeLib } : { nodeLib };
-  const sandboxes = createJobSandboxes({ home, packageRoot, hidden: [vault, absent], env: jobEnv(), ...nodeDirs });
+  const sandboxes = createJobSandboxes({
+    home,
+    packageRoot,
+    hidden: [vault, absent],
+    env: jobEnv(),
+    ...nodeDirs,
+    ...(o.refuse && { refuse: o.refuse }),
+  });
   onTestFinished(() => {
     sandboxes.closeAll();
     process.env.HOME = saved;
@@ -273,6 +280,45 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const result = await env.exec(`ls -A "${vault}"; echo end`, { onOutput }, ctx);
     expect(result).toMatchObject({ ok: true, value: { exitCode: 0 } });
     expect(output).toBe("end\n");
+  });
+
+  test("a sandbox doesn't start while refused; one closed while asking is asked again", async () => {
+    const GOING_LIVE = "Job 1 is going live; message it after its report.";
+    let reason: string | undefined = GOING_LIVE;
+    let hold = false;
+    let answer: (() => void) | undefined;
+    const asked: string[] = [];
+    const { home, sandboxes } = setup({
+      refuse: async (jobId) => {
+        asked.push(jobId);
+        const given = reason; // as read before the wait: stale once it ends
+        if (hold) await new Promise<void>((resolve) => (answer = resolve));
+        return given;
+      },
+    });
+    const env = sandboxes.env("c", "1");
+    expect(await env.exec("true", undefined, ctx)).toMatchObject({ ok: false, error: { message: GOING_LIVE } });
+    expect(sandboxPids(home, "1")).toEqual([]);
+    expect(existsSync(cloneDir(home, "1"))).toBe(false);
+
+    // Allowed when asked, but closed (to publish, say) before the answer: asked again, and refused.
+    reason = undefined;
+    hold = true;
+    const call = env.exec("true", undefined, ctx);
+    await waitFor(() => answer !== undefined);
+    sandboxes.close("1");
+    reason = GOING_LIVE;
+    hold = false;
+    answer!();
+    expect(await call).toMatchObject({ ok: false, error: { message: GOING_LIVE } });
+    expect(asked).toEqual(["1", "1", "1"]);
+    expect(sandboxPids(home, "1")).toEqual([]);
+
+    // Allowed: it starts, and isn't asked again while it runs.
+    reason = undefined;
+    expect((await env.exec("true", undefined, ctx)).ok).toBe(true);
+    expect((await env.exec("true", undefined, ctx)).ok).toBe(true);
+    expect(asked).toHaveLength(4);
   });
 
   test("a job's calls share one sandbox, and closeAll stops it", async () => {

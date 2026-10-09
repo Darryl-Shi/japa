@@ -294,33 +294,56 @@ export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
 
 /**
  * Runs `command` in a sandbox, killing it after `timeoutMs`; its exit code and its combined stdout and stderr, of
- * which only the last 1 MB is kept.
+ * which only the last 1 MB is kept. Once `signal` aborts, the sandbox is killed, and the promise rejects with its
+ * reason when it's gone; an aborted `signal` runs nothing.
  */
 export function runSandboxed(
   spec: SandboxSpec,
   command: string[],
-  o: { timeoutMs: number; cwd?: string },
+  o: { timeoutMs: number; cwd?: string; signal?: AbortSignal },
 ): Promise<{ code: number | null; output: string; timedOut: boolean }> {
-  return new Promise((resolve) => {
+  const { signal } = o;
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
       // Setting it up touches the host (realpath, placeholders): EACCES, ENOTDIR, a race. And spawn throws, before
       // running anything, on an argument with a NUL byte. bwrap gets only the sandbox's environment: its own is
-      // readable in the sandbox, at /proc/1/environ.
+      // readable in the sandbox, at /proc/1/environ. In its own process group, so that killing it kills that.
       child = spawn(bwrap(), [...sandboxArgs(spec, o.cwd), ...command], {
         stdio: ["ignore", "pipe", "pipe"],
         env: spec.env,
+        detached: true,
       });
     } catch (error) {
       resolve({ code: null, output: error instanceof Error ? error.message : String(error), timedOut: false });
       return;
     }
+    // bwrap's group: what's in the sandbox dies with it (`--die-with-parent`, and its PID namespace ends).
+    const kill = () => {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL"); // the group is gone already, or never was
+      }
+    };
+    const onAbort = () => kill();
+    signal?.addEventListener("abort", onAbort, { once: true });
     let output = "";
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      kill();
     }, o.timeoutMs);
+    const settle = (result: { code: number | null; output: string; timedOut: boolean }) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) reject(signal.reason);
+      else resolve(result);
+    };
     const append = (chunk: string) => {
       output += chunk;
       if (output.length > MAX_OUTPUT) output = output.slice(-MAX_OUTPUT);
@@ -329,13 +352,7 @@ export function runSandboxed(
       stream.setEncoding("utf8");
       stream.on("data", append);
     }
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: null, output: `${output}${error.message}`, timedOut });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, output, timedOut });
-    });
+    child.on("error", (error) => settle({ code: null, output: `${output}${error.message}`, timedOut }));
+    child.on("close", (code) => settle({ code, output, timedOut }));
   });
 }

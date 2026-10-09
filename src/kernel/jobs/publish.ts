@@ -30,8 +30,18 @@ import { BUNDLE, inComponents, MAX_NAMED, nameable, publishable } from "./narrow
 
 type Kind = "skill" | "extension";
 
-/** Publishes a job's changes; the outcome line for its report, or undefined when there's none. */
-export type Publish = (job: { id: string; title: string }) => Promise<string | undefined>;
+/**
+ * A job to publish: its id and title, the `seq` of the report its outcome line goes on (one publish per report), and
+ * whether it was `stopped` since that report was decided.
+ */
+export type PublishJob = { id: string; title: string; seq: number; stopped?: boolean };
+
+/**
+ * Publishes a job's changes; the outcome line for its report, or undefined when there's none. Once `signal` aborts
+ * (the daemon closing), what runs in the job's sandbox is killed, nothing more is merged, and it rejects; publishing
+ * the same report again goes on from where it stopped.
+ */
+export type Publish = (job: PublishJob, signal?: AbortSignal) => Promise<string | undefined>;
 
 export type PublishDeps = {
   home: string;
@@ -39,8 +49,11 @@ export type PublishDeps = {
   lock: WorkspaceLock;
   /** Job `jobId`'s sandbox (`JobSandboxes.spec`): where everything that touches its clone runs. */
   spec(jobId: string): SandboxSpec;
-  /** The problems `japa check` finds with a component of job `jobId`'s clone (see `sandboxCheck`); `[]` passes. */
-  check(jobId: string, kind: Kind, name: string): Promise<string[]>;
+  /**
+   * The problems `japa check` finds with a component of job `jobId`'s clone (see `sandboxCheck`); `[]` passes. Rejects
+   * once `signal` aborts.
+   */
+  check(jobId: string, kind: Kind, name: string, signal?: AbortSignal): Promise<string[]>;
   reconcile(): Promise<{ errors: LoadError[]; notices?: string[] }>;
   loaded(kind: Kind, name: string): boolean;
   logChange(change: Omit<Change, "id" | "at">): Promise<string>;
@@ -53,14 +66,25 @@ export type PublishDeps = {
 type Listed = { named: string[]; more: number };
 
 /**
- * What publishing a job did to the real repo, in `cloneMarker` (outside the clone, which the job can write): its merge
- * commit, the components it changed, the paths it dropped, then the change logged for it, or the line it ended with
- * once the merge was reverted. A job resumed in publish after a restart goes on from there, and never merges twice.
+ * What publishing a job's report `seq` did to the real repo, in `cloneMarker` (outside the clone, which the job can
+ * write): its merge commit, the components it changed, the paths it dropped, then the change logged for it, or the line
+ * it ended with once the merge was reverted. A job resumed in publish after a restart goes on from there, and never
+ * merges twice. Publishing a later report (after a follow-up) clears it first.
+ *
+ * Known limit: after a merge reverted, the job's commits stay in the real history, reverted. A later report's publish
+ * merges only what the job changed since, and conflicts where it changes the reverted files again.
  *
  * A marker that can't be read counts as none: the merge is then found in HEAD's history (`earlierMerge`), but a change
  * already logged would be logged again. Written durably, a marker is only garbled by disk corruption or a hand edit.
  */
-type Marker = { merge: string; components: string[]; dropped: Listed; change?: string; reverted?: string };
+type Marker = {
+  seq: number;
+  merge: string;
+  components: string[];
+  dropped: Listed;
+  change?: string;
+  reverted?: string;
+};
 
 /** How long `japa check` may run, per component. */
 const CHECK_TIMEOUT_MS = 600_000;
@@ -166,13 +190,14 @@ export function sandboxCheck(
   packageRoot: string,
 ): PublishDeps["check"] {
   const main = join(packageRoot, "src", "cli", "main.ts");
-  return async (jobId, kind, name) => {
+  return async (jobId, kind, name, signal) => {
     // The sandbox passes no JAPA_HOME: without it, the CLI's home would be `~/.japa`, wherever `home` is.
     const node = [process.execPath, "--disable-warning=ExperimentalWarning", main];
     const command = ["/usr/bin/env", `JAPA_HOME=${home}`, ...node, "check", kind, name];
     const { code, output, timedOut } = await runSandboxed(spec(jobId), command, {
       timeoutMs: CHECK_TIMEOUT_MS,
       cwd: home,
+      signal,
     });
     if (timedOut) return ["timed out after 10 minutes"];
     return code === 0 ? [] : [output.trim() || `japa check exited with ${code}`];
@@ -181,13 +206,14 @@ export function sandboxCheck(
 
 /**
  * `publish`, but a rejection ends in an outcome line too, so the job's report still goes out:
- * `Not live: publishing failed: <error>. Kept at <clone>.`
+ * `Not live: publishing failed: <error>. Kept at <clone>.` Not an abort's: the publish goes on after a restart.
  */
 export function reportingFailures(home: string, publish: Publish): Publish {
-  return async (job) => {
+  return async (job, signal) => {
     try {
-      return await publish(job);
+      return await publish(job, signal);
     } catch (error) {
+      if (signal?.aborted) throw error;
       const text = error instanceof Error ? error.message : String(error);
       return `Not live: publishing failed: ${oneLine(text) || "unknown error"}. Kept at ${display(cloneDir(home, job.id))}.`;
     }
@@ -238,6 +264,7 @@ export function createPublisher(deps: PublishDeps): Publish {
     try {
       const m = JSON.parse(text) as Marker;
       const valid =
+        Number.isSafeInteger(m.seq) &&
         typeof m.merge === "string" &&
         SHA.test(m.merge) &&
         isStrings(m.components) &&
@@ -274,14 +301,18 @@ export function createPublisher(deps: PublishDeps): Publish {
    * Commits and bundles the job's changes in its sandbox (narrow.ts): what it dropped and whether there's a bundle.
    * The folders the sandbox mounts in the home, which bwrap makes there, are dropped without a word.
    */
-  async function narrowInSandbox(id: string, base: string, message: string) {
+  async function narrowInSandbox(id: string, base: string, message: string, signal?: AbortSignal) {
     const spec = deps.spec(id);
     const quiet = spec.shared.filter((path) => path !== home && within(path, home)).map((path) => relative(home, path));
     const script = join(deps.packageRoot, "src", "kernel", "jobs", "narrow.ts");
     // `/tmp` in the sandbox is the job's own temp dir, `spec.tmp` on the host.
     const node = [process.execPath, "--disable-warning=ExperimentalWarning", script];
     const command = [...node, base, message, "/tmp", ...quiet];
-    const { code, output, timedOut } = await runSandboxed(spec, command, { timeoutMs: NARROW_TIMEOUT_MS, cwd: home });
+    const { code, output, timedOut } = await runSandboxed(spec, command, {
+      timeoutMs: NARROW_TIMEOUT_MS,
+      cwd: home,
+      signal,
+    });
     if (timedOut) return { error: "timed out after 2 minutes" };
     if (code === 0) {
       try {
@@ -382,12 +413,13 @@ export function createPublisher(deps: PublishDeps): Publish {
     return { line: line.join(" "), live: true };
   }
 
-  return async ({ id, title }) => {
+  return async ({ id, title, seq, stopped }, signal) => {
     const clone = cloneDir(home, id);
     const notLive = (reason: string) => `Not live: ${reason}. Kept at ${display(clone)}.`;
-    /** Under the lock, `load`; then the clone goes if the changes are live. */
+    /** Under the lock, unless aborted meanwhile, `load`; then the clone goes if the changes are live. */
     const finish = async (merge: () => Marker | string) => {
       const { line, live } = await deps.lock(async () => {
+        signal?.throwIfAborted();
         const marker = merge();
         return typeof marker === "string" ? { line: marker, live: false } : load(id, marker, notLive);
       });
@@ -395,15 +427,23 @@ export function createPublisher(deps: PublishDeps): Publish {
       return line;
     };
 
-    // Before looking for the clone: deleting it, after going live, ends with the marker.
-    const marker = readMarker(id);
+    // Before looking for the clone: deleting it, after going live, ends with the marker. An earlier report's is done.
+    let marker = readMarker(id);
+    if (marker === undefined || marker.seq !== seq) {
+      rmSync(cloneMarker(home, id), { force: true });
+      marker = undefined;
+    }
     if (marker?.reverted !== undefined) return marker.reverted;
-    if (marker !== undefined) return finish(() => marker);
+    if (marker !== undefined) {
+      const merged = marker;
+      return finish(() => merged); // merged already, so it goes on, stopped or not
+    }
 
     const base = cloneBase(home, id);
     if (base === undefined || !existsSync(clone)) return undefined; // no tool call, so no clone
+    if (stopped) return notLive("the job was stopped");
     const message = `Job ${id}: ${title}`;
-    const narrowed = await narrowInSandbox(id, base, message);
+    const narrowed = await narrowInSandbox(id, base, message, signal);
     if ("error" in narrowed) return notLive(`couldn't commit the job's changes: ${narrowed.error}`);
     if (!narrowed.bundle) {
       removeClone(home, id);
@@ -434,7 +474,7 @@ export function createPublisher(deps: PublishDeps): Publish {
       }
       // A deleted component has nothing to check.
       for (const component of componentsOf(changed).filter((c) => inTree(sha, c))) {
-        const problems = await deps.check(id, ...parts(component));
+        const problems = await deps.check(id, ...parts(component), signal);
         if (problems.length > 0) {
           return notLive(`check failed for ${show(component)}: ${oneLine(problems.join("; "), 2000)}`);
         }
@@ -455,7 +495,11 @@ export function createPublisher(deps: PublishDeps): Publish {
             return notLive(`the job's commit is already in ${display(home)}`);
           }
         }
-        const merged: Marker = { merge: earlier ?? head(home), components: componentsOf(changed), dropped: narrowed.dropped };
+        const merge = earlier ?? head(home);
+        // What the merge changed: not what an earlier report's merge, since reverted, brought in already.
+        const brought = componentsOf(gitPaths(home, "diff", "--name-only", "--no-renames", "-z", `${merge}^1`, merge));
+        const components = brought.length > 0 ? brought : componentsOf(changed);
+        const merged: Marker = { seq, merge, components, dropped: narrowed.dropped };
         writeMarker(id, merged);
         return merged;
       });

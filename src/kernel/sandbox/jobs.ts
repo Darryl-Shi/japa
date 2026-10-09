@@ -94,7 +94,8 @@ export function hiddenPaths(home: string, paths: string[]): { hidden: string[]; 
  * `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
  *
  * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (by something outside
- * the sandboxes; in one, its folders are pinned), it would be found nowhere to hide, and read where it went.
+ * the sandboxes; in one, its folders are pinned), it would be found nowhere to hide, and read where it went. Nor while
+ * `refuse` gives a reason (a job going live, whose clone is being published): the call fails with it.
  */
 export function createJobSandboxes(o: {
   home: string;
@@ -103,6 +104,7 @@ export function createJobSandboxes(o: {
   env: Record<string, string>;
   nodeDir?: string;
   nodeLib?: string;
+  refuse?: (jobId: string) => Promise<string | undefined>;
 }): JobSandboxes {
   const { home, packageRoot } = o;
   const nodeDir = o.nodeDir ?? realpathSync(dirname(process.execPath));
@@ -111,6 +113,8 @@ export function createJobSandboxes(o: {
     o.nodeLib ?? process.env.JAPA_NODE_LIB ?? resolve(dirname(realpathSync(process.execPath)), "..", "lib", "node");
   const problem = probeSandbox();
   const servers = new Map<string, EnvServer>();
+  /** How many times each job's sandbox was closed. */
+  const closes = new Map<string, number>();
   const present = o.hidden.filter((path) => existsSync(path));
 
   const spec = (jobId: string): SandboxSpec => ({
@@ -124,11 +128,25 @@ export function createJobSandboxes(o: {
     env: o.env,
   });
 
-  /** Job `jobId`'s running server, started (after its clone is made) if it has none. */
+  /**
+   * Job `jobId`'s running server, started (after its clone is made) if it has none and `refuse` gives no reason. The
+   * reason is asked again when the sandbox was closed meanwhile: closed to publish the job, say, after `refuse` read
+   * that it wasn't.
+   */
   const server = async (jobId: string): Promise<EnvServer> => {
     if (problem !== undefined) throw new Error(sandboxRefusal(problem));
-    const running = servers.get(jobId);
-    if (running !== undefined && !running.closed) return running;
+    for (;;) {
+      const running = servers.get(jobId);
+      if (running !== undefined && !running.closed) return running;
+      const closed = closes.get(jobId) ?? 0;
+      const refusal = await o.refuse?.(jobId);
+      if (refusal !== undefined) throw new Error(refusal);
+      if ((closes.get(jobId) ?? 0) === closed && servers.get(jobId)?.closed !== false) return start(jobId);
+    }
+  };
+
+  /** Starts job `jobId`'s server, making its clone first. */
+  const start = (jobId: string): EnvServer => {
     const missing = present.find((path) => !existsSync(path));
     if (missing !== undefined) throw new Error(`The job's sandbox can't start: ${missing} is missing`);
     ensureClone(home, packageRoot, jobId);
@@ -144,6 +162,7 @@ export function createJobSandboxes(o: {
     env: (_conversationId, jobId) => remoteEnv(() => server(jobId), homedir(), `job ${jobId}`),
     spec,
     close: (jobId) => {
+      closes.set(jobId, (closes.get(jobId) ?? 0) + 1);
       servers.get(jobId)?.close();
       servers.delete(jobId);
     },

@@ -17,7 +17,11 @@ export type Job = {
   reported: EntryId[]; // answer entries already reported
   completed?: boolean; // job_complete called in the run not yet reported
   asked?: boolean; // job_ask called in the run not yet reported
+  publishing?: number; // going live (see run.ts): the seq of the report its outcome line goes on
 };
+
+/** Why job `n` can't be messaged, nor its sandbox start, while it's `publishing`. */
+export const goingLive = (n: string) => `Job ${n} is going live; message it after its report.`;
 
 // On the root conversation.
 export const JobsDoc = defineDoc<{ nextId: number; jobs: Record<string, Job> }>({
@@ -68,11 +72,13 @@ export function recent(jobs: Job[], now = Date.now()): Job[] {
 }
 
 /**
- * Deletes the done, failed and cancelled jobs updated before `before`, except one whose completion is not yet reported;
- * returns how many.
+ * Deletes the done, failed and cancelled jobs updated before `before`, except one whose completion is not yet reported,
+ * or that's going live; returns how many.
  */
 export function prune(jobs: Record<string, Job>, before: number): number {
-  const old = Object.values(jobs).filter((j) => !active(j) && !j.completed && j.updatedAt < before);
+  const old = Object.values(jobs).filter(
+    (j) => !active(j) && !j.completed && j.publishing === undefined && j.updatedAt < before,
+  );
   for (const job of old) delete jobs[job.id];
   return old.length;
 }
