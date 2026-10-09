@@ -342,7 +342,7 @@ secrets/             secrets, one file per secret      (ignored by git)
 attachments/         images received over Telegram, files from Google (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
 logs/                service log (macOS only) and update.log, `/update`'s log (ignored by git)
-update.json          the last update started with `/update`: how it went and whether it's been reported
+update.json          the last `/update`: how it went and whether it's been reported (ignored by git)
 setup.json           extensions `japa setup` and `japa update` have already told you about (ignored by git)
 state.db             conversations, jobs, memory, change log (SQLite; ignored by git)
 japa.sock            the socket `japa chat` and `japa status` connect to
