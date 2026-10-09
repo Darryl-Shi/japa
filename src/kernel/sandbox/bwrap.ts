@@ -4,7 +4,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 /** The variables a sandbox gets from the daemon's environment, when set. */
 const ENV = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
@@ -33,6 +33,14 @@ export type SandboxSpec = {
 };
 
 const bwrap = () => process.env.JAPA_BWRAP ?? "bwrap";
+
+/**
+ * The runtime dirs masked with an empty tmpfs where they exist: the user's (D-Bus, the systemd user manager,
+ * ssh-agent, the keyring) and screen's sockets.
+ */
+export function runtimeDirs(): string[] {
+  return [join("/run/user", String(process.getuid?.())), "/run/screen"];
+}
 
 /** Creates `path` as an empty file (and its parent dirs), leaving it as it is if it appeared meanwhile. */
 function placeholder(path: string): void {
@@ -98,8 +106,9 @@ export function probeSandbox(): string | undefined {
 
 /**
  * What the daemon runs outside the sandbox: the app directory (its parent in the installed layout, which includes
- * Node), the user's systemd units (config and data) and environment.d, and the launcher. `XDG_CONFIG_HOME` and
- * `XDG_DATA_HOME` are resolved as `serviceEnv` does. Not git config: the daemon's git runs without it.
+ * Node), the user's systemd units (config and data) and environment.d, and the launcher. Those under
+ * `XDG_CONFIG_HOME` and `XDG_DATA_HOME`, when set (absolute and not empty), and the default ones too. Not git config:
+ * the daemon's git runs without it.
  */
 export function readOnlyPaths(
   packageRoot: string,
@@ -107,37 +116,51 @@ export function readOnlyPaths(
   env: NodeJS.ProcessEnv = process.env,
 ): ReadOnlyPath[] {
   const app = basename(packageRoot) === "app" ? dirname(packageRoot) : packageRoot;
-  const config = env.XDG_CONFIG_HOME ?? join(userHome, ".config");
-  const data = env.XDG_DATA_HOME ?? join(userHome, ".local", "share");
-  const dirs = [app, join(config, "systemd"), join(config, "environment.d"), join(data, "systemd")];
+  const xdg = (name: string, fallback: string) => {
+    const value = env[name];
+    return [...new Set([value && isAbsolute(value) ? normalize(value).replace(/(.)\/+$/, "$1") : fallback, fallback])];
+  };
+  const configs = xdg("XDG_CONFIG_HOME", join(userHome, ".config"));
+  const datas = xdg("XDG_DATA_HOME", join(userHome, ".local", "share"));
+  const dirs = [
+    app,
+    ...configs.flatMap((config) => [join(config, "systemd"), join(config, "environment.d")]),
+    ...datas.map((data) => join(data, "systemd")),
+  ];
   return [...dirs.map((path) => ({ path, dir: true })), { path: join(userHome, ".local", "bin", "japa"), dir: false }];
 }
 
 /**
  * Where the read-only paths are mounted: `pinned` dirs are bound onto themselves (a mount point can't be renamed, so
  * the protected paths under them can't be moved away and recreated); a protected symlink's directory is in
- * `readOnlyDirs`, so the link can't be replaced, and its target in `paths`, by real path.
+ * `readOnlyDirs`, so the link can't be replaced, and its target in `paths`, by real path. A missing protected file is
+ * created empty, and a missing dir's parents, before the pins are computed, so the folders they need are pinned too;
+ * `missing` dirs get a read-only tmpfs.
  */
 function readOnlyMounts(spec: SandboxSpec) {
-  const home = realPath(spec.userHome) ?? spec.userHome;
-  const jobHome = realPath(spec.home) ?? spec.home;
-  const pinned = new Set<string>();
   const readOnlyDirs = new Set<string>();
-  const paths: ReadOnlyPath[] = [];
-  const pin = (path: string) => {
-    for (const dir of between(home, path)) if (!within(jobHome, dir)) pinned.add(dir);
-  };
+  const resolved: ReadOnlyPath[] = [];
   for (const { path, dir } of spec.readOnly) {
     const linkDir = isSymlink(path) ? realPath(dirname(path)) : undefined;
-    if (linkDir !== undefined) {
-      readOnlyDirs.add(linkDir);
-      pin(linkDir);
-    }
+    if (linkDir !== undefined) readOnlyDirs.add(linkDir);
     const real = realPath(path);
-    if (real === undefined) continue; // a symlink loop: nothing to protect behind it
-    pin(real);
-    paths.push({ path: real, dir });
+    if (real !== undefined) resolved.push({ path: real, dir }); // else a symlink loop: nothing to protect behind it
   }
+  const paths: (ReadOnlyPath & { missing: boolean })[] = [];
+  for (const { path, dir } of resolved) {
+    const missing = !existsSync(path);
+    if (missing) {
+      // Nothing can be created under a read-only dir, nor can bwrap create a mount point there.
+      if ([...readOnlyDirs].some((readOnly) => within(path, readOnly))) continue;
+      // Not `--ro-bind /dev/null`: bwrap mounts it nodev, so it can't be read (nor run, for the launcher).
+      if (dir) mkdirSync(dirname(path), { recursive: true });
+      else placeholder(path);
+    }
+    paths.push({ path, dir, missing: missing && dir });
+  }
+  // Every parent, the japa home's too: the clone, bound after them, still covers it.
+  const home = realPath(spec.userHome) ?? spec.userHome;
+  const pinned = new Set([...readOnlyDirs, ...paths.map(({ path }) => path)].flatMap((path) => between(home, path)));
   // Parents first: binding one covers the mounts already under it.
   return { pinned: [...pinned].sort(), readOnlyDirs: [...readOnlyDirs].sort(), paths };
 }
@@ -145,33 +168,26 @@ function readOnlyMounts(spec: SandboxSpec) {
 /**
  * The bwrap arguments before the command (spec §3.2); later mounts cover earlier ones. A missing read-only file is
  * first created empty on the host, as bwrap would leave one behind for its mount point anyway.
+ *
+ * The read-only mounts come first: each binds the host's dir, which would uncover the clone, or a mask, mounted under
+ * it earlier (a japa home inside a protected dir, with `JAPA_HOME`). Mounted after them, those cover the host's copy.
  */
 export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   const args = ["--bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc"];
   const { pinned, readOnlyDirs, paths } = readOnlyMounts(spec);
   for (const dir of pinned) args.push("--bind", dir, dir);
-  // Before the mounts below: a bind takes the host's dir, which would uncover them.
   for (const dir of readOnlyDirs) args.push("--ro-bind", dir, dir);
+  for (const { path, missing } of paths) {
+    if (missing) args.push("--tmpfs", path, "--remount-ro", path);
+    else args.push("--ro-bind", path, path);
+  }
   for (const dir of ["/tmp", "/var/tmp"].filter((dir) => existsSync(dir))) args.push("--bind", spec.tmp, dir);
   args.push("--bind", spec.clone, spec.home);
   for (const path of spec.shared) args.push("--bind-try", path, path);
-  // The user's runtime dir holds D-Bus, the systemd user manager, ssh-agent and the keyring.
-  const hidden = [join("/run/user", String(process.getuid?.())), ...spec.hidden];
-  for (const path of hidden.filter((path) => existsSync(path))) args.push("--tmpfs", path);
+  for (const path of [...spec.hidden, ...runtimeDirs()].filter((path) => existsSync(path))) args.push("--tmpfs", path);
   // Masked by real path, once each (`/var/run` is usually `/run`); only existing ones, as bwrap can't create them.
   const sockets = new Set(DOCKER_SOCKETS.filter((path) => existsSync(path)).map((path) => realpathSync(path)));
   for (const path of sockets) args.push("--ro-bind-try", "/dev/null", path);
-  for (const { path, dir } of paths) {
-    // Nothing can be created under a read-only dir, nor can bwrap create a mount point there.
-    if (!existsSync(path) && readOnlyDirs.some((readOnly) => within(path, readOnly))) continue;
-    if (!existsSync(path) && dir) {
-      args.push("--tmpfs", path, "--remount-ro", path);
-      continue;
-    }
-    // Not `--ro-bind /dev/null`: bwrap mounts it nodev, so it can't be read (nor run, for the launcher).
-    if (!existsSync(path)) placeholder(path);
-    args.push("--ro-bind", path, path);
-  }
   args.push("--die-with-parent", "--new-session", "--clearenv");
   for (const name of ENV) {
     const value = process.env[name];
@@ -190,7 +206,15 @@ export function runSandboxed(
   o: { timeoutMs: number; cwd?: string },
 ): Promise<{ code: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const child = spawn(bwrap(), [...sandboxArgs(spec, o.cwd), ...command], { stdio: ["ignore", "pipe", "pipe"] });
+    let args: string[];
+    try {
+      args = sandboxArgs(spec, o.cwd);
+    } catch (error) {
+      // Setting it up touches the host (realpath, placeholders): EACCES, ENOTDIR, a race.
+      resolve({ code: null, output: error instanceof Error ? error.message : String(error), timedOut: false });
+      return;
+    }
+    const child = spawn(bwrap(), [...args, ...command], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let timedOut = false;
     const timer = setTimeout(() => {
