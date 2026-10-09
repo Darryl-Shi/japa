@@ -75,16 +75,19 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--bind D D` for the user's home and every existing directory above a protected or hidden path, wherever it is
   (`/` aside), that the user could move: one it can write, or one in a directory it can write or owns (renaming
   takes write access to the parent). E.g. `~/.config`, `~/.local/share`. So a job can't rename it away and
-  recreate the path, or move a hidden one out of its mask.
+  recreate the path, or move a hidden one out of its mask. None under `/dev` or `/proc`: the sandbox has its own
+  (pinning `/dev/shm` would bring the host's in), so a hidden path there isn't masked either.
 - `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
   to secrets; jobs therefore can't patch japa itself on the host.
   - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
   - The daemon's Node directory, by real path, first in the daemon's `PATH`: elsewhere than the app directory with
-    nvm or a dev checkout.
+    nvm or a dev checkout. And that Node's `<prefix>/lib/node`, where `require` still looks last (see below).
   - `$XDG_CONFIG_HOME/systemd` (the unit, drop-ins and new units), `$XDG_DATA_HOME/systemd` and
     `$XDG_CONFIG_HOME/environment.d`, both at the `$XDG_*` location and the default one.
-  - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. One that is
-    a symlink: its target is protected and the link's directory is made read-only.
+  - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it; not one
+    inside another protected directory, nor one only root could create (`/usr/lib/node`), where bwrap couldn't
+    make the mount point and a job can't create it anyway. One that is a symlink: its target is protected and the
+    link's directory is made read-only.
   - Git config isn't protected: the daemon's git never reads it.
 - `--bind <home>/.jobs/<id>.tmp /tmp` and `/var/tmp`: a private temp dir, so tmux, screen and X11 sockets in `/tmp`
   are out of reach.
@@ -118,8 +121,10 @@ Consequences, accepted:
 - The daemon never runs a job-controlled program outside the sandbox: git commands in a clone (narrowing,
   committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
   global git config, ignore or attributes file; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
-  directories and its Node (jobs keep the original `PATH`). CommonJS `require` has no global folders
-  (`~/.node_modules`, `~/.node_libraries`), so a dependency's missing optional module isn't looked for there.
+  directories and its Node (jobs keep the original `PATH`). CommonJS `require`'s global folders are only Node's
+  `<prefix>/lib/node` (read-only to jobs): at boot `NODE_PATH` is unset and `Module._initPaths()` runs without
+  `HOME`, so a dependency's missing optional module isn't looked for in `~/.node_modules`, `~/.node_libraries` or
+  `NODE_PATH`.
 
 ### 3.3 Lifetime
 

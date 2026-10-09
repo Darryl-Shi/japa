@@ -1,8 +1,8 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { join } from "node:path";
+import { Module } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { statusText } from "../src/kernel/status.ts";
@@ -31,11 +31,15 @@ test("the identity section reaches the model", async () => {
   await daemon.close();
 });
 
-// Jobs can write there: a dependency's missing optional `require` mustn't load code from it.
-test("after boot, CommonJS require has no global folders: no ~/.node_modules or ~/.node_libraries", async () => {
-  const { globalPaths } = createRequire(import.meta.url)("node:module") as { globalPaths: string[] };
+// Jobs can write there: a dependency's missing optional `require` mustn't load code from it (see narrowRequire's test).
+test("boot narrows require's global folders to Node's lib/node: no ~/.node_modules, NODE_PATH", async () => {
+  const home = process.env.HOME;
   const { daemon } = await bootTest();
-  expect(globalPaths).toEqual([]);
+  // `_initPaths` refreshes this copy of the folders `require` uses.
+  const { globalPaths } = Module as unknown as { globalPaths: string[] };
+  expect(globalPaths).toEqual([resolve(dirname(process.execPath), "..", "lib", "node")]);
+  expect(process.env.NODE_PATH).toBeUndefined();
+  expect(process.env.HOME).toBe(home);
   await daemon.close();
 });
 

@@ -51,6 +51,9 @@ function garbledServer(line: string) {
   return { garbled, logged, env: remoteEnv(async () => garbled, tmpdir(), "test") };
 }
 
+/** `text` as a regular expression that matches it literally. */
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 test.each([
   ["not json", "Unexpected token"],
   ["null", "null"],
@@ -64,15 +67,24 @@ test.each([
   const read = await env.readTextFile("x", ctx);
   expect(read).toMatchObject({ ok: false, error: { code: "unknown", message: expect.stringContaining(LOST) } });
   expect(garbled.closed).toBe(true);
-  const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  expect(logged.mock.calls).toEqual([[expect.stringMatching(new RegExp(`${why}.*: ${escaped}$`))]]);
+  const quoted = literal(JSON.stringify(line));
+  expect(logged.mock.calls).toEqual([[expect.stringMatching(new RegExp(`${why}.*: ${quoted}$`))]]);
   expect(await env.exists("/", ctx)).toMatchObject({ ok: false, error: { message: expect.stringContaining(LOST) } });
 });
 
 test("a long garbled line is logged shortened to 200 characters", async () => {
   const { logged, env } = garbledServer(`${"x".repeat(200)}${"y".repeat(1000)}`);
   expect(await env.readTextFile("x", ctx)).toMatchObject({ ok: false });
-  expect(logged.mock.calls).toEqual([[expect.stringMatching(new RegExp(`: ${"x".repeat(200)}…$`))]]);
+  expect(logged.mock.calls).toEqual([[expect.stringMatching(new RegExp(`: "${"x".repeat(200)}…"$`))]]);
+});
+
+// It comes from the sandbox: escape sequences would reach the terminal or journal reading the log.
+test("a garbled line is logged quoted, its control characters escaped", async () => {
+  const { logged, env } = garbledServer("\u001b[2J\u001b]0;pwned\u0007 forged");
+  expect(await env.readTextFile("x", ctx)).toMatchObject({ ok: false });
+  const [[message]] = logged.mock.calls as [[string]];
+  expect(message).toMatch(/: "\\u001b\[2J\\u001b\]0;pwned\\u0007 forged"$/);
+  expect(message).not.toMatch(/[\u0000-\u001f]/);
 });
 
 test("a callback that throws is logged, then fails the calls in flight like a lost server", async () => {
@@ -83,7 +95,7 @@ test("a callback that throws is logged, then fails the calls in flight like a lo
   const ran = await env.exec("true", { onOutput }, ctx);
   expect(ran).toMatchObject({ ok: false, error: { message: expect.stringContaining(LOST) } });
   expect(garbled.closed).toBe(true);
-  expect(logged.mock.calls).toEqual([[expect.stringMatching(/boom in the callback.*: \{"id":1,"call":/)]]);
+  expect(logged.mock.calls).toEqual([[expect.stringMatching(/boom in the callback.*: "\{\\"id\\":1,\\"call\\":/)]]);
 });
 
 test("a server that can't be reached answers with the reason", async () => {

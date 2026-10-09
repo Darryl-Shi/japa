@@ -2,7 +2,7 @@
 // tool call and again after it stops. All of a job's file and shell operations run there, none in the daemon.
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { existsSync, realpathSync } from "node:fs";
-import { createRequire } from "node:module";
+import { Module } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { cloneDir, cloneTmp, ensureClone } from "../jobs/clone.ts";
@@ -55,13 +55,20 @@ export function narrowPath(): Record<string, string> {
 }
 
 /**
- * Empties this process's CommonJS global folders (`~/.node_modules`, `~/.node_libraries`, `NODE_PATH`'s, Node's
- * `lib/node`), where `require` looks last: a job can write there, so a dependency's missing optional `require` would
- * load the job's code in the daemon.
+ * Drops `~/.node_modules`, `~/.node_libraries` and `NODE_PATH`'s dirs from the folders CommonJS `require` looks in
+ * last: a job can write there, so a dependency's optional `require` of a module that isn't installed would load the
+ * job's code in the daemon. `NODE_PATH` is unset for good; `Module._initPaths` recomputes them (`Module.globalPaths`
+ * is only a copy) without `HOME`, which is then restored. Node's `<prefix>/lib/node` stays: jobs get it read-only.
  */
 export function narrowRequire(): void {
-  const { globalPaths } = createRequire(import.meta.url)("node:module") as { globalPaths: string[] };
-  globalPaths.length = 0;
+  delete process.env.NODE_PATH;
+  const home = process.env.HOME;
+  delete process.env.HOME;
+  try {
+    (Module as unknown as { _initPaths(): void })._initPaths();
+  } finally {
+    if (home !== undefined) process.env.HOME = home;
+  }
 }
 
 /**
@@ -81,8 +88,9 @@ export function hiddenPaths(home: string, paths: string[]): { hidden: string[]; 
 
 /**
  * The jobs' sandboxes for japa home `home`: each mounts the job's clone over it, and its own temp dir at /tmp; japa's
- * code at `packageRoot`, what the daemon runs and its Node dir `nodeDir` (the first in its PATH) are read-only, and
- * the `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
+ * code at `packageRoot`, what the daemon runs, its Node dir `nodeDir` (the first in its PATH) and that Node's
+ * `nodeLib`, `<prefix>/lib/node` (where `require` still looks last, see `narrowRequire`), are read-only, and the
+ * `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
  *
  * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (by something outside
  * the sandboxes; in one, its folders are pinned), it would be found nowhere to hide, and read where it went.
@@ -93,9 +101,11 @@ export function createJobSandboxes(o: {
   hidden: string[];
   env: Record<string, string>;
   nodeDir?: string;
+  nodeLib?: string;
 }): JobSandboxes {
   const { home, packageRoot } = o;
   const nodeDir = o.nodeDir ?? realpathSync(dirname(process.execPath));
+  const nodeLib = o.nodeLib ?? resolve(dirname(realpathSync(process.execPath)), "..", "lib", "node");
   const problem = probeSandbox();
   const servers = new Map<string, EnvServer>();
   const present = o.hidden.filter((path) => existsSync(path));
@@ -105,7 +115,7 @@ export function createJobSandboxes(o: {
     userHome: homedir(),
     clone: cloneDir(home, jobId),
     tmp: cloneTmp(home, jobId),
-    readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }],
+    readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }, { path: nodeLib, dir: true }],
     hidden: o.hidden,
     shared: [join(home, "desktop", "shared")],
     env: o.env,

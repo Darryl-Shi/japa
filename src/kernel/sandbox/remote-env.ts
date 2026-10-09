@@ -121,7 +121,9 @@ export function startEnvServer(
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
       const shown = line.length > MAX_LOGGED ? `${line.slice(0, MAX_LOGGED)}\u2026` : line;
-      console.error(`The env server's connection ends, its line failed (${why}): ${shown}`);
+      // Quoted, control characters escaped: both can come from the sandbox (JSON.parse's error quotes the line).
+      const [quotedWhy, quotedLine] = [JSON.stringify(why), JSON.stringify(shown)];
+      console.error(`The env server's connection ends, its line failed (${quotedWhy}): ${quotedLine}`);
       onLost();
       child.kill();
     }

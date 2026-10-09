@@ -23,6 +23,12 @@ const ENV = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
 /** Docker's sockets: reaching one means running a container with the host mounted. */
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"];
 
+/**
+ * Whether `path` is in the sandbox's own `/dev` or `/proc` (`--dev`, `--proc`), where the host's paths aren't seen:
+ * pinning a folder there would bring the host's in (its `/dev/shm`), and a mask there is pointless.
+ */
+const inOwnMount = (path: string) => within(path, "/dev") || within(path, "/proc");
+
 /** How much of a command's output `runSandboxed` keeps: the last 1 MB (as UTF-16 code units). */
 const MAX_OUTPUT = 1024 * 1024;
 
@@ -140,6 +146,13 @@ function movable(dir: string): boolean {
   return writable(dir) || writable(parent) || statSync(parent, { throwIfNoEntry: false })?.uid === process.getuid?.();
 }
 
+/** Whether this user could create missing `path`: its nearest existing folder is one it can write, or owns. */
+function creatable(path: string): boolean {
+  let dir = dirname(path);
+  while (!existsSync(dir)) dir = dirname(dir);
+  return writable(dir) || statSync(dir).uid === process.getuid?.();
+}
+
 /** The existing directories above `path`, `/` aside, that this user could move (see `movable`). */
 function movableAncestors(path: string): string[] {
   const dirs: string[] = [];
@@ -209,8 +222,10 @@ function readOnlyMounts(spec: SandboxSpec) {
   for (const { path, dir } of resolved) {
     const missing = !existsSync(path);
     if (missing) {
-      // Nothing can be created under a read-only dir, nor can bwrap create a mount point there.
-      if ([...readOnlyDirs].some((readOnly) => within(path, readOnly))) continue;
+      // Nothing can be created under a read-only dir (a link's, or another protected one), nor can bwrap create a
+      // mount point there; nor where only root could (Node's `/usr/lib/node`): the job can't either.
+      const others = resolved.flatMap((other) => (other.dir && other.path !== path ? [other.path] : []));
+      if ([...readOnlyDirs, ...others].some((readOnly) => within(path, readOnly)) || !creatable(path)) continue;
       // Not `--ro-bind /dev/null`: bwrap mounts it nodev, so it can't be read (nor run, for the launcher).
       if (dir) mkdirSync(dirname(path), { recursive: true });
       else placeholder(path);
@@ -222,8 +237,8 @@ function readOnlyMounts(spec: SandboxSpec) {
   // writable. A hidden path's too: renamed, a folder would take the mask with it, and the next sandbox would find
   // nothing to hide where it was.
   const home = realPath(spec.userHome) ?? spec.userHome;
-  const protectedPaths = [...readOnlyDirs, ...paths.map(({ path }) => path), ...spec.hidden];
-  const parents = protectedPaths.flatMap((path) => movableAncestors(path));
+  const pinTargets = [...readOnlyDirs, ...paths.map(({ path }) => path), ...spec.hidden].filter((p) => !inOwnMount(p));
+  const parents = pinTargets.flatMap((path) => movableAncestors(path));
   const pinned = new Set([...(existsSync(home) ? [home] : []), ...parents]);
   // Parents first: binding one covers the mounts already under it.
   return { pinned: [...pinned].sort(), readOnlyDirs: [...readOnlyDirs].sort(), paths };
@@ -250,7 +265,7 @@ export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   for (const path of spec.shared) args.push("--bind-try", path, path);
   // A hidden dir gets an empty tmpfs; a file (a database outside the home) reads as /dev/null and writes go there.
   // Not `--ro-bind /dev/null`: bwrap mounts that nodev, where /dev/null can't even be opened.
-  for (const path of [...spec.hidden, ...runtimeDirs()]) {
+  for (const path of [...spec.hidden.filter((path) => !inOwnMount(path)), ...runtimeDirs()]) {
     const stat = statSync(path, { throwIfNoEntry: false });
     if (stat?.isDirectory()) args.push("--tmpfs", path);
     else if (stat !== undefined) args.push("--dev-bind", "/dev/null", path);

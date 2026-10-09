@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { cloneDir } from "../src/kernel/jobs/clone.ts";
@@ -25,7 +25,8 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * A japa workspace and a user home (`HOME`, until the test finishes) outside `/tmp`, which jobs see replaced by their
- * own, and the job sandboxes on them; with `o.node`, `<outside>/node` stands in for the daemon's Node dir. Hidden are
+ * own, and the job sandboxes on them; with `o.node`, `<outside>/node` stands in for the daemon's Node dir, and the
+ * missing `<outside>/prefix/lib/node` (`lib` exists) for its `lib/node`. Hidden are
  * `<outside>/vault`, which has a `key`, and the missing `<outside>/absent`. All closed and removed when the test
  * finishes.
  */
@@ -40,14 +41,16 @@ function setup(o: { node?: boolean } = {}) {
   ensureWorkspace(home);
   const saved = process.env.HOME;
   process.env.HOME = user;
-  const nodeDir = o.node ? { nodeDir: node } : {};
-  const sandboxes = createJobSandboxes({ home, packageRoot, hidden: [vault, absent], env: jobEnv(), ...nodeDir });
+  const nodeLib = join(outside, "prefix", "lib", "node");
+  if (o.node) mkdirSync(dirname(nodeLib), { recursive: true });
+  const nodeDirs = o.node ? { nodeDir: node, nodeLib } : {};
+  const sandboxes = createJobSandboxes({ home, packageRoot, hidden: [vault, absent], env: jobEnv(), ...nodeDirs });
   onTestFinished(() => {
     sandboxes.closeAll();
     process.env.HOME = saved;
     rmSync(outside, { recursive: true, force: true });
   });
-  return { outside, home, user, node, vault, absent, sandboxes };
+  return { outside, home, user, node, nodeLib, vault, absent, sandboxes };
 }
 
 /** The processes running job `jobId`'s sandbox in `home`: bwrap's, by the clone on its command line. */
@@ -130,9 +133,51 @@ test("hiddenPaths: one that is or holds the home, by real path, isn't hidden but
   });
 });
 
-test("a job's spec has the daemon's Node dir read-only, by real path", () => {
+// Jobs can write `~/.node_modules`, `~/.node_libraries` and NODE_PATH's dirs: a dependency's optional `require` of a
+// module that isn't installed (`supports-color` from `debug`, `bufferutil` from `ws`) mustn't load one from there.
+test("narrowRequire: require no longer looks in ~/.node_modules, ~/.node_libraries or NODE_PATH", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "japa-require-")));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const [home, extra] = [join(root, "home"), join(root, "extra")];
+  const probes = [
+    [join(home, ".node_modules"), "probe"],
+    [extra, "probe2"],
+    [join(home, ".node_libraries"), "probe3"],
+  ];
+  for (const [dir, name] of probes) {
+    mkdirSync(join(dir!, name!), { recursive: true });
+    writeFileSync(join(dir!, name!, "index.js"), `module.exports = "${name}";`);
+  }
+  const jobs = new URL("../src/kernel/sandbox/jobs.ts", import.meta.url).href;
+  const run = (narrow: boolean) => {
+    const script = [
+      `import { createRequire } from "node:module";`,
+      narrow ? `import { narrowRequire } from ${JSON.stringify(jobs)}; narrowRequire();` : "",
+      `const require = createRequire(${JSON.stringify(join(root, "main.js"))});`,
+      "const load = (name) => { try { return require(name); } catch (error) { return error.code; } };",
+      'const loaded = ["probe", "probe2", "probe3"].map(load);',
+      "console.log(JSON.stringify([...loaded, process.env.HOME, process.env.NODE_PATH ?? null]));",
+    ].join("\n");
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: { PATH: process.env.PATH, HOME: home, NODE_PATH: extra },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return JSON.parse(output);
+  };
+  // Found there without it: the probes are where Node looks.
+  expect(run(false)).toEqual(["probe", "probe2", "probe3", home, extra]);
+  const missing = "MODULE_NOT_FOUND";
+  // HOME is restored; NODE_PATH stays unset, for the daemon's own children too.
+  expect(run(true)).toEqual([missing, missing, missing, home, null]);
+});
+
+test("a job's spec has the daemon's Node dir and its lib/node read-only, by real path", () => {
   const { sandboxes } = setup();
-  expect(sandboxes.spec("1").readOnly).toContainEqual({ path: realpathSync(dirname(process.execPath)), dir: true });
+  const bin = realpathSync(dirname(process.execPath));
+  expect(sandboxes.spec("1").readOnly).toContainEqual({ path: bin, dir: true });
+  // Where `require` still looks last, after narrowRequire.
+  expect(sandboxes.spec("1").readOnly).toContainEqual({ path: resolve(bin, "..", "lib", "node"), dir: true });
 });
 
 describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
@@ -144,6 +189,16 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const planted = join(node, "git");
     const result = await env.exec(`touch "${planted}"; touch "${join(outside, "ran")}"`, undefined, ctx);
     expect(result.ok).toBe(true);
+    expect(existsSync(join(outside, "ran"))).toBe(true);
+    expect(existsSync(planted)).toBe(false);
+  });
+
+  test("a job can't create a module in the daemon's Node's lib/node, missing as it usually is", async () => {
+    const { outside, nodeLib, sandboxes } = setup({ node: true });
+    expect(sandboxes.spec("1").readOnly).toContainEqual({ path: nodeLib, dir: true });
+    const planted = join(nodeLib, "supports-color", "index.js");
+    const script = `mkdir -p "${dirname(planted)}" && echo x > "${planted}"; touch "${join(outside, "ran")}"`;
+    expect((await sandboxes.env("c", "1").exec(script, undefined, ctx)).ok).toBe(true);
     expect(existsSync(join(outside, "ran"))).toBe(true);
     expect(existsSync(planted)).toBe(false);
   });

@@ -25,6 +25,7 @@ import {
   runtimeDirs,
   sandboxArgs,
   type SandboxSpec,
+  within,
 } from "../src/kernel/sandbox/bwrap.ts";
 import { NO_BWRAP, tempHome } from "./helpers.ts";
 
@@ -283,13 +284,14 @@ test("sandboxArgs pins the user's home and the existing folders between it and e
 test("sandboxArgs creates missing placeholders and their folders first, and pins those folders too", () => {
   const user = tempUser();
   mkdirSync(join(user, ".config", "systemd"), { recursive: true });
-  mkdirSync(join(user, "app"));
+  // Not `app`: that would make its parent, the user's home, the protected app dir.
+  mkdirSync(join(user, "src"));
   const spec: SandboxSpec = {
     home: join(user, "japa"),
     userHome: user,
     clone: join(user, "japa", ".jobs", "1"),
     tmp: "/t",
-    readOnly: readOnlyPaths(join(user, "app"), user, {}),
+    readOnly: readOnlyPaths(join(user, "src"), user, {}),
     hidden: [],
     shared: [],
     env: {},
@@ -300,6 +302,23 @@ test("sandboxArgs creates missing placeholders and their folders first, and pins
   expect(pinsIn(args, user)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const systemd = join(local, "share", "systemd");
   expect(args.join(" ")).toContain(`--tmpfs ${systemd} --remount-ro ${systemd}`);
+});
+
+/** A missing dir only root could create (bwrap can't make a mount point there either); undefined as root. */
+const ROOTS_ONLY =
+  process.getuid?.() === 0 || !existsSync("/usr/lib") ? undefined : `/usr/lib/japa-missing-${process.pid}`;
+
+// Node's `<prefix>/lib/node`, usually missing: in the app dir with japa's own Node, under /usr with the system's.
+test("sandboxArgs leaves out a missing protected dir inside another protected one, or only root's", () => {
+  const user = tempUser();
+  const app = join(user, "app");
+  mkdirSync(app);
+  const inApp = join(app, "node", "lib", "node");
+  const readOnly = [inApp, app, ...(ROOTS_ONLY ? [ROOTS_ONLY] : [])].map((path) => ({ path, dir: true }));
+  const args = sandboxArgs({ ...bare, userHome: user, readOnly });
+  expect(args).toContain(app);
+  expect(args.filter((arg) => arg === inApp || arg === ROOTS_ONLY)).toEqual([]);
+  expect(existsSync(join(app, "node"))).toBe(false);
 });
 
 test("sandboxArgs hides a dir with an empty tmpfs and a file with /dev/null, those that exist", () => {
@@ -356,6 +375,18 @@ test("sandboxArgs pins a folder it can't write in one it can but doesn't own (st
   } finally {
     chmodSync(locked, 0o755);
   }
+});
+
+// Pinned, the host's /dev/shm would replace the sandbox's empty one; a mask there is pointless, or fails (/proc/1).
+test("sandboxArgs neither pins nor masks under /dev or /proc: the sandbox has its own", () => {
+  const shm = existsSync("/dev/shm") ? mkdtempSync("/dev/shm/japa-sandbox-") : undefined;
+  if (shm !== undefined) onTestFinished(() => rmSync(shm, { recursive: true, force: true }));
+  const secrets = shm === undefined ? [] : [join(shm, "secrets")];
+  for (const dir of secrets) mkdirSync(dir);
+  const readOnly = shm === undefined ? [] : [{ path: shm, dir: true }];
+  const args = sandboxArgs({ ...bare, readOnly, hidden: [...secrets, "/proc/1", "/proc/self/fd"] });
+  expect(pins(args).filter((dir) => within(dir, "/dev") || within(dir, "/proc"))).toEqual([]);
+  expect(args.filter((arg) => [...secrets, "/proc/1", "/proc/self/fd"].includes(arg))).toEqual([]);
 });
 
 test("sandboxArgs masks the runtime dirs that exist: the user's, and screen's sockets", () => {
@@ -449,6 +480,18 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     for (const dir of [join(user, ".local", "share", "systemd"), join(config, "environment.d")]) {
       expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
     }
+  });
+
+  test("a sandbox starts with a missing protected dir inside another protected one, or only root's", async () => {
+    const { app, spec } = sandbox();
+    const inApp = join(dirname(app), "node", "lib", "node");
+    const missing = [inApp, ...(ROOTS_ONLY ? [ROOTS_ONLY] : [])].map((path) => ({ path, dir: true }));
+    const script = `mkdir -p "${inApp}" 2>/dev/null; echo "mkdir=$?"`;
+    const result = await runSandboxed({ ...spec, readOnly: [...spec.readOnly, ...missing] }, ["bash", "-c", script], {
+      timeoutMs: 10_000,
+    });
+    expect(result).toMatchObject({ code: 0, output: expect.stringMatching(/^mkdir=[1-9]\n$/) });
+    expect(existsSync(inApp)).toBe(false);
   });
 
   test("the folders holding protected paths can't be renamed away and recreated", async () => {
