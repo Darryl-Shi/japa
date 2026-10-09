@@ -1,6 +1,7 @@
 // What a finished job hands over to go live, made in its own sandbox: `node narrow.ts <base> <message> <out> [quiet...]`,
 // run in its clone (the japa home there). The clone and its `.git` are the job's, so the daemon runs no git in it
-// itself (see publish.ts). Prints `{ dropped, bundle }` (see `narrow`) as its last line, or fails with git's error.
+// itself (see publish.ts). Prints `{ dropped, droppedCount, bundle }` (see `narrow`) as its last line, or fails with
+// git's error.
 import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,13 @@ export const BUNDLE = "publish.bundle";
 
 /** Whether `path`, relative to the japa home, is under extensions/ or skills/, where the components are. */
 export const inComponents = (path: string) => /^(extensions|skills)\/./.test(path);
+
+/** How many paths an outcome line names, at most, and how long each may be. */
+export const MAX_NAMED = 50;
+const MAX_PATH = 300;
+
+/** Whether `path` can be named on an outcome line: not empty, on one line, and 300 characters at most. */
+export const nameable = (path: string) => path !== "" && path.length <= MAX_PATH && !/[\0\r\n]/.test(path);
 
 /** Files that tell git how to check out, fetch or filter others: never published, in a component either. */
 const GIT_FILES = new Set([".gitattributes", ".lfsconfig", ".gitmodules"]);
@@ -30,9 +38,10 @@ export function publishable(path: string): boolean {
  * In the clone at `dir`: stages everything, then puts each staged path that can't go live (see `publishable`) back in
  * the index as it is at `base` (the working tree keeps the job's files: nothing there is deleted, a folder mounted from
  * outside included). Commits what's left as `message` when that differs from HEAD, and bundles `base..HEAD` into
- * `<out>/publish.bundle`. Returns the paths put back (`dropped`), but those under `quiet` paths (the folders the sandbox
- * mounts in the home) and what `linkSdk` made, and whether it made a bundle: not when nothing is left changed since
- * `base`.
+ * `<out>/publish.bundle`. Returns how many paths it put back (`droppedCount`), but those under `quiet` paths (the
+ * folders the sandbox mounts in the home) and what `linkSdk` made; the first 50 of them that are `nameable`
+ * (`dropped`: a job can leave thousands, a virtualenv say, more than the sandbox's output keeps); and whether it made a
+ * bundle: not when nothing is left changed since `base`.
  */
 export function narrow(
   dir: string,
@@ -40,7 +49,7 @@ export function narrow(
   message: string,
   out: string,
   quiet: string[] = [],
-): { dropped: string[]; bundle: boolean } {
+): { dropped: string[]; droppedCount: number; bundle: boolean } {
   rmSync(join(out, BUNDLE), { force: true });
   git(dir, "add", "-A");
   const staged = (...filter: string[]) =>
@@ -51,8 +60,10 @@ export function narrow(
   const added = new Set(staged("--diff-filter=A"));
   const under = (path: string, folder: string) => path === folder || path.startsWith(`${folder}/`);
   const linked = (path: string) =>
-    under(path, SDK_LINK) || (path === "package.json" && added.has(path) && sdkPackage(dir));
-  const dropped = unpublished.filter((path) => !linked(path) && !quiet.some((folder) => under(path, folder)));
+    path === SDK_LINK || (path === "package.json" && added.has(path) && sdkPackage(dir));
+  const reported = unpublished.filter((path) => !linked(path) && !quiet.some((folder) => under(path, folder)));
+  const dropped = reported.filter(nameable).slice(0, MAX_NAMED);
+  const droppedCount = reported.length;
   if (unpublished.length > 0) {
     // From a file: there may be more than a command line holds. Literal: a name like `*` is no pattern.
     const list = join(out, "publish.dropped");
@@ -61,12 +72,12 @@ export function narrow(
     rmSync(list);
   }
   const tree = git(dir, "write-tree");
-  if (tree === git(dir, "rev-parse", `${base}^{tree}`)) return { dropped, bundle: false };
+  if (tree === git(dir, "rev-parse", `${base}^{tree}`)) return { dropped, droppedCount, bundle: false };
   if (tree !== git(dir, "rev-parse", "HEAD^{tree}")) {
     git(dir, "commit", "-q", "--no-verify", "--cleanup=whitespace", "-m", message);
   }
   git(dir, "bundle", "create", "-q", join(out, BUNDLE), `${base}..HEAD`);
-  return { dropped, bundle: true };
+  return { dropped, droppedCount, bundle: true };
 }
 
 /** Whether `<dir>/package.json` is the one `linkSdk` writes. */

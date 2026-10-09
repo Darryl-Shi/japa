@@ -26,7 +26,7 @@ import { runSandboxed, type SandboxSpec, within } from "../sandbox/bwrap.ts";
 import type { WorkspaceLock } from "../workspace-lock.ts";
 import { git, gitError, gitPaths, head } from "../workspace.ts";
 import { cloneBase, cloneDir, cloneMarker, removeClone } from "./clone.ts";
-import { BUNDLE, inComponents, publishable } from "./narrow.ts";
+import { BUNDLE, inComponents, MAX_NAMED, nameable, publishable } from "./narrow.ts";
 
 type Kind = "skill" | "extension";
 
@@ -42,6 +42,8 @@ export type PublishDeps = {
   loaded(kind: Kind, name: string): boolean;
   logChange(change: Omit<Change, "id" | "at">): Promise<string>;
   scheduleGood(): void;
+  /** The largest bundle of a job's changes read, in size or on disk: 100 MB unless set (tests lower it). */
+  maxBundleBytes?: number;
 };
 
 /** Paths named on an outcome line (see `listed`), and how many more there are. */
@@ -51,6 +53,9 @@ type Listed = { named: string[]; more: number };
  * What publishing a job did to the real repo, in `cloneMarker` (outside the clone, which the job can write): its merge
  * commit, the components it changed, the paths it dropped, then the change logged for it, or the line it ended with
  * once the merge was reverted. A job resumed in publish after a restart goes on from there, and never merges twice.
+ *
+ * A marker that can't be read counts as none: the merge is then found in HEAD's history (`earlierMerge`), but a change
+ * already logged would be logged again. Written durably, a marker is only garbled by disk corruption or a hand edit.
  */
 type Marker = { merge: string; components: string[]; dropped: Listed; change?: string; reverted?: string };
 
@@ -58,11 +63,9 @@ type Marker = { merge: string; components: string[]; dropped: Listed; change?: s
 const CHECK_TIMEOUT_MS = 600_000;
 /** How long committing and bundling a job's changes in its sandbox may take. */
 const NARROW_TIMEOUT_MS = 120_000;
-/** The largest bundle of a job's changes the daemon reads. */
-const MAX_BUNDLE = 100 * 1024 * 1024;
-/** How many paths an outcome line names, and how long each may be. */
-const MAX_NAMED = 50;
-const MAX_PATH = 300;
+const MB = 1024 * 1024;
+/** How long a list of paths on an outcome line may be, in characters, before the rest are only counted. */
+const MAX_LIST = 1000;
 
 /** Characters that would break, or disguise, an outcome line: controls, line separators and bidi overrides. */
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
@@ -82,20 +85,26 @@ function display(path: string): string {
   return show(within(path, user) ? join("~", relative(user, path)) : path);
 }
 
-/** Of `paths`, the first 50 that are non-empty strings, on one line, of 300 characters at most; the rest are counted. */
-function listed(paths: unknown[]): Listed {
-  const valid = paths.filter(
-    (path): path is string => typeof path === "string" && path !== "" && path.length <= MAX_PATH && !/[\0\r\n]/.test(path),
-  );
+/** Of `paths`, of `total` in all, the first 50 that are strings and `nameable`; the rest are counted. */
+function listed(paths: unknown[], total = paths.length): Listed {
+  const valid = paths.filter((path): path is string => typeof path === "string" && nameable(path));
   const named = valid.slice(0, MAX_NAMED);
-  return { named, more: paths.length - named.length };
+  return { named, more: total - named.length };
 }
 
-/** `a, b and 2 more`, or `3 paths` when none is named. */
+/** `a, b and 2 more`, naming as many as fit in 1,000 characters; `3 paths` when none is named. */
 function listText({ named, more }: Listed): string {
-  const shown = named.map(show).join(", ");
-  if (more === 0) return shown;
-  return shown === "" ? `${more} ${more === 1 ? "path" : "paths"}` : `${shown} and ${more} more`;
+  const shown: string[] = [];
+  let length = 0;
+  for (const name of named.map(show)) {
+    length += (shown.length > 0 ? 2 : 0) + name.length;
+    if (length > MAX_LIST) break;
+    shown.push(name);
+  }
+  const rest = more + named.length - shown.length;
+  const text = shown.join(", ");
+  if (rest === 0) return text;
+  return text === "" ? `${rest} ${rest === 1 ? "path" : "paths"}` : `${text} and ${rest} more`;
 }
 
 /** The components (`extensions/<x>`, `skills/<x>`) `paths` are in (each is in one); sorted, each once. */
@@ -107,19 +116,19 @@ function parts(component: string): [Kind, string] {
   return [dir === "extensions" ? "extension" : "skill", name];
 }
 
-/** A bundle over `MAX_BUNDLE`. */
+/** A bundle over the cap. */
 class TooLarge extends Error {}
 
 /**
- * Copies `path`, which must be a regular file (not a symlink to one, nor a FIFO to wait on) of 100 MB at most, in size
- * and on disk, to new file `dest`: as many bytes as it had when opened, though the job may still be writing it.
+ * Copies `path`, which must be a regular file (not a symlink to one, nor a FIFO to wait on) of `max` bytes at most, in
+ * size and on disk, to new file `dest`: as many bytes as it had when opened, though the job may still be writing it.
  */
-function copyBundle(path: string, dest: string): void {
+function copyBundle(path: string, dest: string, max: number): void {
   const from = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(from);
     if (!stat.isFile()) throw new Error(`${basename(path)} is not a regular file`);
-    if (Math.max(stat.size, stat.blocks * 512) > MAX_BUNDLE) throw new TooLarge(`${basename(path)} is too large`);
+    if (Math.max(stat.size, stat.blocks * 512) > max) throw new TooLarge(`${basename(path)} is too large`);
     const to = openSync(dest, "wx", 0o600);
     try {
       const buffer = Buffer.alloc(1024 * 1024);
@@ -170,7 +179,7 @@ const optionalString = (value: unknown) => value === undefined || typeof value =
  * live or when there are none, and kept otherwise.
  */
 export function createPublisher(deps: PublishDeps): (job: { id: string; title: string }) => Promise<string | undefined> {
-  const { home } = deps;
+  const { home, maxBundleBytes = 100 * MB } = deps;
 
   const isAncestor = (ancestor: string, rev: string) => {
     try {
@@ -251,10 +260,13 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
     if (timedOut) return { error: "timed out after 2 minutes" };
     if (code === 0) {
       try {
-        const result = JSON.parse(output.trim().split("\n").at(-1) ?? "") as { dropped?: unknown; bundle?: unknown };
-        const { dropped, bundle } = result;
+        const last = output.trim().split("\n").at(-1) ?? "";
+        const { dropped, droppedCount, bundle } = JSON.parse(last) as Record<string, unknown>;
         // From the job's sandbox: its git can say anything.
-        if (Array.isArray(dropped) && typeof bundle === "boolean") return { dropped: listed(dropped), bundle };
+        const count = Number.isSafeInteger(droppedCount) ? (droppedCount as number) : -1;
+        if (Array.isArray(dropped) && dropped.length <= count && typeof bundle === "boolean") {
+          return { dropped: listed(dropped, count), bundle };
+        }
       } catch {}
     }
     return { error: oneLine(output) || `it exited with ${code}` };
@@ -268,7 +280,7 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
     const dir = mkdtempSync(join(tmpdir(), "japa-publish-"));
     try {
       const bundle = join(dir, BUNDLE);
-      copyBundle(path, bundle);
+      copyBundle(path, bundle, maxBundleBytes);
       git(home, "bundle", "verify", "-q", bundle);
       const fetch = ["fetch", "-q", "--no-tags", "--no-recurse-submodules", "--no-auto-gc", "--no-write-fetch-head"];
       git(home, "-c", "transfer.fsckObjects=true", ...fetch, bundle, `+HEAD:${ref}`);
@@ -378,7 +390,9 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
       try {
         sha = fetchBundle(join(deps.spec(id).tmp, BUNDLE), ref);
       } catch (error) {
-        if (error instanceof TooLarge) return notLive("the job's changes are too large (over 100 MB)");
+        if (error instanceof TooLarge) {
+          return notLive(`the job's changes are too large (over ${Math.round(maxBundleBytes / MB)} MB)`);
+        }
         return notLive(`couldn't commit the job's changes: ${oneLine(gitError(error))}`);
       }
       if (!isAncestor(base, sha)) return notLive("the job's history doesn't start from its base");

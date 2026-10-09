@@ -201,6 +201,17 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(git(home, "status", "--porcelain")).toBe("");
   });
 
+  test("files under node_modules/japa are reported: only the link itself is linkSdk's", async () => {
+    const { home, clone, sandboxes } = setup();
+    const ignored = read(clone, ".gitignore").split("\n");
+    write(clone, ".gitignore", ignored.filter((line) => line !== "node_modules/").join("\n"));
+    rmSync(join(clone, "node_modules", "japa"));
+    write(clone, "node_modules/japa/x.js", "x\n");
+    write(clone, "extensions/e/index.ts", "changed\n");
+    const { publish } = publisher(home, sandboxes.spec);
+    expect(await publish(job)).toBe("Live: extensions/e (change 1). Dropped: .gitignore, node_modules/japa/x.js.");
+  });
+
   test("a package.json the job wrote is reported", async () => {
     const { home, clone, sandboxes } = setup({}, { unlinked: true });
     write(clone, "package.json", '{"type":"module","dependencies":{"x":"1"}}\n');
@@ -309,6 +320,17 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(existsSync(clone)).toBe(true);
   });
 
+  test("a bundle that takes more room on disk than the cap is refused, whatever its size", async () => {
+    const { outside, home, clone, sandboxes, base } = setup();
+    write(clone, "extensions/e/index.ts", "changed\n");
+    // Blocks allocated past its end (`--keep-size`): its size stays the real bundle's, under the cap.
+    const allocate = "fallocate --keep-size -l 2M /tmp/publish.bundle";
+    const spec = withGit(outside, sandboxes.spec, ":", allocate);
+    const { publish } = publisher(home, spec, { maxBundleBytes: 1024 * 1024 });
+    expect(await publish(job)).toBe(`Not live: the job's changes are too large (over 1 MB). ${KEPT}`);
+    expect(git(home, "rev-parse", "HEAD")).toBe(base);
+  });
+
   test("a job's commit already in the real history isn't merged as the job's", async () => {
     const { outside, home, clone, sandboxes } = setup();
     // A commit made on main since the job started, which the job hands over as its own.
@@ -397,6 +419,18 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(await publish(job)).toBe("Live: extensions/e (change 1).");
     expect(read(home, "extensions/e/a.ts")).toBe("a fixed\n");
     expect(read(home, "extensions/e/b.ts")).toBe("b\n");
+  });
+
+  test("a long list of conflicting files is cut at 1,000 characters", async () => {
+    // Five files, each of 259 characters: three fit.
+    const paths = Array.from({ length: 5 }, (_, i) => `extensions/e/${"x".repeat(240)}/${i}.ts`);
+    const { home, clone, sandboxes } = setup(Object.fromEntries(paths.map((path) => [path, INDEX])));
+    for (const path of paths) write(home, path, "line 1 main\nline 2\n");
+    git(home, "commit", "-q", "-a", "-m", "main");
+    for (const path of paths) write(clone, path, "line 1 job\nline 2\n");
+    const { publish } = publisher(home, sandboxes.spec);
+    const named = paths.slice(0, 3).join(", ");
+    expect(await publish(job)).toBe(`Not live: ${named} and 2 more changed since this job started. ${KEPT}`);
   });
 
   test("regression: the same lines conflict", async () => {
@@ -589,6 +623,31 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(git(home, "rev-parse", "HEAD")).toBe(later);
     expect(git(home, "rev-list", "--merges", "--count", "HEAD")).toBe("1");
     expect(calls.changes).toEqual([{ title: "Job 1: changed extensions/e", howToUse: "", undo: { commits: [merge] } }]);
+  });
+
+  test("thousands of new files are counted, not listed", { timeout: 60_000 }, async () => {
+    // More than the last 1 MB of output the sandbox keeps, were they all printed: 4,500 paths of 255 characters.
+    const names = Array.from({ length: 4500 }, (_, i) => `.venv/${"a".repeat(240)}/f${String(i).padStart(4, "0")}.py`);
+    const { home, clone, sandboxes } = setup();
+    mkdirSync(join(clone, dirname(names[0]!)), { recursive: true });
+    for (const name of names) writeFileSync(join(clone, name), "");
+    write(clone, "extensions/e/index.ts", "changed\n");
+    const { publish } = publisher(home, sandboxes.spec);
+    // Three fit in 1,000 characters.
+    const named = names.slice(0, 3).join(", ");
+    expect(await publish(job)).toBe(`Live: extensions/e (change 1). Dropped: ${named} and 4497 more.`);
+  });
+
+  test("a list of dropped paths is cut at 1,000 characters", async () => {
+    // 50 paths of 300 characters: three fit.
+    const names = Array.from({ length: 50 }, (_, i) => `${"x".repeat(250)}/${String(i).padStart(2, "0")}${"y".repeat(47)}`);
+    expect(names[0]).toHaveLength(300);
+    const { home, clone, sandboxes } = setup();
+    for (const name of names) write(clone, name, "n\n");
+    write(clone, "extensions/e/index.ts", "changed\n");
+    const { publish } = publisher(home, sandboxes.spec);
+    const named = names.slice(0, 3).join(", ");
+    expect(await publish(job)).toBe(`Live: extensions/e (change 1). Dropped: ${named} and 47 more.`);
   });
 
   test("dropped paths: 50 at most are named, and none empty, multi-line or over 300 characters", async () => {
