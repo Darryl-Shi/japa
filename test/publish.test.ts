@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
@@ -117,6 +117,24 @@ function withGit(outside: string, spec: (jobId: string) => SandboxSpec, before: 
     return { ...s, env: { ...s.env, PATH: `${bin}:${s.env.PATH ?? "/usr/bin:/bin"}` } };
   };
 }
+
+/**
+ * Whether `fallocate --keep-size` allocates blocks past a file's end where the sandbox tests' scratch dirs are (and a
+ * job's /tmp with them): not every filesystem can.
+ */
+const FALLOCATE = (() => {
+  const dir = sandboxScratch("japa-fallocate-");
+  try {
+    const file = join(dir, "probe");
+    writeFileSync(file, "x");
+    execFileSync("fallocate", ["--keep-size", "-l", "2M", file], { stdio: "ignore" });
+    return statSync(file).blocks * 512 >= 2 * 1024 * 1024;
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
 
 const KEPT = "Kept at ~/.japa/.jobs/1.";
 const job = { id: "1", title: "t" };
@@ -320,7 +338,49 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(existsSync(clone)).toBe(true);
   });
 
-  test("a bundle that takes more room on disk than the cap is refused, whatever its size", async () => {
+  test("a cap under 1 MB is shown in KB or bytes", async () => {
+    const { outside, home, clone, sandboxes } = setup();
+    write(clone, "extensions/e/index.ts", "changed\n");
+    const spec = withGit(outside, sandboxes.spec, ":", "truncate -s 3K /tmp/publish.bundle");
+    expect(await publisher(home, spec, { maxBundleBytes: 2048 }).publish(job)).toBe(
+      `Not live: the job's changes are too large (over 2 KB). ${KEPT}`,
+    );
+    expect(await publisher(home, spec, { maxBundleBytes: 100 }).publish(job)).toBe(
+      `Not live: the job's changes are too large (over 100 bytes). ${KEPT}`,
+    );
+  });
+
+  test("narrowing's report with a bad count is a failed commit step", async () => {
+    const { outside, home, clone, sandboxes, base } = setup();
+    write(clone, "extensions/e/index.ts", "changed\n");
+    // A stand-in for narrow.ts, which prints `report`.
+    const fake = join(outside, "fake");
+    mkdirSync(join(fake, "src", "kernel", "jobs"), { recursive: true });
+    const reports = [
+      { dropped: [], bundle: true }, // missing
+      { dropped: [], droppedCount: -1, bundle: true },
+      { dropped: [], droppedCount: null, bundle: true }, // NaN, as JSON writes it
+      { dropped: [], droppedCount: "NaN", bundle: true },
+      { dropped: [], droppedCount: 1.5, bundle: true },
+      { dropped: ["a", "b"], droppedCount: 1, bundle: true }, // below dropped.length
+    ];
+    for (const report of reports) {
+      const json = JSON.stringify(report);
+      writeFileSync(join(fake, "src", "kernel", "jobs", "narrow.ts"), `console.log(${JSON.stringify(json)});\n`);
+      const { publish, calls } = publisher(home, sandboxes.spec, { packageRoot: fake });
+      expect(await publish(job), json).toBe(`Not live: couldn't commit the job's changes: ${json}. ${KEPT}`);
+      expect(calls.check).toEqual([]);
+    }
+    expect(git(home, "rev-parse", "HEAD")).toBe(base);
+    // The same, with a good count, goes on to the bundle (none here).
+    const good = JSON.stringify({ dropped: ["a", "b"], droppedCount: 2, bundle: true });
+    writeFileSync(join(fake, "src", "kernel", "jobs", "narrow.ts"), `console.log(${JSON.stringify(good)});\n`);
+    rmSync(join(home, ".jobs", "1.tmp", "publish.bundle"), { force: true });
+    const { publish } = publisher(home, sandboxes.spec, { packageRoot: fake });
+    expect(await publish(job)).toMatch(/^Not live: couldn't commit the job's changes: ENOENT: .*publish\.bundle/);
+  });
+
+  test.skipIf(!FALLOCATE)("a bundle that takes more room on disk than the cap is refused, whatever its size", async () => {
     const { outside, home, clone, sandboxes, base } = setup();
     write(clone, "extensions/e/index.ts", "changed\n");
     // Blocks allocated past its end (`--keep-size`): its size stays the real bundle's, under the cap.

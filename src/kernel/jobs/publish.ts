@@ -79,6 +79,13 @@ function oneLine(text: string, max = 500): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/** `bytes` for the user: in MB from 1 MB, in KB from 1 KB, in bytes under that; to one decimal at most. */
+function sizeText(bytes: number): string {
+  const [value, unit] = bytes >= MB ? [bytes / MB, "MB"] : bytes >= 1024 ? [bytes / 1024, "KB"] : [bytes, ""];
+  const amount = Number(value.toFixed(1));
+  return unit === "" ? `${amount} ${amount === 1 ? "byte" : "bytes"}` : `${amount} ${unit}`;
+}
+
 /** `path` for the user: under their home, from `~`. */
 function display(path: string): string {
   const user = homedir();
@@ -201,7 +208,7 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
   const inTree = (rev: string, path: string) =>
     gitPaths(home, "--literal-pathspecs", "ls-tree", "-z", "--name-only", rev, "--", path).length > 0;
 
-  /** Job `id`'s marker; undefined when there's none, or it's empty or garbled (a write cut short, say). */
+  /** Job `id`'s marker; undefined when there's none, or it's empty or garbled (see `Marker`). */
   function readMarker(id: string): Marker | undefined {
     let text: string;
     try {
@@ -391,7 +398,7 @@ export function createPublisher(deps: PublishDeps): (job: { id: string; title: s
         sha = fetchBundle(join(deps.spec(id).tmp, BUNDLE), ref);
       } catch (error) {
         if (error instanceof TooLarge) {
-          return notLive(`the job's changes are too large (over ${Math.round(maxBundleBytes / MB)} MB)`);
+          return notLive(`the job's changes are too large (over ${sizeText(maxBundleBytes)})`);
         }
         return notLive(`couldn't commit the job's changes: ${oneLine(gitError(error))}`);
       }
