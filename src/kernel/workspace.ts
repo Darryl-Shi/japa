@@ -6,12 +6,18 @@ import { basename, join } from "node:path";
 /** The last-known-good tag. */
 export const LKG = "japa-lkg";
 
-const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/", "logs/", "setup.json", "update.json*"];
+const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/", "logs/", "setup.json", "update.json*", ".jobs/"];
 
-function git(home: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", home, "-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false", ...args], {
+/**
+ * Runs git in `home` as japa, with neither the user's global config nor any hooks: jobs can write both, and the
+ * daemon's git runs outside their sandbox.
+ */
+export function git(home: string, ...args: string[]): string {
+  const config = ["-c", "core.hooksPath=/dev/null", "-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false"];
+  return execFileSync("git", ["-C", home, ...config, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
   }).trim();
 }
 

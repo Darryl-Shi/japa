@@ -29,14 +29,15 @@ export const JobsDoc = defineDoc<{ nextId: number; jobs: Record<string, Job> }>(
   initial: () => ({ nextId: 1, jobs: {} }),
 });
 
-// On each job's conversation.
-export const JobDoc = defineDoc<{ jobId: string; environment: string; skills?: string[] }>({
+// On each job's conversation. `skills` is its profile's, until profiles go; one stored with an `environment` (the
+// profile's, before every job ran in its sandbox) still loads.
+export const JobDoc = defineDoc<{ jobId: string; skills?: string[] }>({
   kind: "japa.job",
   version: 1,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ jobId: "", environment: "" }),
+  initial: () => ({ jobId: "" }),
 });
 
 export function byId(jobs: Record<string, Job>): Job[] {

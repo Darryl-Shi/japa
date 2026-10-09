@@ -51,6 +51,7 @@ export function createRuntime(input: {
   selection: Extension[]; // the root's, filled by `start`
   cos: Extension;
   safety: Extension; // selected by the root and every job
+  sandboxProblem: () => string | undefined; // why jobs can't run here, if they can't
   kernel: (extension: string) => KernelContext;
   messaging: MessagingContext; // kernel-internal, given to contract activations only
 }) {
@@ -233,6 +234,7 @@ export function createRuntime(input: {
       available: () => runtime.available,
       skills: skillsExt,
       safety: input.safety,
+      sandboxProblem: input.sandboxProblem,
     };
     const jobs = jobsExtension(jobsOptions);
     registry.install(skillsExt);

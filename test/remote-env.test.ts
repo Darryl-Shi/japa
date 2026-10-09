@@ -10,7 +10,7 @@ import { ENV_MODULE, LOST, remoteEnv, SERVER, startEnvServer } from "../src/kern
 const server = startEnvServer([process.execPath, SERVER, ENV_MODULE]);
 afterAll(() => server.close());
 
-registerEnvConformance({ describe, expect, it }, "desktop environment (local server)", async (use) => {
+registerEnvConformance({ describe, expect, it }, "remote environment (local server)", async (use) => {
   const dir = mkdtempSync(join(tmpdir(), "japa-env-"));
   try {
     await use(remoteEnv(async () => server, dir, "test"));
@@ -31,16 +31,16 @@ test("calls on a lost connection fail with the lost message", async () => {
 });
 
 test("a lost server's calls fail with the message it was started with", async () => {
-  const doomed = startEnvServer([process.execPath, "-e", "process.exit(3)"], "The job's sandbox stopped");
+  const doomed = startEnvServer([process.execPath, "-e", "process.exit(3)"], "The test server stopped");
   const env = remoteEnv(async () => doomed, tmpdir(), "test");
   const read = await env.readTextFile("x", ctx);
-  expect(read).toMatchObject({ ok: false, error: { message: expect.stringContaining("The job's sandbox stopped") } });
+  expect(read).toMatchObject({ ok: false, error: { message: expect.stringContaining("The test server stopped") } });
   expect(read.ok ? undefined : read.error.message).not.toContain(LOST);
 });
 
 test("a server that can't be reached answers with the reason", async () => {
   const env = remoteEnv(async () => {
-    throw new Error("The desktop needs Docker: x");
+    throw new Error("Jobs can't run: x");
   }, "/", "test");
-  expect(await env.exists("/", ctx)).toMatchObject({ ok: false, error: { message: "The desktop needs Docker: x" } });
+  expect(await env.exists("/", ctx)).toMatchObject({ ok: false, error: { message: "Jobs can't run: x" } });
 });

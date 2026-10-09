@@ -12,10 +12,7 @@ import { validateExtension } from "../src/kernel/extension.ts";
 import { createEnvDispatcher, READ_ONLY_MESSAGE, readOnly } from "../src/kernel/env.ts";
 
 const localAdapter = localEnv.provides!.environment![0] as EnvironmentAdapter;
-/** A reader whose job conversations have `JobDoc` `doc`. */
-const reading = (doc?: { jobId: string; environment: string }) =>
-  ({ snapshot: async () => doc }) as unknown as EnvTarget["read"];
-const read = reading();
+const read = { snapshot: async () => undefined } as unknown as EnvTarget["read"];
 
 let dir: string;
 beforeEach(() => {
@@ -62,41 +59,32 @@ test("read-only env refuses reads inside a denied dir, relative to cwd", async (
   expect(!w.ok && w.error.message).toBe(READ_ONLY_MESSAGE);
 });
 
-test("dispatcher wraps the root conversation only", async () => {
-  const dispatch = createEnvDispatcher(new Map([["local", localAdapter]]), []);
-  const rootEnv = await dispatch({ conversationId: ROOT_CONVERSATION_ID, cwd: dir, read } as EnvTarget, ctx);
-  const otherEnv = await dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx);
-  expect((await rootEnv!.writeFile(join(dir, "c.txt"), "x", ctx)).ok).toBe(false);
-  expect((await otherEnv!.writeFile(join(dir, "c.txt"), "x", ctx)).ok).toBe(true);
-});
-
-test("dispatcher gives a job its own environment, unwrapped", async () => {
-  const created: string[] = [];
-  const probe: EnvironmentAdapter = {
-    name: "probe",
+test("jobs get the env from the jobs callback, the root a read-only local env", async () => {
+  const created: { conversationId: string; cwd?: string }[] = [];
+  const local: EnvironmentAdapter = {
+    name: "local",
     create: (input) => {
-      created.push(input.conversationId);
+      created.push(input);
       return localAdapter.create(input);
     },
   };
-  const dispatch = createEnvDispatcher(
-    new Map([
-      ["local", localAdapter],
-      ["probe", probe],
-    ]),
-    [],
-  );
-  const job = { conversationId: 2 as ConversationId, cwd: dir, read: reading({ jobId: "1", environment: "probe" }) };
-  const env = await dispatch(job as EnvTarget, ctx);
-  expect(created).toEqual(["2"]);
-  expect((await env!.writeFile(join(dir, "d.txt"), "x", ctx)).ok).toBe(true);
-  const unknown = { ...job, read: reading({ jobId: "1", environment: "nope" }) };
-  await expect(async () => dispatch(unknown as EnvTarget, ctx)).rejects.toThrow('No environment "nope" is installed');
-});
+  const asked: ConversationId[] = [];
+  const jobEnv = new NodeExecutionEnv({ cwd: dir });
+  const dispatch = createEnvDispatcher(local, [join(dir, "secrets")], async (conversationId) => {
+    asked.push(conversationId);
+    return jobEnv;
+  });
 
-test("dispatcher throws when the default environment is missing", async () => {
-  const dispatch = createEnvDispatcher(new Map(), []);
-  await expect(async () =>
-    dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx),
-  ).rejects.toThrow('No environment "local" is installed');
+  const rootEnv = (await dispatch({ conversationId: ROOT_CONVERSATION_ID, cwd: dir, read } as EnvTarget, ctx))!;
+  expect(created).toEqual([{ conversationId: String(ROOT_CONVERSATION_ID), cwd: dir }]);
+  expect(asked).toEqual([]);
+  const w = await rootEnv.writeFile(join(dir, "c.txt"), "x", ctx);
+  expect(!w.ok && w.error.message).toBe(READ_ONLY_MESSAGE);
+  const r = await rootEnv.readTextFile(join(dir, "secrets", "k"), ctx);
+  expect(!r.ok && r.error.message).toBe("Secrets are not readable here.");
+
+  const env = await dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx);
+  expect(env).toBe(jobEnv);
+  expect(asked).toEqual([2]);
+  expect(created).toHaveLength(1);
 });

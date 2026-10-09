@@ -1,5 +1,5 @@
-// An out-of-process ExecutionEnv: a client of `env-server.ts`, which runs NodeExecutionEnv in another process (the
-// desktop's container).
+// An out-of-process ExecutionEnv: a client of `env-server.ts`, which runs NodeExecutionEnv in another process (a job's
+// sandbox).
 import type { Context } from "@earendil-works/chord";
 import { err, type ExecutionEnv, ExecutionError, FileError } from "@earendil-works/pi-durable/env";
 import { spawn } from "node:child_process";
@@ -7,7 +7,8 @@ import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-export const LOST = "The desktop connection was lost";
+/** What a call answers once the server is gone: it was closed, or every process in the job's sandbox was killed. */
+export const LOST = "The job's sandbox stopped";
 /** pi-durable's `dist/env/node.js`, which `env-server.ts` loads; `dist/env/` imports only `node:` built-ins. */
 export const ENV_MODULE = createRequire(import.meta.url).resolve("@earendil-works/pi-durable/env/node");
 export const SERVER = fileURLToPath(new URL("./env-server.ts", import.meta.url));

@@ -1,12 +1,13 @@
 // The bubblewrap sandbox jobs run in: the host as the user sees it, with the job's clone in place of the japa home and
 // its own /tmp, japa's own code and the config it runs under read-only, and nothing of the daemon's processes or
 // environment, nor a socket (the user's runtime dir, Docker's) that would run a command outside it.
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcessByStdio, spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 
-/** The variables a sandbox gets from the daemon's environment, when set. */
+/** The only variables a sandbox gets: from the daemon's environment as it started, when set. */
 const ENV = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
 
 /** Docker's sockets: reaching one means running a container with the host mounted. */
@@ -21,6 +22,7 @@ export type ReadOnlyPath = { path: string; dir: boolean };
 /**
  * `clone` is mounted over `home`, and `tmp` (a host dir) at `/tmp` and `/var/tmp`; `hidden` dirs get an empty tmpfs;
  * `shared` paths under `home` stay the real ones. `userHome` is the user's home, the rest of which stays writable.
+ * `env` is the sandbox's whole environment (see `jobEnv`); only its allowed names are set.
  */
 export type SandboxSpec = {
   home: string;
@@ -30,9 +32,16 @@ export type SandboxSpec = {
   readOnly: ReadOnlyPath[];
   hidden: string[];
   shared: string[];
+  env: Record<string, string>;
 };
 
-const bwrap = () => process.env.JAPA_BWRAP ?? "bwrap";
+/** The bwrap binary: `JAPA_BWRAP`, or `bwrap` on the PATH. */
+export const bwrap = () => process.env.JAPA_BWRAP ?? "bwrap";
+
+/** The variables of `env` a sandbox may get: `PATH HOME USER SHELL LANG TZ TERM`, those that are set. */
+export function jobEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  return Object.fromEntries(ENV.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])));
+}
 
 /**
  * The runtime dirs masked with an empty tmpfs where they exist: the user's (D-Bus, the systemd user manager,
@@ -49,7 +58,7 @@ function placeholder(path: string): void {
 }
 
 /** Whether `path` is `dir` or under it. */
-function within(path: string, dir: string): boolean {
+export function within(path: string, dir: string): boolean {
   const rel = relative(dir, path);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep));
 }
@@ -158,9 +167,11 @@ function readOnlyMounts(spec: SandboxSpec) {
     }
     paths.push({ path, dir, missing: missing && dir });
   }
-  // Every parent, the japa home's too: the clone, bound after them, still covers it.
+  // Every parent, the japa home's too: the clone, bound after them, still covers it. The user's home as well, which
+  // could otherwise be renamed away whole where its own parent is writable.
   const home = realPath(spec.userHome) ?? spec.userHome;
-  const pinned = new Set([...readOnlyDirs, ...paths.map(({ path }) => path)].flatMap((path) => between(home, path)));
+  const parents = [...readOnlyDirs, ...paths.map(({ path }) => path)].flatMap((path) => between(home, path));
+  const pinned = new Set([...(existsSync(home) ? [home] : []), ...parents]);
   // Parents first: binding one covers the mounts already under it.
   return { pinned: [...pinned].sort(), readOnlyDirs: [...readOnlyDirs].sort(), paths };
 }
@@ -190,7 +201,7 @@ export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   for (const path of sockets) args.push("--ro-bind-try", "/dev/null", path);
   args.push("--die-with-parent", "--new-session", "--clearenv");
   for (const name of ENV) {
-    const value = process.env[name];
+    const value = spec.env[name];
     if (value !== undefined) args.push("--setenv", name, value);
   }
   return [...args, "--chdir", cwd];
@@ -206,15 +217,15 @@ export function runSandboxed(
   o: { timeoutMs: number; cwd?: string },
 ): Promise<{ code: number | null; output: string; timedOut: boolean }> {
   return new Promise((resolve) => {
-    let args: string[];
+    let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
-      args = sandboxArgs(spec, o.cwd);
+      // Setting it up touches the host (realpath, placeholders): EACCES, ENOTDIR, a race. And spawn throws, before
+      // running anything, on an argument with a NUL byte.
+      child = spawn(bwrap(), [...sandboxArgs(spec, o.cwd), ...command], { stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
-      // Setting it up touches the host (realpath, placeholders): EACCES, ENOTDIR, a race.
       resolve({ code: null, output: error instanceof Error ? error.message : String(error), timedOut: false });
       return;
     }
-    const child = spawn(bwrap(), [...args, ...command], { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let timedOut = false;
     const timer = setTimeout(() => {

@@ -1,6 +1,6 @@
 // The out-of-process env's server: `node env-server.ts <path of pi-durable's env/node.js>` answers the JSON-lines
-// requests of `remote-env.ts` on stdin with a NodeExecutionEnv, and exits when stdin ends. Imports only `node:`
-// built-ins, so it runs in the container next to a copy of pi-durable's `dist/env/`.
+// requests of `remote-env.ts` on stdin with a NodeExecutionEnv, and exits when stdin ends. It runs in a job's sandbox;
+// it imports only `node:` built-ins, and pi-durable's `dist/env/` by the path it is given.
 import { createInterface } from "node:readline";
 
 type Target = Record<string, (...args: unknown[]) => Promise<unknown>>;

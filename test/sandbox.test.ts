@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import {
+  jobEnv,
   probeSandbox,
   readOnlyPaths,
   runSandboxed,
@@ -121,6 +122,7 @@ function sandbox(o: { japaHome?: string; env?: (user: string) => NodeJS.ProcessE
     readOnly: readOnlyPaths(app, user, o.env?.(user) ?? {}),
     hidden: [hidden, join(outside, "absent")],
     shared: [join(home, "desktop", "shared")],
+    env: jobEnv(),
   };
   const run = (script: string, o: { timeoutMs?: number; cwd?: string } = {}) =>
     runSandboxed(spec, ["bash", "-c", script], { timeoutMs: o.timeoutMs ?? 10_000, cwd: o.cwd });
@@ -171,8 +173,32 @@ function tempUser(): string {
 const pins = (args: string[]) =>
   args.flatMap((arg, i) => (arg === "--bind" && args[i + 1] === args[i + 2] && args[i + 1] !== "/" ? [args[i + 1]] : []));
 
+/** A spec with nothing to protect, for a japa home `/h` and a user home `/u` that don't exist. */
+const bare: SandboxSpec = {
+  home: "/h",
+  userHome: "/u",
+  clone: "/h/.jobs/1",
+  tmp: "/t",
+  readOnly: [],
+  hidden: [],
+  shared: [],
+  env: {},
+};
+
+test("jobEnv keeps the allowed variables that are set", () => {
+  const env = { PATH: "/p", HOME: "/u", TERM: undefined, FOO_SECRET: "1", ANTHROPIC_API_KEY: "k" };
+  expect(jobEnv(env)).toEqual({ PATH: "/p", HOME: "/u" });
+});
+
+test("sandboxArgs sets the allowed variables from the spec's env, not the daemon's", () => {
+  const spec = { ...bare, env: { PATH: "/job/bin", HOME: "/u", FOO_SECRET: "1" } };
+  const set = (args: string[]) => args.flatMap((arg, i) => (args[i - 1] === "--setenv" ? [`${arg}=${args[i + 1]}`] : []));
+  expect(set(sandboxArgs(spec))).toEqual(["PATH=/job/bin", "HOME=/u"]);
+  expect(set(sandboxArgs({ ...bare, env: {} }))).toEqual([]);
+});
+
 test("sandboxArgs masks each existing docker socket once, by its real path", () => {
-  const spec = { home: "/h", userHome: "/u", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] };
+  const spec = bare;
   const args = sandboxArgs(spec);
   const masked = args.flatMap((arg, i) => (arg === "/dev/null" && args[i - 1] === "--ro-bind-try" ? [args[i + 1]] : []));
   // A missing mount point would make bwrap fail ("Can't create file at /run/docker.sock").
@@ -196,6 +222,7 @@ test("sandboxArgs mounts in order: pins, link dirs, protected paths, /tmp, the c
     readOnly: readOnlyPaths(join(user, ".local", "share", "japa", "app"), user, {}),
     hidden: [join(user, "hidden")],
     shared: [join(home, "shared")],
+    env: {},
   };
   const args = sandboxArgs(spec);
   const index = (flag: string, path: string) => {
@@ -205,6 +232,7 @@ test("sandboxArgs mounts in order: pins, link dirs, protected paths, /tmp, the c
   };
   const order = [
     index("--proc", "/proc"),
+    index("--bind", user),
     index("--bind", join(user, ".config")),
     index("--bind", join(user, ".local", "share")),
     index("--ro-bind", join(user, ".config")),
@@ -223,7 +251,7 @@ test("sandboxArgs mounts in order: pins, link dirs, protected paths, /tmp, the c
   expect(order).toEqual([...order].sort((a, b) => a - b));
 });
 
-test("sandboxArgs pins the existing folders between the user's home and each protected path, the job home's too", () => {
+test("sandboxArgs pins the user's home and the existing folders between it and each protected path, the job home's too", () => {
   const user = tempUser();
   for (const dir of [".config/systemd", ".local/share/japa", ".local/bin", ".local/jobs"]) {
     mkdirSync(join(user, dir), { recursive: true });
@@ -237,12 +265,15 @@ test("sandboxArgs pins the existing folders between the user's home and each pro
     readOnly: readOnlyPaths(join(user, ".local", "share", "japa", "app"), user, {}),
     hidden: [],
     shared: [],
+    env: {},
   };
   const args = sandboxArgs(spec);
-  // `.local` holds the job home, which the clone (bound later) still covers.
+  // `.local` holds the job home, which the clone (bound later) still covers; so does the user's home.
   const local = join(user, ".local");
-  expect(pins(args)).toEqual([join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
+  expect(pins(args)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const at = (path: string) => args.findIndex((arg, i) => arg === path && args[i - 1] === "--bind");
+  expect(at(user)).toBeGreaterThan(args.indexOf("/proc"));
+  expect(at(user)).toBeLessThan(at(join(user, ".config")));
   expect(at(join(user, ".config"))).toBeGreaterThan(args.indexOf("/proc"));
   expect(at(local)).toBeLessThan(args.indexOf(spec.clone));
 });
@@ -259,19 +290,19 @@ test("sandboxArgs creates missing placeholders and their folders first, and pins
     readOnly: readOnlyPaths(join(user, "app"), user, {}),
     hidden: [],
     shared: [],
+    env: {},
   };
   const args = sandboxArgs(spec);
   const local = join(user, ".local");
   expect(readFileSync(join(local, "bin", "japa"), "utf8")).toBe("");
-  expect(pins(args)).toEqual([join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
+  expect(pins(args)).toEqual([user, join(user, ".config"), local, join(local, "bin"), join(local, "share")]);
   const systemd = join(local, "share", "systemd");
   expect(args.join(" ")).toContain(`--tmpfs ${systemd} --remount-ro ${systemd}`);
 });
 
 test("sandboxArgs masks the runtime dirs that exist: the user's, and screen's sockets", () => {
   expect(runtimeDirs()).toEqual([`/run/user/${process.getuid?.()}`, "/run/screen"]);
-  const spec = { home: "/h", userHome: "/u", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] };
-  const args = sandboxArgs(spec);
+  const args = sandboxArgs(bare);
   const masked = args.flatMap((arg, i) => (args[i - 1] === "--tmpfs" ? [arg] : []));
   // Only existing ones: bwrap can't create a mount point under /run.
   expect(masked).toEqual(runtimeDirs().filter((path) => existsSync(path)));
@@ -288,9 +319,18 @@ test("runSandboxed resolves with the error when the sandbox can't be set up", as
     readOnly: [{ path: join(user, ".local", "bin", "japa"), dir: false }],
     hidden: [],
     shared: [],
+    env: {},
   };
   const result = await runSandboxed(spec, ["true"], { timeoutMs: 1000 });
   expect(result).toEqual({ code: null, output: expect.stringMatching(/ENOTDIR|EEXIST/), timedOut: false });
+});
+
+test("runSandboxed resolves with the error when the command can't be spawned", async () => {
+  const user = tempUser();
+  const spec = { ...bare, userHome: user };
+  // Node refuses an argument with a NUL byte before running anything.
+  const result = await runSandboxed(spec, ["echo", "a\0b"], { timeoutMs: 1000 });
+  expect(result).toEqual({ code: null, output: expect.stringContaining("null bytes"), timedOut: false });
 });
 
 describe.skipIf(NO_BWRAP)("the sandbox", () => {
@@ -369,6 +409,21 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(readFileSync(join(units, "japa.service"), "utf8")).toBe("unit");
     expect(existsSync(`${config}.old`)).toBe(false);
     expect(existsSync(`${local}.old`)).toBe(false);
+  });
+
+  test("the user's home can't be renamed away and recreated", async () => {
+    const { user, units, run } = sandbox();
+    const unit = join(units, "japa.service");
+    const { output } = await run(
+      [
+        `mv "${user}" "${user}.old" 2>/dev/null; echo "mv=$?"`,
+        `(mkdir -p "${units}" && echo changed > "${unit}") 2>/dev/null`,
+        "echo end",
+      ].join("; "),
+    );
+    expect(output).toMatch(/^mv=[1-9]\nend\n$/);
+    expect(existsSync(`${user}.old`)).toBe(false);
+    expect(readFileSync(unit, "utf8")).toBe("unit");
   });
 
   test("a protected path that is a symlink: its target can't be written, nor the link replaced", async () => {

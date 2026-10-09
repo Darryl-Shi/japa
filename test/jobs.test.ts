@@ -2,16 +2,18 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, test } from "vitest";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
+import { probeSandbox } from "../src/kernel/sandbox/bwrap.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
-import { tempHome, testKit, waitFor } from "./helpers.ts";
-import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts } from "./jobs-helpers.ts";
+import { bootTest, tempHome, testKit, waitFor } from "./helpers.ts";
+import { ask, call, held, idle, jobs, nudges, queued, reported, say, script, texts, tool } from "./jobs-helpers.ts";
 
 /** Each `create` of the probe extension's environments, by environment name. */
 const created: { env: string; conversationId: string }[] = [];
@@ -52,6 +54,40 @@ async function bootWith(workers: Record<string, string> = {}): Promise<{ daemon:
 
 const profile = (name: string, lines: string[]) =>
   ["---", `name: ${name}`, "description: Test", ...lines, "---", "Work."].join("\n");
+
+/** Whether bwrap works here; the tests that run a job's tools in its sandbox are skipped where it doesn't. */
+const NO_BWRAP = probeSandbox() !== undefined;
+const HOME = process.env.HOME;
+
+/**
+ * Boots with the probe extension, the japa home and the user's home (`HOME`, until the test finishes) outside `/tmp`,
+ * which jobs see replaced by their own; the home has `marker` and a secret `secrets/api-key`.
+ */
+async function bootSandboxed(): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string }> {
+  const cache = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
+  mkdirSync(cache, { recursive: true });
+  const outside = mkdtempSync(join(cache, "japa-jobs-"));
+  const [home, user] = [join(outside, "home"), join(outside, "user")];
+  mkdirSync(join(home, "secrets"), { recursive: true });
+  mkdirSync(user);
+  writeFileSync(join(home, "secrets", "api-key"), "sk-1");
+  writeFileSync(join(home, "marker"), "the real marker");
+  const kit = testKit();
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage: { adapter: "memory" }, models: { cos: kit.model } }));
+  process.env.HOME = user;
+  onTestFinished(() => {
+    process.env.HOME = HOME;
+    rmSync(outside, { recursive: true, force: true });
+  });
+  const daemon = await boot({ home, extensions: [kit.extension, probe] });
+  return { daemon, faux: kit.faux, home, user };
+}
+
+/** The tool results of job 1's conversation. */
+async function jobResults(daemon: Daemon): Promise<string[]> {
+  const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+  return texts(job, "toolResult");
+}
 
 test("a job runs and reports once", async () => {
   const { daemon, faux } = await bootWith();
@@ -464,26 +500,113 @@ test("the CoS and jobs are offered their own tools", async () => {
   await daemon.close();
 });
 
-test("a job runs in its profile's environment; the CoS's is read-only", async () => {
+test("the CoS's environment is the local one, read-only", async () => {
   created.length = 0;
-  const { daemon, faux } = await bootWith({ prober: profile("prober", ["environment: probe"]) });
+  const { daemon, faux } = await bootWith();
   script(faux, (_role, text) => {
     if (text === "probe root") return call("probe_write", { path: join(dir, "root.txt") });
-    if (text === "start probe") return call("job_start", { title: "Probe", brief: "probe job", worker: "prober" });
-    if (text === "probe job") return call("probe_write", { path: join(dir, "job.txt") });
   });
   await ask(daemon, "probe root");
   expect(await texts(daemon.root, "toolResult")).toEqual([READ_ONLY_MESSAGE]);
   expect(existsSync(join(dir, "root.txt"))).toBe(false);
-
-  await ask(daemon, "start probe");
-  await waitFor(async () => (await reported(daemon)).length > 0);
-  const job = String((await jobs(daemon))["1"]!.conversationId);
-  expect(existsSync(join(dir, "job.txt"))).toBe(true);
-  expect(created).toContainEqual({ env: "local", conversationId: String(ROOT_CONVERSATION_ID) });
-  expect(created).toContainEqual({ env: "probe", conversationId: job });
-  expect(created).not.toContainEqual({ env: "local", conversationId: job });
+  expect(created).not.toEqual([]);
+  expect(created.filter((c) => c.env !== "local" || c.conversationId !== String(ROOT_CONVERSATION_ID))).toEqual([]);
   await daemon.close();
+});
+
+test("job_start refuses without a sandbox", async () => {
+  process.env.JAPA_BWRAP = "/nonexistent";
+  onTestFinished(() => void delete process.env.JAPA_BWRAP);
+  const { daemon, faux } = await bootTest();
+  const reply = await tool(daemon, faux, "job_start", { title: "T", brief: "b" });
+  expect(reply).toMatch(/^Jobs can't run: \S.*\. Install bubblewrap: sudo apt install bubblewrap$/);
+  expect(await jobs(daemon)).toEqual({});
+  expect(daemon.status().errors).toContainEqual({ name: "sandbox", error: reply });
+  await daemon.close();
+});
+
+describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
+  test("a job's bash runs in its clone", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    const command = `ls "${home}/secrets"; cat "${home}/marker"; echo made > "${home}/made"`;
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Look", brief: "look", worker: "coder" });
+      if (text === "look") return call("bash", { command });
+      if (role === "toolResult" && text.includes("marker")) return call("job_complete", { summary: "seen" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    const [result] = await jobResults(daemon);
+    expect(result).toContain("the real marker");
+    expect(result).not.toContain("api-key");
+    expect(readFileSync(join(home, ".jobs", "1", "made"), "utf8")).toBe("made\n");
+    expect(existsSync(join(home, "made"))).toBe(false);
+    expect(await reported(daemon)).toEqual(['[job 1 "Look" done] seen']);
+    await daemon.close();
+  });
+
+  test("a job's file tools work on its clone, not through an environment adapter", async () => {
+    created.length = 0;
+    const { daemon, faux, home } = await bootSandboxed();
+    script(faux, (_role, text) => {
+      if (text === "start") return call("job_start", { title: "Probe", brief: "probe" });
+      if (text === "probe") return call("probe_write", { path: join(home, "job.txt") });
+      if (text === "written") return call("job_complete", { summary: "probed" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    expect(await jobResults(daemon)).toEqual(["written", "Done."]);
+    expect(readFileSync(join(home, ".jobs", "1", "job.txt"), "utf8")).toBe("x");
+    expect(existsSync(join(home, "job.txt"))).toBe(false);
+    const job = String((await jobs(daemon))["1"]!.conversationId);
+    expect(created.filter((c) => c.conversationId === job)).toEqual([]);
+    await daemon.close();
+  });
+
+  test("a dead sandbox fails one call, then restarts", async () => {
+    const { daemon, faux } = await bootSandboxed();
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Die", brief: "die", worker: "coder" });
+      // The env server, bwrap's only child: with it, the whole sandbox ends.
+      if (text === "die") return call("bash", { command: "kill -9 $PPID" });
+      if (role === "toolResult" && text.includes("sandbox stopped")) return call("bash", { command: "echo ok" });
+      if (role === "toolResult" && text.trim() === "ok") return call("job_complete", { summary: "alive" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    const results = await jobResults(daemon);
+    expect(results).toHaveLength(3);
+    expect(results[0]).toContain("The job's sandbox stopped");
+    expect(results.slice(1).map((r) => r.trim())).toEqual(["ok", "Done."]);
+    await daemon.close();
+  });
+
+  test("the daemon's own PATH holds only its Node and the system dirs; a job's is the original", async () => {
+    const original = process.env.PATH;
+    const { daemon, faux } = await bootSandboxed();
+    const system = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    expect(process.env.PATH).toBe(`${dirname(process.execPath)}:${system}`);
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Path", brief: "path", worker: "coder" });
+      if (text === "path") return call("bash", { command: 'echo "$PATH"' });
+      if (role === "toolResult" && text.trim() === original) return call("job_complete", { summary: "same" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon));
+    expect((await jobResults(daemon))[0]!.trim()).toBe(original);
+    await daemon.close();
+
+    // A second boot in this process still gives jobs the original.
+    const again = await bootSandboxed();
+    script(again.faux, (_role, text) => {
+      if (text === "start") return call("job_start", { title: "Path", brief: "path", worker: "coder" });
+      if (text === "path") return call("bash", { command: 'echo "$PATH"' });
+    });
+    await ask(again.daemon, "start");
+    await waitFor(() => idle(again.daemon));
+    expect((await jobResults(again.daemon))[0]!.trim()).toBe(original);
+    await again.daemon.close();
+  });
 });
 
 test("bad worker profiles are reported and cannot be started", async () => {
