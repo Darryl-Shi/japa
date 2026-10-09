@@ -76,6 +76,8 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--ro-bind` over the protected paths. Otherwise a job could edit code or config the daemon later runs with access
   to secrets; jobs therefore can't patch japa itself on the host.
   - The japa app directory (`~/.local/share/japa`, including its Node) and the launcher (`~/.local/bin/japa`).
+  - The daemon's Node directory, by real path, first in the daemon's `PATH`: elsewhere than the app directory with
+    nvm or a dev checkout.
   - `$XDG_CONFIG_HOME/systemd` (the unit, drop-ins and new units), `$XDG_DATA_HOME/systemd` and
     `$XDG_CONFIG_HOME/environment.d`, both at the `$XDG_*` location and the default one.
   - A protected path that doesn't exist gets an empty read-only placeholder, so a job can't create it. One that is
@@ -87,14 +89,18 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
   `state.db`, `japa.sock`, `daemon.lock` and `.git`.
 - `--bind <home>/desktop/shared <home>/desktop/shared`, when the desktop extension is installed: the folder for
   exchanging files with the desktop, which is otherwise covered by the clone.
-- `--tmpfs <settings.secrets.dir>`, when the secrets directory is configured outside `~/.japa`.
+- `--tmpfs` over a secrets directory whose real path is outside `~/.japa` (`settings.secrets.dir`, or
+  `~/.japa/secrets` as a symlink out of it), at that real path.
+- `--dev-bind /dev/null` over a storage database outside `~/.japa` (`settings.storage.file`) and its `-wal` and
+  `-shm`, by real path: they read empty. (`--ro-bind` mounts it `nodev`, where `/dev/null` can't be opened.)
 - `--tmpfs /run/user/<uid>` and `/run/screen`: hides the D-Bus session bus, the systemd user manager, ssh-agent,
   keyring and screen sockets. Otherwise `systemd-run --user` runs any command outside the sandbox.
 - `--ro-bind /dev/null` over the Docker sockets that exist (`/run/docker.sock`, `/var/run/docker.sock`): Docker
   access is root access.
 - `--die-with-parent`, `--new-session`.
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
-  environment. Provider API keys set as environment variables don't reach jobs.
+  environment. Provider API keys set as environment variables don't reach jobs. bwrap itself starts with only those
+  (its own environment is readable inside, at `/proc/1/environ`), found through the daemon's `PATH`.
 
 The network is shared, as now.
 
@@ -105,7 +111,7 @@ Consequences, accepted:
   later runs from his home.
 - The daemon never runs a job-controlled program outside the sandbox: git commands in a clone (narrowing,
   committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
-  global git config; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
+  global git config, ignore or attributes file; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
   directories and its Node (jobs keep the original `PATH`).
 
 ### 3.3 Lifetime
