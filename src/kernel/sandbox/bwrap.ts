@@ -2,9 +2,9 @@
 // its own /tmp, japa's own code and the config it runs under read-only, and nothing of the daemon's processes or
 // environment, nor a socket (the user's runtime dir, Docker's) that would run a command outside it.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 /** The variables a sandbox gets from the daemon's environment, when set. */
 const ENV = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
@@ -20,10 +20,11 @@ export type ReadOnlyPath = { path: string; dir: boolean };
 
 /**
  * `clone` is mounted over `home`, and `tmp` (a host dir) at `/tmp` and `/var/tmp`; `hidden` dirs get an empty tmpfs;
- * `shared` paths under `home` stay the real ones.
+ * `shared` paths under `home` stay the real ones. `userHome` is the user's home, the rest of which stays writable.
  */
 export type SandboxSpec = {
   home: string;
+  userHome: string;
   clone: string;
   tmp: string;
   readOnly: ReadOnlyPath[];
@@ -39,6 +40,54 @@ function placeholder(path: string): void {
   writeFileSync(path, "", { flag: "a" });
 }
 
+/** Whether `path` is `dir` or under it. */
+function within(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep));
+}
+
+/**
+ * `path` with every symlink resolved, dangling ones included, and its missing tail kept as it is; undefined for a
+ * symlink loop.
+ */
+function realPath(path: string, depth = 0): string | undefined {
+  if (depth > 40) return undefined;
+  try {
+    return realpathSync(path);
+  } catch {}
+  const parent = dirname(path);
+  if (parent === path) return path;
+  const realParent = realPath(parent, depth + 1);
+  if (realParent === undefined) return undefined;
+  const real = join(realParent, basename(path));
+  let link: string;
+  try {
+    link = readlinkSync(real);
+  } catch {
+    return real; // missing, or not a symlink
+  }
+  return realPath(resolve(realParent, link), depth + 1);
+}
+
+/** Whether `path` itself is a symlink. */
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** The existing directories strictly between `home` and `path`, when `path` is under it. */
+function between(home: string, path: string): string[] {
+  const dirs: string[] = [];
+  if (!within(path, home)) return dirs;
+  for (let dir = dirname(path); dir !== home && within(dir, home); dir = dirname(dir)) {
+    if (existsSync(dir)) dirs.push(dir);
+  }
+  return dirs;
+}
+
 /** Why `bwrap --ro-bind / / true` fails here (stderr's last line, or the spawn error); undefined when it works. */
 export function probeSandbox(): string | undefined {
   const result = spawnSync(bwrap(), ["--ro-bind", "/", "/", "true"], { encoding: "utf8", timeout: 10_000 });
@@ -49,8 +98,8 @@ export function probeSandbox(): string | undefined {
 
 /**
  * What the daemon runs outside the sandbox: the app directory (its parent in the installed layout, which includes
- * Node), the user's systemd units (config and data), environment.d and git config, and the launcher. `XDG_CONFIG_HOME`
- * and `XDG_DATA_HOME` are resolved as `serviceEnv` does.
+ * Node), the user's systemd units (config and data) and environment.d, and the launcher. `XDG_CONFIG_HOME` and
+ * `XDG_DATA_HOME` are resolved as `serviceEnv` does. Not git config: the daemon's git runs without it.
  */
 export function readOnlyPaths(
   packageRoot: string,
@@ -60,9 +109,37 @@ export function readOnlyPaths(
   const app = basename(packageRoot) === "app" ? dirname(packageRoot) : packageRoot;
   const config = env.XDG_CONFIG_HOME ?? join(userHome, ".config");
   const data = env.XDG_DATA_HOME ?? join(userHome, ".local", "share");
-  const dirs = [app, join(config, "systemd"), join(config, "git"), join(config, "environment.d"), join(data, "systemd")];
-  const files = [join(userHome, ".local", "bin", "japa"), join(userHome, ".gitconfig")];
-  return [...dirs.map((path) => ({ path, dir: true })), ...files.map((path) => ({ path, dir: false }))];
+  const dirs = [app, join(config, "systemd"), join(config, "environment.d"), join(data, "systemd")];
+  return [...dirs.map((path) => ({ path, dir: true })), { path: join(userHome, ".local", "bin", "japa"), dir: false }];
+}
+
+/**
+ * Where the read-only paths are mounted: `pinned` dirs are bound onto themselves (a mount point can't be renamed, so
+ * the protected paths under them can't be moved away and recreated); a protected symlink's directory is in
+ * `readOnlyDirs`, so the link can't be replaced, and its target in `paths`, by real path.
+ */
+function readOnlyMounts(spec: SandboxSpec) {
+  const home = realPath(spec.userHome) ?? spec.userHome;
+  const jobHome = realPath(spec.home) ?? spec.home;
+  const pinned = new Set<string>();
+  const readOnlyDirs = new Set<string>();
+  const paths: ReadOnlyPath[] = [];
+  const pin = (path: string) => {
+    for (const dir of between(home, path)) if (!within(jobHome, dir)) pinned.add(dir);
+  };
+  for (const { path, dir } of spec.readOnly) {
+    const linkDir = isSymlink(path) ? realPath(dirname(path)) : undefined;
+    if (linkDir !== undefined) {
+      readOnlyDirs.add(linkDir);
+      pin(linkDir);
+    }
+    const real = realPath(path);
+    if (real === undefined) continue; // a symlink loop: nothing to protect behind it
+    pin(real);
+    paths.push({ path: real, dir });
+  }
+  // Parents first: binding one covers the mounts already under it.
+  return { pinned: [...pinned].sort(), readOnlyDirs: [...readOnlyDirs].sort(), paths };
 }
 
 /**
@@ -71,6 +148,10 @@ export function readOnlyPaths(
  */
 export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   const args = ["--bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc"];
+  const { pinned, readOnlyDirs, paths } = readOnlyMounts(spec);
+  for (const dir of pinned) args.push("--bind", dir, dir);
+  // Before the mounts below: a bind takes the host's dir, which would uncover them.
+  for (const dir of readOnlyDirs) args.push("--ro-bind", dir, dir);
   for (const dir of ["/tmp", "/var/tmp"].filter((dir) => existsSync(dir))) args.push("--bind", spec.tmp, dir);
   args.push("--bind", spec.clone, spec.home);
   for (const path of spec.shared) args.push("--bind-try", path, path);
@@ -80,12 +161,14 @@ export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   // Masked by real path, once each (`/var/run` is usually `/run`); only existing ones, as bwrap can't create them.
   const sockets = new Set(DOCKER_SOCKETS.filter((path) => existsSync(path)).map((path) => realpathSync(path)));
   for (const path of sockets) args.push("--ro-bind-try", "/dev/null", path);
-  for (const { path, dir } of spec.readOnly) {
+  for (const { path, dir } of paths) {
+    // Nothing can be created under a read-only dir, nor can bwrap create a mount point there.
+    if (!existsSync(path) && readOnlyDirs.some((readOnly) => within(path, readOnly))) continue;
     if (!existsSync(path) && dir) {
       args.push("--tmpfs", path, "--remount-ro", path);
       continue;
     }
-    // Not `--ro-bind /dev/null`: bwrap mounts it nodev, so it can't be read; git dies on an unreadable ~/.gitconfig.
+    // Not `--ro-bind /dev/null`: bwrap mounts it nodev, so it can't be read (nor run, for the launcher).
     if (!existsSync(path)) placeholder(path);
     args.push("--ro-bind", path, path);
   }

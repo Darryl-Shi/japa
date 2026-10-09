@@ -1,7 +1,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { probeSandbox, readOnlyPaths, runSandboxed, sandboxArgs, type SandboxSpec } from "../src/kernel/sandbox/bwrap.ts";
 import { tempHome } from "./helpers.ts";
@@ -31,6 +44,13 @@ const NO_BWRAP = withEnv("JAPA_BWRAP", undefined, () => probeSandbox() !== undef
 const NO_SYSTEMD_RUN = spawnSync("systemd-run", ["--version"]).status !== 0;
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"].filter((path) => existsSync(path));
 
+/** Where the sandbox tests' user homes go: not under `/tmp`, which jobs see replaced by their own. */
+function scratch(): string {
+  const dir = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** A script that tries to create or overwrite each of `paths`: prints `wrote <path>` for each that worked, then `done`. */
 function tryWrites(paths: string[]): string {
   const write = `(mkdir -p "$(dirname "$f")" && echo x > "$f") 2>/dev/null && echo "wrote $f"`;
@@ -39,13 +59,13 @@ function tryWrites(paths: string[]): string {
 
 /**
  * A japa home with `secrets/x`, `state.db`, `japa.sock` and a shared folder, and `marker` and `skills/s` committed;
- * its clone at `.jobs/1`. Outside it: the sandbox's `/tmp`; a user home with an installed app (and its Node), the
- * launcher and the service unit, but no `.gitconfig`, `.config/git`, `.local/share/systemd` or
- * `.config/environment.d`; a hidden dir, plus a missing one. All removed when the test finishes.
+ * its clone at `.jobs/1`. Outside it (and outside `/tmp`): the sandbox's `/tmp`; a user home with an installed app (and its Node), the
+ * launcher and the service unit, but no `.local/share/systemd` or `.config/environment.d`; a hidden dir, plus a
+ * missing one. All removed when the test finishes.
  */
 function sandbox() {
   const home = tempHome();
-  const outside = mkdtempSync(join(tmpdir(), "japa-sandbox-"));
+  const outside = mkdtempSync(join(scratch(), "japa-sandbox-"));
   onTestFinished(() => {
     rmSync(home, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
@@ -85,6 +105,7 @@ function sandbox() {
 
   const spec: SandboxSpec = {
     home,
+    userHome: user,
     clone,
     tmp,
     readOnly: readOnlyPaths(app, user, {}),
@@ -100,17 +121,15 @@ test("probe fails with JAPA_BWRAP=/nonexistent", () => {
   expect(withEnv("JAPA_BWRAP", "/nonexistent", probeSandbox)).toMatch(/\S/);
 });
 
-test("readOnlyPaths covers the app dir (with its Node), the launcher, the user's systemd, environment.d and git config", () => {
+test("readOnlyPaths covers the app dir (with its Node), the launcher, the user's systemd and environment.d", () => {
   const dir = (path: string) => ({ path, dir: true });
   const file = (path: string) => ({ path, dir: false });
   const paths = (app: string, config = "/u/.config", data = "/u/.local/share") => [
     dir(app),
     dir(`${config}/systemd`),
-    dir(`${config}/git`),
     dir(`${config}/environment.d`),
     dir(`${data}/systemd`),
     file("/u/.local/bin/japa"),
-    file("/u/.gitconfig"),
   ];
   expect(readOnlyPaths("/u/.local/share/japa/app", "/u", {})).toEqual(paths("/u/.local/share/japa"));
   expect(readOnlyPaths("/src/japa", "/u", {})).toEqual(paths("/src/japa"));
@@ -119,10 +138,37 @@ test("readOnlyPaths covers the app dir (with its Node), the launcher, the user's
 });
 
 test("sandboxArgs masks each existing docker socket once, by its real path", () => {
-  const args = sandboxArgs({ home: "/h", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] });
+  const spec = { home: "/h", userHome: "/u", clone: "/h/.jobs/1", tmp: "/t", readOnly: [], hidden: [], shared: [] };
+  const args = sandboxArgs(spec);
   const masked = args.flatMap((arg, i) => (arg === "/dev/null" && args[i - 1] === "--ro-bind-try" ? [args[i + 1]] : []));
   // A missing mount point would make bwrap fail ("Can't create file at /run/docker.sock").
   expect(masked).toEqual([...new Set(DOCKER_SOCKETS.map((path) => realpathSync(path)))]);
+});
+
+test("sandboxArgs pins the existing folders between the user's home and each protected path, but not the job home's", () => {
+  const user = realpathSync(mkdtempSync(join(tmpdir(), "japa-sandbox-")));
+  onTestFinished(() => rmSync(user, { recursive: true, force: true }));
+  for (const dir of [".config/systemd", ".local/share/japa", ".local/bin", ".local/jobs"]) {
+    mkdirSync(join(user, dir), { recursive: true });
+  }
+  const home = join(user, ".local", "jobs");
+  const spec: SandboxSpec = {
+    home,
+    userHome: user,
+    clone: join(home, ".jobs", "1"),
+    tmp: "/t",
+    readOnly: readOnlyPaths(join(user, ".local", "share", "japa", "app"), user, {}),
+    hidden: [],
+    shared: [],
+  };
+  const args = sandboxArgs(spec);
+  const binds = args.flatMap((arg, i) => (arg === "--bind" && args[i + 1] === args[i + 2] ? [args[i + 1]] : []));
+  expect(binds.shift()).toBe("/");
+  // `.local` holds the job home; `.local/share/systemd` and `.config/environment.d` don't exist.
+  expect(binds).toEqual([join(user, ".config"), join(user, ".local", "bin"), join(user, ".local", "share")]);
+  const at = (path: string) => args.findIndex((arg, i) => arg === path && args[i - 1] === "--bind");
+  expect(at(join(user, ".config"))).toBeGreaterThan(args.indexOf("/proc"));
+  expect(at(join(user, ".local", "share"))).toBeLessThan(args.indexOf(spec.clone));
 });
 
 describe.skipIf(NO_BWRAP)("the sandbox", () => {
@@ -166,23 +212,68 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(existsSync(join(units, "japa.service.d"))).toBe(false);
   });
 
-  test("missing protected paths can't be created, and git still reads its config", async () => {
-    const { home, user, run } = sandbox();
-    const gitconfig = join(user, ".gitconfig");
+  test("missing protected paths can't be created", async () => {
+    const { user, run } = sandbox();
+    const launcher = join(user, ".local", "bin", "japa");
+    rmSync(launcher);
     const config = join(user, ".config");
     const targets = [
-      gitconfig,
-      join(config, "git", "config"),
+      launcher,
       join(user, ".local", "share", "systemd", "user", "japa.service.d", "x.conf"),
       join(config, "environment.d", "x.conf"),
     ];
-    const { output } = await run(`${tryWrites(targets)}; HOME="${user}" git -C "${home}" log --format=%s`);
-    expect(output.trim()).toBe("done\ninit");
+    const { output } = await run(tryWrites(targets));
+    expect(output.trim()).toBe("done");
     // At most an empty placeholder is left behind.
-    expect(existsSync(gitconfig) ? readFileSync(gitconfig, "utf8") : "").toBe("");
-    for (const dir of [join(config, "git"), join(user, ".local", "share", "systemd"), join(config, "environment.d")]) {
+    expect(existsSync(launcher) ? readFileSync(launcher, "utf8") : "").toBe("");
+    for (const dir of [join(user, ".local", "share", "systemd"), join(config, "environment.d")]) {
       expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
     }
+  });
+
+  test("the folders holding protected paths can't be renamed away and recreated", async () => {
+    const { user, units, run } = sandbox();
+    const config = join(user, ".config");
+    const local = join(user, ".local");
+    const moves = await run(
+      `mv "${config}" "${config}.old" 2>/dev/null; echo "config=$?"; mv "${local}" "${local}.old" 2>/dev/null; echo "local=$?"`,
+    );
+    expect(moves.output).toMatch(/config=[1-9]/);
+    expect(moves.output).toMatch(/local=[1-9]/);
+    await run(
+      `mv "${config}" "${config}.old"; mkdir -p "${units}"; echo changed > "${join(units, "japa.service")}"`,
+    );
+    expect(readFileSync(join(units, "japa.service"), "utf8")).toBe("unit");
+    expect(existsSync(`${config}.old`)).toBe(false);
+    expect(existsSync(`${local}.old`)).toBe(false);
+  });
+
+  test("a protected path that is a symlink: its target can't be written, nor the link replaced", async () => {
+    const { user, units, run } = sandbox();
+    const link = join(user, ".config", "systemd");
+    const target = join(user, "dotfiles", "systemd");
+    mkdirSync(dirname(target));
+    renameSync(link, target);
+    symlinkSync(target, link);
+    // A dangling one too: its target can't be created.
+    const env = join(user, ".config", "environment.d");
+    const envTarget = join(user, "dotfiles", "environment.d");
+    symlinkSync(envTarget, env);
+    const writes = [join(target, "user", "evil.service"), join(target, "user", "japa.service"), join(envTarget, "x.conf")];
+    const script = [
+      tryWrites(writes),
+      `rm "${link}" 2>/dev/null && echo removed`,
+      `ln -sfn /tmp "${link}" 2>/dev/null && echo replaced`,
+      `mv "${link}" "${link}.old" 2>/dev/null && echo moved`,
+      `mv "${dirname(target)}" "${dirname(target)}.old" 2>/dev/null && echo "moved target"`,
+      "echo end",
+    ].join("; ");
+    const { code, output } = await run(script);
+    expect({ code, output: output.trim() }).toEqual({ code: 0, output: "done\nend" });
+    expect(readlinkSync(link)).toBe(target);
+    expect(readFileSync(join(units, "japa.service"), "utf8")).toBe("unit");
+    expect(readdirSync(join(target, "user"))).toEqual(["japa.service"]);
+    expect(existsSync(envTarget) ? readdirSync(envTarget) : []).toEqual([]);
   });
 
   test("/tmp and /var/tmp are the job's own", async () => {
