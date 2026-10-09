@@ -70,6 +70,15 @@ function agentOf(
   };
 }
 
+/**
+ * `job_start`'s refusal of model `name`: `known` when japa has it but its provider has no credentials; `available`, the
+ * models it could use instead.
+ */
+export function modelRefusal(name: string, known: boolean, available: string[]): string {
+  const why = known ? `Model "${name}" has no credentials.` : `Unknown model "${name}".`;
+  return `${why} ${available.length === 0 ? "No models are usable." : `Models: ${available.join(", ")}.`}`;
+}
+
 /** The models a job can run on: `<provider>/<modelId>` of each one whose provider has credentials. */
 async function availableModels(models: Models): Promise<string[]> {
   return (await models.getAvailable()).map((m) => `${m.provider}/${m.id}`);
@@ -118,7 +127,8 @@ export function jobsExtension(options: JobsOptions): Extension {
         const available = await availableModels(options.models);
         const ref = parseModel(name);
         if (ref === undefined || !available.includes(modelText(ref))) {
-          return reply(`Unknown model "${name}". Models: ${available.join(", ")}.`);
+          const known = ref !== undefined && options.models.getModel(ref.provider, ref.modelId) !== undefined;
+          return reply(modelRefusal(name, known, available));
         }
         model = ref;
       }

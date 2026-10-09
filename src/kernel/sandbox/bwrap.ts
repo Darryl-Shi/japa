@@ -171,8 +171,16 @@ function isDirectory(path: string): boolean {
   }
 }
 
-/** Why `bwrap --ro-bind / / true` fails here (stderr's last line, or the spawn error); undefined when it works. */
+/**
+ * Why `bwrap --ro-bind / / true` fails here (stderr's last line, or the spawn error), without a trailing period: the
+ * messages showing it add their own; undefined when it works.
+ */
 export function probeSandbox(): string | undefined {
+  const reason = probeFailure();
+  return reason === undefined ? undefined : reason.trim().replace(/\.+$/, "") || "bwrap failed";
+}
+
+function probeFailure(): string | undefined {
   let command: string;
   try {
     command = bwrap();

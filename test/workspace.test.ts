@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import {
@@ -22,10 +22,22 @@ function workspace(): string {
   return home;
 }
 
+test("a secrets directory symlinked out of the workspace is ignored, in a new workspace and an older one", () => {
+  const outside = tempHome();
+  for (const before of [undefined, "secrets/\n"]) {
+    const home = tempHome();
+    if (before !== undefined) writeFileSync(join(home, ".gitignore"), before);
+    symlinkSync(outside, join(home, "secrets"));
+    ensureWorkspace(home);
+    expect(git(home, "ls-files")).toBe(".gitignore");
+    expect(git(home, "status", "--porcelain")).toBe("");
+  }
+});
+
 test("ensureWorkspace creates the repo, .gitignore and the initial commit, idempotently", () => {
   const home = workspace();
   ensureWorkspace(home);
-  expect(readFileSync(join(home, ".gitignore"), "utf8")).toContain("secrets/");
+  expect(readFileSync(join(home, ".gitignore"), "utf8").split("\n")).toContain("/secrets");
   expect(git(home, "log", "--format=%s")).toBe("Initial workspace");
   expect(git(home, "branch", "--show-current")).toBe("main");
 });

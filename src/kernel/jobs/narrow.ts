@@ -44,7 +44,8 @@ export function publishable(path: string): boolean {
  * bundle: not when nothing is left changed since `base`.
  *
  * First, it removes the index's lock: one left there is stale, by a git killed holding it (a publish aborted
- * mid-narrow, say), since nothing else runs in the clone meanwhile: its sandbox is closed while the job is published.
+ * mid-narrow, say), since nothing else should run in the clone meanwhile: the job's sandbox has been told to stop
+ * (its processes may still be exiting), and it can't restart while the job is publishing.
  */
 export function narrow(
   dir: string,

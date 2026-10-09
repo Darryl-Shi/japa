@@ -202,5 +202,10 @@ test("skill errors are returned; a workers dir is noticed", async () => {
     { name: "skill:bad", error: "description is required" },
     { name: "workers", error: "~/.japa/workers/ is no longer used: jobs have no profiles" },
   ]);
+  expect(bootErrors(daemon).map((e) => e.name)).toContain("workers");
+  // Once it's removed, the notice goes with the next reload.
+  rmSync(join(home, "workers"), { recursive: true });
+  expect((await daemon.reconcile()).errors).toEqual([{ name: "skill:bad", error: "description is required" }]);
+  expect(bootErrors(daemon).map((e) => e.name)).not.toContain("workers");
   await daemon.close();
 });

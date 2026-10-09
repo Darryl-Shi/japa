@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { type ModelRef, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { envApiKeyAuth, type FauxProviderHandle, StringEnum } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -241,7 +241,7 @@ describe("jobs", { timeout: 30_000 }, () => {
   });
 
   test("/jobs shows model and thinking", async () => {
-    // A job from before jobs had them: its worker profile's.
+    // A job from before jobs had them, started by a worker profile.
     const legacy = { ...jobOf("2"), worker: "coder" } as Job;
     delete legacy.model;
     delete legacy.thinking;
@@ -249,9 +249,12 @@ describe("jobs", { timeout: 30_000 }, () => {
     await openJobs();
     await fake.press("🔄 #1 t1 · <1m");
     expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*#1 t1\*\*\n\n🔄 running · anthropic\/opus · thinking xhigh\n/);
+    // It runs on the settings' worker model (else the CoS's) and jobs.thinking.
+    const cos = JSON.parse((await tool(daemon, faux, "settings_get", { path: "models.cos" }))!) as ModelRef;
+    await tool(daemon, faux, "settings_set", { path: "jobs.thinking", value: "high" });
     await openJobs();
     await fake.press("🔄 #2 t2 · <1m");
-    expect(fake.edited.at(-1)!.markdown).toMatch(/^\*\*#2 t2\*\*\n\n🔄 running · default model · thinking default\n/);
+    expect(fake.edited.at(-1)!.markdown.split("\n")[2]).toBe(`🔄 running · ${cos.provider}/${cos.modelId} · thinking high`);
   });
 
   test("a job's detail shows its status, model, thinking, times, brief and what its status calls for", async () => {

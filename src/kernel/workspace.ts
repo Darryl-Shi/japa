@@ -16,7 +16,8 @@ import { basename, dirname, join } from "node:path";
 /** The last-known-good tag. */
 export const LKG = "japa-lkg";
 
-const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/", "logs/", "setup.json", "update.json*", ".jobs/"];
+// `/secrets`, not `secrets/`: that matches only a directory, and `~/.japa/secrets` may be a symlink to one elsewhere.
+const IGNORED = ["state.db*", "/secrets", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/", "logs/", "setup.json", "update.json*", ".jobs/"];
 
 /**
  * Runs git in `home` as japa, with neither the user's global config, ignore and attributes files nor any hooks: jobs

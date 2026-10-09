@@ -8,7 +8,7 @@ import { CHECK_KINDS, check } from "../src/kernel/check.ts";
 import { tempHome } from "./helpers.ts";
 
 /** A temp home holding `files` (by path relative to it), used as both the checked dir and the home. */
-function staged(files: Record<string, string>): string {
+function homeWith(files: Record<string, string>): string {
   const home = tempHome();
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(dirname(join(home, path)), { recursive: true });
@@ -37,12 +37,12 @@ export default defineJapaExtension({
 `;
 
 test("a skill whose name does not match its directory fails", async () => {
-  const home = staged({ "skills/notes/SKILL.md": "---\nname: other\ndescription: Takes notes\n---\nBody" });
+  const home = homeWith({ "skills/notes/SKILL.md": "---\nname: other\ndescription: Takes notes\n---\nBody" });
   expect(await check("skill", "notes", home, home)).toEqual([`name must be "notes"`]);
 });
 
 test("a good skill passes", async () => {
-  const home = staged({ "skills/notes/SKILL.md": "---\nname: notes\ndescription: Takes notes\n---\nBody" });
+  const home = homeWith({ "skills/notes/SKILL.md": "---\nname: notes\ndescription: Takes notes\n---\nBody" });
   expect(await check("skill", "notes", home, home)).toEqual([]);
 });
 
@@ -52,7 +52,7 @@ test("the check kinds are skill and extension", () => {
 
 describe("extensions", { timeout: 60_000 }, () => {
   test("an extension with a type error fails with the compiler output", async () => {
-    const home = staged({ "extensions/hello/index.ts": extension("hello", "hello").replace(`"hello " + who`, "who * 2") });
+    const home = homeWith({ "extensions/hello/index.ts": extension("hello", "hello").replace(`"hello " + who`, "who * 2") });
     const problems = await check("extension", "hello", home, home);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("index.ts");
@@ -60,12 +60,12 @@ describe("extensions", { timeout: 60_000 }, () => {
   });
 
   test("an extension whose tool collides with a kernel tool fails", async () => {
-    const home = staged({ "extensions/hello/index.ts": extension("hello", "job_start") });
+    const home = homeWith({ "extensions/hello/index.ts": extension("hello", "job_start") });
     expect(await check("extension", "hello", home, home)).toEqual([`tool "job_start" is also provided by japa-jobs`]);
   });
 
   test("an extension whose tool collides with another extension's tool fails", async () => {
-    const home = staged({
+    const home = homeWith({
       "extensions/hello/index.ts": extension("hello", "greet"),
       "extensions/hi/index.ts": extension("hi", "greet"),
     });
@@ -74,12 +74,12 @@ describe("extensions", { timeout: 60_000 }, () => {
 
   test("an extension whose activation throws fails the smoke load", async () => {
     const provides = `tool: [tool], trigger: [{ name: "tick", start: () => { throw new Error("boom"); } }]`;
-    const home = staged({ "extensions/hello/index.ts": extension("hello", "hello", provides) });
+    const home = homeWith({ "extensions/hello/index.ts": extension("hello", "hello", provides) });
     expect(await check("extension", "hello", home, home)).toEqual(["trigger: boom"]);
   });
 
   test("checking again after an edit runs the edited module", async () => {
-    const home = staged({
+    const home = homeWith({
       "extensions/hello/index.ts": extension("hello", "hello"),
       "extensions/hello/index.test.ts": `import { expect, test } from "vitest";\ntest("ok", () => expect(1).toBe(1));\n`,
     });
@@ -91,12 +91,12 @@ describe("extensions", { timeout: 60_000 }, () => {
   });
 
   test("a good extension with one tool, importing japa/sdk, passes", async () => {
-    const home = staged({ "extensions/hello/index.ts": extension("hello", "hello") });
+    const home = homeWith({ "extensions/hello/index.ts": extension("hello", "hello") });
     expect(await check("extension", "hello", home, home)).toEqual([]);
   });
 
   test("tsc and vitest run on japa's own Node when there is no node on PATH", () => {
-    const home = staged({
+    const home = homeWith({
       "extensions/hello/index.ts": extension("hello", "hello"),
       "extensions/hello/index.test.ts": `import { expect, test } from "vitest";\ntest("ok", () => expect(1).toBe(1));\n`,
     });
@@ -116,7 +116,7 @@ describe("extensions", { timeout: 60_000 }, () => {
 });
 
 test("japa check worker is refused", () => {
-  const dir = staged({ "workers/scout.md": "---\nname: scout\ndescription: Looks around\n---\nLook." });
+  const dir = homeWith({ "workers/scout.md": "---\nname: scout\ndescription: Looks around\n---\nLook." });
   const main = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
   const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", main, "check", "worker", "scout"], {
     cwd: dir,
@@ -131,7 +131,7 @@ test("japa check worker is refused", () => {
 });
 
 test("japa check prints ok and exits 0 for a good skill", () => {
-  const dir = staged({ "skills/notes/SKILL.md": "---\nname: notes\ndescription: Takes notes\n---\nBody" });
+  const dir = homeWith({ "skills/notes/SKILL.md": "---\nname: notes\ndescription: Takes notes\n---\nBody" });
   const main = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
   const out = execFileSync(main, ["check", "skill", "notes"], { cwd: dir, env: { ...process.env, JAPA_HOME: tempHome() }, encoding: "utf8" });
   expect(out.trim()).toBe("ok");

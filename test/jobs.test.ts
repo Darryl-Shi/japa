@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { type FauxProviderHandle, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { configure, type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -17,6 +17,7 @@ import { basename, dirname, join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
+import { modelRefusal } from "../src/kernel/jobs/cos.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobDoc, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
@@ -597,6 +598,29 @@ test.skipIf(NO_BWRAP)("an unknown model is refused with the list", async () => {
   }
   expect(await jobs(daemon)).toEqual({});
   await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("a known model whose provider has no credentials is refused as such, with the list", async () => {
+  const kit = testKit({ models: [{ id: "a" }] });
+  const locked = fauxProvider({ provider: "locked", models: [{ id: "m" }] }).provider;
+  // As a provider whose key isn't set: known, but not usable.
+  const provider = Object.assign(Object.create(Object.getPrototypeOf(locked)), locked, {
+    auth: { apiKey: { name: "Locked", resolve: async () => undefined } },
+  });
+  const extension = { name: "locked", summary: "A provider without credentials", provides: { provider: [provider] } };
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  const daemon = await boot({ home, extensions: [kit.extension, probe, extension] });
+  expect(await tool(daemon, kit.faux, "job_start", { title: "T", brief: "b", model: "locked/m" })).toBe(
+    `Model "locked/m" has no credentials. Models: ${kit.model.provider}/a.`,
+  );
+  expect(await jobs(daemon)).toEqual({});
+  await daemon.close();
+});
+
+test("the model refusal says when no model is usable", () => {
+  expect(modelRefusal("p/x", false, [])).toBe('Unknown model "p/x". No models are usable.');
+  expect(modelRefusal("p/x", true, [])).toBe('Model "p/x" has no credentials. No models are usable.');
+  expect(modelRefusal("p/x", false, ["p/a", "p/b"])).toBe('Unknown model "p/x". Models: p/a, p/b.');
 });
 
 test.skipIf(NO_BWRAP)("a stored job with worker and environment still loads", async () => {

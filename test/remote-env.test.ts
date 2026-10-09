@@ -10,7 +10,7 @@ import { ENV_MODULE, LOST, remoteEnv, SERVER, startEnvServer } from "../src/kern
 const server = startEnvServer([process.execPath, SERVER, ENV_MODULE]);
 afterAll(() => server.close());
 
-registerEnvConformance({ describe, expect, it }, "remote environment (local server)", async (use) => {
+registerEnvConformance({ describe, expect, it }, "the job sandbox's environment (its server, run here without bwrap)", async (use) => {
   const dir = mkdtempSync(join(tmpdir(), "japa-env-"));
   try {
     await use(remoteEnv(async () => server, dir, "test"));

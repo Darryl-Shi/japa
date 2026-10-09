@@ -128,6 +128,14 @@ test("probe fails with JAPA_BWRAP=/nonexistent", () => {
   expect(withEnv("JAPA_BWRAP", "/nonexistent", probeSandbox)).toMatch(/\S/);
 });
 
+test("the probe's reason has no trailing period, as messages add their own", () => {
+  const dir = mkdtempSync(join(tmpdir(), "japa-fake-bwrap-"));
+  const fake = join(dir, "bwrap");
+  writeFileSync(fake, "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace.' >&2\nexit 1\n");
+  chmodSync(fake, 0o755);
+  expect(withEnv("JAPA_BWRAP", fake, probeSandbox)).toBe("bwrap: No permissions to create a new namespace");
+});
+
 test("readOnlyPaths covers the app dir (with its Node), the launcher, the user's systemd and environment.d", () => {
   const dir = (path: string) => ({ path, dir: true });
   const file = (path: string) => ({ path, dir: false });

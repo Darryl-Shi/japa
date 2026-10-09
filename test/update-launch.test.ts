@@ -64,7 +64,7 @@ test("JAPA_HOME is passed only for a custom home", () => {
   expect(custom.slice(4, 6)).toEqual(["--setenv=PATH=/usr/bin:/bin", "--setenv=JAPA_HOME=/home/x/.japa"]);
 });
 
-test("on macOS, or without the service, the update is a detached process", () => {
+test("off Linux, or without the service, the update is a detached process", () => {
   const detached = { cmd: "/opt/japa/node/bin/node", args: [...UPDATE.slice(1), "--ff-only"], detached: true };
   expect(plan({ platform: "darwin" })).toEqual(detached);
   expect(plan({ serviceActive: false })).toEqual(detached);
