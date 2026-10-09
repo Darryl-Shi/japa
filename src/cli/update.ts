@@ -168,10 +168,13 @@ export async function restartAfterUpdate(
   return "none";
 }
 
-/** The commits `old..target` brings, newest first, as `git log --oneline` shows them; the newest `max` of them. */
+/**
+ * The commits `old..target` brings, newest first, as `<short sha> <subject>`; the newest `max` of them. Not
+ * `--oneline`, which follows the user's git config (decorations, colours).
+ */
 async function commitsBetween(app: string, old: string, target: string, max?: number): Promise<string[]> {
   const limit = max === undefined ? [] : [`-${max}`];
-  return linesOf((await gitIn(app)("log", "--oneline", ...limit, `${old}..${target}`)).stdout);
+  return linesOf((await gitIn(app)("log", "--format=%h %s", ...limit, `${old}..${target}`)).stdout);
 }
 
 /**

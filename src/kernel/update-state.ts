@@ -25,7 +25,7 @@ export type UpdateState = {
   /** A failure's one-line reason and the output of the command that failed. */
   summary?: string;
   output?: string;
-  /** The newest 20 new commits, as `git log --oneline` shows them, and the new code's what's new lines. */
+  /** The newest 20 new commits, as `<short sha> <subject>`, and the new code's what's new lines. */
   commits?: string[];
   whatsNew?: string[];
   reported: boolean;

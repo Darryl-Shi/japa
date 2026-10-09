@@ -499,6 +499,18 @@ test("checkForUpdate lists incoming commits newest first and changes nothing", a
   expect(git(c.app, "stash", "list")).toBe("");
 });
 
+test("commit lines are the short sha and subject, whatever the user's git config decorates or colours", async () => {
+  const c = checkout();
+  git(c.app, "config", "log.decorate", "short");
+  git(c.app, "config", "color.ui", "always");
+  const two = push(c, "two", { README: "two\n" });
+  const h = harness(c);
+
+  expect((await checkForUpdate(c.app)).commits).toEqual([`${short(two)} two`]);
+  await update(h.o, h.deps);
+  expect(h.patches.at(-1)?.commits).toEqual([`${short(two)} two`]);
+});
+
 test("checkForUpdate on a current checkout lists nothing, and fails as update does", async () => {
   const c = checkout();
   const before = head(c.app);
