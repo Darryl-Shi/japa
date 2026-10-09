@@ -731,6 +731,10 @@ describe("extensions", { timeout: 60_000 }, () => {
     await fake.receive({ text: "lots" });
     expect(shown()).toMatch(/^✗ .+\n\n\*\*demo/);
     expect(shown()).toContain("- limit: 5");
+    await fake.press("limit");
+    await fake.receive({ text: "null" });
+    expect(shown()).toMatch(/^✗ limit can't be null\n\n\*\*demo/);
+    expect(shown()).toContain("- limit: 5");
     await fake.press("loud: on");
     expect(shown()).toContain("- loud: false");
     const changes = await tool(daemon, faux, "changes_list");
@@ -738,6 +742,18 @@ describe("extensions", { timeout: 60_000 }, () => {
     expect(await tool(daemon, faux, "settings_get", { path: "extensions.demo" })).toBe(
       JSON.stringify({ loud: false, mode: "slow", size: 2, label: "hello", limit: 5 }, null, 2),
     );
+    // A text setting keeps exactly what was typed, even when it reads as JSON.
+    const label = async () => {
+      const got = await hook.messaging!.tool("settings_get", { path: "extensions.demo.label" });
+      return (got!.content![0] as { text: string }).text;
+    };
+    for (const text of ["12345678901234567890", "1e3", "1.50", "null", '"quoted"']) {
+      await open("demo");
+      await fake.press("label");
+      await fake.receive({ text });
+      expect(shown()).toMatch(/^✓ Set extensions\.demo\.label\./);
+      expect(await label()).toBe(JSON.stringify(text));
+    }
   });
 
   test("Turn off hides the extension from the CoS; Turn on shows it again", async () => {

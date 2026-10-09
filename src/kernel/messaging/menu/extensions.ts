@@ -29,6 +29,12 @@ function choicesOf(schema: Property): unknown[] | undefined {
   return consts !== undefined && consts.length > 0 && consts.every((c) => c !== undefined) ? consts : undefined;
 }
 
+/** Whether `schema` accepts null: its type is (or includes) "null", or one of its `anyOf` does. */
+function nullable(schema: Property): boolean {
+  const types = [schema.type].flat();
+  return types.includes("null") || (schema.anyOf ?? []).some((s) => nullable(s as Property));
+}
+
 /** Typed text as a setting's value: its JSON value if it parses, else the text itself. */
 function parsed(text: string): unknown {
   try {
@@ -85,7 +91,13 @@ export function extensionsMenu(nav: Nav, messaging: MessagingContext, home: Page
       } else if (choices !== undefined) {
         rows.push([nav.button(prop, choose(name, prop, choices, current, self))]);
       } else {
-        const apply = (text: string) => messaging.setSetting(path(prop), parsed(text));
+        // A text setting keeps exactly what was typed; anything else is read as JSON when it parses.
+        const text = (t: string) => ([schema.type].flat().includes("string") ? t : parsed(t));
+        const apply = async (typed: string) => {
+          const value = text(typed);
+          if (value === null && !nullable(schema)) return `Not changed: ${prop} can't be null`;
+          return messaging.setSetting(path(prop), value);
+        };
         const ask = nav.ask({ title: prop, prompt: schema.description, apply, then: self, cancel: self });
         rows.push([nav.button(prop, ask)]);
       }
