@@ -12,6 +12,8 @@ export const LOST = "The job's sandbox stopped";
 /** pi-durable's `dist/env/node.js`, which `env-server.ts` loads; `dist/env/` imports only `node:` built-ins. */
 export const ENV_MODULE = createRequire(import.meta.url).resolve("@earendil-works/pi-durable/env/node");
 export const SERVER = fileURLToPath(new URL("./env-server.ts", import.meta.url));
+/** How much of a server line that failed is logged. */
+const MAX_LOGGED = 200;
 
 export type EnvServer = {
   call(target: { cwd: string } | { handle: number }, method: string, args: unknown[], context: Context): Promise<unknown>;
@@ -105,8 +107,9 @@ export function startEnvServer(
   createInterface({ input: child.stderr }).on("line", (line) => {
     if (line.trim()) lastStderr = line;
   });
-  // What the server writes can come from the sandbox too (its stdout is reachable there): a line it can't have meant
-  // ends the connection, as if the server were lost, instead of throwing here.
+  // What the server writes can come from the sandbox too (its stdout is reachable there): a line it can't have meant,
+  // or one a callback throws on, is logged and ends the connection, as if the server were lost, instead of throwing
+  // here.
   createInterface({ input: child.stdout }).on("line", (line) => {
     try {
       const message = JSON.parse(line) as { id: number; call?: unknown[]; result?: unknown; thrown?: string };
@@ -115,7 +118,10 @@ export function startEnvServer(
       if (message.call) request.callback!(...(decode(message.call, request.context) as unknown[]));
       else if (message.thrown !== undefined) request.reject(new Error(message.thrown));
       else request.resolve(decode(message.result, request.context));
-    } catch {
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      const shown = line.length > MAX_LOGGED ? `${line.slice(0, MAX_LOGGED)}\u2026` : line;
+      console.error(`The env server's connection ends, its line failed (${why}): ${shown}`);
       onLost();
       child.kill();
     }
