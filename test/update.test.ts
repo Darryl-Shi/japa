@@ -594,6 +594,49 @@ test("record gets each failure with its summary and output, after the rollback",
   expect(h.patchHeads.at(-1)).toBe(old);
 });
 
+/** A `record` that keeps the pid and fails to write any result, as a full disk would. */
+function failingRecord(h: { patches: Partial<UpdateState>[] }) {
+  return (patch: Partial<UpdateState>) => {
+    h.patches.push(patch);
+    if (patch.state !== undefined) throw new Error("ENOSPC: no space left on device");
+  };
+}
+
+test("a result that can't be recorded is logged, and the update still succeeds", async () => {
+  const c = checkout();
+  const two = push(c, "two", { README: "two\n" });
+  const h = harness(c);
+  h.o.record = failingRecord(h);
+
+  expect(await update(h.o, h.deps)).toBe("updated");
+
+  expect(head(c.app)).toBe(two);
+  expect(h.patches.map((p) => p.state)).toEqual([undefined, "updated"]); // never re-recorded as failed
+  expect(h.logs).toContain("could not record the update: ENOSPC: no space left on device");
+
+  const current = harness(c);
+  current.o.record = failingRecord(current);
+
+  expect(await update(current.o, current.deps)).toBe("up to date");
+  expect(current.logs).toContain("could not record the update: ENOSPC: no space left on device");
+});
+
+test("a failure that can't be recorded still throws the original reason", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  push(c, "two", { README: "two\n" });
+  const h = harness(c, { fail: "validate" });
+  h.o.record = failingRecord(h);
+
+  const error = await update(h.o, h.deps).catch((e: unknown) => e);
+
+  expect(error).toBeInstanceOf(UpdateFailed);
+  expect((error as Error).message).toBe(`update failed at validation: boom; still on ${short(old)}`);
+  expect(h.patches.map((p) => p.state)).toEqual([undefined, "failed"]);
+  expect(h.logs).toContain("could not record the update: ENOSPC: no space left on device");
+  expect(head(c.app)).toBe(old);
+});
+
 test("record gets a refusal and an unexpected error as failures", async () => {
   const diverged = checkout();
   push(diverged, "two", { README: "upstream\n" });

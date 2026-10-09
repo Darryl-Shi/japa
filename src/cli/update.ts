@@ -206,17 +206,30 @@ export async function checkForUpdate(app: string, branch?: string): Promise<Upda
  * `o.record` gets the pid first and how the run ended last -- a failure once everything is put back.
  */
 export async function update(o: UpdateOptions, overrides: Partial<UpdateDeps> = {}): Promise<"up to date" | "checked" | "updated"> {
+  // Nothing has changed yet, so a pid that can't be recorded may stop the run.
   o.record?.({ pid: process.pid });
+  /** Records the run's result. A write that fails is only logged: the outcome (or the reason it failed) wins. */
+  const note = (patch: Partial<UpdateState>) => {
+    try {
+      o.record?.(patch);
+    } catch (error) {
+      o.log(`could not record the update: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   try {
-    return await updateCheckout(o, overrides);
+    return await updateCheckout(o, overrides, note);
   } catch (error) {
     const [summary, ...said] = (error instanceof Error ? error.message : String(error)).split("\n");
-    o.record?.({ state: "failed", summary, output: said.length === 0 ? undefined : said.join("\n"), finished: Date.now() });
+    note({ state: "failed", summary, output: said.length === 0 ? undefined : said.join("\n"), finished: Date.now() });
     throw error;
   }
 }
 
-async function updateCheckout(o: UpdateOptions, overrides: Partial<UpdateDeps>): Promise<"up to date" | "checked" | "updated"> {
+async function updateCheckout(
+  o: UpdateOptions,
+  overrides: Partial<UpdateDeps>,
+  note: (patch: Partial<UpdateState>) => void,
+): Promise<"up to date" | "checked" | "updated"> {
   const deps = { ...defaultDeps(o), ...overrides };
   const layout = layoutOf(o.app, o.userHome);
   const git = gitIn(o.app);
@@ -251,7 +264,7 @@ async function updateCheckout(o: UpdateOptions, overrides: Partial<UpdateDeps>):
   // Up to date means standing on the target branch at the target commit: a `--branch` elsewhere is still a move.
   if (!switched && target === old) {
     o.log(`japa is up to date (${short(old)})`);
-    o.record?.({ state: "up to date", to: old, finished: Date.now() });
+    note({ state: "up to date", to: old, finished: Date.now() });
     return "up to date";
   }
   if (o.check) {
@@ -372,7 +385,7 @@ async function updateCheckout(o: UpdateOptions, overrides: Partial<UpdateDeps>):
   o.log(`${short(old)} → ${short(target)}`);
   const commits = await commitsBetween(o.app, old, target, 20);
   if (commits.length > 0) o.log(commits.join("\n"));
-  o.record?.({ state: "updated", to: target, commits, whatsNew, restarted, finished: Date.now() });
+  note({ state: "updated", to: target, commits, whatsNew, restarted, finished: Date.now() });
   return "updated";
 }
 
