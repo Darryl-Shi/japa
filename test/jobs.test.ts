@@ -2,9 +2,18 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxProviderHandle, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
@@ -61,26 +70,45 @@ const HOME = process.env.HOME;
 
 /**
  * Boots with the probe extension, the japa home and the user's home (`HOME`, until the test finishes) outside `/tmp`,
- * which jobs see replaced by their own; the home has `marker` and a secret `secrets/api-key`.
+ * which jobs see replaced by their own; the home has `marker` and a secret `secrets/api-key`, or with `o.vault`,
+ * `secrets` is a symlink to `<outside>/vault`, which has it. `o.storage(outside)` is the storage setting.
  */
-async function bootSandboxed(): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string }> {
+async function bootSandboxed(
+  o: { vault?: boolean; storage?: (outside: string) => object } = {},
+): Promise<{ daemon: Daemon; faux: FauxProviderHandle; home: string; user: string; outside: string }> {
   const cache = join(realpathSync(fileURLToPath(new URL("../node_modules", import.meta.url))), ".cache");
   mkdirSync(cache, { recursive: true });
   const outside = mkdtempSync(join(cache, "japa-jobs-"));
   const [home, user] = [join(outside, "home"), join(outside, "user")];
-  mkdirSync(join(home, "secrets"), { recursive: true });
+  const secrets = o.vault ? join(outside, "vault") : join(home, "secrets");
+  mkdirSync(secrets, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  if (o.vault) symlinkSync(secrets, join(home, "secrets"));
   mkdirSync(user);
-  writeFileSync(join(home, "secrets", "api-key"), "sk-1");
+  writeFileSync(join(secrets, "api-key"), "sk-1");
   writeFileSync(join(home, "marker"), "the real marker");
   const kit = testKit();
-  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage: { adapter: "memory" }, models: { cos: kit.model } }));
+  const storage = o.storage?.(outside) ?? { adapter: "memory" };
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ storage, models: { cos: kit.model } }));
   process.env.HOME = user;
   onTestFinished(() => {
     process.env.HOME = HOME;
     rmSync(outside, { recursive: true, force: true });
   });
   const daemon = await boot({ home, extensions: [kit.extension, probe] });
-  return { daemon, faux: kit.faux, home, user };
+  return { daemon, faux: kit.faux, home, user, outside };
+}
+
+/** Has job 1 (a coder) run `command` in bash; its result. */
+async function jobBash(daemon: Daemon, faux: FauxProviderHandle, command: string): Promise<string> {
+  script(faux, (role, text) => {
+    if (text === "start") return call("job_start", { title: "Bash", brief: "bash", worker: "coder" });
+    if (text === "bash") return call("bash", { command });
+    if (role === "toolResult" && text.includes("end")) return call("job_complete", { summary: "ran" });
+  });
+  await ask(daemon, "start");
+  await waitFor(() => idle(daemon));
+  return (await jobResults(daemon))[0]!;
 }
 
 /** The tool results of job 1's conversation. */
@@ -579,6 +607,35 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const [result] = await jobResults(daemon);
     expect(result).toMatch(/end\s*$/);
     expect(result).not.toContain(value);
+    await daemon.close();
+  });
+
+  test("a secrets dir that is a symlink in the home to a dir outside it is hidden", async () => {
+    const { daemon, faux, home, outside } = await bootSandboxed({ vault: true });
+    const vault = join(outside, "vault");
+    const result = await jobBash(daemon, faux, `cat "${home}/secrets/api-key" "${vault}/api-key"; ls -A "${vault}"; echo end`);
+    expect(result).toMatch(/end\s*$/);
+    expect(result).not.toContain("sk-1");
+    expect(result).not.toMatch(/^api-key$/m);
+    await daemon.close();
+  });
+
+  test("a storage database outside the home reads empty, its -wal and -shm too", async () => {
+    const storage = (outside: string) => ({ adapter: "sqlite", file: join(outside, "db", "state.db") });
+    const { daemon, faux, outside } = await bootSandboxed({
+      storage: (outside) => {
+        mkdirSync(join(outside, "db"));
+        return storage(outside);
+      },
+    });
+    const db = storage(outside).file;
+    const files = [db, `${db}-wal`, `${db}-shm`];
+    const sizes = files.map((file) => `test -e "${file}" && echo "$(basename "${file}") $(wc -c < "${file}")"`);
+    const result = await jobBash(daemon, faux, `${sizes.join("; ")}; echo end`);
+    const host = files.filter((file) => existsSync(file));
+    expect(host.length).toBeGreaterThan(1);
+    expect(result.trim()).toBe([...host.map((file) => `${basename(file)} 0`), "end"].join("\n"));
+    expect(readFileSync(db).length).toBeGreaterThan(0);
     await daemon.close();
   });
 

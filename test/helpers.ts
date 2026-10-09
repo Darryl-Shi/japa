@@ -9,9 +9,16 @@ import { boot, type Daemon } from "../src/kernel/boot.ts";
 import type { SurfaceContext } from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import { fauxKit } from "../src/kernel/kit.ts";
+import { probeSandbox } from "../src/kernel/sandbox/bwrap.ts";
 import type { Updater } from "../src/kernel/update-state.ts";
 
 export const REPO_EXTENSIONS = fileURLToPath(new URL("../extensions", import.meta.url));
+
+/**
+ * Whether jobs can't run here: the sandbox probe fails (`JAPA_BWRAP` honoured). Tests that start a job, or expect no
+ * boot errors, are skipped then.
+ */
+export const NO_BWRAP = probeSandbox() !== undefined;
 
 /** Creates a temp `japa` home dir; writes `settings.json` when `settings` is given. */
 export function tempHome(settings?: object): string {

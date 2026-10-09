@@ -300,6 +300,18 @@ test("sandboxArgs creates missing placeholders and their folders first, and pins
   expect(args.join(" ")).toContain(`--tmpfs ${systemd} --remount-ro ${systemd}`);
 });
 
+test("sandboxArgs hides a dir with an empty tmpfs and a file with /dev/null, those that exist", () => {
+  const user = tempUser();
+  mkdirSync(join(user, "dir"));
+  writeFileSync(join(user, "file"), "secret");
+  const hidden = [join(user, "dir"), join(user, "file"), join(user, "absent")];
+  const args = sandboxArgs({ ...bare, userHome: user, hidden }).join(" ");
+  expect(args).toContain(`--tmpfs ${join(user, "dir")}`);
+  // Not `--ro-bind`: bwrap mounts that nodev, so the file couldn't be read at all.
+  expect(args).toContain(`--dev-bind /dev/null ${join(user, "file")}`);
+  expect(args).not.toContain(join(user, "absent"));
+});
+
 test("sandboxArgs masks the runtime dirs that exist: the user's, and screen's sockets", () => {
   expect(runtimeDirs()).toEqual([`/run/user/${process.getuid?.()}`, "/run/screen"]);
   const args = sandboxArgs(bare);
@@ -469,6 +481,18 @@ describe.skipIf(NO_BWRAP)("the sandbox", () => {
     expect(readFileSync(join(tmp, `${name}.var`), "utf8")).toBe("b\n");
     expect(existsSync(`/tmp/${name}`)).toBe(false);
     expect(existsSync(`/var/tmp/${name}.var`)).toBe(false);
+  });
+
+  test("hidden files read empty, and writes don't reach them", async () => {
+    const { outside, spec } = sandbox();
+    const db = join(outside, "state.db");
+    writeFileSync(db, "db-secret");
+    const script = `cat "${db}"; echo "cat=$?"; echo x > "${db}" 2>/dev/null; cat "${db}"; echo end`;
+    const { output } = await runSandboxed({ ...spec, hidden: [...spec.hidden, db] }, ["bash", "-c", script], {
+      timeoutMs: 10_000,
+    });
+    expect(output).toBe("cat=0\nend\n");
+    expect(readFileSync(db, "utf8")).toBe("db-secret");
   });
 
   test("hidden dirs are empty", async () => {

@@ -30,7 +30,8 @@ const MAX_OUTPUT = 1024 * 1024;
 export type ReadOnlyPath = { path: string; dir: boolean };
 
 /**
- * `clone` is mounted over `home`, and `tmp` (a host dir) at `/tmp` and `/var/tmp`; `hidden` dirs get an empty tmpfs;
+ * `clone` is mounted over `home`, and `tmp` (a host dir) at `/tmp` and `/var/tmp`; `hidden` dirs get an empty tmpfs
+ * and `hidden` files read empty;
  * `shared` paths under `home` stay the real ones. `userHome` is the user's home, the rest of which stays writable.
  * `env` is the sandbox's whole environment (see `jobEnv`); only its allowed names are set.
  */
@@ -92,7 +93,7 @@ export function within(path: string, dir: string): boolean {
  * `path` with every symlink resolved, dangling ones included, and its missing tail kept as it is; undefined for a
  * symlink loop.
  */
-function realPath(path: string, depth = 0): string | undefined {
+export function realPath(path: string, depth = 0): string | undefined {
   if (depth > 40) return undefined;
   try {
     return realpathSync(path);
@@ -226,7 +227,13 @@ export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   for (const dir of ["/tmp", "/var/tmp"].filter((dir) => existsSync(dir))) args.push("--bind", spec.tmp, dir);
   args.push("--bind", spec.clone, spec.home);
   for (const path of spec.shared) args.push("--bind-try", path, path);
-  for (const path of [...spec.hidden, ...runtimeDirs()].filter((path) => existsSync(path))) args.push("--tmpfs", path);
+  // A hidden dir gets an empty tmpfs; a file (a database outside the home) reads as /dev/null and writes go there.
+  // Not `--ro-bind /dev/null`: bwrap mounts that nodev, where /dev/null can't even be opened.
+  for (const path of [...spec.hidden, ...runtimeDirs()]) {
+    const stat = statSync(path, { throwIfNoEntry: false });
+    if (stat?.isDirectory()) args.push("--tmpfs", path);
+    else if (stat !== undefined) args.push("--dev-bind", "/dev/null", path);
+  }
   // Masked by real path, once each (`/var/run` is usually `/run`); only existing ones, as bwrap can't create them.
   const sockets = new Set(DOCKER_SOCKETS.filter((path) => existsSync(path)).map((path) => realpathSync(path)));
   for (const path of sockets) args.push("--ro-bind-try", "/dev/null", path);

@@ -60,8 +60,7 @@ import {
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
-import { within } from "./sandbox/bwrap.ts";
-import { createJobSandboxes, type JobSandboxes, narrowPath, sandboxRefusal } from "./sandbox/jobs.ts";
+import { createJobSandboxes, hiddenPaths, type JobSandboxes, narrowPath, sandboxRefusal } from "./sandbox/jobs.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
 import {
   liveness,
@@ -468,8 +467,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     ];
     const { dir } = settings.secrets;
     const secretsDirs = [join(home, "secrets"), ...(typeof dir === "string" ? [dir.replace(/^~/, homedir())] : [])];
-    // The clone mounted over the home hides a secrets dir inside it; one outside it is masked.
-    const hidden = secretsDirs.map((d) => resolve(d)).filter((d) => !within(d, resolve(home)));
+    // The clone mounted over the home hides a secrets dir inside it; one outside it, by real path, is masked. So is
+    // a storage database outside it.
+    const { file } = settings.storage;
+    const db = typeof file === "string" ? [resolve(file.replace(/^~/, homedir()))] : [];
+    const hidden = hiddenPaths(home, [...secretsDirs, ...db.flatMap((f) => [f, `${f}-wal`, `${f}-shm`])]);
     const jobs = createJobSandboxes({ home, packageRoot, hidden, env: jobEnv });
     sandboxes = jobs;
     const sandboxError = jobs.problem === undefined ? [] : [{ name: "sandbox", error: sandboxRefusal(jobs.problem) }];

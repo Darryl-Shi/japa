@@ -1,10 +1,20 @@
 // Each job's sandbox: an env server under bwrap, on the job's own clone of the japa home, started on the job's first
 // tool call and again after it stops. All of a job's file and shell operations run there, none in the daemon.
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { cloneDir, cloneTmp, ensureClone } from "../jobs/clone.ts";
-import { bwrap, jobEnv, probeSandbox, readOnlyPaths, sandboxArgs, type SandboxSpec } from "./bwrap.ts";
+import {
+  bwrap,
+  jobEnv,
+  probeSandbox,
+  readOnlyPaths,
+  realPath,
+  sandboxArgs,
+  type SandboxSpec,
+  within,
+} from "./bwrap.ts";
 import { ENV_MODULE, type EnvServer, LOST, remoteEnv, SERVER, startEnvServer } from "./remote-env.ts";
 
 export type JobSandboxes = {
@@ -44,17 +54,30 @@ export function narrowPath(): Record<string, string> {
 }
 
 /**
+ * Which of `paths` (secrets dirs, the storage database and its `-wal` and `-shm`) the clone mounted over `home`
+ * doesn't cover: those whose real path isn't inside the home's, by real path. A path inside the home can be a
+ * symlink to one outside it. A missing one is kept, resolved as far as it exists: a sandbox hides it once it exists.
+ */
+export function hiddenPaths(home: string, paths: string[]): string[] {
+  const realHome = realPath(home) ?? resolve(home);
+  const real = paths.flatMap((path) => realPath(resolve(path)) ?? []); // none behind a symlink loop
+  return [...new Set(real.filter((path) => !within(path, realHome)))];
+}
+
+/**
  * The jobs' sandboxes for japa home `home`: each mounts the job's clone over it, and its own temp dir at /tmp; japa's
- * code at `packageRoot` and what the daemon runs are read-only, and the `hidden` dirs (a secrets dir outside `home`)
- * empty. `env` is the environment the jobs get.
+ * code at `packageRoot`, what the daemon runs and its Node dir `nodeDir` (the first in its PATH) are read-only, and
+ * the `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
  */
 export function createJobSandboxes(o: {
   home: string;
   packageRoot: string;
   hidden: string[];
   env: Record<string, string>;
+  nodeDir?: string;
 }): JobSandboxes {
   const { home, packageRoot } = o;
+  const nodeDir = o.nodeDir ?? realpathSync(dirname(process.execPath));
   const problem = probeSandbox();
   const servers = new Map<string, EnvServer>();
 
@@ -63,7 +86,7 @@ export function createJobSandboxes(o: {
     userHome: homedir(),
     clone: cloneDir(home, jobId),
     tmp: cloneTmp(home, jobId),
-    readOnly: readOnlyPaths(packageRoot),
+    readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }],
     hidden: o.hidden,
     shared: [join(home, "desktop", "shared")],
     env: o.env,
