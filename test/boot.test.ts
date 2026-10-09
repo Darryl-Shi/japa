@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { Module } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -218,7 +218,7 @@ test("boot logs adopted edits as a change", async () => {
   await daemon.close();
 });
 
-test("boot retires the staging worktree, archiving its untracked files", async () => {
+test("boot retires the staging worktree, archiving it", async () => {
   const kit = testKit();
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
   ensureWorkspace(home);
@@ -228,7 +228,28 @@ test("boot retires the staging worktree, archiving its untracked files", async (
   const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
   expect(existsSync(join(home, ".staging"))).toBe(false);
   expect(git(home, "branch", "--list", "staging")).toBe("");
-  expect(readFileSync(join(home, ".jobs", "staging-archive", "skills", "draft", "SKILL.md"), "utf8")).toBe("draft");
+  const archived = join(home, ".jobs", "staging-archive", ".staging", "skills", "draft", "SKILL.md");
+  expect(readFileSync(archived, "utf8")).toBe("draft");
+  await daemon.close();
+});
+
+test("boot reports a staging worktree it can't retire, and still adopts edits", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+  mkdirSync(join(home, ".jobs"), { mode: 0o500 });
+  onTestFinished(() => chmodSync(join(home, ".jobs"), 0o700));
+  write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(daemon.status().errors).toContainEqual({
+    name: "workspace",
+    error: expect.stringMatching(/^Couldn't retire the old staging worktree /),
+  });
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Edits made outside japa");
   await daemon.close();
 });
 
@@ -292,7 +313,9 @@ test("boot goes on when the workspace can't be tidied, adopting nothing, and rep
   expect(git(home, "rev-parse", "HEAD")).toBe(before);
   expect(daemon.status().errors).toContainEqual({
     name: "workspace",
-    error: expect.stringMatching(/^Couldn't finish tidying the workspace: /),
+    error: expect.stringMatching(
+      /^Couldn't finish tidying the workspace: the rebase in progress couldn't be aborted: .*The repo is still mid-rebase, so edits made outside japa weren't adopted; if it's aborted by hand later, the commits japa makes until then may be lost\.$/s,
+    ),
   });
   await daemon.close();
 });
