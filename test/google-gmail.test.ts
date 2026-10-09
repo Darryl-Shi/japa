@@ -89,6 +89,26 @@ test("search lists each message's subject, sender, date, snippet and ids", async
   );
 });
 
+test("search fetches metadata 10 at a time, in order", async () => {
+  const ids = Array.from({ length: 25 }, (_, i) => `m${i + 1}`);
+  let running = 0;
+  let most = 0;
+  const routes: Record<string, Route> = { "GET messages": { messages: ids.map((id) => ({ id, threadId: "t" })) } };
+  for (const [i, id] of ids.entries()) {
+    routes[`GET messages/${id}`] = async () => {
+      most = Math.max(most, ++running);
+      // Later ones answer first: the order must come from the ids, not the replies.
+      await new Promise((resolve) => setTimeout(resolve, 25 - i));
+      running--;
+      return { id, threadId: "t", payload: { headers: [header("Subject", `S${i + 1}`)] } };
+    };
+  }
+  const { api } = fake(routes);
+  const out = await gmail(api, home(), { action: "search", query: "x", max: 25 });
+  expect(most).toBe(10);
+  expect(out.split("\n").filter((line) => /^\d+\./.test(line))).toEqual(ids.map((_, i) => `${i + 1}. S${i + 1} —  — `));
+});
+
 test("search defaults to 10 results and says when there are none", async () => {
   const { api, calls } = fake({ "GET messages": { resultSizeEstimate: 0 } });
   expect(await gmail(api, home(), { action: "search", query: "nothing" })).toBe("No messages.");

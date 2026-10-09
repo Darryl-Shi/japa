@@ -11,6 +11,9 @@ const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 /** Send and draft go through the media upload endpoints: a JSON `raw` is capped near 1 MB, attachments included. */
 const UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
 
+/** How many messages' metadata search fetches at once. */
+const BATCH = 10;
+
 export const GMAIL_ACTIONS = ["search", "read", "send", "draft", "modify", "labels", "attachment"] as const;
 
 export const gmailParameters = Type.Object({
@@ -115,13 +118,15 @@ async function search(api: Api, args: GmailArgs): Promise<string> {
   });
   const ids = (found?.messages ?? []).map((m) => m.id);
   if (ids.length === 0) return "No messages.";
-  const messages = await Promise.all(
-    ids.map((id) =>
-      api.json<Message>("GET", path("messages", id), {
-        query: { format: "metadata", metadataHeaders: ["From", "Subject", "Date"] },
-      }),
-    ),
-  );
+  const metadata = (id: string) =>
+    api.json<Message>("GET", path("messages", id), {
+      query: { format: "metadata", metadataHeaders: ["From", "Subject", "Date"] },
+    });
+  // A few at a time: up to 100 requests at once would run into Gmail's per-user rate limit.
+  const messages: Message[] = [];
+  for (let i = 0; i < ids.length; i += BATCH) {
+    messages.push(...(await Promise.all(ids.slice(i, i + BATCH).map(metadata))));
+  }
   return messages
     .map((m, i) => {
       const h = m.payload?.headers;
