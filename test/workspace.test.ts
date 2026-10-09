@@ -2,7 +2,16 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { commit, dirHash, ensureWorkspace, restorePath, revert } from "../src/kernel/workspace.ts";
+import {
+  abortPending,
+  adoptOutsideEdits,
+  commit,
+  dirHash,
+  ensureWorkspace,
+  restorePath,
+  retireStaging,
+  revert,
+} from "../src/kernel/workspace.ts";
 import { tempHome } from "./helpers.ts";
 
 const git = (home: string, ...args: string[]) => execFileSync("git", ["-C", home, ...args], { encoding: "utf8" }).trim();
@@ -13,13 +22,114 @@ function workspace(): string {
   return home;
 }
 
-test("ensureWorkspace creates the repo, .gitignore, the initial commit and the staging worktree, idempotently", () => {
+test("ensureWorkspace creates the repo, .gitignore and the initial commit, idempotently", () => {
   const home = workspace();
   ensureWorkspace(home);
   expect(readFileSync(join(home, ".gitignore"), "utf8")).toContain("secrets/");
   expect(git(home, "log", "--format=%s")).toBe("Initial workspace");
   expect(git(home, "branch", "--show-current")).toBe("main");
-  expect(git(join(home, ".staging"), "branch", "--show-current")).toBe("staging");
+});
+
+test("ensureWorkspace no longer creates .staging", () => {
+  const home = workspace();
+  expect(existsSync(join(home, ".staging"))).toBe(false);
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  expect(git(home, "worktree", "list").split("\n")).toHaveLength(1);
+});
+
+/** `home` as an older japa left it: a `staging` worktree at `.staging`. */
+function withStaging(home: string): string {
+  git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+  return join(home, ".staging");
+}
+
+test("retireStaging archives untracked files and removes the worktree and branch", () => {
+  const home = workspace();
+  const staging = withStaging(home);
+  mkdirSync(join(staging, "skills", "draft"), { recursive: true });
+  writeFileSync(join(staging, "skills", "draft", "SKILL.md"), "draft");
+  writeFileSync(join(staging, "notes with space.md"), "notes");
+  writeFileSync(join(staging, ".gitignore"), "changed, tracked: not archived\n");
+  retireStaging(home);
+  const archive = join(home, ".jobs", "staging-archive");
+  expect(readFileSync(join(archive, "skills", "draft", "SKILL.md"), "utf8")).toBe("draft");
+  expect(readFileSync(join(archive, "notes with space.md"), "utf8")).toBe("notes");
+  expect(existsSync(join(archive, ".gitignore"))).toBe(false);
+  expect(existsSync(staging)).toBe(false);
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  expect(git(home, "worktree", "list").split("\n")).toHaveLength(1);
+  expect(git(home, "status", "--porcelain")).toBe("");
+  retireStaging(home); // nothing left to retire
+});
+
+test("retireStaging removes the branch and worktree record of a hand-deleted .staging", () => {
+  const home = workspace();
+  rmSync(withStaging(home), { recursive: true, force: true });
+  retireStaging(home);
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  expect(git(home, "worktree", "list").split("\n")).toHaveLength(1);
+});
+
+test("abortPending aborts an unfinished merge or revert", () => {
+  const home = workspace();
+  const file = join(home, "f");
+  writeFileSync(file, "v0\n");
+  commit(home, ["f"], "v0");
+  git(home, "checkout", "-q", "-b", "other");
+  writeFileSync(file, "other\n");
+  commit(home, ["f"], "other");
+  git(home, "checkout", "-q", "main");
+  writeFileSync(file, "v1\n");
+  const v1 = commit(home, ["f"], "v1")!;
+  expect(() => git(home, "merge", "other")).toThrow();
+  expect(existsSync(join(home, ".git", "MERGE_HEAD"))).toBe(true);
+  abortPending(home);
+  expect(existsSync(join(home, ".git", "MERGE_HEAD"))).toBe(false);
+  expect(readFileSync(file, "utf8")).toBe("v1\n");
+
+  writeFileSync(file, "v2\n");
+  commit(home, ["f"], "v2");
+  expect(() => git(home, "-c", "user.name=t", "-c", "user.email=t@t", "revert", "--no-edit", v1)).toThrow();
+  expect(existsSync(join(home, ".git", "REVERT_HEAD"))).toBe(true);
+  abortPending(home);
+  expect(existsSync(join(home, ".git", "REVERT_HEAD"))).toBe(false);
+  expect(readFileSync(file, "utf8")).toBe("v2\n");
+  expect(git(home, "status", "--porcelain")).toBe("");
+  abortPending(home); // nothing pending
+});
+
+test("adoptOutsideEdits commits only extensions and skills", () => {
+  const home = workspace();
+  writeFileSync(join(home, "settings.json"), "{}\n");
+  writeFileSync(join(home, "other.txt"), "one\n");
+  commit(home, ["settings.json", "other.txt"], "settings");
+  mkdirSync(join(home, "extensions", "e"), { recursive: true });
+  writeFileSync(join(home, "extensions", "e", "index.ts"), "export default {};\n");
+  mkdirSync(join(home, "skills", "s"), { recursive: true });
+  writeFileSync(join(home, "skills", "s", "SKILL.md"), "s");
+  writeFileSync(join(home, "settings.json"), '{"x":1}\n');
+  writeFileSync(join(home, "other.txt"), "two\n");
+  git(home, "add", "other.txt"); // staged by hand: still not japa's to commit
+  const sha = adoptOutsideEdits(home)!;
+  expect(sha).toBe(git(home, "rev-parse", "HEAD"));
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Edits made outside japa");
+  expect(git(home, "show", "--name-only", "--format=", sha).split("\n").sort()).toEqual([
+    "extensions/e/index.ts",
+    "skills/s/SKILL.md",
+  ]);
+  expect(git(home, "status", "--porcelain").split("\n").sort()).toEqual([" M settings.json", "M  other.txt"]);
+  expect(adoptOutsideEdits(home)).toBeUndefined();
+});
+
+test("adoptOutsideEdits adopts a removal, and does nothing without extensions or skills", () => {
+  const home = workspace();
+  expect(adoptOutsideEdits(home)).toBeUndefined();
+  mkdirSync(join(home, "skills", "s"), { recursive: true });
+  writeFileSync(join(home, "skills", "s", "SKILL.md"), "s");
+  commit(home, ["skills"], "add s");
+  rmSync(join(home, "skills"), { recursive: true });
+  expect(adoptOutsideEdits(home)).toBeDefined();
+  expect(git(home, "ls-files", "skills")).toBe("");
 });
 
 test("commit never includes secrets or the database", () => {
@@ -52,13 +162,6 @@ test("restorePath removes a path that is absent at the ref", () => {
   commit(home, ["skills/s"], "add s");
   restorePath(home, "HEAD~1", "skills/s");
   expect(existsSync(join(home, "skills", "s"))).toBe(false);
-});
-
-test("ensureWorkspace recovers from a hand-deleted .staging", () => {
-  const home = workspace();
-  rmSync(join(home, ".staging"), { recursive: true, force: true });
-  ensureWorkspace(home);
-  expect(git(join(home, ".staging"), "branch", "--show-current")).toBe("staging");
 });
 
 test("ensureWorkspace works with a global commit.gpgsign=true", () => {

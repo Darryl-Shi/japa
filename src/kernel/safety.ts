@@ -23,12 +23,12 @@ export const recordBoot = (home: string) =>
 export const clearBoots = (home: string) => rmSync(bootsFile(home), { force: true });
 
 /**
- * Restores the workspace's extensions, skills and worker profiles to `LKG` and, with `defaultAdapters`, selects the
- * packaged storage and secrets adapters; commits and clears the crash log. Returns the new HEAD, or undefined when
+ * Restores the workspace's extensions and skills to `LKG` and, with `defaultAdapters`, selects the packaged storage and
+ * secrets adapters; commits the extensions and skills and clears the crash log. Returns the HEAD, or undefined when
  * there was nothing to restore: the crash log is just cleared.
  */
 export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapters: boolean }): string | undefined {
-  const paths = ["extensions", "skills", "workers"];
+  const paths = ["extensions", "skills"];
   if (!defaultAdapters && hasTag(home, LKG) && matches(home, LKG, paths)) {
     clearBoots(home);
     return undefined;
@@ -45,7 +45,7 @@ export function enterSafeMode(home: string, { defaultAdapters }: { defaultAdapte
     setPath(user, "secrets.adapter", "file");
     saveSettings(home, user);
   }
-  commit(home, ["."], "Safe mode: restored last-known-good");
+  commit(home, paths, "Safe mode: restored last-known-good");
   clearBoots(home);
   return head(home);
 }

@@ -1,7 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 /** The last-known-good tag. */
 export const LKG = "japa-lkg";
@@ -45,9 +55,12 @@ function run(home: string, args: string[]): string {
   });
 }
 
+/** The components the daemon loads from the workspace; only japa commits changes to them. */
+const COMPONENTS = ["extensions", "skills"];
+
 /**
- * Makes `home` a git repo on `main` with an initial commit, a `staging` worktree at `<home>/.staging`, and the `LKG`
- * tag, which starts at HEAD. Commits the `IGNORED` lines missing from `.gitignore`.
+ * Makes `home` a git repo on `main` with an initial commit and the `LKG` tag, which starts at HEAD. Commits the
+ * `IGNORED` lines missing from `.gitignore`.
  */
 export function ensureWorkspace(home: string): void {
   if (!existsSync(join(home, ".git"))) git(home, "init", "-q", "-b", "main");
@@ -59,10 +72,43 @@ export function ensureWorkspace(home: string): void {
   if (!hasHead(home)) commit(home, ["."], "Initial workspace");
   if (missing.length > 0) commit(home, [".gitignore"], "Update .gitignore");
   if (!hasTag(home, LKG)) tag(home, LKG);
-  if (!existsSync(join(home, ".staging"))) {
-    git(home, "worktree", "prune");
-    git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+}
+
+/**
+ * Retires the `staging` worktree older versions kept at `<home>/.staging`: moves its untracked files under
+ * `<home>/.jobs/staging-archive/` (pruned by age, see clone.ts), then removes the worktree and the `staging` branch.
+ */
+export function retireStaging(home: string): void {
+  const staging = join(home, ".staging");
+  if (existsSync(join(staging, ".git"))) {
+    const archive = join(home, ".jobs", "staging-archive");
+    for (const path of gitPaths(staging, "ls-files", "--others", "--exclude-standard", "-z")) {
+      const to = join(archive, path);
+      mkdirSync(dirname(to), { recursive: true });
+      renameSync(join(staging, path), to);
+    }
+    git(home, "worktree", "remove", "--force", ".staging");
   }
+  git(home, "worktree", "prune"); // a hand-deleted one's record
+  try {
+    git(home, "branch", "-D", "staging");
+  } catch {
+    // no such branch
+  }
+}
+
+/** Aborts a merge or revert the daemon left unfinished (it stopped mid-way), so the working tree is HEAD's again. */
+export function abortPending(home: string): void {
+  if (existsSync(join(home, ".git", "MERGE_HEAD"))) git(home, "merge", "--abort");
+  if (existsSync(join(home, ".git", "REVERT_HEAD"))) git(home, "revert", "--abort");
+}
+
+/**
+ * Commits the uncommitted changes to the workspace's extensions and skills, made by hand or by an older japa: they
+ * are what the daemon ran, as it loads the working tree. The new sha, or undefined when there were none.
+ */
+export function adoptOutsideEdits(home: string): string | undefined {
+  return commit(home, COMPONENTS, "Edits made outside japa");
 }
 
 function hasHead(home: string): boolean {
@@ -74,11 +120,16 @@ function hasHead(home: string): boolean {
   }
 }
 
-/** Commits the changes under `paths`; the new sha, or undefined when nothing changed. */
+/**
+ * Commits the changes under `paths`, and only those (whatever else is staged); the new sha, or undefined when nothing
+ * changed. A path neither on disk nor tracked is skipped.
+ */
 export function commit(home: string, paths: string[], message: string): string | undefined {
-  git(home, "add", "-A", "--", ...paths);
-  if (!git(home, "diff", "--cached", "--name-only")) return undefined;
-  git(home, "commit", "-q", "-m", message);
+  const present = paths.filter((path) => existsSync(join(home, path)) || git(home, "ls-files", "--", path) !== "");
+  if (present.length === 0) return undefined;
+  git(home, "add", "-A", "--", ...present);
+  if (!git(home, "diff", "--cached", "--name-only", "--", ...present)) return undefined;
+  git(home, "commit", "-q", "-m", message, "--", ...present);
   return head(home);
 }
 

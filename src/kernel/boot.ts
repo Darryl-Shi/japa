@@ -37,6 +37,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
+import { jobLife, pruneClones, pruneJobRefs } from "./jobs/clone.ts";
 import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish.ts";
 import { unstickPublishing } from "./jobs/run.ts";
 import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
@@ -80,7 +81,7 @@ import {
   writeUpdateState,
 } from "./update-state.ts";
 import { createWorkspaceLock } from "./workspace-lock.ts";
-import { dirHash, ensureWorkspace } from "./workspace.ts";
+import { abortPending, adoptOutsideEdits, dirHash, ensureWorkspace, retireStaging } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -128,6 +129,10 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   try {
     linkSdk(home, packageRoot);
     ensureWorkspace(home);
+    // Spec §6.1: before anything loads, the workspace's extensions and skills are as committed.
+    retireStaging(home);
+    abortPending(home);
+    const adopted = adoptOutsideEdits(home);
     const safeMode = crashLooping(home) ? enterSafeMode(home, { defaultAdapters: false }) : undefined;
     recordBoot(home);
     const settings = loadSettings(home);
@@ -184,7 +189,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // Finished jobs updated before `before` leave the jobs list; their conversations stay in storage.
     const pruneJobs = (before: number) =>
       root.commit(async (tx) => prune((await tx.doc(JobsDoc, root.id)).jobs, before), ctx);
-    const pruneOld = () => pruneJobs(Date.now() - settings.jobs.keepFinishedDays * DAY);
+    // Then the clones and leftover refs of the jobs no longer active (see `pruneClones`).
+    const pruneOld = async () => {
+      await pruneJobs(Date.now() - settings.jobs.keepFinishedDays * DAY);
+      const life = jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs);
+      pruneClones(home, life);
+      await lock(async () => {
+        // Read again under the lock: a job may have started going live meanwhile.
+        pruneJobRefs(home, jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs));
+      });
+    };
     const runTool: MessagingContext["tool"] = async (name, args) => {
       const api = { commit: root.commit.bind(root), snapshot: opened.snapshot.bind(opened) };
       const found = registry.snapshot().tools().find((t) => t.tool.name === name);
@@ -583,6 +597,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       // A chat sign-in doesn't survive a restart: its request goes too.
       const requests = await tx.doc(SecretRequestsDoc, root.id);
       requests.pending = requests.pending.filter((r) => !r.name.endsWith(AUTHORIZE_SUFFIX));
+      if (adopted !== undefined) {
+        await logChange(tx, { title: "Edits made outside japa", howToUse: "", undo: { commits: [adopted] } });
+      }
     }, ctx);
     await pruneOld();
     const droppedLoops = await upgradeMemory(root);

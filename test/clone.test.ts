@@ -14,7 +14,17 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { cloneBase, cloneDir, cloneMarker, ensureClone, pruneClones, removeClone } from "../src/kernel/jobs/clone.ts";
+import {
+  cloneBase,
+  cloneDir,
+  cloneMarker,
+  ensureClone,
+  jobLife,
+  pruneClones,
+  pruneJobRefs,
+  removeClone,
+} from "../src/kernel/jobs/clone.ts";
+import type { Job, JobStatus } from "../src/kernel/jobs/state.ts";
 import { commit, ensureWorkspace, git as daemonGit } from "../src/kernel/workspace.ts";
 import { tempHome } from "./helpers.ts";
 
@@ -147,7 +157,7 @@ test("pruneClones removes old and orphaned clones, keeps recent ones", () => {
   mkdirSync(join(jobs, "staging-archive"));
   mkdirSync(join(jobs, "5.tmp")); // left without its clone
   writeFileSync(join(jobs, "6.base"), "x");
-  pruneClones(home, (id) => id !== "3", now);
+  pruneClones(home, (id) => (id === "3" ? undefined : "finished"), now);
   const left = ["1", "2", "3", "4"].flatMap((id) => [id, `${id}.base`, `${id}.tmp`]);
   expect(left.filter((name) => existsSync(join(jobs, name)))).toEqual(["2", "2.base", "2.tmp", "4", "4.base", "4.tmp"]);
   expect(["staging-archive", "5.tmp", "6.base"].filter((name) => existsSync(join(jobs, name)))).toEqual([
@@ -155,11 +165,65 @@ test("pruneClones removes old and orphaned clones, keeps recent ones", () => {
   ]);
 
   // The staging archive goes only by age, whatever `keep` says.
-  pruneClones(home, () => false, now);
+  pruneClones(home, () => undefined, now);
   expect(existsSync(join(jobs, "staging-archive"))).toBe(true);
   age(join(jobs, "staging-archive"), 8);
-  pruneClones(home, () => true, now);
+  pruneClones(home, () => "active", now);
   expect(existsSync(join(jobs, "staging-archive"))).toBe(false);
+});
+
+test("pruneClones never removes an active job's clone or files, whatever their age", () => {
+  const home = workspace();
+  const now = Date.now();
+  ensureClone(home, packageRoot, "1");
+  const jobs = join(home, ".jobs");
+  const old = (now - 30 * DAY) / 1000;
+  utimesSync(join(jobs, "1"), old, old);
+  writeFileSync(cloneMarker(home, "1"), "{}");
+  mkdirSync(join(jobs, "2.tmp")); // its clone not made yet, or being made again
+  pruneClones(home, () => "active", now);
+  expect(readdirSync(jobs).sort()).toEqual(["1", "1.base", "1.merged", "1.tmp", "2.tmp"]);
+  pruneClones(home, () => "finished", now);
+  expect(readdirSync(jobs)).toEqual([]);
+});
+
+/** A job with `status`, and `extra`. */
+const job = (status: JobStatus, extra: Partial<Job> = {}) => ({ status, ...extra }) as Job;
+
+test("jobLife: queued, running, needs_input or publishing jobs are active, other known ones finished", () => {
+  const life = jobLife({
+    "1": job("queued"),
+    "2": job("running"),
+    "3": job("needs_input"),
+    "4": job("done", { publishing: 3 }),
+    "5": job("done"),
+    "6": job("failed"),
+    "7": job("cancelled"),
+  });
+  expect(["1", "2", "3", "4", "5", "6", "7", "8"].map(life)).toEqual([
+    "active",
+    "active",
+    "active",
+    "active",
+    "finished",
+    "finished",
+    "finished",
+    undefined,
+  ]);
+  expect(life("toString")).toBeUndefined();
+});
+
+test("pruneJobRefs deletes the leftover job refs of jobs that aren't active", () => {
+  const home = workspace();
+  for (const id of ["1", "2", "3"]) git(home, "update-ref", `refs/japa/jobs/${id}`, "HEAD");
+  git(home, "update-ref", "refs/japa/other", "HEAD");
+  pruneJobRefs(home, (id) => (id === "1" ? "active" : id === "2" ? "finished" : undefined));
+  expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa").split("\n")).toEqual([
+    "refs/japa/jobs/1",
+    "refs/japa/other",
+  ]);
+  pruneJobRefs(home, () => undefined);
+  expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/other");
 });
 
 test("pruneClones removes folders a job made inaccessible, and goes on past an entry it can't remove", () => {
@@ -183,7 +247,7 @@ test("pruneClones removes folders a job made inaccessible, and goes on past an e
   onTestFinished(() => unremovable.clear());
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   onTestFinished(() => errors.mockRestore());
-  pruneClones(home, () => false);
+  pruneClones(home, () => undefined);
   const left = ["1", "2", "3"].flatMap((id) => [id, `${id}.base`, `${id}.tmp`]);
   expect(left.filter((name) => existsSync(join(jobs, name)))).toEqual(["2"]);
   expect(errors).toHaveBeenCalledWith(expect.stringContaining(join(jobs, "2")));
@@ -199,7 +263,7 @@ test("pruneClones removes a clone's merge marker with it, and orphaned ones", ()
   // `.merged.new`: one being written when the daemon stopped.
   for (const id of ["1", "2", "3"]) writeFileSync(cloneMarker(home, id), "{}");
   for (const id of ["1", "3"]) writeFileSync(`${cloneMarker(home, id)}.new`, "{");
-  pruneClones(home, (id) => id === "2");
+  pruneClones(home, (id) => (id === "2" ? "finished" : undefined));
   expect(readdirSync(jobs).sort()).toEqual(["2", "2.base", "2.merged", "2.tmp"]);
 });
 
@@ -219,5 +283,5 @@ test("removeClone deletes a clone with its base, temp dir and marker, and folder
 
 test("pruneClones without a .jobs dir does nothing", () => {
   const home = workspace();
-  expect(() => pruneClones(home, () => false)).not.toThrow();
+  expect(() => pruneClones(home, () => undefined)).not.toThrow();
 });

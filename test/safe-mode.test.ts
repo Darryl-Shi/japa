@@ -77,3 +77,21 @@ test("a boot tags the last known good setup once it has run for goodAfterMinutes
   await waitFor(() => lkg() === head(home));
   await daemon.close();
 });
+
+test("safe mode commits only the extensions and skills it restores", () => {
+  const home = tempHome({ storage: { adapter: "broken" } });
+  ensureWorkspace(home);
+  write(home, "notes.txt", "one\n");
+  commit(home, ["notes.txt"], "notes");
+  tag(home, LKG);
+  write(home, "skills/new/SKILL.md", "---\nname: new\ndescription: N\n---\n");
+  commit(home, ["skills"], "Install skill new");
+  write(home, "notes.txt", "two\n");
+  const before = head(home);
+  const after = enterSafeMode(home, { defaultAdapters: true })!;
+  const git = (...args: string[]) => execFileSync("git", ["-C", home, ...args], { encoding: "utf8" }).trim();
+  expect(after).not.toBe(before);
+  expect(existsSync(join(home, "skills", "new"))).toBe(false);
+  expect(readUserSettings(home).storage).toEqual({ adapter: "sqlite" });
+  expect(git("status", "--porcelain").split("\n").map((line) => line.trim())).toEqual(["M notes.txt", "M settings.json"]);
+});
