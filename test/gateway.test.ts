@@ -7,8 +7,8 @@ import { type ServerMessage, socketPath } from "../extensions/gateway/protocol.t
 import { boot } from "../src/kernel/boot.ts";
 import type { Status } from "../src/kernel/contracts.ts";
 import type { SecretRequest } from "../src/kernel/secret-requests.ts";
-import { bootTest, probe, tempHome, testKit } from "./helpers.ts";
-import { call, script } from "./jobs-helpers.ts";
+import { bootTest, probe, tempHome, testKit, waitFor } from "./helpers.ts";
+import { call, script, texts } from "./jobs-helpers.ts";
 
 test("attach, submit, and receive the answer", async () => {
   const { daemon, faux, home } = await bootTest();
@@ -71,6 +71,35 @@ test("attach streams pending secret requests and a secret message fulfils one", 
   client.send({ type: "secret", requestId: lists.at(-1)![0]!.id, value: "s3cr3t" });
   await vi.waitFor(() => expect(lists.at(-1)).toEqual([]));
   expect(JSON.stringify(seen)).not.toContain("s3cr3t");
+  client.close();
+  await daemon.close();
+});
+
+test("a decline message withdraws the request and tells the CoS", async () => {
+  const { daemon, faux, home } = await bootTest();
+  script(faux, (role, text) =>
+    role === "user" && text === "go" ? call("secret_request", { name: "svc.token", why: "to sync" }) : undefined,
+  );
+  const client = await connect(home);
+  const lists: SecretRequest[][] = [];
+  client.onMessage((m) => m.type === "secrets" && lists.push(m.pending));
+  client.send({ type: "attach" });
+  client.send({ type: "submit", text: "go" });
+  await vi.waitFor(() => expect(lists.at(-1)).toMatchObject([{ name: "svc.token" }]));
+  client.send({ type: "decline", requestId: lists.at(-1)![0]!.id });
+  await vi.waitFor(() => expect(lists.at(-1)).toEqual([]));
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret svc.token declined]"));
+  client.close();
+  await daemon.close();
+});
+
+test("a decline without a request id is invalid", async () => {
+  const { daemon, home } = await bootTest();
+  const client = await connect(home);
+  const seen: ServerMessage[] = [];
+  client.onMessage((m) => seen.push(m));
+  client.send({ type: "decline" } as never);
+  await vi.waitFor(() => expect(seen).toContainEqual({ type: "error", message: "Invalid message" }));
   client.close();
   await daemon.close();
 });

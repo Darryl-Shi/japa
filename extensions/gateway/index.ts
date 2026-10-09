@@ -24,6 +24,9 @@ async function start(ctx: SurfaceContext) {
         case "secret":
           if (typeof m.value === "string") return ctx.secrets.fulfil(m.requestId, m.value);
           return writeMessage(socket, { type: "error", message: "Invalid message" });
+        case "decline":
+          if (typeof m.requestId === "string") return ctx.secrets.decline(m.requestId);
+          return writeMessage(socket, { type: "error", message: "Invalid message" });
         case "status":
           return writeMessage(socket, { type: "status", status: ctx.status() });
         case "submit":

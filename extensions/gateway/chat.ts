@@ -41,7 +41,9 @@ export async function runChat(home: string): Promise<void> {
       tui.setFocus(editor);
       return;
     }
-    const input = new MaskedInput({ prompt: `${request.why} — enter ${request.name} (hidden): ` });
+    const input = new MaskedInput({
+      prompt: `${request.why} — enter ${request.name} (hidden) (Esc hides, Ctrl-X declines): `,
+    });
     input.onSubmit = (value) => {
       if (value !== "") client.send({ type: "secret", requestId: request.id, value });
     };
@@ -80,6 +82,11 @@ export async function runChat(home: string): Promise<void> {
   let quitting = false;
   tui.addInputListener((data) => {
     if (matchesKey(data, "escape") && t.busy && prompt === undefined) client.send({ type: "abort" });
+    // Ctrl-X declines the request the prompt shows.
+    if (matchesKey(data, "ctrl+x") && prompt !== undefined) {
+      client.send({ type: "decline", requestId: prompt.id });
+      return { consume: true };
+    }
     if (!matchesKey(data, "ctrl+c")) return undefined;
     quitting = true;
     client.close();
