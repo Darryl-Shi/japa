@@ -26,12 +26,25 @@ export const Anchor = defineTask<null, { phase: "done" }, null>({
     runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-export type JobRunInput = { jobId: string; conversationId: ConversationId; text: string; mode: "steer" | "followUp" };
+// Sent once to a job whose run ended without job_complete or job_ask.
+export const NUDGE =
+  "Your turn ended without job_complete or job_ask. If the job is finished, call job_complete with your summary. " +
+  "If you need an answer to continue, call job_ask with one clear question. Otherwise, carry on with the job.";
+
+// `nudge` marks the run that delivers `NUDGE`; optional, so runs persisted before it still load.
+export type JobRunInput = {
+  jobId: string;
+  conversationId: ConversationId;
+  text: string;
+  mode: "steer" | "followUp";
+  nudge?: true;
+};
 type JobRunState = { phase: "deliver" } | { phase: "report"; report?: { seq: number; content: string } };
 
 /**
- * The `JobRun` task, which delivers one message to a job and reports the answer to the CoS, and `start`, which starts
- * the queued jobs that fit under `jobs.maxConcurrent`.
+ * The `JobRun` task, which delivers one message to a job and reports the answer to the CoS (or, for a run that ended
+ * without job_complete or job_ask, nudges the job once with another `JobRun`), and `start`, which starts the queued
+ * jobs that fit under `jobs.maxConcurrent`.
  */
 export function jobRun(settings: Settings) {
   const JobRun = defineTask<JobRunInput, JobRunState, null>({
@@ -44,17 +57,24 @@ export function jobRun(settings: Settings) {
         const conversation = (await runtime.conversation(conversationId, context))!;
         const request = { type: "input", content: text, whenBusy: mode, requestId: `job:${task.id}` } as const;
         const settled = await (await conversation.submit(request, context)).wait(context);
-        // One commit decides the report and records the answer as reported, so a restart does not decide again.
+        // One commit decides the report (or creates the nudge) and records the answer as reported, so a restart
+        // neither decides again nor nudges twice.
         await runtime.commit(async (tx) => {
           const doc = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
           // A job cleared after it was stopped has nothing to report.
           const job = doc.jobs[jobId];
-          const content = job === undefined ? undefined : await decide(tx, job, settled);
+          const decision = job === undefined ? undefined : await decide(tx, job, settled, task.input.nudge === true);
           await start(tx, doc.jobs);
-          if (job === undefined || content === undefined) return { status: "running", checkpoint: { phase: "report" } };
-          job.seq++;
+          if (job === undefined || decision === undefined) return { status: "running", checkpoint: { phase: "report" } };
           job.updatedAt = Date.now();
-          return { status: "running", checkpoint: { phase: "report", report: { seq: job.seq, content } } };
+          if ("nudge" in decision) {
+            const nudge = { jobId, conversationId, text: NUDGE, mode: "followUp", nudge: true } as const;
+            await tx.createTask(JobRun, nudge, BACKGROUND);
+            return { status: "running", checkpoint: { phase: "report" } };
+          }
+          job.seq++;
+          const report = { seq: job.seq, content: decision.report };
+          return { status: "running", checkpoint: { phase: "report", report } };
         }, context);
       },
       report: async (task, runtime, context) => {
@@ -89,12 +109,15 @@ export function jobRun(settings: Settings) {
   return { JobRun, start };
 }
 
+type Decision = { report: string } | { nudge: true } | undefined;
+
 /**
- * Updates `job` for the settled message; returns the report to post, if any. A run that ends unreported (stopped,
- * aborted or failed) clears `completed`, which would otherwise keep the job from being pruned, and `asked`, which
- * would otherwise refuse the next run's ending call.
+ * Updates `job` for the settled message; returns the report to post, a nudge, or nothing. A run that ends unreported
+ * (stopped, aborted or failed) clears `completed`, which would otherwise keep the job from being pruned, and `asked`,
+ * which would otherwise refuse the next run's ending call. A run that ends without job_complete or job_ask is nudged
+ * (the job stays `running`); a nudged run that ends so is `done` with its text, or `failed` if it has none.
  */
-async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord): Promise<string | undefined> {
+async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord, nudged: boolean): Promise<Decision> {
   const aborted = settled.status === "unanswered" && settled.reason === "aborted";
   if (job.status === "cancelled" || aborted) {
     job.completed = false;
@@ -106,7 +129,7 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord): Promi
     job.asked = false;
     job.status = "failed";
     job.result = settled.detail === undefined ? settled.reason : `${settled.reason}: ${String(settled.detail)}`;
-    return reportText(job, job.result);
+    return { report: reportText(job, job.result) };
   }
   if (settled.type !== "input" || job.reported.includes(settled.answer)) return undefined;
   job.reported.push(settled.answer);
@@ -114,13 +137,18 @@ async function decide(tx: Tx, job: Job, settled: SettledSubmissionRecord): Promi
   // Only the run that called job_complete reports the job done; a later run's answer is its own.
   if (job.completed) {
     job.completed = false;
-    return reportText(job, job.result!);
+    return { report: reportText(job, job.result!) };
   }
   if (job.asked) {
     job.asked = false;
-    return reportText(job, job.result!);
+    return { report: reportText(job, job.result!) };
   }
-  job.status = "needs_input";
-  job.result = answer.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
-  return reportText(job, job.result);
+  if (!nudged) return { nudge: true };
+  const text = answer.content
+    .flatMap((c) => (c.type === "text" ? [c.text] : []))
+    .join("")
+    .trim();
+  job.status = text === "" ? "failed" : "done";
+  job.result = text === "" ? "the worker ended its turn without a reply" : text;
+  return { report: reportText(job, job.result) };
 }

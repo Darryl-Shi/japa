@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
+import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { defineJapaExtension, defineTool, type EnvironmentAdapter, Type } from "../src/sdk.ts";
 import { tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, reported, say, script, texts } from "./jobs-helpers.ts";
@@ -51,6 +52,15 @@ async function bootWith(workers: Record<string, string> = {}): Promise<{ daemon:
 
 const profile = (name: string, lines: string[]) =>
   ["---", `name: ${name}`, "description: Test", ...lines, "---", "Work."].join("\n");
+
+/** Job 1's conversation. */
+const conversationOf = async (daemon: Daemon) =>
+  (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
+
+/** How many times job 1 was nudged. */
+const nudges = async (daemon: Daemon) =>
+  (await texts(await conversationOf(daemon), "user")).filter((t) => t === NUDGE).length;
+
 test("a job runs and reports once", async () => {
   const { daemon, faux } = await bootWith();
   script(faux, (role, text) => {
@@ -83,6 +93,106 @@ test("a job asks with job_ask and resumes on a follow-up", async () => {
   await waitFor(async () => (await reported(daemon)).length === 2);
   expect((await reported(daemon))[1]).toEqual('[job 1 "Clone" done] cloned');
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", seq: 2 });
+  await daemon.close();
+});
+
+test("a run that ends without job_complete or job_ask is nudged, then completes", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "start sum") return call("job_start", { title: "Sum", brief: "Add 2 and 2" });
+    if (text === "Add 2 and 2") return say("Working on it");
+    if (text === NUDGE) return call("job_complete", { summary: "4" });
+  });
+  await ask(daemon, "start sum");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Sum" done] 4']);
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "4", seq: 1 });
+  expect(await nudges(daemon)).toBe(1);
+  await daemon.close();
+});
+
+test("a nudged run can ask with job_ask", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "start clone") return call("job_start", { title: "Clone", brief: "Clone it" });
+    if (text === NUDGE) return call("job_ask", { question: "Which repo?" });
+  });
+  await ask(daemon, "start clone");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Clone" needs_input] Which repo?']);
+  expect((await jobs(daemon))["1"]!.status).toBe("needs_input");
+  await daemon.close();
+});
+
+test("a nudged run that ends with text reports it done", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
+    if (text === "Do it") return say("partial");
+    if (text === NUDGE) return say("Here is the answer");
+  });
+  await ask(daemon, "start t");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "T" done] Here is the answer']);
+  expect((await jobs(daemon))["1"]!.status).toBe("done");
+  expect(await nudges(daemon)).toBe(1);
+  await daemon.close();
+});
+
+test("an empty run is nudged; an empty nudged run fails", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (_role, text) => {
+    if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
+    if (text === "Do it") return fauxAssistantMessage([]);
+    if (text === NUDGE) return say("  \n");
+  });
+  await ask(daemon, "start t");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "T" failed] the worker ended its turn without a reply']);
+  expect((await jobs(daemon))["1"]!.status).toBe("failed");
+  expect(await nudges(daemon)).toBe(1);
+  await daemon.close();
+});
+
+test("a finished job that answers a follow-up with text is nudged, not asked", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (role, text) => {
+    if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
+    if (text === "Do it") return call("job_complete", { summary: "first" });
+    if (text === "follow") return call("job_message", { id: "1", text: "anything else?", mode: "followup" });
+    if (role === "user" && text === "anything else?") return say("No user input is needed");
+    if (text === NUDGE) return say("Nothing else");
+  });
+  await ask(daemon, "start t");
+  await waitFor(() => idle(daemon));
+  await ask(daemon, "follow");
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "T" done] first', '[job 1 "T" done] Nothing else']);
+  expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", seq: 2 });
+  await daemon.close();
+});
+
+test("a message queued behind the nudge is decided on its own", async () => {
+  const { daemon, faux } = await bootWith();
+  const hold = held();
+  script(faux, (role, text, signal) => {
+    if (text === "start t") return call("job_start", { title: "T", brief: "Do it" });
+    if (text === "Do it") return say("partial");
+    if (text === NUDGE) return hold.wait(call("job_complete", { summary: "one" }), signal);
+    if (text === "follow") return call("job_message", { id: "1", text: "more", mode: "followup" });
+    if (role === "user" && text === "more") return call("job_complete", { summary: "two" });
+  });
+  await ask(daemon, "start t");
+  await waitFor(hold.started);
+  await ask(daemon, "follow");
+  const job = (await jobs(daemon))["1"]!.conversationId;
+  const queued = async () =>
+    (await daemon.harness.inspect(ctx)).submissions.some((s) => s.conversationId === job && s.status === "queued");
+  await waitFor(queued);
+  hold.release();
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "T" done] one', '[job 1 "T" done] two']);
+  expect(await nudges(daemon)).toBe(1);
   await daemon.close();
 });
 
@@ -230,6 +340,28 @@ test("a job interrupted by a restart finishes and reports once", async () => {
   expect(await reported(daemon)).toEqual(['[job 1 "Long" done] finished']);
   const job = (await daemon.harness.conversation((await jobs(daemon))["1"]!.conversationId, ctx))!;
   expect((await texts(job, "user")).filter((t) => t === "Take long")).toHaveLength(1);
+  await daemon.close();
+});
+
+test("a restart during the nudge nudges once and reports once", async () => {
+  const kit = testKit();
+  const home = tempHome({ models: { cos: kit.model } }); // default storage: sqlite
+  const hold = held();
+  script(kit.faux, (_role, text, signal) => {
+    if (text === "start long") return call("job_start", { title: "Long", brief: "Take long" });
+    if (text === "Take long") return say("partial");
+    if (text === NUDGE)
+      return hold.started() ? call("job_complete", { summary: "finished" }) : hold.wait(say("lost"), signal);
+  });
+  let daemon = await boot({ home, extensions: [kit.extension] });
+  await ask(daemon, "start long");
+  await waitFor(hold.started);
+  await daemon.close();
+
+  daemon = await boot({ home, extensions: [kit.extension] });
+  await waitFor(() => idle(daemon));
+  expect(await reported(daemon)).toEqual(['[job 1 "Long" done] finished']);
+  expect(await nudges(daemon)).toBe(1);
   await daemon.close();
 });
 

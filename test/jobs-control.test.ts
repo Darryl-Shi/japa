@@ -3,6 +3,7 @@ import { getSystemMessageText } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
 import type { Daemon } from "../src/kernel/boot.ts";
+import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobsDoc } from "../src/kernel/jobs/state.ts";
 import { bootTest, waitFor } from "./helpers.ts";
 import { ask, call, held, idle, jobs, reported, say, script, texts } from "./jobs-helpers.ts";
@@ -66,6 +67,24 @@ test("a stopped job stays quiet and frees its slot", async () => {
   expect((await texts(daemon.root, "toolResult")).at(-1)).toBe("Stopped job 1.");
   expect(await statuses(daemon)).toEqual(["cancelled", "done"]);
   expect(await reported(daemon)).toEqual(['[job 2 "Two" done] two']);
+  await daemon.close();
+});
+
+test("a job stopped during its nudge stays cancelled", async () => {
+  const { daemon, faux } = await bootTest();
+  const hold = held();
+  script(faux, (_role, text, signal) => {
+    if (text === "start work") return call("job_start", { title: "Work", brief: "Do work" });
+    if (text === "stop 1") return call("job_stop", { id: "1" });
+    if (text === "Do work") return say("partial");
+    if (text === NUDGE) return hold.wait(say("x"), signal);
+  });
+  await ask(daemon, "start work");
+  await waitFor(hold.started);
+  await ask(daemon, "stop 1");
+  await waitFor(() => idle(daemon));
+  expect(await statuses(daemon)).toEqual(["cancelled"]);
+  expect(await reported(daemon)).toEqual([]);
   await daemon.close();
 });
 
