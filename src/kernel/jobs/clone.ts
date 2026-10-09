@@ -15,6 +15,7 @@ import {
 import { join } from "node:path";
 import { linkSdk } from "../loader.ts";
 import { git } from "../workspace.ts";
+import type { Job } from "./state.ts";
 
 /** How long a kept clone, or the staging archive, stays. */
 const KEEP_MS = 7 * 86_400_000;
@@ -95,11 +96,31 @@ export function removeClone(home: string, jobId: string): void {
 }
 
 /**
- * Deletes, with their `.base`, `.tmp` and `.merged`, the clones in `<home>/.jobs` older than 7 days (by the clone dir's
- * mtime) or whose job `keep` rejects, and any of those files left without its clone. The staging archive goes by age
- * only. An entry that can't be deleted is logged and left; the rest are still pruned.
+ * Whether a job's clone (and its leftovers) are still needed: `"active"` while its job may yet use it, `"finished"` once
+ * that's done, undefined when no such job is known.
  */
-export function pruneClones(home: string, keep: (jobId: string) => boolean, now = Date.now()): void {
+export type JobLife = "active" | "finished" | undefined;
+
+/**
+ * The `JobLife` of each of `jobs`, by id: queued, running, needs_input or publishing jobs are active, other ones
+ * finished.
+ */
+export function jobLife(jobs: Record<string, Job>): (jobId: string) => JobLife {
+  return (jobId) => {
+    if (!Object.hasOwn(jobs, jobId)) return undefined;
+    const { status, publishing } = jobs[jobId]!;
+    const active = status === "queued" || status === "running" || status === "needs_input" || publishing !== undefined;
+    return active ? "active" : "finished";
+  };
+}
+
+/**
+ * Deletes the clones in `<home>/.jobs`, with their `.base`, `.tmp` and `.merged`, by their job's `life`: an active
+ * job's never, a finished one's after 7 days (by the clone dir's mtime) or when left without its clone, an unknown
+ * one's at once. The staging archive goes by age only. An entry that can't be deleted is logged and left; the rest are
+ * still pruned.
+ */
+export function pruneClones(home: string, life: (jobId: string) => JobLife, now = Date.now()): void {
   const dir = jobsDir(home);
   if (!existsSync(dir)) return;
   const old = (path: string) => statSync(path).mtimeMs < now - KEEP_MS;
@@ -108,10 +129,12 @@ export function pruneClones(home: string, keep: (jobId: string) => boolean, now 
   for (const id of ids) {
     const clone = join(dir, id);
     try {
-      const prune =
-        id === STAGING_ARCHIVE
-          ? existsSync(clone) && old(clone)
-          : !existsSync(clone) || old(clone) || !keep(id);
+      let prune: boolean;
+      if (id === STAGING_ARCHIVE) prune = existsSync(clone) && old(clone);
+      else {
+        const state = life(id);
+        prune = state === undefined || (state === "finished" && (!existsSync(clone) || old(clone)));
+      }
       if (!prune) continue;
     } catch (error) {
       console.error(`Couldn't check ${clone} for pruning: ${(error as Error).message}`);
@@ -124,5 +147,17 @@ export function pruneClones(home: string, keep: (jobId: string) => boolean, now 
         console.error(`Couldn't remove ${path}: ${(error as Error).message}`);
       }
     }
+  }
+}
+
+/**
+ * Deletes from the real repo the `refs/japa/jobs/<id>` refs left by a publish the daemon didn't finish, except those
+ * of jobs `life` deems active. Run under the workspace lock.
+ */
+export function pruneJobRefs(home: string, life: (jobId: string) => JobLife): void {
+  const prefix = "refs/japa/jobs/";
+  for (const ref of git(home, "for-each-ref", "--format=%(refname)", prefix).split("\n")) {
+    if (ref === "" || life(ref.slice(prefix.length)) === "active") continue;
+    git(home, "update-ref", "-d", ref);
   }
 }

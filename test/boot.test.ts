@@ -1,12 +1,32 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { Module } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { expect, test } from "vitest";
+import { fileURLToPath } from "node:url";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
+import { ensureClone } from "../src/kernel/jobs/clone.ts";
+import { type Job, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { statusText } from "../src/kernel/status.ts";
+import { commit, ensureWorkspace } from "../src/kernel/workspace.ts";
 import { bootErrors, bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
+import { tool } from "./jobs-helpers.ts";
+
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+
+const git = (home: string, ...args: string[]) =>
+  execFileSync("git", ["-C", home, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+
+/** Writes `text` to `path` in `home`, making its folders. */
+function write(home: string, path: string, text: string) {
+  mkdirSync(dirname(join(home, path)), { recursive: true });
+  writeFileSync(join(home, path), text);
+}
 
 test("the CoS answers in the root conversation", async () => {
   const { daemon, faux } = await bootTest();
@@ -154,5 +174,148 @@ test("a CoS model whose provider has no key is reported, naming the env var and 
         `or set JAPA_TEST_API_KEY or write the key to ${file}, then restart.`,
     },
   ]);
+  await daemon.close();
+});
+
+// Review Focus 4: a daemon that died mid-merge leaves conflict markers in the working tree; they must not load, nor be
+// adopted.
+test("boot aborts an unfinished merge", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  write(home, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\nbase\n");
+  commit(home, ["skills"], "base");
+  git(home, "checkout", "-q", "-b", "job");
+  write(home, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\njob\n");
+  commit(home, ["skills"], "job");
+  git(home, "checkout", "-q", "main");
+  write(home, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\nmain\n");
+  const installed = commit(home, ["skills"], "main");
+  expect(() => git(home, "merge", "job")).toThrow();
+  expect(existsSync(join(home, ".git", "MERGE_HEAD"))).toBe(true);
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(join(home, ".git", "MERGE_HEAD"))).toBe(false);
+  expect(git(home, "rev-parse", "HEAD")).toBe(installed);
+  expect(readFileSync(join(home, "skills", "s", "SKILL.md"), "utf8")).toContain("main");
+  expect(git(home, "status", "--porcelain", "--", "skills")).toBe("");
+  await daemon.close();
+});
+
+test("boot logs adopted edits as a change", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
+  write(home, "settings.json", readFileSync(join(home, "settings.json"), "utf8")); // unchanged
+  write(home, "notes.txt", "not japa's\n");
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Edits made outside japa");
+  expect(git(home, "show", "--name-only", "--format=", "HEAD")).toBe("skills/hand/SKILL.md");
+  expect(git(home, "status", "--porcelain", "--", "skills", "notes.txt")).toBe("?? notes.txt");
+  expect(await tool(daemon, kit.faux, "changes_list")).toMatch(/Edits made outside japa/);
+  await daemon.close();
+});
+
+test("boot retires the staging worktree, archiving it", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+  write(home, ".staging/skills/draft/SKILL.md", "draft");
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(join(home, ".staging"))).toBe(false);
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  const archived = join(home, ".jobs", "staging-archive", ".staging", "skills", "draft", "SKILL.md");
+  expect(readFileSync(archived, "utf8")).toBe("draft");
+  await daemon.close();
+});
+
+test("boot reports a staging worktree it can't retire, and still adopts edits", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+  mkdirSync(join(home, ".jobs"), { mode: 0o500 });
+  onTestFinished(() => chmodSync(join(home, ".jobs"), 0o700));
+  write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(daemon.status().errors).toContainEqual({
+    name: "workspace",
+    error: expect.stringMatching(/^Couldn't retire the old staging worktree /),
+  });
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Edits made outside japa");
+  await daemon.close();
+});
+
+test("boot prunes the clones and job refs of jobs that aren't active, keeping active ones whatever their age", async () => {
+  const kit = testKit();
+  const home = tempHome({ models: { cos: kit.model } }); // sqlite: the jobs outlive the first boot
+  let daemon = await boot({ home, extensions: [kit.extension] });
+  const now = Date.now();
+  const job = (id: string, status: Job["status"]) =>
+    ({ id, title: id, brief: "", worker: "", status, createdAt: now, updatedAt: now, seq: 0, reported: [] }) as unknown as Job;
+  await daemon.root.commit(async (tx) => {
+    const doc = await tx.doc(JobsDoc, daemon.root.id);
+    doc.jobs["1"] = job("1", "needs_input");
+    doc.jobs["2"] = job("2", "done");
+  }, ctx);
+  await daemon.close();
+  const jobs = join(home, ".jobs");
+  for (const id of ["1", "2", "3"]) {
+    ensureClone(home, packageRoot, id);
+    git(home, "update-ref", `refs/japa/jobs/${id}`, "HEAD");
+  }
+  const old = (now - 30 * 86_400_000) / 1000;
+  utimesSync(join(jobs, "1"), old, old);
+
+  daemon = await boot({ home, extensions: [kit.extension] });
+  expect(readdirSync(jobs).sort()).toEqual(["1", "1.base", "1.tmp", "2", "2.base", "2.tmp"]);
+  expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/jobs/1");
+  await daemon.close();
+});
+
+// A .staging moved here, or whose worktree record is gone: its git fails, which mustn't stop boot.
+test("boot retires a .staging whose worktree record is gone", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+  write(home, ".staging/skills/draft/SKILL.md", "draft");
+  rmSync(join(home, ".git", "worktrees"), { recursive: true });
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(join(home, ".staging"))).toBe(false);
+  const archived = join(home, ".jobs", "staging-archive", ".staging", "skills", "draft", "SKILL.md");
+  expect(readFileSync(archived, "utf8")).toBe("draft");
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  await daemon.close();
+});
+
+test("boot goes on when the workspace can't be tidied, adopting nothing, and reports it", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
+  mkdirSync(join(home, ".git", "rebase-merge")); // a rebase git can't abort
+  const before = git(home, "rev-parse", "HEAD");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(git(home, "rev-parse", "HEAD")).toBe(before);
+  expect(daemon.status().errors).toContainEqual({
+    name: "workspace",
+    error: expect.stringMatching(
+      /^Couldn't finish tidying the workspace: the rebase in progress couldn't be aborted: .*The repo is still mid-rebase, so edits made outside japa weren't adopted; if it's aborted by hand later, the commits japa makes until then may be lost\.$/s,
+    ),
+  });
   await daemon.close();
 });
