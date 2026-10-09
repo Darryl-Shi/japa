@@ -3,7 +3,7 @@
 // itself (see publish.ts). Prints `{ dropped, droppedCount, bundle }` (see `narrow`) as its last line, or fails with
 // git's error.
 import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SDK_LINK, SDK_PACKAGE_JSON } from "../sdk-link.ts";
 import { git, gitError, gitPaths } from "../workspace.ts";
@@ -42,6 +42,9 @@ export function publishable(path: string): boolean {
  * folders the sandbox mounts in the home) and what `linkSdk` made; the first 50 of them that are `nameable`
  * (`dropped`: a job can leave thousands, a virtualenv say, more than the sandbox's output keeps); and whether it made a
  * bundle: not when nothing is left changed since `base`.
+ *
+ * First, it removes the index's lock: one left there is stale, by a git killed holding it (a publish aborted
+ * mid-narrow, say), since nothing else runs in the clone meanwhile: its sandbox is closed while the job is published.
  */
 export function narrow(
   dir: string,
@@ -51,6 +54,7 @@ export function narrow(
   quiet: string[] = [],
 ): { dropped: string[]; droppedCount: number; bundle: boolean } {
   rmSync(join(out, BUNDLE), { force: true });
+  rmSync(`${resolve(dir, git(dir, "rev-parse", "--git-path", "index"))}.lock`, { force: true });
   git(dir, "add", "-A");
   const staged = (...filter: string[]) =>
     gitPaths(dir, "diff", "--cached", "--name-only", "--no-renames", "-z", ...filter, base).filter(

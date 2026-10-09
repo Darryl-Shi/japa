@@ -38,6 +38,7 @@ import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
 import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish.ts";
+import { unstickPublishing } from "./jobs/run.ts";
 import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
@@ -596,6 +597,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // Which extensions are available may have changed while japa was down.
     await rt.reconfigure(root);
     harness.resume();
+    // A job whose publishing run faulted would otherwise stay going live, its sandbox refused, for good.
+    await root.commit((tx) => unstickPublishing(tx), ctx);
     if (safeMode !== undefined) {
       const content =
         "[japa] I restarted in safe mode after repeated crashes and restored the last working setup.";

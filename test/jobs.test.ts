@@ -891,8 +891,11 @@ describe.skipIf(NO_BWRAP)("going live, slowly", { timeout: 120_000 }, () => {
     expect(await still(beat)).toBe(true);
     expect(existsSync(join(home, "extensions", "slow"))).toBe(false);
 
-    writeFileSync(gate, "");
     const again = await boot({ home, extensions: [kit.extension, probe] });
+    await waitFor(async () => !(await still(beat)), 30_000); // checking again
+    // Its publishing run is live again: the boot leaves it going live.
+    expect((await jobs(again))["1"]!.publishing).toBe(1);
+    writeFileSync(gate, "");
     await waitFor(() => idle(again), 90_000);
     expect(await reported(again)).toEqual(['[job 1 "Slow" done] wrote it\n\nLive: extensions/slow (change 1).']);
     expect(again.capabilities()).toContain("- slow: ");

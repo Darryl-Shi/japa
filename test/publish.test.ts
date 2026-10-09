@@ -410,6 +410,23 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(git(home, "for-each-ref", "refs/japa")).toBe("");
   });
 
+  test("a job whose changes the real repo has already brings nothing: nothing goes live, and no merge is left", async () => {
+    const { home, clone, sandboxes } = setup();
+    // The same skill, put in by hand since the job started.
+    const SKILL = "---\nname: s\ndescription: S\n---\n";
+    write(home, "skills/s/SKILL.md", SKILL);
+    git(home, "add", "skills");
+    git(home, "commit", "-q", "-m", "by hand");
+    const main = git(home, "rev-parse", "HEAD");
+    write(clone, "skills/s/SKILL.md", SKILL);
+    const { publish, calls } = publisher(home, sandboxes.spec);
+    expect(await publish(job)).toBe(`Not live: the job's changes are already in ~/.japa. ${KEPT}`);
+    expect(git(home, "rev-parse", "HEAD")).toBe(main);
+    expect(git(home, "status", "--porcelain")).toBe("");
+    expect(existsSync(join(home, ".jobs", "1.merged"))).toBe(false);
+    expect(calls).toMatchObject({ changes: [], reconciles: 0 });
+  });
+
   test("a bundle the job swapped for a symlink isn't followed", async () => {
     const { outside, home, clone, sandboxes, base } = setup();
     write(clone, "extensions/e/index.ts", "changed\n");
@@ -444,10 +461,10 @@ describe.skipIf(NO_BWRAP)("publish", () => {
   test("a failure to commit in the clone is reported, and nothing changes", async () => {
     const { home, clone, sandboxes, base } = setup();
     write(clone, "extensions/e/index.ts", "changed\n");
-    writeFileSync(join(clone, ".git", "index.lock"), "");
+    writeFileSync(join(clone, ".git", "index"), "garbled");
     const { publish } = publisher(home, sandboxes.spec);
     const line = await publish(job);
-    expect(line).toMatch(/^Not live: couldn't commit the job's changes: .*index\.lock.*\. Kept at ~\/\.japa\/\.jobs\/1\.$/);
+    expect(line).toMatch(/^Not live: couldn't commit the job's changes: .*index file.*\. Kept at ~\/\.japa\/\.jobs\/1\.$/);
     expect(line).not.toContain("\n");
     expect(git(home, "rev-parse", "HEAD")).toBe(base);
     expect(existsSync(clone)).toBe(true);
@@ -915,10 +932,12 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     const { publish } = publisher(home, sandboxes.spec, { reconcile: async () => ({ errors }) });
     expect(await publish(job)).toBe(`Not live: skills/s failed to load: no frontmatter. Reverted. ${KEPT}`);
     expect(await publish(job)).toBe(`Not live: skills/s failed to load: no frontmatter. Reverted. ${KEPT}`);
+    // A follow-up that changes nothing hands over the reverted merge's commit again: it's found reverted.
+    expect(await publish({ ...job, seq: 2 })).toBe(`Not live: skills/s failed to load. Reverted. ${KEPT}`);
     // A follow-up adds skill t, and completes the job again.
     write(clone, "skills/t/SKILL.md", "---\nname: t\ndescription: T\n---\n");
     errors = [];
-    expect(await publish({ ...job, seq: 2 })).toBe("Live: skills/t (change 1).");
+    expect(await publish({ ...job, seq: 3 })).toBe("Live: skills/t (change 1).");
     expect(read(home, "skills/t/SKILL.md")).toContain("name: t");
     expect(existsSync(join(home, "skills", "s"))).toBe(false);
     expect(existsSync(clone)).toBe(false);
@@ -948,19 +967,23 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(await publisher(home, sandboxes.spec).publish(job)).toBe("Live: skills/s (change 1).");
   });
 
-  test("an abort mid-commit rejects at once", async () => {
+  test("an abort mid-commit rejects at once; publishing again goes live, past the index.lock git left", async () => {
     const { outside, home, clone, sandboxes, base } = setup();
     write(clone, "skills/s/SKILL.md", "---\nname: s\ndescription: S\n---\n");
     const committing = join(outside, "committing");
+    // The job's clean filter, which `git add` runs with the index locked: the first time, it waits.
+    git(clone, "config", "filter.slow.clean", `sh -c '[ -e "${committing}" ] || { touch "${committing}"; sleep 30; }; cat'`);
+    writeFileSync(join(clone, ".git", "info", "attributes"), "*.md filter=slow\n");
     const controller = new AbortController();
-    const spec = withGit(outside, sandboxes.spec, `touch "${committing}"; sleep 30`);
-    const publishing = publisher(home, spec).publish(job, controller.signal);
+    const publishing = publisher(home, sandboxes.spec).publish(job, controller.signal);
     await waitFor(() => existsSync(committing));
     const started = performance.now();
     controller.abort();
     await expect(publishing).rejects.toMatchObject({ name: "AbortError" });
     expect(performance.now() - started).toBeLessThan(4000);
     expect(git(home, "rev-parse", "HEAD")).toBe(base);
+    expect(existsSync(join(clone, ".git", "index.lock"))).toBe(true); // git was killed holding it
+    expect(await publisher(home, sandboxes.spec).publish(job)).toBe("Live: skills/s (change 1).");
   });
 
   test("an abort while waiting for the lock merges nothing", async () => {

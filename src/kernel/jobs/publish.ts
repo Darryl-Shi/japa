@@ -72,7 +72,9 @@ type Listed = { named: string[]; more: number };
  * merges twice. Publishing a later report (after a follow-up) clears it first.
  *
  * Known limit: after a merge reverted, the job's commits stay in the real history, reverted. A later report's publish
- * merges only what the job changed since, and conflicts where it changes the reverted files again.
+ * merges only what the job changed since, and conflicts where it changes the reverted files again. One whose narrowed
+ * commit is the reverted merge's own (the job changed nothing since) finds that merge, and repeats its revert line
+ * (`<components> failed to load. Reverted`), without the errors.
  *
  * A marker that can't be read counts as none: the merge is then found in HEAD's history (`earlierMerge`), but a change
  * already logged would be logged again. Written durably, a marker is only garbled by disk corruption or a hand edit.
@@ -496,9 +498,17 @@ export function createPublisher(deps: PublishDeps): Publish {
           }
         }
         const merge = earlier ?? head(home);
-        // What the merge changed: not what an earlier report's merge, since reverted, brought in already.
-        const brought = componentsOf(gitPaths(home, "diff", "--name-only", "--no-renames", "-z", `${merge}^1`, merge));
-        const components = brought.length > 0 ? brought : componentsOf(changed);
+        const parent = git(home, "rev-parse", `${merge}^1`);
+        // What the merge changed: not what an earlier report's merge, since reverted, brought in already, nor what the
+        // real repo got otherwise.
+        const components = componentsOf(gitPaths(home, "diff", "--name-only", "--no-renames", "-z", parent, merge));
+        if (components.length === 0) {
+          // The merge made just now goes (it changed nothing); one made before a restart stays, empty.
+          if (earlier === undefined) {
+            git(home, "update-ref", "-m", `japa: drop job ${id}'s empty merge`, "HEAD", parent, merge);
+          }
+          return notLive(`the job's changes are already in ${display(home)}`);
+        }
         const merged: Marker = { seq, merge, components, dropped: narrowed.dropped };
         writeMarker(id, merged);
         return merged;

@@ -43,6 +43,7 @@ export type JobRunInput = {
   nudge?: true;
 };
 type Report = { seq: number; content: string };
+const JOB_RUN = "japa.job-run";
 type JobRunState =
   | { phase: "deliver" }
   | { phase: "publish"; report: Report }
@@ -68,11 +69,13 @@ const FINAL = ["done", "failed", "cancelled"];
  *
  * From the decision to publish until its report is posted, the job is `publishing` (the report's seq): its sandbox
  * doesn't start, `job_message` refuses it, and it isn't pruned. A run that leaves the job done meanwhile (a follow-up
- * queued before) publishes nothing itself: its sandbox couldn't start.
+ * queued before) publishes nothing itself: its sandbox couldn't start. Skipping the publish, its report is posted
+ * before the publishing run's, which comes after. A run that faults leaves `publishing` set: `unstickPublishing` ends
+ * it at the next boot.
  */
 export function jobRun(settings: Settings, hooks: JobHooks) {
   const JobRun = defineTask<JobRunInput, JobRunState, null>({
-    name: "japa.job-run",
+    name: JOB_RUN,
     version: 1,
     initial: () => ({ phase: "deliver" }),
     phases: {
@@ -156,7 +159,7 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
       }, context),
   });
 
-  /** Ends job `jobId`'s `publishing` when it's for `report`: its run's. */
+  /** Ends job `jobId`'s `publishing` when it's for `report`: its run's (see `unstickPublishing`). */
   async function donePublishing(tx: Tx, jobId: string, report: Report | undefined): Promise<void> {
     const job = (await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs[jobId];
     if (job !== undefined && report !== undefined && job.publishing === report.seq) delete job.publishing;
@@ -171,6 +174,35 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
   }
 
   return { JobRun, start };
+}
+
+/** The JobRun statuses whose run may yet run code, and end its job's `publishing`. */
+const RUNNING = ["pending", "running", "waiting"] as const;
+
+/**
+ * Ends `publishing` for every job whose publishing run is gone: only that run (the live JobRun whose report has the
+ * seq) ends it, and pi-durable ends a run whose phase throws as `faulted`, without its abort handler. At boot, once the
+ * tasks resumed.
+ */
+export async function unstickPublishing(tx: Tx): Promise<void> {
+  const publishing = new Set<string>();
+  for (const status of RUNNING) {
+    let cursor: Parameters<Tx["scanTasks"]>[2];
+    do {
+      const page = await tx.scanTasks({ kind: JOB_RUN, status }, 256, cursor);
+      for (const task of page.items) {
+        const { jobId } = task.input as JobRunInput;
+        const checkpoint = task.state.checkpoint as JobRunState | undefined;
+        if (checkpoint !== undefined && "report" in checkpoint && checkpoint.report !== undefined) {
+          publishing.add(`${jobId}:${checkpoint.report.seq}`);
+        }
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+  }
+  for (const job of Object.values((await tx.doc(JobsDoc, ROOT_CONVERSATION_ID)).jobs)) {
+    if (job.publishing !== undefined && !publishing.has(`${job.id}:${job.publishing}`)) delete job.publishing;
+  }
 }
 
 /** `completed`: the run left the job done, so its changes are published before its report. */
