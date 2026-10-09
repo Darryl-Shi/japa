@@ -38,9 +38,9 @@ The header is one `key: value` line per field; lists are `[a, b]`, maps `{ provi
 | `skills` | skills listed for it; `[]` for none | all |
 | `cwd` | working directory; a leading `~` or `$JAPA_HOME` is expanded | the environment's (`local`: the user's home directory) |
 
-The body is the worker's instructions. Every worker also gets `job_progress`, `job_complete` and
-`skill_read`. To ask something, a worker ends its turn with one clear question; the chief of staff
-answers with `job_message`.
+The body is the worker's instructions. Every worker also gets `job_progress`, `job_complete`,
+`job_ask` and `skill_read`. To ask something, a worker calls `job_ask` with one clear question; the
+chief of staff answers with `job_message`.
 
 ## Choosing the tools
 

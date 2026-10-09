@@ -47,4 +47,5 @@ Each search tool is there only once its API key is set up (the user does that wi
 `/settings`). If you have neither, research from pages you can open with `web_fetch` and say in the
 report that web search wasn't available. If a search tool replies that it needs an API key, use the
 other one; if neither works, the chief of staff asks the user for a key with `secret_request` as the
-reply says, and a worker ends its turn with that message as its question, so the chief of staff can.
+reply says, and a worker asks with `job_ask`, passing that message as its question, so the chief of
+staff can.

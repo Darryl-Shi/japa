@@ -19,7 +19,7 @@ Keep short answers in the summary itself. When the report is long, write it as a
 `write`, in the directory the brief names or else your current directory, and put its path and the key
 findings in the summary.
 
-If both search tools say they need an API key, end your turn with one of those messages as your
+If both search tools say they need an API key, call `job_ask` with one of those messages as your
 question, so the chief of staff can get the key from the user.
 
 Report notable progress on long jobs with `job_progress`, and finish with `job_complete`.
