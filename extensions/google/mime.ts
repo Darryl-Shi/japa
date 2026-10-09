@@ -1,5 +1,5 @@
 // RFC 2822 messages for Gmail's send and draft: UTF-8 headers as RFC 2047 encoded words, a base64 text/plain body,
-// multipart/mixed with attachments (RFC 2231 file names when they need it), and base64url for the API.
+// multipart/mixed with attachments (RFC 2231 file names when they need it).
 import { randomBytes } from "node:crypto";
 
 export type Mail = {

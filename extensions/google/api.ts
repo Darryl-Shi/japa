@@ -29,6 +29,8 @@ export type Api = {
 type Tokens = { access(): Promise<string>; refresh(): Promise<string> };
 
 const TIMEOUT_MS = 60_000;
+/** Uploads and downloads can be large: a slow link needs longer than a JSON request. */
+const TRANSFER_TIMEOUT_MS = 5 * 60_000;
 const LIBRARY = "https://console.cloud.google.com/apis/library";
 const CONNECT = 'connect({ extension: "google" })';
 const NO_CLIENT =
@@ -120,7 +122,7 @@ export function createApi(tokens: Tokens, opts: { sleep?: (ms: number) => Promis
   async function send(
     method: string,
     url: string,
-    init: { body?: string | Uint8Array<ArrayBuffer>; type?: string; binary?: boolean } = {},
+    init: { body?: string | Uint8Array<ArrayBuffer>; type?: string; binary?: boolean; timeout?: number } = {},
   ): Promise<{ response: Response; text: string; data: Buffer }> {
     let token = await tokens.access();
     let refreshed = false;
@@ -132,7 +134,12 @@ export function createApi(tokens: Tokens, opts: { sleep?: (ms: number) => Promis
       let data: Buffer;
       try {
         // The timeout covers reading the body as well as the reply's arrival.
-        response = await fetch(url, { method, headers, body: init.body, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        response = await fetch(url, {
+          method,
+          headers,
+          body: init.body,
+          signal: AbortSignal.timeout(init.timeout ?? TIMEOUT_MS),
+        });
         data = Buffer.from(await response.arrayBuffer());
       } catch (error) {
         throw new GoogleError(`Google request failed: ${reason(error)}`);
@@ -173,7 +180,7 @@ export function createApi(tokens: Tokens, opts: { sleep?: (ms: number) => Promis
 
     bytes: async (url, query) => {
       const target = withQuery(url, query);
-      const { response, data, text } = await send("GET", target, { binary: true });
+      const { response, data, text } = await send("GET", target, { binary: true, timeout: TRANSFER_TIMEOUT_MS });
       if (!response.ok) throw failure(target, response.status, text);
       return { data, type: response.headers.get("content-type") ?? "application/octet-stream" };
     },
@@ -189,7 +196,8 @@ export function createApi(tokens: Tokens, opts: { sleep?: (ms: number) => Promis
         data,
         Buffer.from(`\r\n--${boundary}--\r\n`),
       ]);
-      return parse(target, await send("POST", target, { body, type: `multipart/related; boundary=${boundary}` }));
+      const contentType = `multipart/related; boundary=${boundary}`;
+      return parse(target, await send("POST", target, { body, type: contentType, timeout: TRANSFER_TIMEOUT_MS }));
     },
 
     raw: async (method, url, { query, body } = {}) => {

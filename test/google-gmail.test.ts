@@ -7,11 +7,15 @@ import { GMAIL_ACTIONS, GMAIL_DESCRIPTION, gmail, gmailParameters } from "../ext
 import { schemaProblems } from "../src/kernel/tool-schema.ts";
 
 const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
 
 type Call = [string, string, unknown];
 type Route = unknown | ((opts: any) => unknown);
 
-/** An Api whose `json` answers from `routes`, keyed "METHOD path" (relative to the Gmail base); it records calls. */
+/**
+ * An Api whose `json` answers from `routes`, keyed "METHOD path" (relative to the Gmail base), and whose `upload`
+ * answers from "UPLOAD path" (relative to the upload base); it records calls.
+ */
 function fake(routes: Record<string, Route>) {
   const calls: Call[] = [];
   const api = {
@@ -26,8 +30,13 @@ function fake(routes: Record<string, Route>) {
     bytes: async () => {
       throw new Error("unexpected bytes");
     },
-    upload: async () => {
-      throw new Error("unexpected upload");
+    upload: async (url: string, metadata: object, data: Buffer, type: string, query?: unknown) => {
+      const path = url.replace(UPLOAD + "/", "");
+      calls.push(["UPLOAD", path, { metadata, data, type, query }]);
+      const key = `UPLOAD ${path}`;
+      if (!(key in routes)) throw new Error(`unexpected upload: ${key}`);
+      const route = routes[key];
+      return typeof route === "function" ? route(metadata) : route;
     },
     raw: async () => {
       throw new Error("unexpected raw");
@@ -40,9 +49,11 @@ const b64u = (s: string | Buffer) => Buffer.from(s).toString("base64url");
 const header = (name: string, value: string) => ({ name, value });
 const home = () => mkdtempSync(join(tmpdir(), "japa-gmail-"));
 
-/** The header block of a decoded `raw` message and its body. */
-const decodeRaw = (raw: string) => {
-  const text = Buffer.from(raw, "base64url").toString("utf8");
+type Upload = { metadata: object; data: Buffer; type: string; query?: unknown };
+
+/** The header block of an uploaded RFC 2822 message and its body. */
+const decodeRaw = (data: Buffer) => {
+  const text = data.toString("utf8");
   const at = text.indexOf("\r\n\r\n");
   return { head: text.slice(0, at).split("\r\n"), body: text.slice(at + 4) };
 };
@@ -265,7 +276,7 @@ test("send builds the message with cc, bcc and attachments, and sends it", async
   const dir = home();
   const file = join(dir, "notes.txt");
   writeFileSync(file, "hello");
-  const { api, calls } = fake({ "POST messages/send": { id: "s1", threadId: "t5" } });
+  const { api, calls } = fake({ "UPLOAD messages/send": { id: "s1", threadId: "t5" } });
   const out = await gmail(api, dir, {
     action: "send",
     to: "a@x.com, b@y.com",
@@ -278,15 +289,17 @@ test("send builds the message with cc, bcc and attachments, and sends it", async
   expect(out).toBe("Sent (id s1).");
   expect(calls).toHaveLength(1);
   const [method, path, opts] = calls[0]!;
-  expect([method, path]).toEqual(["POST", "messages/send"]);
-  const body = (opts as { body: { raw: string; threadId?: string } }).body;
-  expect(Object.keys(body)).toEqual(["raw"]);
-  const { head } = decodeRaw(body.raw);
+  expect([method, path]).toEqual(["UPLOAD", "messages/send"]);
+  const upload = opts as Upload;
+  expect(upload.metadata).toEqual({});
+  expect(upload.type).toBe("message/rfc822");
+  expect(upload.query).toBeUndefined();
+  const { head } = decodeRaw(upload.data);
   expect(head).toContain("To: a@x.com, b@y.com");
   expect(head).toContain("Cc: c@z.com");
   expect(head).toContain("Bcc: d@w.com");
   expect(head).toContain("Subject: Notes");
-  const text = Buffer.from(body.raw, "base64url").toString("utf8");
+  const text = upload.data.toString("utf8");
   expect(text).toContain('filename="notes.txt"');
   expect(text).toContain(Buffer.from("hello").toString("base64"));
 });
@@ -304,7 +317,7 @@ test("send with replyTo threads the reply: In-Reply-To, References, Re: subject 
         ],
       },
     },
-    "POST messages/send": { id: "s2" },
+    "UPLOAD messages/send": { id: "s2" },
   });
   const args = { to: "ann@x.com", subject: "lunch", body: "Yes!", replyTo: "m1" };
   const out = await gmail(api, home(), { action: "send", ...args });
@@ -314,9 +327,11 @@ test("send with replyTo threads the reply: In-Reply-To, References, Re: subject 
     "messages/m1",
     { query: { format: "metadata", metadataHeaders: ["Message-ID", "References", "Subject"] } },
   ]);
-  const body = (calls[1]![2] as { body: { raw: string; threadId: string } }).body;
-  expect(body.threadId).toBe("t1");
-  const { head } = decodeRaw(body.raw);
+  expect(calls[1]!.slice(0, 2)).toEqual(["UPLOAD", "messages/send"]);
+  const upload = calls[1]![2] as Upload;
+  expect(upload.metadata).toEqual({ threadId: "t1" });
+  expect(upload.type).toBe("message/rfc822");
+  const { head } = decodeRaw(upload.data);
   expect(head).toContain("Subject: Re: Lunch");
   expect(head).toContain("In-Reply-To: <orig@mail.x.com>");
   expect(head).toContain("References: <first@mail.x.com> <orig@mail.x.com>");
@@ -329,10 +344,10 @@ test("a reply whose subject already starts with re: keeps it", async () => {
       threadId: "t1",
       payload: { headers: [header("Subject", "Lunch"), header("Message-ID", "<o@x>")] },
     },
-    "POST messages/send": { id: "s3" },
+    "UPLOAD messages/send": { id: "s3" },
   });
   await gmail(api, home(), { action: "send", to: "a@x.com", subject: "RE: lunch plans", body: "ok", replyTo: "m1" });
-  const { head } = decodeRaw((calls[1]![2] as { body: { raw: string } }).body.raw);
+  const { head } = decodeRaw((calls[1]![2] as Upload).data);
   expect(head).toContain("Subject: RE: lunch plans");
   expect(head).toContain("References: <o@x>");
 });
@@ -344,15 +359,32 @@ test("draft saves the message, threaded when replying", async () => {
       threadId: "t1",
       payload: { headers: [header("Subject", "Plan"), header("Message-ID", "<p@x>")] },
     },
-    "POST drafts": { id: "d1", message: { id: "m7" } },
+    "UPLOAD drafts": { id: "d1", message: { id: "m7" } },
   });
   const args = { to: "a@x.com", subject: "Plan", body: "Draft", replyTo: "m1" };
   const out = await gmail(api, home(), { action: "draft", ...args });
   expect(out).toBe("Draft saved (id d1).");
-  const body = (calls[1]![2] as { body: { message: { raw: string; threadId: string } } }).body;
-  expect(calls[1]!.slice(0, 2)).toEqual(["POST", "drafts"]);
-  expect(body.message.threadId).toBe("t1");
-  expect(decodeRaw(body.message.raw).head).toContain("Subject: Re: Plan");
+  expect(calls[1]!.slice(0, 2)).toEqual(["UPLOAD", "drafts"]);
+  const upload = calls[1]![2] as Upload;
+  expect(upload.metadata).toEqual({ message: { threadId: "t1" } });
+  expect(upload.type).toBe("message/rfc822");
+  const { head } = decodeRaw(upload.data);
+  expect(head).toContain("Subject: Re: Plan");
+  expect(head).toContain("In-Reply-To: <p@x>");
+});
+
+test("draft without replyTo uploads the message with empty metadata", async () => {
+  const { api, calls } = fake({ "UPLOAD drafts": { id: "d2" } });
+  const out = await gmail(api, home(), { action: "draft", to: "a@x.com", subject: "Hi", body: "Body" });
+  expect(out).toBe("Draft saved (id d2).");
+  expect(calls).toHaveLength(1);
+  const upload = calls[0]![2] as Upload;
+  expect(upload.metadata).toEqual({});
+  expect(upload.type).toBe("message/rfc822");
+  const { head, body } = decodeRaw(upload.data);
+  expect(head).toContain("To: a@x.com");
+  expect(head).toContain("Subject: Hi");
+  expect(body).toContain(Buffer.from("Body").toString("base64"));
 });
 
 test("send and draft need to, subject and body", async () => {

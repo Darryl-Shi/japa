@@ -178,7 +178,8 @@ the calendar's time zone.
 | `google_request` | `{method, url, query?, body?}`: any Google REST call the others don't cover. The URL must be `https://*.googleapis.com/…`; returns the status and the JSON body, truncated. |
 
 `send` and `draft` build an RFC 2822 message in `mime.ts`: UTF-8 headers encoded per RFC 2047, a `text/plain` body,
-`multipart/mixed` when there are attachments (host paths, content type by extension), base64url for the API.
+`multipart/mixed` when there are attachments (host paths, content type by extension), sent through Gmail's media
+upload endpoints (`message/rfc822`; a JSON `raw` is capped near 1 MB).
 `replyTo` (a message id) sets `threadId`, `In-Reply-To` and `References` from that message, and `Re: ` on the subject
 when missing.
 

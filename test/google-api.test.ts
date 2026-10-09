@@ -289,6 +289,20 @@ describe("bytes, upload, raw", () => {
     const { api } = setup(new TypeError("fetch failed", { cause: new Error("ECONNRESET") }));
     expect((await failure(api.raw("GET", BASE))).message).toBe("Google request failed: ECONNRESET");
   });
+
+  test("uploads and downloads get 5 minutes; json and raw 60 s", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const { api } = setup(Response.json({ ok: 1 }));
+      await api.json("GET", BASE);
+      await api.raw("GET", BASE);
+      await api.bytes(BASE);
+      await api.upload(BASE, {}, Buffer.from("x"), "text/plain");
+      expect(timeout.mock.calls.map((call) => call[0])).toEqual([60_000, 60_000, 300_000, 300_000]);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
 });
 
 describe("respond and truncate", () => {

@@ -5,9 +5,11 @@ import { Type } from "../../src/sdk.ts";
 import { htmlToText } from "../web/html.ts";
 import { type Api, GoogleError } from "./api.ts";
 import { readUpload, saveFile } from "./files.ts";
-import { base64url, buildMessage, type Mail } from "./mime.ts";
+import { buildMessage, type Mail } from "./mime.ts";
 
 const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+/** Send and draft go through the media upload endpoints: a JSON `raw` is capped near 1 MB, attachments included. */
+const UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
 
 export const GMAIL_ACTIONS = ["search", "read", "send", "draft", "modify", "labels", "attachment"] as const;
 
@@ -166,12 +168,14 @@ async function compose(api: Api, args: GmailArgs, action: "send" | "draft"): Pro
     mail.references = references || undefined;
     if (!/^\s*re:/i.test(subject)) mail.subject = /^\s*re:/i.test(was) ? was : `Re: ${was}`;
   }
-  const message = { raw: base64url(buildMessage(mail)), ...(threadId ? { threadId } : {}) };
+  const raw = Buffer.from(buildMessage(mail));
   if (action === "send") {
-    const sent = await api.json<{ id: string }>("POST", path("messages", "send"), { body: message });
+    const metadata = threadId ? { threadId } : {};
+    const sent = await api.upload(`${UPLOAD}/messages/send`, metadata, raw, "message/rfc822");
     return `Sent (id ${sent.id}).`;
   }
-  const draft = await api.json<{ id: string }>("POST", path("drafts"), { body: { message } });
+  const metadata = threadId ? { message: { threadId } } : {};
+  const draft = await api.upload(`${UPLOAD}/drafts`, metadata, raw, "message/rfc822");
   return `Draft saved (id ${draft.id}).`;
 }
 
