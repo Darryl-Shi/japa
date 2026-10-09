@@ -52,7 +52,8 @@ The password is the secret `desktop.vncPassword`. With the default secrets store
   the real folder there. Save files meant for the user or for other jobs to it.
 - To upload a file in the browser, put it in `~/.japa/desktop/shared` and upload it from
   `~/shared/<name>`: `browser`'s upload takes paths on the desktop.
-- `~/attachments` on the desktop holds the files the user sent, read-only.
+- `~/attachments` on the desktop holds the files the user sent, read-only; on this machine they are
+  in `~/.japa/attachments` (read-only in a job).
 
 ## When it doesn't work
 

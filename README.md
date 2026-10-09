@@ -196,22 +196,26 @@ refuses to start jobs, and `japa status` says why.
 Each job runs in a bubblewrap sandbox. It sees your files and the network as you do, except:
 
 - `~/.japa` is the job's own clone of it (made at `~/.japa/.jobs/<id>`), without your secrets, `state.db` or japa's
-  socket; `~/.japa/desktop/shared` is the real shared folder.
+  socket; `~/.japa/desktop/shared` is the real shared folder, and `~/.japa/attachments` (the files you sent) and
+  `~/.japa/settings.json` are the real ones, read-only.
 - `/tmp` and `/var/tmp` are private to the job.
 - japa's install directory, the `japa` launcher, and your systemd user units and `environment.d` are read-only, so a
   job can't change what japa runs with your secrets.
 - `sudo` and other setuid programs don't work, and Docker, `systemctl --user`, the D-Bus session bus and the ssh
   agent are out of reach. A job can't install system packages or start services that outlive it.
-- It gets only `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ` and `TERM` from japa's environment, so provider keys
-  set as environment variables don't reach it.
+- It gets only `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` and `JAPA_HOME` from japa's environment, so
+  provider keys set as environment variables don't reach it. Its `PATH` also has japa's Node and the `japa`
+  launcher's directory (`~/.local/bin`), so `japa check` works there.
 
 When a job finishes, its changes under `~/.japa/extensions/` and `~/.japa/skills/` go live: each changed one is
 checked with `japa check` in the sandbox, then merged into `~/.japa` (a three-way merge, so changes made since the
 job started are kept), loaded and logged as one change you can undo. Anything else it changed in `~/.japa` is
 dropped. Its report to the CoS ends with the outcome: `Live: <paths> (change <id>).`, or `Not live: <why>. Kept at
-~/.japa/.jobs/<id>.` when the check failed, the merge conflicted or the change failed to load (then it's reverted),
-plus `Dropped: <paths>.` when it changed other files. While a job's changes go live it can't be messaged. A kept
-clone is deleted after 7 days.
+~/.japa/.jobs/<id>.` when nothing went live, for example because the check failed, the merge conflicted or the
+change failed to load (then it's reverted); either is followed by `Dropped: <paths>.` when it changed other files.
+A job that changed only other files ends `Not live: the job changed nothing under extensions/ or skills/. Kept at
+~/.japa/.jobs/<id>. Dropped: <paths>.`; one that changed nothing in `~/.japa` has no outcome line. While a job's
+changes go live it can't be messaged. A kept clone is deleted after 7 days.
 
 ## Updating
 

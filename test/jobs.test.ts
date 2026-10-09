@@ -12,11 +12,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
+import { jobPath } from "../src/kernel/sandbox/bwrap.ts";
 import { modelRefusal } from "../src/kernel/jobs/cos.ts";
 import { NUDGE } from "../src/kernel/jobs/run.ts";
 import { JobDoc, JobsDoc } from "../src/kernel/jobs/state.ts";
@@ -738,7 +739,11 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     const [result] = await jobResults(daemon);
     expect(result).toContain("the real marker");
     expect(result).not.toContain("api-key");
-    expect(await reported(daemon)).toEqual(['[job 1 "Look" done] seen']);
+    // What it wrote outside extensions/ and skills/ is dropped, and said so.
+    const kept = `Kept at ${join(home, ".jobs", "1")}.`;
+    expect(await reported(daemon)).toEqual([
+      `[job 1 "Look" done] seen\n\nNot live: the job changed nothing under extensions/ or skills/. ${kept} Dropped: made.`,
+    ]);
     await daemon.close();
   });
 
@@ -829,9 +834,13 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     await daemon.close();
   });
 
-  test("the daemon's own PATH holds only its Node and the system dirs; a job's is the original", async () => {
-    const original = process.env.PATH;
+  test("the daemon's own PATH holds only its Node and the system dirs; a job's is the original, plus japa's", async () => {
+    const before = process.env.PATH;
+    // Its Node's dir and the launcher's (in the user home the boot had), where the original lacks them.
+    const jobsPath = () => jobPath(before, dirname(process.execPath), join(homedir(), ".local", "bin"));
     const { daemon, faux } = await bootSandboxed();
+    const original = jobsPath();
+    expect(original.startsWith(`${before}:`)).toBe(true);
     const system = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     expect(process.env.PATH).toBe(`${dirname(process.execPath)}:${system}`);
     script(faux, (role, text) => {
@@ -852,7 +861,7 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     });
     await ask(again.daemon, "start");
     await waitFor(() => idle(again.daemon));
-    expect((await jobResults(again.daemon))[0]!.trim()).toBe(original);
+    expect((await jobResults(again.daemon))[0]!.trim()).toBe(jobsPath());
     await again.daemon.close();
   });
 });

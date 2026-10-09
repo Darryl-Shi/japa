@@ -228,8 +228,10 @@ const optionalString = (value: unknown) => value === undefined || typeof value =
 
 /**
  * Publishes job `id`'s changes to extensions/ and skills/ (spec §4.3); the outcome line for its report, or undefined
- * when there's nothing to publish (no clone, or no change left once narrowed). The clone is deleted once its changes are
- * live or when there are none, and kept otherwise.
+ * when the job changed nothing at all (no clone, or no change). Dropped work is never silent: a job that changed only
+ * paths outside the components gets `Not live: the job changed nothing under extensions/ or skills/`, and every Not
+ * live line made once narrowing ran ends with `Dropped: <paths>.` when it dropped any. The clone is deleted once its
+ * changes are live or when there are none, and kept otherwise.
  */
 export function createPublisher(deps: PublishDeps): Publish {
   const { home, maxBundleBytes = 100 * MB } = deps;
@@ -301,11 +303,14 @@ export function createPublisher(deps: PublishDeps): Publish {
 
   /**
    * Commits and bundles the job's changes in its sandbox (narrow.ts): what it dropped and whether there's a bundle.
-   * The folders the sandbox mounts in the home, which bwrap makes there, are dropped without a word.
+   * The paths the sandbox mounts in the home (bwrap makes those missing there; settings.json is the real one, not the
+   * clone's) are dropped without a word.
    */
   async function narrowInSandbox(id: string, base: string, message: string, signal?: AbortSignal) {
     const spec = deps.spec(id);
-    const quiet = spec.shared.filter((path) => path !== home && within(path, home)).map((path) => relative(home, path));
+    const quiet = [...spec.shared, ...(spec.readOnlyShared ?? [])]
+      .filter((path) => path !== home && within(path, home))
+      .map((path) => relative(home, path));
     const script = join(deps.packageRoot, "src", "kernel", "jobs", "narrow.ts");
     // `/tmp` in the sandbox is the job's own temp dir, `spec.tmp` on the host.
     const node = [process.execPath, "--disable-warning=ExperimentalWarning", script];
@@ -417,7 +422,20 @@ export function createPublisher(deps: PublishDeps): Publish {
 
   return async ({ id, title, seq, stopped }, signal) => {
     const clone = cloneDir(home, id);
-    const notLive = (reason: string) => `Not live: ${reason}. Kept at ${display(clone)}.`;
+    /** What narrowing dropped, once known: every Not live line names it too, so dropped work is never silent. */
+    let dropped: Listed | undefined;
+    const notLive = (reason: string) => {
+      const paths = dropped === undefined ? "" : listText(dropped);
+      return `Not live: ${reason}. Kept at ${display(clone)}.${paths === "" ? "" : ` Dropped: ${paths}.`}`;
+    };
+    /** Nothing left to go live: no line when nothing else changed either, else a Not live line naming what. */
+    const nothingLive = () => {
+      if (dropped === undefined || listText(dropped) === "") {
+        removeClone(home, id);
+        return undefined;
+      }
+      return notLive("the job changed nothing under extensions/ or skills/");
+    };
     /** Under the lock, unless aborted meanwhile, `load`; then the clone goes if the changes are live. */
     const finish = async (merge: () => Marker | string) => {
       const { line, live } = await deps.lock(async () => {
@@ -438,6 +456,7 @@ export function createPublisher(deps: PublishDeps): Publish {
     if (marker?.reverted !== undefined) return marker.reverted;
     if (marker !== undefined) {
       const merged = marker;
+      dropped = merged.dropped;
       return finish(() => merged); // merged already, so it goes on, stopped or not
     }
 
@@ -447,10 +466,8 @@ export function createPublisher(deps: PublishDeps): Publish {
     const message = `Job ${id}: ${title}`;
     const narrowed = await narrowInSandbox(id, base, message, signal);
     if ("error" in narrowed) return notLive(`couldn't commit the job's changes: ${narrowed.error}`);
-    if (!narrowed.bundle) {
-      removeClone(home, id);
-      return undefined;
-    }
+    dropped = narrowed.dropped;
+    if (!narrowed.bundle) return nothingLive();
     const ref = `refs/japa/jobs/${id}`;
     try {
       let sha: string;
@@ -470,10 +487,7 @@ export function createPublisher(deps: PublishDeps): Publish {
         const where = inComponents(odd) ? ", which japa doesn't publish" : " outside extensions/ and skills/";
         return notLive(`the job changed ${listText(listed([odd]))}${where}`);
       }
-      if (changed.length === 0) {
-        removeClone(home, id);
-        return undefined;
-      }
+      if (changed.length === 0) return nothingLive();
       // A deleted component has nothing to check.
       for (const component of componentsOf(changed).filter((c) => inTree(sha, c))) {
         const problems = await deps.check(id, ...parts(component), signal);

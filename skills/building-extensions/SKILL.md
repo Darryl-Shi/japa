@@ -192,6 +192,8 @@ From `~/.japa`, run
 japa check extension <name>
 ```
 
+(If `japa` isn't found, run `~/.local/bin/japa check extension <name>`.)
+
 It stops at the first failure of: a valid manifest (core contracts, valid contributions); tool
 descriptions of at most 1024 characters; a typecheck (tests excluded); its `*.test.ts` files; and a
 smoke load (loads without errors, appears in the capabilities, no tool name shared with another

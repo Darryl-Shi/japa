@@ -38,10 +38,10 @@ export function publishable(path: string): boolean {
  * In the clone at `dir`: stages everything, then puts each staged path that can't go live (see `publishable`) back in
  * the index as it is at `base` (the working tree keeps the job's files: nothing there is deleted, a folder mounted from
  * outside included). Commits what's left as `message` when that differs from HEAD, and bundles `base..HEAD` into
- * `<out>/publish.bundle`. Returns how many paths it put back (`droppedCount`), but those under `quiet` paths (the
- * folders the sandbox mounts in the home) and what `linkSdk` made; the first 50 of them that are `nameable`
- * (`dropped`: a job can leave thousands, a virtualenv say, more than the sandbox's output keeps); and whether it made a
- * bundle: not when nothing is left changed since `base`.
+ * `<out>/publish.bundle`. Returns how many paths it put back (`droppedCount`), but those under `quiet` paths (what
+ * the sandbox mounts in the home) unless the job committed them itself, and what `linkSdk` made; the first 50 of them
+ * that are `nameable` (`dropped`: a job can leave thousands, a virtualenv say, more than the sandbox's output keeps);
+ * and whether it made a bundle: not when nothing is left changed since `base`.
  *
  * First, it removes the index's lock: one left there is stale, by a git killed holding it (a publish aborted
  * mid-narrow, say), since nothing else should run in the clone meanwhile: the job's sandbox has been told to stop
@@ -56,6 +56,8 @@ export function narrow(
 ): { dropped: string[]; droppedCount: number; bundle: boolean } {
   rmSync(join(out, BUNDLE), { force: true });
   rmSync(`${resolve(dir, git(dir, "rev-parse", "--git-path", "index"))}.lock`, { force: true });
+  // What the job committed itself: reported even under `quiet` paths, where the working tree isn't the job's.
+  const committed = new Set(gitPaths(dir, "diff", "--name-only", "--no-renames", "-z", base, "HEAD"));
   git(dir, "add", "-A");
   const staged = (...filter: string[]) =>
     gitPaths(dir, "diff", "--cached", "--name-only", "--no-renames", "-z", ...filter, base).filter(
@@ -66,7 +68,11 @@ export function narrow(
   const under = (path: string, folder: string) => path === folder || path.startsWith(`${folder}/`);
   const linked = (path: string) =>
     path === SDK_LINK || (path === "package.json" && added.has(path) && sdkPackage(dir));
-  const reported = unpublished.filter((path) => !linked(path) && !quiet.some((folder) => under(path, folder)));
+  const quietly = (path: string) => quiet.some((folder) => under(path, folder));
+  // A file the job committed under a `quiet` path may read as unchanged now (settings.json is the real one there).
+  const reported = [...new Set([...unpublished, ...[...committed].filter((path) => !publishable(path))])].filter(
+    (path) => !linked(path) && (committed.has(path) || !quietly(path)),
+  );
   const dropped = reported.filter(nameable).slice(0, MAX_NAMED);
   const droppedCount = reported.length;
   if (unpublished.length > 0) {

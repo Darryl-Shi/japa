@@ -64,5 +64,7 @@ From `~/.japa`, run
 japa check skill <name>
 ```
 
+(If `japa` isn't found, run `~/.local/bin/japa check skill <name>`.)
+
 It checks that SKILL.md exists, that `name` matches the directory and that `description` is present,
 and prints `ok` when it passes. The same check runs when you finish: if it fails, nothing goes live.

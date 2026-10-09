@@ -154,15 +154,38 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(await publish({ id: "2", title: "t", seq: 1 })).toBeUndefined();
   });
 
-  test("only changes outside the components: undefined, clone deleted, the real tree unchanged", async () => {
+  test("only changes outside the components: not live, the dropped paths named, the clone kept, the real tree unchanged", async () => {
     const { home, clone, sandboxes, base } = setup();
-    write(clone, "settings.json", '{"a":2}\n');
+    write(clone, "README.md", "r\n");
     write(clone, "notes.md", "n\n");
-    const { publish } = publisher(home, sandboxes.spec);
-    expect(await publish(job)).toBeUndefined();
-    expect(existsSync(clone)).toBe(false);
+    const { publish, calls } = publisher(home, sandboxes.spec);
+    expect(await publish(job)).toBe(
+      `Not live: the job changed nothing under extensions/ or skills/. ${KEPT} Dropped: README.md, notes.md.`,
+    );
+    expect(existsSync(clone)).toBe(true);
     expect(git(home, "rev-parse", "HEAD")).toBe(base);
     expect(read(home, "settings.json")).toBe(SETTINGS);
+    expect(calls).toMatchObject({ changes: [], check: [], reconciles: 0 });
+  });
+
+  test("every Not live line names the dropped paths too", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "extensions/e/index.ts", "changed\n");
+    write(clone, "README.md", "r\n");
+    const { publish } = publisher(home, sandboxes.spec, { check: async () => ["boom"] });
+    expect(await publish(job)).toBe(`Not live: check failed for extensions/e: boom. ${KEPT} Dropped: README.md.`);
+  });
+
+  test("a reverted load names the dropped paths, after a restart too", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "extensions/e/index.ts", "broken\n");
+    write(clone, "notes.md", "n\n");
+    const { publish } = publisher(home, sandboxes.spec, {
+      reconcile: async () => ({ errors: [{ name: "e", error: "bad" }] }),
+    });
+    const line = `Not live: extensions/e failed to load: bad. Reverted. ${KEPT} Dropped: notes.md.`;
+    expect(await publish(job)).toBe(line);
+    expect(await publish(job)).toBe(line);
   });
 
   test("an extension and a skill go live in one merge", async () => {
@@ -189,16 +212,25 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(git(home, "for-each-ref", "refs/japa")).toBe("");
   });
 
-  test("settings.json is dropped and reported", async () => {
+  test("a job sees the real settings.json, so its clone's differing isn't a change of the job's", async () => {
     const { home, clone, sandboxes } = setup();
-    write(clone, "settings.json", '{"a":2}\n');
+    write(home, "settings.json", '{"local":true}\n'); // the settings tools write it at any time
+    write(clone, "settings.json", '{"a":2}\n'); // hidden in the sandbox under the real one
     write(clone, "extensions/e/index.ts", "changed\n");
     const { publish } = publisher(home, sandboxes.spec);
-    const line = await publish(job);
-    expect(line).toBe("Live: extensions/e (change 1). Dropped: settings.json.");
-    expect(read(home, "settings.json")).toBe(SETTINGS);
+    expect(await publish(job)).toBe("Live: extensions/e (change 1).");
+    expect(read(home, "settings.json")).toBe('{"local":true}\n');
     expect(git(home, "show", "HEAD^2:settings.json")).toBe(SETTINGS.trim());
     expect(read(home, "extensions/e/index.ts")).toBe("changed\n");
+  });
+
+  test("a new file outside the components is dropped and reported", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "README.md", "r\n");
+    write(clone, "extensions/e/index.ts", "changed\n");
+    const { publish } = publisher(home, sandboxes.spec);
+    expect(await publish(job)).toBe("Live: extensions/e (change 1). Dropped: README.md.");
+    expect(existsSync(join(home, "README.md"))).toBe(false);
   });
 
   test("files changed, removed or new outside the components are reported; the shared folder's and linkSdk's aren't", async () => {
@@ -291,13 +323,14 @@ describe.skipIf(NO_BWRAP)("publish", () => {
   test("a job's changes outside the components that get past narrowing are refused in the real repo", async () => {
     const { outside, home, clone, sandboxes, base } = setup();
     write(clone, "extensions/e/index.ts", "changed\n");
-    // The job's git commits settings.json again after narrowing, just before the bundle is made.
+    // The job's git commits a file outside them after narrowing, just before the bundle is made.
     const tamper = [
-      `printf '{"tampered":true}\\n' > settings.json`,
-      `${realGit()} -c core.hooksPath=/dev/null -c user.name=job -c user.email=job@localhost commit -q -m tamper settings.json`,
+      "printf 'tampered\\n' > notes.md",
+      `${realGit()} add notes.md`,
+      `${realGit()} -c core.hooksPath=/dev/null -c user.name=job -c user.email=job@localhost commit -q -m tamper notes.md`,
     ].join(" && ");
     const { publish, calls } = publisher(home, withGit(outside, sandboxes.spec, tamper));
-    expect(await publish(job)).toBe(`Not live: the job changed settings.json outside extensions/ and skills/. ${KEPT}`);
+    expect(await publish(job)).toBe(`Not live: the job changed notes.md outside extensions/ and skills/. ${KEPT}`);
     expect(git(home, "rev-parse", "HEAD")).toBe(base);
     expect(read(home, "settings.json")).toBe(SETTINGS);
     expect(calls).toMatchObject({ check: [], changes: [], reconciles: 0 });
@@ -804,7 +837,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
 
   test("a change logged before a restart isn't logged again", async () => {
     const { home, clone, sandboxes } = setup();
-    write(clone, "settings.json", '{"a":2}\n');
+    write(clone, "README.md", "r\n");
     write(clone, "extensions/e/index.ts", "changed\n");
     let stopped = false;
     const { publish, calls } = publisher(home, sandboxes.spec, {
@@ -817,7 +850,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
       },
     });
     await expect(publish(job)).rejects.toThrow("stopped");
-    expect(await publish(job)).toBe("Live: extensions/e (change 1). Dropped: settings.json.");
+    expect(await publish(job)).toBe("Live: extensions/e (change 1). Dropped: README.md.");
     expect(calls.changes).toHaveLength(1);
     expect(calls.good).toBe(2);
     expect(git(home, "rev-list", "--merges", "--count", "HEAD")).toBe("1");

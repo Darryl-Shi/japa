@@ -257,6 +257,20 @@ describe("jobs", { timeout: 30_000 }, () => {
     expect(fake.edited.at(-1)!.markdown.split("\n")[2]).toBe(`🔄 running · ${cos.provider}/${cos.modelId} · thinking high`);
   });
 
+  test("/jobs shows a job from before jobs had a model on the worker model, when one is set", async () => {
+    const kit = testKit({ models: [{ id: "a" }, { id: "w" }] });
+    await reboot(kit);
+    const worker = { provider: kit.model.provider, modelId: "w" };
+    expect(await tool(daemon, faux, "settings_set", { path: "models.worker", value: worker })).toMatch(/^Set/);
+    const legacy = { ...jobOf("1"), worker: "coder" } as Job;
+    delete legacy.model;
+    delete legacy.thinking;
+    await seed([legacy]);
+    await openJobs();
+    await fake.press("🔄 #1 t1 · <1m");
+    expect(fake.edited.at(-1)!.markdown.split("\n")[2]).toBe(`🔄 running · ${kit.model.provider}/w · thinking medium`);
+  });
+
   test("a job's detail shows its status, model, thinking, times, brief and what its status calls for", async () => {
     const now = Date.now();
     await seed([

@@ -17,8 +17,11 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 
-/** The only variables a sandbox gets: from the daemon's environment as it started, when set. */
-const ENV = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM"];
+/**
+ * The only variables a sandbox gets: from the daemon's environment as it started, when set. `JAPA_HOME` too, so
+ * `japa check` in a job finds the japa home (the job's clone, mounted there).
+ */
+const ENV = ["PATH", "HOME", "USER", "SHELL", "LANG", "TZ", "TERM", "JAPA_HOME"];
 
 /** Docker's sockets: reaching one means running a container with the host mounted. */
 const DOCKER_SOCKETS = ["/run/docker.sock", "/var/run/docker.sock"];
@@ -37,9 +40,9 @@ export type ReadOnlyPath = { path: string; dir: boolean };
 
 /**
  * `clone` is mounted over `home`, and `tmp` (a host dir) at `/tmp` and `/var/tmp`; `hidden` dirs get an empty tmpfs
- * and `hidden` files read empty;
- * `shared` paths under `home` stay the real ones. `userHome` is the user's home, the rest of which stays writable.
- * `env` is the sandbox's whole environment (see `jobEnv`); only its allowed names are set.
+ * and `hidden` files read empty; `shared` paths under `home` stay the real ones, and `readOnlyShared` ones too,
+ * read-only (those that exist). `userHome` is the user's home, the rest of which stays writable. `env` is the
+ * sandbox's whole environment (see `jobEnv`); only its allowed names are set.
  */
 export type SandboxSpec = {
   home: string;
@@ -49,6 +52,7 @@ export type SandboxSpec = {
   readOnly: ReadOnlyPath[];
   hidden: string[];
   shared: string[];
+  readOnlyShared?: string[];
   env: Record<string, string>;
 };
 
@@ -70,7 +74,26 @@ export function bwrap(): string {
   throw new Error(`${command}: not found in ${process.env.PATH ?? "an empty PATH"}`);
 }
 
-/** The variables of `env` a sandbox may get: `PATH HOME USER SHELL LANG TZ TERM`, those that are set. */
+/** The `japa` launcher the installer writes for the user whose home is `userHome`. */
+export function launcherPath(userHome = homedir()): string {
+  return join(userHome, ".local", "bin", "japa");
+}
+
+/**
+ * A job's PATH: `original` (the daemon's from before `narrowPath`), then the daemon's Node dir and the launcher's dir
+ * where it lacks them, so `node` and `japa check` work in a job whatever PATH the daemon was started with.
+ */
+export function jobPath(
+  original: string | undefined,
+  nodeDir = dirname(process.execPath),
+  launcherDir = dirname(launcherPath()),
+): string {
+  const dirs = original === undefined || original === "" ? [] : original.split(":");
+  for (const dir of [nodeDir, launcherDir]) if (!dirs.includes(dir)) dirs.push(dir);
+  return dirs.join(":");
+}
+
+/** The variables of `env` a sandbox may get: `PATH HOME USER SHELL LANG TZ TERM JAPA_HOME`, those that are set. */
 export function jobEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   return Object.fromEntries(ENV.flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])));
 }
@@ -216,7 +239,7 @@ export function readOnlyPaths(
     ...configs.flatMap((config) => [join(config, "systemd"), join(config, "environment.d")]),
     ...datas.map((data) => join(data, "systemd")),
   ];
-  return [...dirs.map((path) => ({ path, dir: true })), { path: join(userHome, ".local", "bin", "japa"), dir: false }];
+  return [...dirs.map((path) => ({ path, dir: true })), { path: launcherPath(userHome), dir: false }];
 }
 
 /**
@@ -282,6 +305,7 @@ export function sandboxArgs(spec: SandboxSpec, cwd = homedir()): string[] {
   for (const dir of ["/tmp", "/var/tmp"].filter((dir) => existsSync(dir))) args.push("--bind", spec.tmp, dir);
   args.push("--bind", spec.clone, spec.home);
   for (const path of spec.shared) args.push("--bind-try", path, path);
+  for (const path of spec.readOnlyShared ?? []) args.push("--ro-bind-try", path, path);
   // A hidden dir gets an empty tmpfs; a file (a database outside the home) reads as /dev/null and writes go there.
   // Not `--ro-bind /dev/null`: bwrap mounts that nodev, where /dev/null can't even be opened.
   for (const path of [...spec.hidden.filter((path) => !inOwnMount(path)), ...runtimeDirs()]) {

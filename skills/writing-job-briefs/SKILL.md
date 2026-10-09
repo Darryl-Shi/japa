@@ -31,12 +31,16 @@ Every job has `read`, `write`, `edit` and `bash`, every skill and every extensio
 a sandbox:
 
 - It sees the user's files and the network, but its own copy of `~/.japa` (without japa's secrets
-  or database) and its own `/tmp`. Name the directory to work in.
+  or database) and its own `/tmp`. In that copy, the files the user sent (`~/.japa/attachments`)
+  and the current `settings.json` are the real ones, read-only. Name the directory to work in.
 - It can't use `sudo` (so no system packages), Docker, `systemctl --user` or the ssh agent, and
   can't change japa's own program or service. Ask the user for those.
 - What it changes under `~/.japa/extensions` and `~/.japa/skills` goes live when it finishes, if it
   passes `japa check`; its report then ends with `Live: …` or `Not live: …`. Its other changes to
-  `~/.japa` are dropped and listed as `Dropped: …`. Settings change through `settings_set`, not jobs.
+  `~/.japa` are dropped, and that line ends with `Dropped: …` naming them. A job that changed only
+  such files ends `Not live: the job changed nothing under extensions/ or skills/. … Dropped: …`;
+  one that changed nothing in `~/.japa` has no outcome line. Settings change through
+  `settings_set`, not jobs.
 - To retry a job that ended `Not live: … Kept at <path>.`, start a new job with what failed. A job
   can't see `<path>` (its own `~/.japa` covers it): read the files that matter there yourself and put
   them, or what to change, in the brief.
