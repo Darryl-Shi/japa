@@ -13,6 +13,22 @@ const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modu
  * can write them all, and the daemon's git runs outside their sandbox.
  */
 export function git(home: string, ...args: string[]): string {
+  return run(home, args).trim();
+}
+
+/** `git` for a NUL-separated list (`-z` in `args`): the paths, exactly as git wrote them. */
+export function gitPaths(home: string, ...args: string[]): string[] {
+  return run(home, args).split("\0").filter((path) => path !== "");
+}
+
+/** What git said when `git` threw: its stderr, else the error's message. */
+export function gitError(error: unknown): string {
+  const stderr = (error as { stderr?: unknown } | undefined)?.stderr;
+  if (typeof stderr === "string" && stderr.trim() !== "") return stderr.trim();
+  return error instanceof Error ? error.message : String(error);
+}
+
+function run(home: string, args: string[]): string {
   const config = [
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.excludesFile=/dev/null",
@@ -25,7 +41,8 @@ export function git(home: string, ...args: string[]): string {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
-  }).trim();
+    maxBuffer: 1024 ** 3,
+  });
 }
 
 /**

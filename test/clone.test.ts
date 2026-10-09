@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   statSync,
@@ -13,7 +14,7 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { cloneBase, cloneDir, ensureClone, pruneClones } from "../src/kernel/jobs/clone.ts";
+import { cloneBase, cloneDir, cloneMarker, ensureClone, pruneClones, removeClone } from "../src/kernel/jobs/clone.ts";
 import { commit, ensureWorkspace, git as daemonGit } from "../src/kernel/workspace.ts";
 import { tempHome } from "./helpers.ts";
 
@@ -188,6 +189,29 @@ test("pruneClones removes folders a job made inaccessible, and goes on past an e
   expect(errors).toHaveBeenCalledWith(expect.stringContaining(join(jobs, "2")));
   expect(statSync(outside).mode & 0o777).toBe(0o500);
   expect(readFileSync(join(outside, "keep"), "utf8")).toBe("k");
+});
+
+test("pruneClones removes a clone's merge marker with it, and orphaned ones", () => {
+  const home = workspace();
+  for (const id of ["1", "2"]) ensureClone(home, packageRoot, id);
+  const jobs = join(home, ".jobs");
+  expect(cloneMarker(home, "1")).toBe(join(jobs, "1.merged"));
+  for (const id of ["1", "2", "3"]) writeFileSync(cloneMarker(home, id), "{}");
+  pruneClones(home, (id) => id === "2");
+  expect(readdirSync(jobs).sort()).toEqual(["2", "2.base", "2.merged", "2.tmp"]);
+});
+
+test("removeClone deletes a clone with its base, temp dir and marker, and folders the job made inaccessible", () => {
+  const home = workspace();
+  for (const id of ["1", "2"]) ensureClone(home, packageRoot, id);
+  const jobs = join(home, ".jobs");
+  writeFileSync(cloneMarker(home, "1"), "{}");
+  mkdirSync(join(jobs, "1", "locked"));
+  writeFileSync(join(jobs, "1", "locked", "f"), "x");
+  chmodSync(join(jobs, "1", "locked"), 0o000);
+  removeClone(home, "1");
+  expect(readdirSync(jobs).sort()).toEqual(["2", "2.base", "2.tmp"]);
+  expect(() => removeClone(home, "1")).not.toThrow();
 });
 
 test("pruneClones without a .jobs dir does nothing", () => {
