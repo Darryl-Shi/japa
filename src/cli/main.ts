@@ -16,6 +16,7 @@ import { Cancelled, clackPrompter } from "./prompt.ts";
 import { serviceCommand, serviceEnv } from "./service.ts";
 import { setupCommand } from "./setup.ts";
 import { uninstall } from "./uninstall.ts";
+import { chatUpdater } from "./update-launch.ts";
 import { updateCommand } from "./update.ts";
 
 const USAGE = `Usage: japa <command>
@@ -41,7 +42,7 @@ Commands:
   --version  Print the version and git commit`;
 
 async function daemon(home: string): Promise<void> {
-  const d = await boot({ home });
+  const d = await boot({ home, updater: chatUpdater(APP, home) });
   console.log(`japa is running (${socketPath(home)})`);
   for (const e of d.status().errors) console.error(`${e.name}: ${e.error}`);
   const stop = () => void d.close();

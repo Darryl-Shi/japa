@@ -43,6 +43,7 @@ import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./mem
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { ago } from "./messaging/menu/nav.ts";
 import { PROMPT_HISTORY } from "./messaging/prompts.ts";
 import { MessagingDoc } from "./messaging/surface.ts";
 import { requestIdFor } from "./origin.ts";
@@ -59,6 +60,13 @@ import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } fro
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, type Runtime } from "./runtime.ts";
 import { checkModel, loadSettings, type Settings } from "./settings.ts";
+import {
+  liveness,
+  patchUpdateState,
+  readUpdateState,
+  type Updater,
+  writeUpdateState,
+} from "./update-state.ts";
 import { dirHash, ensureWorkspace } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -69,6 +77,8 @@ export type BootOptions = {
   extensionDirs?: string[];
   /** Added after the discovered extensions, replacing any with the same name. */
   extensions?: JapaExtension[];
+  /** Checks for and launches updates from chat; `japa daemon` gives one. */
+  updater?: Updater;
 };
 
 export type Daemon = {
@@ -274,6 +284,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         }
         return `Set ${name}.`;
       },
+      update: chatUpdates(home, options.updater),
     };
     // Resolved by the surfaces' `fulfil` and the menu's `setSecret`, by secret name; a rejectable one (a sign-in's) is
     // rejected by a decline.
@@ -566,6 +577,42 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     release();
     throw error;
   }
+}
+
+/** `MessagingContext.update`: `updater`'s check and launch, with the run recorded in `<home>/update.json`. */
+function chatUpdates(home: string, updater: Updater | undefined): MessagingContext["update"] {
+  const need = () => {
+    if (updater === undefined) throw new Error("Updating from chat isn't available: japa wasn't started as a daemon.");
+    return updater;
+  };
+  return {
+    check: async () => need().check(),
+    start: async (chat, from, to, rollback) => {
+      const launcher = need();
+      // No await until the new state is written: a second start, meanwhile, must see it.
+      const now = Date.now();
+      const earlier = readUpdateState(home);
+      if (earlier !== undefined) {
+        const live = liveness(earlier, now);
+        if (live === "running") throw new Error(`An update is already running (started ${ago(now - earlier.started)} ago).`);
+        // The new run replaces an interrupted one, which needs no report then.
+        if (live === "interrupted") patchUpdateState(home, { reported: true });
+      }
+      writeUpdateState(home, { state: "running", started: now, chat, from, to, rollback, reported: false });
+      try {
+        await launcher.launch(to, rollback);
+      } catch (error) {
+        try {
+          patchUpdateState(home, { state: "failed", summary: message(error), finished: Date.now() });
+        } catch {
+          // Unrecorded, the run reads as interrupted once its 60 s to start are up; the launch's error is the one to see.
+        }
+        throw error;
+      }
+    },
+    state: async () => readUpdateState(home),
+    markReported: async () => patchUpdateState(home, { reported: true }),
+  };
 }
 
 /** Provider and environment activations are disposed after the harness closes, the others before. */

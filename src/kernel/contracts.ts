@@ -14,6 +14,7 @@ import type { Job } from "./jobs/state.ts";
 import { type SecretPrompt, startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
 import { schemaProblems } from "./tool-schema.ts";
+import type { UpdateCheck, UpdateState } from "./update-state.ts";
 
 /** Releases what an `activate()` set up. */
 export type Dispose = () => void | Promise<void>;
@@ -188,6 +189,22 @@ export type MessagingContext = {
    * `by` recorded as `recordSecretMessage`; then recomputes availability. Its reply, `Set <name>.`.
    */
   setSecret(extension: string, name: string, value: string, by?: string): Promise<string>;
+  /** Updating japa from chat (design doc §4.3), through the `Updater` the CLI gave `boot`, and its `update.json`. */
+  update: {
+    /** What an update would bring in. Throws `Updating from chat isn't available: japa wasn't started as a daemon.`
+     * without an updater, as `start` does. */
+    check(): Promise<UpdateCheck>;
+    /**
+     * Records an update to `to` (from `from`, asked in `chat`) as running, then launches it. Refuses (throws `An update
+     * is already running (started <ago> ago).`) while one runs; a launch that throws leaves it failed, its error the
+     * summary, and rethrows.
+     */
+    start(chat: { adapter: string; chat: string }, from: string, to: string, rollback: boolean): Promise<void>;
+    /** The recorded update, if any. */
+    state(): Promise<UpdateState | undefined>;
+    /** Marks the recorded update reported. */
+    markReported(): Promise<void>;
+  };
 };
 
 export type KernelContext = {
