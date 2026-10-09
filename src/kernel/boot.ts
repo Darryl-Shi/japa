@@ -43,6 +43,7 @@ import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./mem
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
+import { PROMPT_HISTORY } from "./messaging/prompts.ts";
 import { MessagingDoc } from "./messaging/surface.ts";
 import { requestIdFor } from "./origin.ts";
 import { watchReplies } from "./replies.ts";
@@ -182,6 +183,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           const doc = await tx.doc(MessagingDoc, root.id);
           if (at !== undefined) doc.secretInput = { ...doc.secretInput, [adapter]: at };
           else if (doc.secretInput !== undefined) delete doc.secretInput[adapter];
+        }, ctx),
+      promptState: async (adapter) => {
+        const doc = await opened.snapshot(MessagingDoc, root.id, ctx);
+        return { prompts: doc?.prompts?.[adapter] ?? [], history: doc?.promptHistory?.[adapter] ?? [] };
+      },
+      savePromptState: (adapter, { prompts, history }) =>
+        root.commit(async (tx) => {
+          const doc = await tx.doc(MessagingDoc, root.id);
+          doc.prompts = { ...doc.prompts, [adapter]: structuredClone(prompts) };
+          doc.promptHistory = { ...doc.promptHistory, [adapter]: history.slice(-PROMPT_HISTORY) };
         }, ctx),
       setSetting: (path, value) => setSetting(settingsDeps, path, value, commit),
       rollback: (name) => rollBackAndLog(home, "extension", name, undefined, reconcile, commit),

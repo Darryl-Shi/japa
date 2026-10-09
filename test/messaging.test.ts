@@ -254,79 +254,296 @@ test("a reply in flight at the stop is sent after the restart, and a sent one is
   await again.close();
 });
 
-const PROMPT = "japa needs `svc.token`: to sync. Send it as your next message; I'll delete it at once.";
+/** The prompt for a request for `name` asked "to sync", and the decline message after it. */
+const promptText = (name: string) =>
+  `japa needs \`${name}\`: to sync. Reply to this message with it; I'll delete your reply at once.`;
+const declineText = (name: string) => `Don't want to provide \`${name}\`?`;
+const PROMPT = promptText("svc.token");
+const DECLINE = declineText("svc.token");
+const STALE = "That request is no longer pending.";
+const UNDELETED = "Couldn't delete your message — please delete it yourself.";
 
-/** Boots with `fake`, has the CoS ask for `svc.token` on "connect", and waits for the prompt. */
-async function prompted(fake: ReturnType<typeof fakeAdapter>, extra: JapaExtension[] = []) {
+type Fake = ReturnType<typeof fakeAdapter>;
+
+/** The newest prompt and decline message `fake` was sent for the request for `name`, once both are. */
+async function promptOf(fake: Fake, name: string) {
+  const find = (markdown: string) => fake.sent.findLast((s) => s.markdown === markdown);
+  await waitFor(() => find(declineText(name)) !== undefined);
+  return { prompt: find(promptText(name))!, decline: find(declineText(name))! };
+}
+
+/** Boots with `fake`, has the CoS ask for `svc.token` on "connect", and waits for its prompt and decline message. */
+async function prompted(fake: Fake, extra: JapaExtension[] = []) {
   const booted = await bootMessaging(fake, {}, extra);
   script(booted.faux, (role, text) =>
     role === "user" && text === "connect" ? call("secret_request", { name: "svc.token", why: "to sync" }) : undefined,
   );
   await fake.receive({ text: "connect" });
-  await waitFor(() => fake.sent.some((s) => s.markdown === PROMPT));
-  return booted;
+  return { ...booted, ...(await promptOf(fake, "svc.token")) };
 }
 
-test("a pending secret request is asked for; the next text fulfils it and is deleted", async () => {
+const pendingOf = async (daemon: Daemon) =>
+  (await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending;
+const transcript = async (daemon: Daemon) => JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items);
+const sentTexts = (fake: Fake) => fake.sent.map((s) => s.markdown);
+const at = (messageId: string) => ({ chat: "42", messageId });
+
+test("each pending request gets a reply prompt with a placeholder, then a Decline message", async () => {
   const fake = fakeAdapter();
-  const { daemon, home } = await prompted(fake);
-  await fake.receive({ text: "s3cr3t", messageId: "77" });
-  expect(fake.deleted).toEqual([{ chat: "42", messageId: "77" }]);
+  const { daemon, prompt, decline } = await prompted(fake);
+  expect(prompt).toMatchObject({ chat: "42", markdown: PROMPT, input: { placeholder: "Paste svc.token" } });
+  expect(prompt.buttons).toBeUndefined();
+  expect(decline).toMatchObject({ chat: "42", markdown: DECLINE, buttons: [[{ label: "Decline" }]] });
+  expect(decline.input).toBeUndefined();
+  expect(fake.sent.indexOf(decline)).toBe(fake.sent.indexOf(prompt) + 1);
+  await sleep(500);
+  expect(sentTexts(fake).filter((t) => t === PROMPT || t === DECLINE)).toEqual([PROMPT, DECLINE]);
+  await daemon.close();
+});
+
+test("a reply to the prompt fulfils it; reply, prompt and decline message are deleted", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home, prompt, decline } = await prompted(fake);
+  await fake.receive({ text: "s3cr3t", messageId: "77", replyTo: prompt.id });
   expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  expect(fake.deleted).toEqual([at("77"), at(prompt.id), at(decline.id)]);
+  expect(await pendingOf(daemon)).toEqual([]);
   await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret svc.token provided]"));
-  expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
+  await sleep(300);
+  expect(fake.deleted).toHaveLength(3);
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
   await daemon.close();
 });
 
-test("a secret message delivered again is dropped and deleted again", async () => {
+test("a plain text while a request is pending goes to the CoS and leaves the request", async () => {
   const fake = fakeAdapter();
   const { daemon } = await prompted(fake);
-  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
-  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
-  await sleep(2000);
-  expect(fake.deleted).toEqual([
-    { chat: "42", messageId: "77" },
-    { chat: "42", messageId: "77" },
-  ]);
-  expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
-  await daemon.close();
-});
-
-test("a secret message delivered again is still dropped after japa chat fulfils another request", async () => {
-  const fake = fakeAdapter();
-  const { extension, surface } = probe();
-  const { daemon } = await prompted(fake, [extension]);
-  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
-  await daemon.root.commit((tx) => addSecretRequest(tx, "other.token", "to sync"), ctx);
-  const { pending } = (await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!;
-  await surface().secrets.fulfil(pending[0]!.id, "other");
-  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret other.token provided]"));
-  await fake.receive({ id: "s", messageId: "77", text: "s3cr3t" });
-  await sleep(2000);
-  expect(fake.deleted).toHaveLength(2);
-  expect(JSON.stringify((await daemon.root.entries({}, 500, undefined, ctx)).items)).not.toContain("s3cr3t");
-  await daemon.close();
-});
-
-test("if the message can't be deleted, the secret is still stored and the user is told", async () => {
-  const fake = fakeAdapter();
-  const { daemon, home } = await prompted(fake);
-  fake.failDelete = true;
-  await fake.receive({ text: "s3cr3t" });
-  expect(fake.sent.at(-1)!.markdown).toBe("Couldn't delete your message — please delete it yourself.");
-  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
-  await daemon.close();
-});
-
-test("a command cancels the prompt; the request stays pending", async () => {
-  const fake = fakeAdapter();
-  const { daemon } = await prompted(fake);
-  await fake.receive({ command: "status" });
   await fake.receive({ text: "hello" });
   await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
   expect(fake.deleted).toEqual([]);
-  expect((await daemon.harness.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, ctx))!.pending).toMatchObject([
-    { name: "svc.token" },
-  ]);
+  expect(await pendingOf(daemon)).toMatchObject([{ name: "svc.token" }]);
   await daemon.close();
 });
+
+test("three requests are prompted at once and answered in any order", async () => {
+  const fake = fakeAdapter();
+  const { daemon, faux, home } = await bootMessaging(fake);
+  script(faux, () => undefined);
+  const names = ["a.token", "b.token", "c.token"];
+  await daemon.root.commit(async (tx) => {
+    for (const name of names) await addSecretRequest(tx, name, "to sync");
+  }, ctx);
+  const [a, b, c] = await Promise.all(names.map((name) => promptOf(fake, name)));
+  expect(sentTexts(fake)).toEqual(names.flatMap((name) => [promptText(name), declineText(name)]));
+  const order = [c!, a!, b!];
+  for (const [i, p] of order.entries()) await fake.receive({ text: `v${i}`, messageId: `7${i}`, replyTo: p.prompt.id });
+  expect(names.map((name) => readFileSync(join(home, "secrets", name), "utf8"))).toEqual(["v1", "v2", "v0"]);
+  expect(fake.deleted).toEqual(order.flatMap((p, i) => [at(`7${i}`), at(p.prompt.id), at(p.decline.id)]));
+  expect(await pendingOf(daemon)).toEqual([]);
+  await daemon.close();
+});
+
+test("prompts survive a restart: none is sent again, a reply still fulfils and Decline still declines", async () => {
+  const kit = testKit();
+  script(kit.faux, () => undefined);
+  const fake = fakeAdapter();
+  const { daemon, home } = await bootMessaging(fake, { storage: { adapter: "sqlite" } }, [], kit);
+  await daemon.root.commit(async (tx) => {
+    await addSecretRequest(tx, "svc.token", "to sync");
+    await addSecretRequest(tx, "other.token", "to sync");
+  }, ctx);
+  const svc = await promptOf(fake, "svc.token");
+  const other = await promptOf(fake, "other.token");
+  await daemon.close();
+  const fake2 = fakeAdapter();
+  const again = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension, fake2.extension] });
+  await sleep(500);
+  expect(fake2.sent).toEqual([]);
+  await fake2.receive({ text: "s3cr3t", messageId: "77", replyTo: svc.prompt.id });
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  expect(fake2.deleted).toEqual([at("77"), at(svc.prompt.id), at(svc.decline.id)]);
+  await fake2.receive({ action: other.decline.buttons![0]![0]!.action, messageId: other.decline.id });
+  await waitFor(async () => (await texts(again.root, "user")).includes("[secret other.token declined]"));
+  await waitFor(() => fake2.deleted.length === 5);
+  expect(fake2.deleted.slice(3)).toEqual([at(other.prompt.id), at(other.decline.id)]);
+  expect(sentTexts(fake2).filter((t) => t.startsWith("japa needs"))).toEqual([]);
+  await again.close();
+});
+
+test("Decline withdraws the request, tells the CoS, and deletes both messages", async () => {
+  const fake = fakeAdapter();
+  const { daemon, prompt, decline } = await prompted(fake);
+  await fake.press("Decline", decline.id);
+  expect(await pendingOf(daemon)).toEqual([]);
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret svc.token declined]"));
+  await waitFor(() => fake.deleted.length === 2);
+  expect(fake.deleted).toEqual([at(prompt.id), at(decline.id)]);
+  await fake.press("Decline", decline.id); // pressed again, the request already gone: its message is deleted
+  expect(fake.deleted).toEqual([at(prompt.id), at(decline.id), at(decline.id)]);
+  await sleep(500);
+  expect((await texts(daemon.root, "user")).filter((t) => t === "[secret svc.token declined]")).toHaveLength(1);
+  await daemon.close();
+});
+
+test("a request fulfilled in japa chat deletes its prompt", async () => {
+  const fake = fakeAdapter();
+  const { extension, surface } = probe();
+  const { daemon, prompt, decline } = await prompted(fake, [extension]);
+  await surface().secrets.fulfil((await pendingOf(daemon))[0]!.id, "s3cr3t");
+  await waitFor(() => fake.deleted.length === 2);
+  expect(fake.deleted).toEqual([at(prompt.id), at(decline.id)]);
+  await daemon.close();
+});
+
+test("a reply to a prompt no longer pending is deleted, never submitted, and the owner told", async () => {
+  const fake = fakeAdapter();
+  const { extension, surface } = probe();
+  const { daemon, home, prompt } = await prompted(fake, [extension]);
+  await surface().secrets.fulfil((await pendingOf(daemon))[0]!.id, "first");
+  await waitFor(() => fake.deleted.length === 2);
+  const reply = { id: "s", messageId: "77", text: "s3cr3t", replyTo: prompt.id };
+  await fake.receive(reply);
+  expect(fake.deleted.at(-1)).toEqual(at("77"));
+  expect(sentTexts(fake)).toContain(STALE);
+  await fake.receive(reply); // delivered again: deleted again, without a second notice
+  expect(fake.deleted.slice(2)).toEqual([at("77"), at("77")]);
+  await sleep(2000);
+  expect(sentTexts(fake).filter((t) => t === STALE)).toHaveLength(1);
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("first");
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("a reply to a prompt without text asks for text and fulfils nothing", async () => {
+  const fake = fakeAdapter();
+  const { daemon, prompt } = await prompted(fake);
+  await fake.receive({ images: [{ data: PNG, mimeType: "image/png" }], replyTo: prompt.id });
+  expect(sentTexts(fake)).toContain("Reply with the secret as text.");
+  await sleep(2000);
+  expect(await pendingOf(daemon)).toMatchObject([{ name: "svc.token" }]);
+  expect(fake.deleted).toEqual([]);
+  expect((await texts(daemon.root, "user")).filter((t) => t.includes("[image"))).toEqual([]);
+  await daemon.close();
+});
+
+test("a reply delivered again is dropped and deleted again", async () => {
+  const fake = fakeAdapter();
+  const { daemon, prompt } = await prompted(fake);
+  const reply = { id: "s", messageId: "77", text: "s3cr3t", replyTo: prompt.id };
+  await fake.receive(reply);
+  await fake.receive(reply);
+  await sleep(2000);
+  expect(fake.deleted.filter((d) => d.messageId === "77")).toHaveLength(2);
+  expect(sentTexts(fake)).not.toContain(STALE);
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("a reply delivered again is still dropped after japa chat fulfils another request", async () => {
+  const fake = fakeAdapter();
+  const { extension, surface } = probe();
+  const { daemon, prompt } = await prompted(fake, [extension]);
+  const reply = { id: "s", messageId: "77", text: "s3cr3t", replyTo: prompt.id };
+  await fake.receive(reply);
+  await daemon.root.commit((tx) => addSecretRequest(tx, "other.token", "to sync"), ctx);
+  await surface().secrets.fulfil((await pendingOf(daemon))[0]!.id, "other");
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("[secret other.token provided]"));
+  await fake.receive(reply);
+  await sleep(2000);
+  expect(fake.deleted.filter((d) => d.messageId === "77")).toHaveLength(2);
+  expect(sentTexts(fake)).not.toContain(STALE);
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+
+test("if the reply can't be deleted, the secret is still stored and the owner told", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home, prompt } = await prompted(fake);
+  fake.failDelete = true;
+  await fake.receive({ text: "s3cr3t", replyTo: prompt.id });
+  expect(sentTexts(fake)).toContain(UNDELETED);
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  expect(await pendingOf(daemon)).toEqual([]);
+  await daemon.close();
+});
+
+test("without an owner nothing is prompted; the owner's first message brings the prompts", async () => {
+  const fake = fakeAdapter();
+  const { daemon, faux } = await bootMessaging(fake, { extensions: {} });
+  await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+  await fake.receive({ user: "7", chat: "7", text: "hi" });
+  await sleep(500);
+  expect(sentTexts(fake)).toEqual(["Not authorized. Your fake user id is 7."]);
+  expect(await tool(daemon, faux, "settings_set", { path: "extensions.fake.owner", value: "42" })).toMatch(/^Set /);
+  await sleep(500);
+  expect(sentTexts(fake)).not.toContain(PROMPT);
+  script(faux, () => undefined);
+  await fake.receive({ text: "hello" });
+  const { prompt } = await promptOf(fake, "svc.token");
+  expect(prompt.chat).toBe("42");
+  await waitFor(async () => (await texts(daemon.root, "user")).includes("hello"));
+  await daemon.close();
+});
+
+test("a prompt whose send fails is retried on the next sync and sent once", async () => {
+  const fake = fakeAdapter();
+  const { daemon, faux } = await bootMessaging(fake);
+  script(faux, () => undefined);
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  fake.failSend = (m) => m.input !== undefined;
+  await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+  await waitFor(() => errors.mock.calls.length > 0);
+  expect(errors).toHaveBeenCalledWith("fake: couldn't send a secret prompt: send failed");
+  errors.mockRestore();
+  expect(fake.sent).toEqual([]);
+  fake.failSend = undefined;
+  await fake.receive({ text: "hello" });
+  await promptOf(fake, "svc.token");
+  await sleep(500);
+  expect(sentTexts(fake).filter((t) => t === PROMPT)).toHaveLength(1);
+  await daemon.close();
+});
+
+test("a prompt whose decline message fails to send is deleted; both are sent on the next sync", async () => {
+  const fake = fakeAdapter();
+  const { daemon, faux, home } = await bootMessaging(fake);
+  script(faux, () => undefined);
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  fake.failSend = (m) => m.buttons !== undefined;
+  await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+  await waitFor(() => fake.deleted.length === 1);
+  expect(errors).toHaveBeenCalledWith("fake: couldn't send a secret prompt: send failed");
+  errors.mockRestore();
+  const first = fake.sent.find((s) => s.markdown === PROMPT)!;
+  expect(fake.deleted).toEqual([at(first.id)]);
+  fake.failSend = undefined;
+  await fake.receive({ text: "hello" });
+  const { prompt } = await promptOf(fake, "svc.token");
+  await sleep(500);
+  expect(sentTexts(fake).filter((t) => t === PROMPT || t === DECLINE)).toEqual([PROMPT, PROMPT, DECLINE]);
+  await fake.receive({ text: "s3cr3t", messageId: "77", replyTo: prompt.id });
+  expect(readFileSync(join(home, "secrets/svc.token"), "utf8")).toBe("s3cr3t");
+  await daemon.close();
+});
+
+test("a reply to a prompt whose decline message failed, left undeleted, is never submitted", async () => {
+  const fake = fakeAdapter();
+  const { daemon, faux } = await bootMessaging(fake);
+  script(faux, () => undefined);
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  fake.failSend = (m) => m.buttons !== undefined;
+  fake.failDelete = true;
+  await daemon.root.commit((tx) => addSecretRequest(tx, "svc.token", "to sync"), ctx);
+  await waitFor(() => errors.mock.calls.length > 0);
+  errors.mockRestore();
+  const orphan = fake.sent.find((s) => s.markdown === PROMPT)!;
+  fake.failSend = undefined;
+  fake.failDelete = false;
+  await fake.receive({ text: "s3cr3t", messageId: "77", replyTo: orphan.id });
+  expect(fake.deleted).toContainEqual(at("77"));
+  expect(sentTexts(fake)).toContain(STALE);
+  await sleep(2000);
+  expect(await transcript(daemon)).not.toContain("s3cr3t");
+  await daemon.close();
+});
+

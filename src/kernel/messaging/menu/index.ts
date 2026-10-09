@@ -109,12 +109,11 @@ export function createMenu(
     /** Whether a screen is waiting for the owner's next text, and has for less than `INPUT_MS`. */
     pendingInput: live,
 
-    /** Ends an input that waited `INPUT_MS`, as if cancelled; whether there was one. */
+    /** Ends an input that waited `INPUT_MS`, as if cancelled. */
     async expire() {
-      if (waiting() === undefined || live()) return false;
+      if (waiting() === undefined || live()) return;
       cancelInput();
       await mark();
-      return true;
     },
 
     /**

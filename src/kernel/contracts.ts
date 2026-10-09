@@ -11,7 +11,7 @@ import type { MutableModels, Provider, TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionState } from "./availability.ts";
 import type { Change } from "./changes.ts";
 import type { Job } from "./jobs/state.ts";
-import { startMessaging } from "./messaging/surface.ts";
+import { type SecretPrompt, startMessaging } from "./messaging/surface.ts";
 import type { SecretRequest } from "./secret-requests.ts";
 import { schemaProblems } from "./tool-schema.ts";
 
@@ -161,6 +161,10 @@ export type MessagingContext = {
   secretInput(adapter: string): Promise<number | undefined>;
   /** Saves `opened` as `adapter`'s `secretInput`, or clears it when undefined. */
   saveSecretInput(adapter: string, opened: number | undefined): Promise<void>;
+  /** `adapter`'s saved secret prompts, and the ids of the latest prompts it sent, oldest first. */
+  promptState(adapter: string): Promise<{ prompts: SecretPrompt[]; history: string[] }>;
+  /** Saves `adapter`'s secret prompts and prompt ids, keeping the last `PROMPT_HISTORY` ids. */
+  savePromptState(adapter: string, state: { prompts: SecretPrompt[]; history: string[] }): Promise<void>;
   /** As `settings_set`; its reply. */
   setSetting(path: string, value: unknown): Promise<string>;
   /** Rolls a workspace extension back to its last known good version, as the `rollback` tool; its reply. */

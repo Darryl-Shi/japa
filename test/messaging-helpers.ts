@@ -3,10 +3,12 @@ import type { JapaExtension } from "../src/kernel/extension.ts";
 import { bootTest, testKit } from "./helpers.ts";
 
 type Buttons = OutgoingMessage["buttons"];
+type Input = OutgoingMessage["input"];
 
 /**
  * A messaging adapter that records what the kernel sends; `receive` hands it a message (chat and user "42", a fresh
- * id and messageId unless given), `press` the button labelled `label` in the newest sent or edited message.
+ * id and messageId unless given), `press` the button labelled `label` in the sent message `id`, else in the newest
+ * sent or edited message.
  * `holdSends` holds each send until the adapter stops, then fails it; `held` tells that a send is being held.
  */
 export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
@@ -16,8 +18,8 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
   let count = 0;
   let newest: { id: string; buttons?: Buttons } | undefined;
   const fake = {
-    sent: [] as { chat: string; id: string; markdown: string; buttons?: Buttons }[],
-    edited: [] as { chat: string; messageId: string; markdown: string; buttons?: Buttons }[],
+    sent: [] as { chat: string; id: string; markdown: string; buttons?: Buttons; input?: Input }[],
+    edited: [] as { chat: string; messageId: string; markdown: string; buttons?: Buttons; input?: Input }[],
     deleted: [] as { chat: string; messageId: string }[],
     typing: [] as string[],
     commands: [] as { name: string; description: string }[][],
@@ -29,9 +31,10 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
       const n = String(++count);
       return receive({ chat: "42", user: "42", id: n, messageId: n, ...m });
     },
-    press: (label: string) => {
-      const action = newest!.buttons!.flat().find((b) => b.label === label)!.action;
-      return fake.receive({ action, messageId: newest!.id });
+    press: (label: string, id?: string) => {
+      const target = id === undefined ? newest! : fake.sent.find((s) => s.id === id)!;
+      const action = target.buttons!.flat().find((b) => b.label === label)!.action;
+      return fake.receive({ action, messageId: target.id });
     },
   };
   const adapter: MessagingAdapter = {
