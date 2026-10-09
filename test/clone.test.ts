@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { cloneBase, cloneDir, ensureClone, pruneClones } from "../src/kernel/jobs/clone.ts";
-import { commit, ensureWorkspace } from "../src/kernel/workspace.ts";
+import { commit, ensureWorkspace, git as daemonGit } from "../src/kernel/workspace.ts";
 import { tempHome } from "./helpers.ts";
 
 /** Paths `rmSync` fails on, standing in for an entry that can't be removed. */
@@ -110,6 +110,27 @@ test("the daemon's git ignores the user's global config and hooks", () => {
     process.env.HOME = saved;
   }
   expect(existsSync(ran)).toBe(false);
+});
+
+test("the daemon's git ignores the user's default ignore and attributes files", () => {
+  const home = workspace();
+  // Read without any global config, from ~/.config/git; a job can write them.
+  const user = tempHome();
+  mkdirSync(join(user, ".config", "git"), { recursive: true });
+  writeFileSync(join(user, ".config", "git", "ignore"), "unseen\n");
+  writeFileSync(join(user, ".config", "git", "attributes"), "* japa-test-attr\n");
+  writeFileSync(join(home, "unseen"), "x");
+  const saved = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.HOME = user;
+  delete process.env.XDG_CONFIG_HOME;
+  onTestFinished(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  expect(daemonGit(home, "status", "--porcelain")).toContain("unseen");
+  expect(daemonGit(home, "check-attr", "japa-test-attr", "--", "marker")).toBe("marker: japa-test-attr: unspecified");
 });
 
 test("pruneClones removes old and orphaned clones, keeps recent ones", () => {

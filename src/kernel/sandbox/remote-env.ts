@@ -105,13 +105,20 @@ export function startEnvServer(
   createInterface({ input: child.stderr }).on("line", (line) => {
     if (line.trim()) lastStderr = line;
   });
+  // What the server writes can come from the sandbox too (its stdout is reachable there): a line it can't have meant
+  // ends the connection, as if the server were lost, instead of throwing here.
   createInterface({ input: child.stdout }).on("line", (line) => {
-    const message = JSON.parse(line) as { id: number; call?: unknown[]; result?: unknown; thrown?: string };
-    const request = requests.get(message.id);
-    if (request === undefined) return; // answered after the connection was lost
-    if (message.call) request.callback!(...(decode(message.call, request.context) as unknown[]));
-    else if (message.thrown !== undefined) request.reject(new Error(message.thrown));
-    else request.resolve(decode(message.result, request.context));
+    try {
+      const message = JSON.parse(line) as { id: number; call?: unknown[]; result?: unknown; thrown?: string };
+      const request = requests.get(message.id);
+      if (request === undefined) return; // answered after the connection was lost
+      if (message.call) request.callback!(...(decode(message.call, request.context) as unknown[]));
+      else if (message.thrown !== undefined) request.reject(new Error(message.thrown));
+      else request.resolve(decode(message.result, request.context));
+    } catch {
+      onLost();
+      child.kill();
+    }
   });
   child.on("close", onLost);
   child.on("error", onLost);

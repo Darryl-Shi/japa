@@ -1,3 +1,4 @@
+import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type HarnessOptions, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { err, type ExecutionEnv, ExecutionError, FileError } from "@earendil-works/pi-durable/env";
 import { resolve, sep } from "node:path";
@@ -64,15 +65,15 @@ export function readOnly(env: ExecutionEnv, deny: string[]): ExecutionEnv {
 
 /**
  * The Harness `env` option: for the CoS (root), the `local` environment, read-only and with the `deny` dirs
- * unreadable; for any other conversation, a job's, the environment `jobs` gives (its sandbox).
+ * unreadable; for any other conversation, a job's, the environment `jobs` gives (its sandbox), under the call's context.
  */
 export function createEnvDispatcher(
   local: EnvironmentAdapter,
   deny: string[],
-  jobs: (conversationId: ConversationId) => Promise<ExecutionEnv>,
+  jobs: (conversationId: ConversationId, context: Context) => Promise<ExecutionEnv>,
 ): NonNullable<HarnessOptions["env"]> {
-  return async (target) => {
-    if (target.conversationId !== ROOT_CONVERSATION_ID) return jobs(target.conversationId);
+  return async (target, context) => {
+    if (target.conversationId !== ROOT_CONVERSATION_ID) return jobs(target.conversationId, context);
     return readOnly(local.create({ conversationId: String(target.conversationId), cwd: target.cwd }), deny);
   };
 }

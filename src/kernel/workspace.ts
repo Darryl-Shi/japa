@@ -9,11 +9,18 @@ export const LKG = "japa-lkg";
 const IGNORED = ["state.db*", "secrets/", "japa.sock", "daemon.lock", "node_modules/", ".staging/", ".cache/", "boots.json", "attachments/", "/desktop/", "logs/", "setup.json", "update.json*", ".jobs/"];
 
 /**
- * Runs git in `home` as japa, with neither the user's global config nor any hooks: jobs can write both, and the
- * daemon's git runs outside their sandbox.
+ * Runs git in `home` as japa, with neither the user's global config, ignore and attributes files nor any hooks: jobs
+ * can write them all, and the daemon's git runs outside their sandbox.
  */
 export function git(home: string, ...args: string[]): string {
-  const config = ["-c", "core.hooksPath=/dev/null", "-c", "user.name=japa", "-c", "user.email=japa@localhost", "-c", "commit.gpgsign=false"];
+  const config = [
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.excludesFile=/dev/null",
+    "-c", "core.attributesFile=/dev/null",
+    "-c", "user.name=japa",
+    "-c", "user.email=japa@localhost",
+    "-c", "commit.gpgsign=false",
+  ];
   return execFileSync("git", ["-C", home, ...config, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

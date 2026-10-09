@@ -1,3 +1,4 @@
+import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type ConversationId, type EnvTarget, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
@@ -68,10 +69,10 @@ test("jobs get the env from the jobs callback, the root a read-only local env", 
       return localAdapter.create(input);
     },
   };
-  const asked: ConversationId[] = [];
+  const asked: [ConversationId, Context][] = [];
   const jobEnv = new NodeExecutionEnv({ cwd: dir });
-  const dispatch = createEnvDispatcher(local, [join(dir, "secrets")], async (conversationId) => {
-    asked.push(conversationId);
+  const dispatch = createEnvDispatcher(local, [join(dir, "secrets")], async (conversationId, context) => {
+    asked.push([conversationId, context]);
     return jobEnv;
   });
 
@@ -83,8 +84,12 @@ test("jobs get the env from the jobs callback, the root a read-only local env", 
   const r = await rootEnv.readTextFile(join(dir, "secrets", "k"), ctx);
   expect(!r.ok && r.error.message).toBe("Secrets are not readable here.");
 
-  const env = await dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, ctx);
+  // The call's context, not a background one: the job's doc is read under it.
+  const context = { ...ctx };
+  const env = await dispatch({ conversationId: 2 as ConversationId, cwd: dir, read } as EnvTarget, context);
   expect(env).toBe(jobEnv);
-  expect(asked).toEqual([2]);
+  expect(asked).toHaveLength(1);
+  expect(asked[0]![0]).toBe(2);
+  expect(asked[0]![1]).toBe(context);
   expect(created).toHaveLength(1);
 });

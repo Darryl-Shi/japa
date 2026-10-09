@@ -514,8 +514,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         return adapter.create(input);
       },
     };
-    const env = createEnvDispatcher(local, secretsDirs, async (conversationId: ConversationId) => {
-      const jobId = (await opened.snapshot(JobDoc, conversationId, ctx))?.jobId;
+    const env = createEnvDispatcher(local, secretsDirs, async (conversationId: ConversationId, context) => {
+      const jobId = (await opened.snapshot(JobDoc, conversationId, context))?.jobId;
       if (!jobId) throw new Error(`No job runs in conversation ${conversationId}`);
       return jobs.env(String(conversationId), jobId);
     });
