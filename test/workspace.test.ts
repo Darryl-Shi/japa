@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import {
   abortPending,
   adoptOutsideEdits,
@@ -70,6 +70,78 @@ test("retireStaging removes the branch and worktree record of a hand-deleted .st
   expect(git(home, "worktree", "list").split("\n")).toHaveLength(1);
 });
 
+/** The files under `dir`, relative to it, sorted. */
+const filesIn = (dir: string) =>
+  readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((f) => statSync(join(dir, f)).isFile())
+    .sort();
+
+test("retireStaging archives a .staging whose worktree record is gone whole, beside an earlier archive", () => {
+  const home = workspace();
+  const staging = withStaging(home);
+  writeFileSync(join(staging, "draft.md"), "draft");
+  const archive = join(home, ".jobs", "staging-archive");
+  mkdirSync(join(archive, ".staging"), { recursive: true });
+  writeFileSync(join(archive, ".staging", "earlier.md"), "earlier");
+  rmSync(join(home, ".git", "worktrees"), { recursive: true }); // its .git file now names a missing gitdir
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+  retireStaging(home);
+  expect(existsSync(staging)).toBe(false);
+  expect(filesIn(archive)).toEqual([".staging-2/.git", ".staging-2/.gitignore", ".staging-2/draft.md", ".staging/earlier.md"]);
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  expect(git(home, "worktree", "list").split("\n")).toHaveLength(1);
+  expect(errors).toHaveBeenCalledWith(expect.stringContaining(staging));
+});
+
+test("retireStaging removes a locked worktree", () => {
+  const home = workspace();
+  const staging = withStaging(home);
+  git(home, "worktree", "lock", ".staging");
+  retireStaging(home);
+  expect(existsSync(staging)).toBe(false);
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  expect(git(home, "worktree", "list").split("\n")).toHaveLength(1);
+});
+
+/** `home` with `f` committed on main and changed on branch `other`, which main's next change conflicts with. */
+function diverged(home: string): string {
+  const file = join(home, "f");
+  writeFileSync(file, "v0\n");
+  commit(home, ["f"], "v0");
+  git(home, "checkout", "-q", "-b", "other");
+  writeFileSync(file, "other\n");
+  commit(home, ["f"], "other");
+  git(home, "checkout", "-q", "main");
+  writeFileSync(file, "v1\n");
+  commit(home, ["f"], "v1");
+  return file;
+}
+
+test("abortPending aborts a cherry-pick or a rebase in progress", () => {
+  const home = workspace();
+  const file = diverged(home);
+  const main = git(home, "rev-parse", "HEAD");
+  const t = ["-c", "user.name=t", "-c", "user.email=t@t"];
+  expect(() => git(home, ...t, "cherry-pick", "other")).toThrow();
+  expect(existsSync(join(home, ".git", "CHERRY_PICK_HEAD"))).toBe(true);
+  abortPending(home);
+  expect(existsSync(join(home, ".git", "CHERRY_PICK_HEAD"))).toBe(false);
+  expect(readFileSync(file, "utf8")).toBe("v1\n");
+
+  for (const backend of ["--merge", "--apply"]) {
+    expect(() => git(home, ...t, "rebase", backend, "other")).toThrow();
+    const dir = backend === "--merge" ? "rebase-merge" : "rebase-apply";
+    expect(existsSync(join(home, ".git", dir))).toBe(true);
+    abortPending(home);
+    expect(existsSync(join(home, ".git", dir))).toBe(false);
+    expect(git(home, "branch", "--show-current")).toBe("main");
+    expect(git(home, "rev-parse", "HEAD")).toBe(main);
+    expect(readFileSync(file, "utf8")).toBe("v1\n");
+  }
+  expect(git(home, "status", "--porcelain")).toBe("");
+});
+
 test("abortPending aborts an unfinished merge or revert", () => {
   const home = workspace();
   const file = join(home, "f");
@@ -119,6 +191,18 @@ test("adoptOutsideEdits commits only extensions and skills", () => {
   ]);
   expect(git(home, "status", "--porcelain").split("\n").sort()).toEqual([" M settings.json", "M  other.txt"]);
   expect(adoptOutsideEdits(home)).toBeUndefined();
+});
+
+test("adoptOutsideEdits adopts a hand-staged deletion", () => {
+  const home = workspace();
+  mkdirSync(join(home, "skills", "s"), { recursive: true });
+  writeFileSync(join(home, "skills", "s", "SKILL.md"), "s");
+  commit(home, ["skills"], "add s");
+  git(home, "rm", "-q", "-r", "skills/s");
+  const sha = adoptOutsideEdits(home)!;
+  expect(sha).toBe(git(home, "rev-parse", "HEAD"));
+  expect(git(home, "show", "--name-status", "--format=", sha)).toBe("D\tskills/s/SKILL.md");
+  expect(git(home, "status", "--porcelain")).toBe("");
 });
 
 test("adoptOutsideEdits adopts a removal, and does nothing without extensions or skills", () => {
@@ -203,6 +287,18 @@ test("a conflicting revert aborts, throws and leaves the live file untouched", (
   expect(() => revert(home, [a])).toThrow();
   expect(readFileSync(file, "utf8")).toBe("v2\n");
   expect(git(home, "status", "--porcelain")).toBe("");
+});
+
+test("revert commits only what it reverted, not what's staged by hand", () => {
+  const home = workspace();
+  mkdirSync(join(home, "skills", "s"), { recursive: true });
+  writeFileSync(join(home, "skills", "s", "SKILL.md"), "one");
+  const added = commit(home, ["skills"], "add s")!;
+  writeFileSync(join(home, "notes.txt"), "by hand\n");
+  git(home, "add", "notes.txt");
+  const sha = revert(home, [added]);
+  expect(git(home, "show", "--name-status", "--format=", sha)).toBe("D\tskills/s/SKILL.md");
+  expect(git(home, "status", "--porcelain")).toBe("A  notes.txt");
 });
 
 test("attachments are ignored by git, also in a workspace made before them", () => {

@@ -1,11 +1,11 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { envApiKeyAuth, fauxAssistantMessage, fauxText, getSystemMessageText } from "@earendil-works/pi-ai";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { Module } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { boot } from "../src/kernel/boot.ts";
 import { ensureClone } from "../src/kernel/jobs/clone.ts";
 import { type Job, JobsDoc } from "../src/kernel/jobs/state.ts";
@@ -256,5 +256,43 @@ test("boot prunes the clones and job refs of jobs that aren't active, keeping ac
   daemon = await boot({ home, extensions: [kit.extension] });
   expect(readdirSync(jobs).sort()).toEqual(["1", "1.base", "1.tmp", "2", "2.base", "2.tmp"]);
   expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/jobs/1");
+  await daemon.close();
+});
+
+// A .staging moved here, or whose worktree record is gone: its git fails, which mustn't stop boot.
+test("boot retires a .staging whose worktree record is gone", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  git(home, "worktree", "add", "-q", "-B", "staging", ".staging", "main");
+  write(home, ".staging/skills/draft/SKILL.md", "draft");
+  rmSync(join(home, ".git", "worktrees"), { recursive: true });
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(join(home, ".staging"))).toBe(false);
+  const archived = join(home, ".jobs", "staging-archive", ".staging", "skills", "draft", "SKILL.md");
+  expect(readFileSync(archived, "utf8")).toBe("draft");
+  expect(git(home, "branch", "--list", "staging")).toBe("");
+  await daemon.close();
+});
+
+test("boot goes on when the workspace can't be tidied, adopting nothing, and reports it", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
+  mkdirSync(join(home, ".git", "rebase-merge")); // a rebase git can't abort
+  const before = git(home, "rev-parse", "HEAD");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(git(home, "rev-parse", "HEAD")).toBe(before);
+  expect(daemon.status().errors).toContainEqual({
+    name: "workspace",
+    error: expect.stringMatching(/^Couldn't finish tidying the workspace: /),
+  });
   await daemon.close();
 });

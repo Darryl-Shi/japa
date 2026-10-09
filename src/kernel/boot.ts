@@ -81,7 +81,7 @@ import {
   writeUpdateState,
 } from "./update-state.ts";
 import { createWorkspaceLock } from "./workspace-lock.ts";
-import { abortPending, adoptOutsideEdits, dirHash, ensureWorkspace, retireStaging } from "./workspace.ts";
+import { dirHash, ensureWorkspace, tidyWorkspace } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -130,9 +130,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     linkSdk(home, packageRoot);
     ensureWorkspace(home);
     // Spec §6.1: before anything loads, the workspace's extensions and skills are as committed.
-    retireStaging(home);
-    abortPending(home);
-    const adopted = adoptOutsideEdits(home);
+    const { adopted, errors: tidyErrors } = tidyWorkspace(home);
     const safeMode = crashLooping(home) ? enterSafeMode(home, { defaultAdapters: false }) : undefined;
     recordBoot(home);
     const settings = loadSettings(home);
@@ -542,7 +540,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       settings,
       secrets,
       extensions,
-      errors: [...loaded.errors, ...sandboxError],
+      errors: [...loaded.errors, ...sandboxError, ...tidyErrors.map((error) => ({ name: "workspace", error }))],
       sources,
       hashes,
       models,

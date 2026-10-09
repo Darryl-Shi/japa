@@ -77,30 +77,61 @@ export function ensureWorkspace(home: string): void {
 /**
  * Retires the `staging` worktree older versions kept at `<home>/.staging`: moves its untracked files under
  * `<home>/.jobs/staging-archive/` (pruned by age, see clone.ts), then removes the worktree and the `staging` branch.
+ * A `.staging` git can't handle (moved, or its worktree record gone) is moved there whole, as `.staging` (or
+ * `.staging-<n>`). Never throws: what fails is logged and left.
  */
 export function retireStaging(home: string): void {
   const staging = join(home, ".staging");
-  if (existsSync(join(staging, ".git"))) {
-    const archive = join(home, ".jobs", "staging-archive");
-    for (const path of gitPaths(staging, "ls-files", "--others", "--exclude-standard", "-z")) {
-      const to = join(archive, path);
-      mkdirSync(dirname(to), { recursive: true });
-      renameSync(join(staging, path), to);
+  if (existsSync(staging)) {
+    try {
+      if (!existsSync(join(staging, ".git"))) throw new Error("not a git worktree");
+      const archive = join(home, ".jobs", "staging-archive");
+      for (const path of gitPaths(staging, "ls-files", "--others", "--exclude-standard", "-z")) {
+        const to = join(archive, path);
+        mkdirSync(dirname(to), { recursive: true });
+        renameSync(join(staging, path), to);
+      }
+      git(home, "worktree", "remove", "--force", "--force", ".staging"); // locked too
+    } catch (error) {
+      console.error(`Couldn't remove the worktree ${staging} (${gitError(error)}); archiving it whole`);
+      try {
+        archiveWhole(home, staging);
+      } catch (error) {
+        console.error(`Couldn't archive ${staging}: ${gitError(error)}`);
+      }
     }
-    git(home, "worktree", "remove", "--force", ".staging");
   }
-  git(home, "worktree", "prune"); // a hand-deleted one's record
+  try {
+    git(home, "worktree", "prune"); // the record of one removed by hand, or archived
+  } catch (error) {
+    console.error(`Couldn't prune the workspace's worktrees: ${gitError(error)}`);
+  }
   try {
     git(home, "branch", "-D", "staging");
   } catch {
-    // no such branch
+    // no such branch, or still checked out: harmless
   }
 }
 
-/** Aborts a merge or revert the daemon left unfinished (it stopped mid-way), so the working tree is HEAD's again. */
+/** Moves `dir` into `<home>/.jobs/staging-archive/`, under its own name or, if that's taken, `<name>-<n>`. */
+function archiveWhole(home: string, dir: string): void {
+  const archive = join(home, ".jobs", "staging-archive");
+  mkdirSync(archive, { recursive: true });
+  let to = join(archive, basename(dir));
+  for (let n = 2; existsSync(to); n++) to = join(archive, `${basename(dir)}-${n}`);
+  renameSync(dir, to);
+}
+
+/**
+ * Aborts a merge, revert, cherry-pick or rebase left unfinished (the daemon or a person stopped mid-way), so the
+ * working tree is HEAD's again. Throws git's error when one can't be aborted.
+ */
 export function abortPending(home: string): void {
-  if (existsSync(join(home, ".git", "MERGE_HEAD"))) git(home, "merge", "--abort");
-  if (existsSync(join(home, ".git", "REVERT_HEAD"))) git(home, "revert", "--abort");
+  const dotGit = (name: string) => existsSync(join(home, ".git", name));
+  if (dotGit("MERGE_HEAD")) git(home, "merge", "--abort");
+  if (dotGit("REVERT_HEAD")) git(home, "revert", "--abort");
+  if (dotGit("CHERRY_PICK_HEAD")) git(home, "cherry-pick", "--abort");
+  if (dotGit("rebase-merge") || dotGit("rebase-apply")) git(home, "rebase", "--abort");
 }
 
 /**
@@ -109,6 +140,24 @@ export function abortPending(home: string): void {
  */
 export function adoptOutsideEdits(home: string): string | undefined {
   return commit(home, COMPONENTS, "Edits made outside japa");
+}
+
+/**
+ * Spec §6.1, at boot before anything loads: retires staging, aborts what's unfinished, and adopts edits made outside
+ * japa. Never throws: `errors` says what failed. When aborting fails, nothing is adopted: the working tree may hold
+ * an unfinished operation's changes.
+ */
+export function tidyWorkspace(home: string): { adopted?: string; errors: string[] } {
+  retireStaging(home);
+  try {
+    abortPending(home);
+    const adopted = adoptOutsideEdits(home);
+    return { ...(adopted !== undefined && { adopted }), errors: [] };
+  } catch (error) {
+    const text = `Couldn't finish tidying the workspace: ${gitError(error)}`;
+    console.error(text);
+    return { errors: [text] };
+  }
 }
 
 function hasHead(home: string): boolean {
@@ -122,18 +171,24 @@ function hasHead(home: string): boolean {
 
 /**
  * Commits the changes under `paths`, and only those (whatever else is staged); the new sha, or undefined when nothing
- * changed. A path neither on disk nor tracked is skipped.
+ * changed. A path neither on disk, nor in the index or HEAD, is skipped.
  */
 export function commit(home: string, paths: string[], message: string): string | undefined {
-  const present = paths.filter((path) => existsSync(join(home, path)) || git(home, "ls-files", "--", path) !== "");
+  // `add` takes paths on disk or in the index; `commit`, also those only in HEAD (a staged deletion).
+  const added = paths.filter((path) => existsSync(join(home, path)) || git(home, "ls-files", "--", path) !== "");
+  const present = paths.filter((path) => added.includes(path) || inHead(home, path));
   if (present.length === 0) return undefined;
-  git(home, "add", "-A", "--", ...present);
+  if (added.length > 0) git(home, "add", "-A", "--", ...added);
   if (!git(home, "diff", "--cached", "--name-only", "--", ...present)) return undefined;
   git(home, "commit", "-q", "-m", message, "--", ...present);
   return head(home);
 }
 
 export const head = (home: string) => git(home, "rev-parse", "HEAD");
+
+function inHead(home: string, path: string): boolean {
+  return hasHead(home) && git(home, "ls-tree", "HEAD", "--", path) !== "";
+}
 
 /**
  * Reverts `shas` (given oldest first) newest first in one commit, or none when they are already undone; returns the
@@ -148,7 +203,17 @@ export function revert(home: string, shas: string[]): string {
   }
   git(home, "revert", "--quit");
   const subjects = git(home, "log", "--no-walk=unsorted", "--format=Revert \"%s\"", ...shas.toReversed());
-  if (git(home, "diff", "--cached", "--name-only")) git(home, "commit", "-q", "-m", subjects);
+  // Only what the revert changed: not what else is staged.
+  const reverted = new Set(
+    shas.flatMap((sha) =>
+      gitPaths(home, "diff-tree", "-r", "--root", "--no-renames", "--no-commit-id", "--name-only", "-z", "-m", "--first-parent", sha),
+    ),
+  );
+  const literal = [...reverted].map((path) => `:(literal)${path}`);
+  const changed = literal.length > 0 ? gitPaths(home, "diff", "--cached", "--name-only", "-z", "--", ...literal) : [];
+  if (changed.length > 0) {
+    git(home, "commit", "-q", "-m", subjects, "--", ...changed.map((path) => `:(literal)${path}`));
+  }
   return head(home);
 }
 
