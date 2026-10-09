@@ -79,11 +79,25 @@ The `bwrap` arguments, in this order (later mounts cover earlier ones):
 - `--ro-bind` over the japa app directory (`~/.local/share/japa`, including its Node), the launcher
   (`~/.local/bin/japa`) and the service unit (`~/.config/systemd/user/japa.service`). Otherwise a job could edit code
   the daemon later runs with access to secrets. Jobs therefore can't patch japa itself on the host.
+- `--tmpfs /run/user/<uid>`: hides the D-Bus session bus, the systemd user manager, ssh-agent and keyring sockets.
+  Otherwise `systemd-run --user` runs any command outside the sandbox.
+- `--ro-bind-try /dev/null` over the Docker sockets (`/run/docker.sock`, `/var/run/docker.sock`): Docker access is
+  root access.
+- `--ro-bind` also over `$XDG_CONFIG_HOME/systemd` (unit drop-ins and new units), `~/.gitconfig` and
+  `$XDG_CONFIG_HOME/git` (git config the daemon's own git commands would read).
 - `--die-with-parent`, `--new-session`.
 - `--clearenv`, then `--setenv` for `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TZ`, `TERM` from the daemon's
   environment. Provider API keys set as environment variables don't reach jobs.
 
 The network and `/tmp` are shared, as now.
+
+Consequences, accepted:
+- bwrap sets `no_new_privs`, so `sudo` and other setuid programs don't work inside: jobs can't install system
+  packages. Abstract unix sockets in the shared network namespace stay reachable.
+- The daemon never runs a job-controlled program outside the sandbox: git commands in a clone (narrowing,
+  committing) run inside the job's sandbox; the real repo only fetches from it and merges, with hooks off and no
+  global git config; the clone is made with `--no-hardlinks`; and the daemon's own `PATH` holds only system
+  directories and its Node (jobs keep the original `PATH`).
 
 ### 3.3 Lifetime
 
@@ -92,8 +106,8 @@ The network and `/tmp` are shared, as now.
 - **Processes:** closing the sandbox kills every process the job started (`--die-with-parent` on the server, and the
   PID namespace ends with it).
 - **Waiting for input:** a job in `needs_input` keeps its sandbox.
-- **Servers that should keep running:** must be installed as a visible service (e.g. a systemd user unit), not left
-  behind as children.
+- **Servers that should keep running:** can't be started from a job (the systemd user manager is hidden); the user
+  starts them.
 
 ### 3.4 When bwrap is unavailable
 
