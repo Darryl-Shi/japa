@@ -101,7 +101,8 @@ export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<voi
 /** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
 export function jobsExtension(options: JobsOptions): Extension {
   const { settings } = options;
-  const { JobRun, start } = jobRun(settings, { publish: options.publish, closeSandbox: options.closeSandbox });
+  const { publish, closeSandbox, ended } = options;
+  const { JobRun, start } = jobRun(settings, { publish, closeSandbox, ended });
 
   const jobStart = defineTool({
     name: "job_start",

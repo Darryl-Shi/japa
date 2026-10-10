@@ -55,6 +55,11 @@ export type PublishDeps = {
    */
   check(jobId: string, kind: Kind, name: string, signal?: AbortSignal): Promise<string[]>;
   reconcile(): Promise<{ errors: LoadError[]; notices?: string[] }>;
+  /**
+   * The load errors the daemon has now, by component name (an extension's, `skill:<name>`): not only those a reconcile
+   * reports, as it doesn't load again an extension unchanged since it failed (at a boot between a merge and its load).
+   */
+  errors(): LoadError[];
   loaded(kind: Kind, name: string): boolean;
   logChange(change: Omit<Change, "id" | "at">): Promise<string>;
   scheduleGood(): void;
@@ -383,12 +388,14 @@ export function createPublisher(deps: PublishDeps): Publish {
       writeMarker(id, { ...marker, reverted: line });
       return { line, live: false };
     }
-    const { errors, notices = [] } = await deps.reconcile();
+    const { errors: reported, notices = [] } = await deps.reconcile();
+    const errors = [...reported, ...deps.errors()];
     const failures = components
       .filter((component) => inTree(marker.merge, component))
       .flatMap((component) => {
         const [kind, name] = parts(component);
-        const failed = errors.filter((e) => e.name === (kind === "extension" ? name : `skill:${name}`)).map((e) => e.error);
+        const named = errors.filter((e) => e.name === (kind === "extension" ? name : `skill:${name}`));
+        const failed = [...new Set(named.map((e) => e.error))];
         if (kind === "skill" && failed.length === 0 && !deps.loaded("skill", name)) failed.push("did not load");
         return failed.length > 0 ? [`${show(component)} failed to load: ${oneLine(failed.join("; "))}`] : [];
       });
@@ -528,7 +535,12 @@ export function createPublisher(deps: PublishDeps): Publish {
         return merged;
       });
     } finally {
-      if (exists(ref)) git(home, "update-ref", "-d", ref);
+      // Not a failure of the publish: a ref left is pruned at the next boot, or hourly (`pruneJobRefs`).
+      try {
+        if (exists(ref)) git(home, "update-ref", "-d", ref);
+      } catch (error) {
+        console.error(`Couldn't delete ${ref}: ${gitError(error)}`);
+      }
     }
   };
 }

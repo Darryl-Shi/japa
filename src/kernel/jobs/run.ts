@@ -57,6 +57,8 @@ export type JobHooks = {
   publish(job: PublishJob, signal: AbortSignal): Promise<string | undefined>;
   /** Stops job `jobId`'s sandbox and every process in it; its next tool call starts another. */
   closeSandbox(jobId: string): void;
+  /** Job `jobId` has ended and its report is posted: its clone, if kept, is kept 7 days from now (`keepCloneFromNow`). */
+  ended(jobId: string): void;
 };
 
 /** The statuses a job ends in: its sandbox is closed then. */
@@ -132,7 +134,8 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
         // A finished job's sandbox goes first (spec §3.3), with everything it left running; one waiting for an answer
         // keeps it.
         const job = (await runtime.snapshot(JobsDoc, ROOT_CONVERSATION_ID, context))?.jobs[jobId];
-        if (job === undefined || FINAL.includes(job.status)) hooks.closeSandbox(jobId);
+        const ended = job === undefined || FINAL.includes(job.status);
+        if (ended) hooks.closeSandbox(jobId);
         if (report !== undefined) {
           const root = (await runtime.conversation(ROOT_CONVERSATION_ID, context))!;
           // Esc withdraws queued inputs; a report withdrawn before the CoS saw it is posted again once the CoS is
@@ -145,6 +148,7 @@ export function jobRun(settings: Settings, hooks: JobHooks) {
             await root.waitForIdle(context);
           }
         }
+        if (ended) hooks.ended(jobId);
         await runtime.commit(async (tx) => {
           await donePublishing(tx, jobId, report);
           return { status: "terminal", outcome: { status: "completed", result: null } };

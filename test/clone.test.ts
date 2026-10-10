@@ -20,6 +20,7 @@ import {
   cloneMarker,
   ensureClone,
   jobLife,
+  keepCloneFromNow,
   pruneClones,
   pruneJobRefs,
   removeClone,
@@ -172,6 +173,19 @@ test("pruneClones removes old and orphaned clones, keeps recent ones", () => {
   expect(existsSync(join(jobs, "staging-archive"))).toBe(false);
 });
 
+test("keepCloneFromNow restarts a kept clone's 7 days; without a clone it does nothing", () => {
+  const home = workspace();
+  const now = Date.now();
+  ensureClone(home, packageRoot, "1");
+  const old = (now - 30 * DAY) / 1000;
+  utimesSync(join(home, ".jobs", "1"), old, old);
+  keepCloneFromNow(home, "1");
+  pruneClones(home, () => "finished", now);
+  expect(existsSync(join(home, ".jobs", "1"))).toBe(true);
+  expect(() => keepCloneFromNow(home, "2")).not.toThrow();
+  expect(existsSync(join(home, ".jobs", "2"))).toBe(false);
+});
+
 test("pruneClones never removes an active job's clone or files, whatever their age", () => {
   const home = workspace();
   const now = Date.now();
@@ -224,6 +238,19 @@ test("pruneJobRefs deletes the leftover job refs of jobs that aren't active", ()
   ]);
   pruneJobRefs(home, () => undefined);
   expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/other");
+});
+
+test("pruneJobRefs goes on past a ref it can't delete, and returns what failed, logged", () => {
+  const home = workspace();
+  for (const id of ["1", "2", "3"]) git(home, "update-ref", `refs/japa/jobs/${id}`, "HEAD");
+  writeFileSync(join(home, ".git", "refs", "japa", "jobs", "2.lock"), ""); // a git that stopped mid-update
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+  const failed = pruneJobRefs(home, () => undefined);
+  expect(failed).toEqual([expect.stringMatching(/^Couldn't delete refs\/japa\/jobs\/2: .*File exists/s)]);
+  expect(errors).toHaveBeenCalledWith(failed[0]);
+  expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/jobs/2");
+  expect(pruneJobRefs(home, () => "active")).toEqual([]);
 });
 
 test("pruneClones removes folders a job made inaccessible, and goes on past an entry it can't remove", () => {

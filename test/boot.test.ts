@@ -334,6 +334,34 @@ test("boot prunes the clones and job refs of jobs that aren't active, keeping ac
   await daemon.close();
 });
 
+test("boot goes on when pruning fails, and reports it", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  for (const id of ["1", "2"]) git(home, "update-ref", `refs/japa/jobs/${id}`, "HEAD");
+  writeFileSync(join(home, ".git", "refs", "japa", "jobs", "1.lock"), ""); // a git that stopped mid-update
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  let daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(daemon.status().errors).toContainEqual({
+    name: "workspace",
+    error: expect.stringMatching(/^Couldn't delete refs\/japa\/jobs\/1: /),
+  });
+  expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/jobs/1");
+  await daemon.close();
+
+  // The clones can't even be listed.
+  mkdirSync(join(home, ".jobs"), { mode: 0o000 });
+  onTestFinished(() => chmodSync(join(home, ".jobs"), 0o700));
+  daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(daemon.status().errors).toContainEqual({
+    name: "workspace",
+    error: expect.stringMatching(/^Couldn't prune finished jobs: .*EACCES/),
+  });
+  await daemon.close();
+});
+
 test("boot survives a stored unfinished job without a conversation", async () => {
   const kit = testKit();
   const home = tempHome({ models: { cos: kit.model } });

@@ -37,7 +37,7 @@ import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
 import { createEnvDispatcher } from "./env.ts";
 import { askedSecretNames, type JapaExtension, secretDescription, secretNames } from "./extension.ts";
-import { jobLife, pruneClones, pruneJobRefs } from "./jobs/clone.ts";
+import { jobLife, keepCloneFromNow, pruneClones, pruneJobRefs } from "./jobs/clone.ts";
 import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish.ts";
 import { unstickPublishing } from "./jobs/run.ts";
 import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
@@ -187,15 +187,20 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // Finished jobs updated before `before` leave the jobs list; their conversations stay in storage.
     const pruneJobs = (before: number) =>
       root.commit(async (tx) => prune((await tx.doc(JobsDoc, root.id)).jobs, before), ctx);
-    // Then the clones and leftover refs of the jobs no longer active (see `pruneClones`).
-    const pruneOld = async () => {
-      await pruneJobs(Date.now() - settings.jobs.keepFinishedDays * DAY);
-      const life = jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs);
-      pruneClones(home, life);
-      await lock(async () => {
+    // Then the clones and leftover refs of the jobs no longer active (see `pruneClones`). Never rejects: returns what
+    // failed, logged.
+    const pruneOld = async (): Promise<string[]> => {
+      try {
+        await pruneJobs(Date.now() - settings.jobs.keepFinishedDays * DAY);
+        const life = jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs);
+        pruneClones(home, life);
         // Read again under the lock: a job may have started going live meanwhile.
-        pruneJobRefs(home, jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs));
-      });
+        return await lock(async () => pruneJobRefs(home, jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs)));
+      } catch (error) {
+        const text = `Couldn't prune finished jobs: ${error instanceof Error ? error.message : String(error)}`;
+        console.error(text);
+        return [text];
+      }
     };
     const runTool: MessagingContext["tool"] = async (name, args) => {
       const api = { commit: root.commit.bind(root), snapshot: opened.snapshot.bind(opened) };
@@ -523,6 +528,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         spec: jobs.spec,
         check: sandboxCheck(jobs.spec, home, packageRoot),
         reconcile,
+        // Not a secrets read that failed: that's the store's error, not the extension's.
+        errors: () => rt.errors.filter((e) => !e.error.startsWith("secrets: ")),
         // A workspace skill by its folder: its frontmatter name keys it, and may differ.
         loaded: (kind, name) =>
           kind === "skill"
@@ -551,6 +558,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       sandboxProblem: () => jobs.problem,
       publish,
       closeSandbox: jobs.close,
+      jobEnded: (jobId) => keepCloneFromNow(home, jobId),
       kernel,
       messaging,
     });
@@ -598,7 +606,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         await logChange(tx, { title: "Edits made outside japa", howToUse: "", undo: { commits: [adopted] } });
       }
     }, ctx);
-    await pruneOld();
+    // What it can't prune mustn't stop the daemon: it's reported, and tried again hourly.
+    for (const error of await pruneOld()) rt.errors.push({ name: "workspace", error });
     const droppedLoops = await upgradeMemory(root);
     if (droppedLoops.length > 0) {
       const content =
@@ -634,7 +643,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // At boot, reflect at once on whatever the last run left unreflected.
     if ((await unreflectedTurns(opened, root)) > 0) void reflect().catch(() => {});
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
-    const pruning = setInterval(() => void pruneOld().catch(() => {}), 3_600_000).unref();
+    const pruning = setInterval(() => void pruneOld(), 3_600_000).unref();
     safety.scheduleGood(); // a pending tag doesn't survive a restart
 
     return {

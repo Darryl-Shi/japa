@@ -10,11 +10,12 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { linkSdk } from "../loader.ts";
-import { git } from "../workspace.ts";
+import { git, gitError } from "../workspace.ts";
 import type { Job } from "./state.ts";
 
 /** How long a kept clone, or the staging archive, stays. */
@@ -72,6 +73,21 @@ export function ensureClone(home: string, packageRoot: string, jobId: string): s
 }
 
 /**
+ * Starts the 7 days job `jobId`'s kept clone stays, now its job has ended: sets the clone folder's mtime, which
+ * `pruneClones` goes by, to now. Without a clone, does nothing; a failure is logged.
+ */
+export function keepCloneFromNow(home: string, jobId: string): void {
+  const now = new Date();
+  try {
+    utimesSync(cloneDir(home, jobId), now, now);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.error(`Couldn't mark ${cloneDir(home, jobId)} as kept from now: ${(error as Error).message}`);
+    }
+  }
+}
+
+/**
  * Deletes `path`, first making every folder under it (not through symlinks) readable, writable and searchable by its
  * owner: a job can `chmod 000` one in its clone or temp dir.
  */
@@ -116,9 +132,9 @@ export function jobLife(jobs: Record<string, Job>): (jobId: string) => JobLife {
 
 /**
  * Deletes the clones in `<home>/.jobs`, with their `.base`, `.tmp` and `.merged`, by their job's `life`: an active
- * job's never, a finished one's after 7 days (by the clone dir's mtime) or when left without its clone, an unknown
- * one's at once. The staging archive goes by age only. An entry that can't be deleted is logged and left; the rest are
- * still pruned.
+ * job's never, a finished one's after 7 days (by the clone dir's mtime: `keepCloneFromNow` sets it when the job ends)
+ * or when left without its clone, an unknown one's at once. The staging archive goes by age only. An entry that can't
+ * be deleted is logged and left; the rest are still pruned.
  */
 export function pruneClones(home: string, life: (jobId: string) => JobLife, now = Date.now()): void {
   const dir = jobsDir(home);
@@ -152,12 +168,21 @@ export function pruneClones(home: string, life: (jobId: string) => JobLife, now 
 
 /**
  * Deletes from the real repo the `refs/japa/jobs/<id>` refs left by a publish the daemon didn't finish, except those
- * of jobs `life` deems active. Run under the workspace lock.
+ * of jobs `life` deems active. Run under the workspace lock. A ref that can't be deleted is left; returns those
+ * failures, also logged.
  */
-export function pruneJobRefs(home: string, life: (jobId: string) => JobLife): void {
+export function pruneJobRefs(home: string, life: (jobId: string) => JobLife): string[] {
   const prefix = "refs/japa/jobs/";
+  const errors: string[] = [];
   for (const ref of git(home, "for-each-ref", "--format=%(refname)", prefix).split("\n")) {
     if (ref === "" || life(ref.slice(prefix.length)) === "active") continue;
-    git(home, "update-ref", "-d", ref);
+    try {
+      git(home, "update-ref", "-d", ref);
+    } catch (error) {
+      const text = `Couldn't delete ${ref}: ${gitError(error)}`;
+      console.error(text);
+      errors.push(text);
+    }
   }
+  return errors;
 }

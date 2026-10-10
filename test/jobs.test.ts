@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -1165,6 +1166,26 @@ describe.skipIf(NO_BWRAP)("finishing", { timeout: 60_000 }, () => {
     report.release();
     await waitFor(() => idle(daemon));
     expect(await reported(daemon)).toEqual(['[job 1 "Beat" failed] model_error: boom']);
+    await daemon.close();
+  });
+
+  test("a kept clone ages from the job's end, not from when its folder last changed", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    const clone = join(home, ".jobs", "1");
+    // The clone's folder, last changed at the epoch: as one made long before its job ends.
+    const command = `echo n > "${home}/notes.md" && touch -d @0 "${home}" && echo aged`;
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Old", brief: "old" });
+      if (text === "old") return call("bash", { command });
+      if (role === "toolResult" && text.trim() === "aged") return call("job_complete", { summary: "aged" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon), 50_000);
+    expect(await reported(daemon)).toEqual([
+      `[job 1 "Old" done] aged\n\nNot live: the job changed nothing under extensions/ or skills/. Kept at ${clone}. ` +
+        "Dropped: notes.md.",
+    ]);
+    expect(statSync(clone).mtimeMs).toBeGreaterThan(Date.now() - 86_400_000);
     await daemon.close();
   });
 

@@ -58,6 +58,7 @@ export function createRuntime(input: {
   sandboxProblem: () => string | undefined; // why jobs can't run here, if they can't
   publish: JobsOptions["publish"]; // a completed job's changes going live
   closeSandbox: JobsOptions["closeSandbox"];
+  jobEnded: JobsOptions["ended"]; // a job ended: its kept clone is kept from then
   kernel: (extension: string) => KernelContext;
   messaging: MessagingContext; // kernel-internal, given to contract activations only
 }) {
@@ -232,6 +233,7 @@ export function createRuntime(input: {
       sandboxProblem: input.sandboxProblem,
       publish: input.publish,
       closeSandbox: input.closeSandbox,
+      ended: input.jobEnded,
     };
     const jobs = jobsExtension(jobsOptions);
     registry.install(skillsExt);

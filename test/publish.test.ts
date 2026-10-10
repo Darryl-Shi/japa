@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 import type { Change } from "../src/kernel/changes.ts";
 import { ensureClone } from "../src/kernel/jobs/clone.ts";
 import { linkSdk } from "../src/kernel/loader.ts";
@@ -67,8 +67,8 @@ function setup(files: Record<string, string> = {}, o: { away?: boolean; unlinked
 }
 
 /**
- * A publisher for `home` with fakes: `check` passes, `reconcile` finds no errors, a skill is loaded when its folder
- * exists, and changes get ids from 1. `calls` records them.
+ * A publisher for `home` with fakes: `check` passes, `reconcile` finds no errors and there are none, a skill is loaded
+ * when its folder exists, and changes get ids from 1. `calls` records them.
  */
 function publisher(home: string, spec: (jobId: string) => SandboxSpec, o: Partial<PublishDeps> = {}) {
   const calls = { check: [] as string[], changes: [] as Omit<Change, "id" | "at">[], reconciles: 0, good: 0 };
@@ -85,6 +85,7 @@ function publisher(home: string, spec: (jobId: string) => SandboxSpec, o: Partia
       calls.reconciles++;
       return { errors: [] };
     },
+    errors: () => [],
     loaded: (kind, name) => existsSync(join(home, `${kind}s`, name)),
     logChange: async (change) => {
       calls.changes.push(change);
@@ -590,6 +591,61 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(await publish(job)).toBe(line);
     expect(git(home, "rev-parse", "HEAD")).toBe(head);
     expect(calls).toMatchObject({ changes: [], reconciles: 2 });
+  });
+
+  test("a merged extension that already failed to load, at a boot after a restart, is reverted: not falsely live", async () => {
+    const { home, clone, sandboxes, base } = setup();
+    write(clone, "extensions/e/index.ts", "broken\n");
+    // Stopped once merged, before reconciling; the boot after loads the merged extension, which fails. A reconcile
+    // then reports nothing new: the extension hasn't changed since.
+    let booted = false;
+    const { publish, calls } = publisher(home, sandboxes.spec, {
+      reconcile: async () => {
+        if (!booted) {
+          booted = true;
+          throw new Error("stopped");
+        }
+        calls.reconciles++;
+        return { errors: [] };
+      },
+      errors: () => [
+        { name: "workspace", error: "unrelated" },
+        { name: "e", error: "bad" },
+      ],
+    });
+    await expect(publish(job)).rejects.toThrow("stopped");
+    expect(read(home, "extensions/e/index.ts")).toBe("broken\n");
+    expect(await publish(job)).toBe(`Not live: extensions/e failed to load: bad. Reverted. ${KEPT}`);
+    expect(git(home, "diff", "--stat", base, "HEAD")).toBe("");
+    expect(calls).toMatchObject({ changes: [], good: 0 });
+  });
+
+  test("an error both reported by the reconcile and already known is shown once", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "extensions/e/index.ts", "broken\n");
+    const { publish } = publisher(home, sandboxes.spec, {
+      reconcile: async () => ({ errors: [{ name: "e", error: "bad" }] }),
+      errors: () => [{ name: "e", error: "bad" }],
+    });
+    expect(await publish(job)).toBe(`Not live: extensions/e failed to load: bad. Reverted. ${KEPT}`);
+  });
+
+  test("live even when the fetched ref can't be deleted: that's logged, and boot prunes it", async () => {
+    const { home, clone, sandboxes } = setup();
+    write(clone, "extensions/e/index.ts", "changed\n");
+    const lock = join(home, ".git", "refs", "japa", "jobs", "1.lock");
+    const { publish, calls } = publisher(home, sandboxes.spec, {
+      reconcile: async () => {
+        calls.reconciles++;
+        writeFileSync(lock, ""); // a git that stopped mid-update: the ref can't be deleted
+        return { errors: [] };
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => errors.mockRestore());
+    expect(await publish(job)).toBe("Live: extensions/e (change 1).");
+    expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^Couldn't delete refs\/japa\/jobs\/1: /));
+    expect(git(home, "for-each-ref", "--format=%(refname)", "refs/japa")).toBe("refs/japa/jobs/1");
   });
 
   test("load errors are shown on one line, without a doubled period, and cut short", async () => {
