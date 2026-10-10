@@ -328,7 +328,8 @@ lock, each ending in a commit. `settings.json` keeps changing through the settin
 At every boot, before loading anything, holding `daemon.lock`:
 
 0. Before any git command, remove a leftover `.git/index.lock` (a git that stopped mid-write): it would block every
-   later commit, merge, undo and rollback. It's logged.
+   later commit, merge, undo and rollback. It's logged. One under 10 seconds old may be another git's (`japa update`,
+   the user's): it's left, and reported as a `workspace` error.
 1. If `MERGE_HEAD` or `REVERT_HEAD` exists, abort that operation; only then commit anything (the workspace's own
    `.gitignore`, whenever it differs from `HEAD`'s).
 2. If `extensions/` or `skills/` has uncommitted changes (edits made by hand or by an older version), commit

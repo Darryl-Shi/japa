@@ -205,8 +205,12 @@ export function jobsExtension(options: JobsOptions): Extension {
         return { text: `Stopped job ${id}.`, stopped: true, abort };
       }, context);
       if (abort !== undefined) await (await api.conversation(abort, context))!.abort(context);
-      // With everything the job left running; its clone is kept.
-      if (stopped) options.closeSandbox(id);
+      // With everything the job left running; its clone is kept, from now: a job waiting for an answer has no run whose
+      // end would say so (a running one's says so again).
+      if (stopped) {
+        options.closeSandbox(id);
+        options.ended(id);
+      }
       return reply(text);
     },
   });

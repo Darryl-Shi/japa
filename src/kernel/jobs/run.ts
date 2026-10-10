@@ -57,7 +57,7 @@ export type JobHooks = {
   publish(job: PublishJob, signal: AbortSignal): Promise<string | undefined>;
   /** Stops job `jobId`'s sandbox and every process in it; its next tool call starts another. */
   closeSandbox(jobId: string): void;
-  /** Job `jobId` has ended, its report posted: its clone, if kept, is kept 7 days from now (`keepCloneFromNow`). */
+  /** Job `jobId` ended (its report posted, or stopped): its clone, if kept, is kept 7 days from now. */
   ended(jobId: string): void;
 };
 

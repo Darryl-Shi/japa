@@ -95,21 +95,45 @@ export function ensureWorkspace(home: string): void {
   const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
   if (missing.length > 0) appendFileSync(gitignore, `${separator}${missing.join("\n")}\n`);
   if (!hasHead(home)) commit(home, ["."], "Initial workspace");
-  commit(home, [".gitignore"], "Update .gitignore");
+  // Compared read-only first: `add` takes the index lock even when nothing changed, and `japa update` runs this while
+  // the daemon may hold it.
+  if (readFileSync(gitignore, "utf8") !== committed(home, ".gitignore")) {
+    commit(home, [".gitignore"], "Update .gitignore");
+  }
   if (!hasTag(home, LKG)) tag(home, LKG);
 }
 
+/** `path` as committed at HEAD, read without touching the index; undefined when it isn't there. */
+function committed(home: string, path: string): string | undefined {
+  try {
+    return run(home, ["cat-file", "-p", `HEAD:${path}`]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** How old an index lock must be, by its mtime, to count as left by a git that stopped. */
+const STALE_LOCK_MS = 10_000;
+
 /**
  * Removes the `.git/index.lock` a git that stopped mid-write left in `home`: while it's there, every later git command
- * that writes the index fails. Only at boot, holding `daemon.lock`, before the daemon runs any git: no git of japa's
- * runs then. Returns whether there was one, and logs it.
+ * that writes the index fails. Only at boot, holding `daemon.lock`, before the daemon runs any git: no git of the
+ * daemon's runs then. But another git may (`japa update`, the user's), so one under 10 seconds old is left: returns
+ * the error saying so, also logged. A removal is logged.
  */
-export function clearIndexLock(home: string): boolean {
+export function clearIndexLock(home: string, now = Date.now()): string | undefined {
   const lock = join(home, ".git", "index.lock");
-  if (!existsSync(lock)) return false;
+  const stat = statSync(lock, { throwIfNoEntry: false });
+  if (stat === undefined) return undefined;
+  if (now - stat.mtimeMs < STALE_LOCK_MS) {
+    const text =
+      `Left ${lock}: it's under 10 seconds old, so a git may still be using it. If it stays, restart japa to remove it`;
+    console.error(text);
+    return text;
+  }
   rmSync(lock, { force: true });
   console.error(`Removed a stale ${lock} left by a git that stopped`);
-  return true;
+  return undefined;
 }
 
 /**
@@ -196,15 +220,16 @@ export function adoptOutsideEdits(home: string): string | undefined {
 }
 
 /**
- * Spec §6.1, at boot (holding `daemon.lock`) before anything loads: clears a stale index lock, makes the repo if it's
- * missing, retires staging, aborts what's unfinished, then ensures the workspace (`ensureWorkspace`: its first
- * commits) and adopts edits made outside japa. Throws only when the workspace can't be ensured; else `errors` says what
- * failed. When aborting fails, nothing is committed: the working tree may hold an unfinished operation's changes.
+ * Spec §6.1, at boot (holding `daemon.lock`) before anything loads: clears a stale index lock (`clearIndexLock`; a
+ * recent one is reported), makes the repo if it's missing, retires staging, aborts what's unfinished, then ensures
+ * the workspace (`ensureWorkspace`: its first commits) and adopts edits made outside japa. Throws only when the
+ * workspace can't be ensured; else `errors` says what failed. When aborting fails, nothing is committed: the working
+ * tree may hold an unfinished operation's changes.
  */
 export function tidyWorkspace(home: string): { adopted?: string; errors: string[] } {
-  clearIndexLock(home);
+  const locked = clearIndexLock(home);
   ensureRepo(home);
-  const errors = retireStaging(home);
+  const errors = [...(locked === undefined ? [] : [locked]), ...retireStaging(home)];
   const failed = (error: unknown) => {
     let text = `Couldn't finish tidying the workspace: ${gitError(error)}`;
     if (error instanceof Unaborted) {

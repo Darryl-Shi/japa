@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, onTestFinished, test } from "vitest";
 import { CHECK_KINDS, check } from "../src/kernel/check.ts";
 import { tempHome } from "./helpers.ts";
 
@@ -88,6 +88,18 @@ describe("extensions", { timeout: 60_000 }, () => {
     writeFileSync(join(home, "extensions/hello/index.ts"), extension("hello", "hello", provides));
     expect(await check("extension", "hello", home, home)).toEqual(["trigger: boom"]);
     expect(existsSync(join(home, "extensions/hello/node_modules"))).toBe(false);
+  });
+
+  test("the smoke load's kernel errors don't count against an extension of the same name", async () => {
+    // As in a job's sandbox, where jobs can't run: the throwaway daemon reports a `sandbox` error.
+    const saved = process.env.JAPA_BWRAP;
+    process.env.JAPA_BWRAP = "/nonexistent";
+    onTestFinished(() => {
+      if (saved === undefined) delete process.env.JAPA_BWRAP;
+      else process.env.JAPA_BWRAP = saved;
+    });
+    const home = homeWith({ "extensions/sandbox/index.ts": extension("sandbox", "hello") });
+    expect(await check("extension", "sandbox", home, home)).toEqual([]);
   });
 
   test("a good extension with one tool, importing japa/sdk, passes", async () => {

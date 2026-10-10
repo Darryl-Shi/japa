@@ -11,7 +11,7 @@ import { ensureClone } from "../src/kernel/jobs/clone.ts";
 import { type Job, JobsDoc } from "../src/kernel/jobs/state.ts";
 import { statusText } from "../src/kernel/status.ts";
 import { commit, ensureWorkspace } from "../src/kernel/workspace.ts";
-import { bootErrors, bootTest, REPO_EXTENSIONS, tempHome, testKit } from "./helpers.ts";
+import { bootErrors, bootTest, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { tool } from "./jobs-helpers.ts";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -243,7 +243,10 @@ test("boot removes a stale .git/index.lock first, says so, and commits", async (
   const kit = testKit();
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
   ensureWorkspace(home);
-  writeFileSync(join(home, ".git", "index.lock"), ""); // a git that died mid-write
+  const lock = join(home, ".git", "index.lock");
+  writeFileSync(lock, ""); // a git that died mid-write, 11 s ago
+  const stale = (Date.now() - 11_000) / 1000;
+  utimesSync(lock, stale, stale);
   write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   onTestFinished(() => errors.mockRestore());
@@ -253,6 +256,26 @@ test("boot removes a stale .git/index.lock first, says so, and commits", async (
   expect(errors).toHaveBeenCalledWith(`Removed a stale ${join(home, ".git", "index.lock")} left by a git that stopped`);
   expect(git(home, "log", "-1", "--format=%s")).toBe("Edits made outside japa");
   expect(daemon.status().errors.filter((e) => e.name === "workspace")).toEqual([]);
+  await daemon.close();
+});
+
+test("boot leaves an index.lock under 10 s old, which a git may still hold, and reports it", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  const lock = join(home, ".git", "index.lock");
+  writeFileSync(lock, "");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(lock)).toBe(true);
+  expect(daemon.status().errors.filter((e) => e.name === "workspace")).toEqual([
+    {
+      name: "workspace",
+      error: `Left ${lock}: it's under 10 seconds old, so a git may still be using it. If it stays, restart japa to remove it`,
+    },
+  ]);
   await daemon.close();
 });
 
@@ -359,6 +382,36 @@ test("boot goes on when pruning fails, and reports it", async () => {
     name: "workspace",
     error: expect.stringMatching(/^Couldn't prune finished jobs: .*EACCES/),
   });
+  await daemon.close();
+});
+
+test("each prune replaces the errors of the one before: a later one that succeeds clears them", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  git(home, "update-ref", "refs/japa/jobs/1", "HEAD");
+  const lock = join(home, ".git", "refs", "japa", "jobs", "1.lock");
+  writeFileSync(lock, "");
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => logged.mockRestore());
+  const intervals = vi.spyOn(globalThis, "setInterval");
+  onTestFinished(() => intervals.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  const failure = { name: "workspace", error: expect.stringMatching(/^Couldn't delete refs\/japa\/jobs\/1: /) };
+  const workspaceErrors = () => daemon.status().errors.filter((e) => e.name === "workspace");
+  expect(workspaceErrors()).toEqual([failure]);
+  const hourly = intervals.mock.calls.find(([, ms]) => ms === 3_600_000)![0] as () => void;
+  const failures = () => logged.mock.calls.filter(([text]) => String(text).startsWith("Couldn't delete")).length;
+  const before = failures();
+  hourly(); // fails again: one error still, not two
+  await waitFor(() => failures() > before);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(workspaceErrors()).toEqual([failure]);
+  rmSync(lock);
+  hourly();
+  await waitFor(() => workspaceErrors().length === 0);
+  expect(git(home, "for-each-ref", "refs/japa")).toBe("");
   await daemon.close();
 });
 

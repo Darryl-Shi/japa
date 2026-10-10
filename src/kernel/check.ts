@@ -10,6 +10,7 @@ import type { JapaExtension } from "./extension.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { fauxKit } from "./kit.ts";
 import { discoverExtensions, linkSdk, loadExtensions, message } from "./loader.ts";
+import { isKernelError } from "./runtime.ts";
 import { cachedCopy } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -105,7 +106,8 @@ async function smokeLoad(name: string, dir: string, extension: JapaExtension): P
     const daemon = await boot({ home, extensionDirs: [packaged, join(dir, "extensions")], extensions: [kit.extension, extension] });
     const status = daemon.status();
     if (!status.extensions.some((e) => e.name === name)) problems.push("did not load");
-    problems.push(...status.errors.filter((e) => e.name === name).map((e) => e.error));
+    // Its own errors, not the kernel's (`sandbox`, where jobs can't run), whatever it's called.
+    problems.push(...status.errors.filter((e) => e.name === name && !isKernelError(e)).map((e) => e.error));
     if (!daemon.capabilities().includes(`- ${name}: `)) problems.push("missing from the capabilities");
     const tools = daemon.registry.snapshot().tools();
     for (const { tool } of tools.filter((t) => t.extension.name === name)) {

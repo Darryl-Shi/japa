@@ -56,8 +56,10 @@ export type PublishDeps = {
   check(jobId: string, kind: Kind, name: string, signal?: AbortSignal): Promise<string[]>;
   reconcile(): Promise<{ errors: LoadError[]; notices?: string[] }>;
   /**
-   * The load errors the daemon has now, by component name (an extension's, `skill:<name>`): not only those a reconcile
-   * reports, as it doesn't load again an extension unchanged since it failed (at a boot between a merge and its load).
+   * The components' load errors the daemon has now, by component name (an extension's, `skill:<name>`), and only
+   * those: not the kernel's own, named `workspace`, `models` and so on, which an extension may be called too. Not only
+   * those a reconcile reports, as it doesn't load again an extension unchanged since it failed (at a boot between a
+   * merge and its load).
    */
   errors(): LoadError[];
   loaded(kind: Kind, name: string): boolean;

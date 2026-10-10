@@ -62,7 +62,7 @@ import {
 } from "./secret-requests.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
-import { createRuntime, type Runtime } from "./runtime.ts";
+import { createRuntime, isKernelError, kernelError, type Runtime } from "./runtime.ts";
 import {
   createJobSandboxes,
   hiddenPaths,
@@ -462,7 +462,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       await refreshAvailability();
       return result;
     };
-    const report = (error: string) => rt.errors.push({ name: "japa-safety", error });
+    const report = (error: string) => rt.errors.push(kernelError("japa-safety", error));
     const safety = createSafety({ home, settings, built: () => rt.built, reconcile, root: () => root, report, lock });
     // After an undo's commits are reverted.
     const undone = async () => {
@@ -521,7 +521,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       ...holdingHome.map(
         (path) => `Jobs can read ${path}: it is or holds the japa home, so their sandboxes can't hide it`,
       ),
-    ].map((error) => ({ name: "sandbox", error }));
+    ].map((error) => kernelError("sandbox", error));
     // A completed job's changes go live from its clone (spec §4.3), checked and committed in its sandbox.
     const publish = reportingFailures(
       home,
@@ -532,8 +532,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         spec: jobs.spec,
         check: sandboxCheck(jobs.spec, home, packageRoot),
         reconcile,
-        // Not a secrets read that failed: that's the store's error, not the extension's.
-        errors: () => rt.errors.filter((e) => !e.error.startsWith("secrets: ")),
+        // Only the components' load errors: not the kernel's own (`workspace`, `models`, ...), whatever an extension is
+        // called, nor a secrets read that failed, which is the store's.
+        errors: () => rt.errors.filter((e) => !isKernelError(e)),
         // A workspace skill by its folder: its frontmatter name keys it, and may differ.
         loaded: (kind, name) =>
           kind === "skill"
@@ -551,7 +552,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       settings,
       secrets,
       extensions,
-      errors: [...loaded.errors, ...sandboxError, ...tidyErrors.map((error) => ({ name: "workspace", error }))],
+      errors: [...loaded.errors, ...sandboxError, ...tidyErrors.map((error) => kernelError("workspace", error))],
       sources,
       hashes,
       models,
@@ -574,7 +575,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     if (settings.models.consolidation !== undefined) checkModel(models, settings.models.consolidation);
 
     const keyError = await missingKey(models, model.provider, secretsDirs.at(-1)!);
-    if (keyError !== undefined) rt.errors.push({ name: "models", error: keyError });
+    if (keyError !== undefined) rt.errors.push(kernelError("models", keyError));
     // The CoS reads through the `local` environment, installed with the environment contracts.
     const local: EnvironmentAdapter = {
       name: "local",
@@ -610,8 +611,16 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         await logChange(tx, { title: "Edits made outside japa", howToUse: "", undo: { commits: [adopted] } });
       }
     }, ctx);
-    // What it can't prune mustn't stop the daemon: it's reported, and tried again hourly.
-    for (const error of await pruneOld()) rt.errors.push({ name: "workspace", error });
+    // What it can't prune mustn't stop the daemon: it's reported, and tried again hourly; each prune's errors replace
+    // the one before's, so they go once it succeeds.
+    let pruneErrors: LoadError[] = [];
+    const pruneAndReport = async () => {
+      const fresh = (await pruneOld()).map((error) => kernelError("workspace", error));
+      const stale = pruneErrors;
+      rt.errors.splice(0, rt.errors.length, ...rt.errors.filter((e) => !stale.includes(e)), ...fresh);
+      pruneErrors = fresh;
+    };
+    await pruneAndReport();
     const droppedLoops = await upgradeMemory(root);
     if (droppedLoops.length > 0) {
       const content =
@@ -647,7 +656,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // At boot, reflect at once on whatever the last run left unreflected.
     if ((await unreflectedTurns(opened, root)) > 0) void reflect().catch(() => {});
     const stayedUp = setTimeout(() => clearBoots(home), 5 * 60_000).unref();
-    const pruning = setInterval(() => void pruneOld(), 3_600_000).unref();
+    const pruning = setInterval(() => void pruneAndReport(), 3_600_000).unref();
     safety.scheduleGood(); // a pending tag doesn't survive a restart
 
     return {

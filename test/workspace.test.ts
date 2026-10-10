@@ -42,6 +42,22 @@ test("ensureWorkspace creates the repo, .gitignore and the initial commit, idemp
   expect(git(home, "branch", "--show-current")).toBe("main");
 });
 
+test("ensureWorkspace takes no index lock when nothing changed: another git may hold it", () => {
+  const home = workspace();
+  const lock = join(home, ".git", "index.lock");
+  writeFileSync(lock, ""); // `japa update` runs this while the daemon may be committing
+  const before = git(home, "rev-parse", "HEAD");
+  expect(() => ensureWorkspace(home)).not.toThrow();
+  expect(git(home, "rev-parse", "HEAD")).toBe(before);
+  expect(existsSync(lock)).toBe(true);
+  // Changed, it's committed once the lock is gone.
+  rmSync(lock);
+  writeFileSync(join(home, ".gitignore"), `${readFileSync(join(home, ".gitignore"), "utf8")}scratch/\n`);
+  ensureWorkspace(home);
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Update .gitignore");
+  expect(git(home, "status", "--porcelain")).toBe("");
+});
+
 test("ensureWorkspace no longer creates .staging", () => {
   const home = workspace();
   expect(existsSync(join(home, ".staging"))).toBe(false);

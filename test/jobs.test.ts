@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxProviderHandle, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
 import { configure, type Conversation, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { execFileSync } from "node:child_process";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
   existsSync,
@@ -11,11 +12,12 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { READ_ONLY_MESSAGE } from "../src/kernel/env.ts";
 import { jobPath } from "../src/kernel/sandbox/bwrap.ts";
@@ -935,7 +937,10 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
   test("a stale .git/index.lock in the real repo is cleared at boot, so a job then goes live", async () => {
     const { daemon, home, kit } = await bootSandboxed();
     await daemon.close();
-    writeFileSync(join(home, ".git", "index.lock"), ""); // a git that died mid-write
+    const lock = join(home, ".git", "index.lock");
+    writeFileSync(lock, ""); // a git that died mid-write, a minute ago
+    const stale = (Date.now() - 60_000) / 1000;
+    utimesSync(lock, stale, stale);
     const again = await boot({ home, extensions: [kit.extension, probe] });
     script(kit.faux, (role, text) => {
       if (text === "start") return call("job_start", { title: "Hello", brief: "hello" });
@@ -945,6 +950,36 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
     await ask(again, "start");
     await waitFor(() => idle(again), 50_000);
     expect(await reported(again)).toEqual(['[job 1 "Hello" done] wrote it\n\nLive: skills/hello (change 1).']);
+    await again.close();
+  });
+
+  test("the daemon's own errors don't count against an extension of the same name going live", async () => {
+    const { daemon, home, kit } = await bootSandboxed();
+    await daemon.close();
+    // A ref boot can't prune: a `workspace` error in status.
+    execFileSync("git", ["-C", home, "update-ref", "refs/japa/jobs/9", "HEAD"]);
+    writeFileSync(join(home, ".git", "refs", "japa", "jobs", "9.lock"), "");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => errors.mockRestore());
+    const again = await boot({ home, extensions: [kit.extension, probe] });
+    expect(again.status().errors).toContainEqual({ name: "workspace", error: expect.stringMatching(/^Couldn't delete /) });
+    const extension =
+      'import { defineJapaExtension } from "japa/sdk";\n' +
+      'export default defineJapaExtension({ name: "workspace", summary: "Works", examples: ["w"], docs: "W." });\n';
+    const command =
+      `mkdir -p "${home}/extensions/workspace" && ` +
+      `cat > "${home}/extensions/workspace/index.ts" <<'EOF'\n${extension}EOF\necho written`;
+    script(kit.faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Work", brief: "work" });
+      if (text === "work") return call("bash", { command });
+      if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote it" });
+    });
+    await ask(again, "start");
+    await waitFor(() => idle(again), 50_000);
+    expect(await reported(again)).toEqual(['[job 1 "Work" done] wrote it\n\nLive: extensions/workspace (change 1).']);
+    expect(again.capabilities()).toContain("- workspace: Works");
+    // Nor does reloading the extension clear the daemon's error.
+    expect(again.status().errors).toContainEqual({ name: "workspace", error: expect.stringMatching(/^Couldn't delete /) });
     await again.close();
   });
 
@@ -1185,6 +1220,26 @@ describe.skipIf(NO_BWRAP)("finishing", { timeout: 60_000 }, () => {
       `[job 1 "Old" done] aged\n\nNot live: the job changed nothing under extensions/ or skills/. Kept at ${clone}. ` +
         "Dropped: notes.md.",
     ]);
+    expect(statSync(clone).mtimeMs).toBeGreaterThan(Date.now() - 86_400_000);
+    await daemon.close();
+  });
+
+  test("a job stopped while it waits for an answer: its kept clone ages from the stop", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    const clone = join(home, ".jobs", "1");
+    const command = `echo n > "${home}/notes.md" && touch -d @0 "${home}" && echo aged`;
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Old", brief: "old" });
+      if (text === "old") return call("bash", { command });
+      if (role === "toolResult" && text.trim() === "aged") return call("job_ask", { question: "Which?" });
+      if (text === "stop") return call("job_stop", { id: "1" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon), 50_000);
+    expect((await jobs(daemon))["1"]!.status).toBe("needs_input");
+    expect(statSync(clone).mtimeMs).toBe(0); // no run to end it: it waits
+    await ask(daemon, "stop");
+    expect((await texts(daemon.root, "toolResult")).at(-1)).toBe("Stopped job 1.");
     expect(statSync(clone).mtimeMs).toBeGreaterThan(Date.now() - 86_400_000);
     await daemon.close();
   });

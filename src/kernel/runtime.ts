@@ -27,11 +27,25 @@ import { cachedCopy, dirHash } from "./workspace.ts";
 
 export type Runtime = ReturnType<typeof createRuntime>;
 
+/** The errors made by `kernelError`. */
+const kernelErrors = new WeakSet<LoadError>();
+
+/**
+ * An error the kernel shows in status under `name`: its own (`workspace`, `models`, `sandbox`, ...), or a secrets read
+ * that failed for an extension. Not one of loading or starting a component, though a component may have that name:
+ * it neither counts against one (`isKernelError`), nor goes when one is reloaded.
+ */
+export function kernelError(name: string, error: string): LoadError {
+  const made = { name, error };
+  kernelErrors.add(made);
+  return made;
+}
+
+/** Whether `error` was made by `kernelError`. */
+export const isKernelError = (error: LoadError) => kernelErrors.has(error);
+
 /** Shown while `<home>/workers`, from when jobs had worker profiles, is still there. */
-const WORKERS_NOTICE: LoadError = {
-  name: "workers",
-  error: "~/.japa/workers/ is no longer used: jobs have no profiles",
-};
+const WORKERS_NOTICE = kernelError("workers", "~/.japa/workers/ is no longer used: jobs have no profiles");
 
 /**
  * The daemon's live extension state: the loaded extensions, their activations and built Pi Durable extensions, the
@@ -173,7 +187,7 @@ export function createRuntime(input: {
       const secrets: SecretReader = {
         get: (name) =>
           input.secrets.get(name).catch((error: unknown) => {
-            failed.push({ name: e.name, error: `secrets: ${message(error)}` });
+            failed.push(kernelError(e.name, `secrets: ${message(error)}`));
             throw error;
           }),
       };
@@ -220,7 +234,7 @@ export function createRuntime(input: {
     const all = skillsOf(() => true);
     const skills = skillsOf((name) => runtime.available.has(name)).skills;
     const errors = [...all.errors, ...(existsSync(join(home, "workers")) ? [WORKERS_NOTICE] : [])];
-    replaceErrors((e) => e.name.startsWith("skill:") || e.name === WORKERS_NOTICE.name, errors);
+    replaceErrors((e) => e.name.startsWith("skill:") || e === WORKERS_NOTICE, errors);
     runtime.skills = skills;
     const skillsExt = skillsExtension(skills);
     jobsOptions = {
@@ -293,7 +307,7 @@ export function createRuntime(input: {
       .filter((e) => Object.keys(e.provides ?? {}).some((name) => CONTRACTS.get(name)?.phase === "boot"))
       .map((e) => `${e.name}: storage/secrets changes apply after a restart`);
 
-    replaceErrors((e) => names.has(e.name), loadErrors);
+    replaceErrors((e) => names.has(e.name) && !isKernelError(e), loadErrors);
     const errors = [...loadErrors, ...(await start(loaded, ACTIVATION_ORDER))];
     await root.commit((tx) => reconfigureJobs(tx, jobsOptions!), ctx);
     return { errors, notices };
