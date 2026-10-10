@@ -37,10 +37,11 @@ a sandbox:
   can't change japa's own program or service. Ask the user for those.
 - What it changes under `~/.japa/extensions` and `~/.japa/skills` goes live when it finishes, if it
   passes `japa check`; its report then ends with `Live: …` or `Not live: …`. Its other changes to
-  `~/.japa` are dropped, and that line ends with `Dropped: …` naming them. A job that changed only
-  such files ends `Not live: the job changed nothing under extensions/ or skills/. … Dropped: …`;
-  one that changed nothing in `~/.japa` has no outcome line. Settings change through
-  `settings_set`, not jobs.
+  `~/.japa` are dropped: a `Live` line ends with `Dropped: …` naming them, and so does a `Not live`
+  line, except one saying the job was stopped, its changes couldn't be committed, or publishing
+  failed, which may not name them. A job that changed only such files ends
+  `Not live: the job changed nothing under extensions/ or skills/. … Dropped: …`; one that changed
+  nothing in `~/.japa` has no outcome line. Settings change through `settings_set`, not jobs.
 - To retry a job that ended `Not live: … Kept at <path>.`, start a new job with what failed. A job
   can't see `<path>` (its own `~/.japa` covers it): read the files that matter there yourself and put
   them, or what to change, in the brief.

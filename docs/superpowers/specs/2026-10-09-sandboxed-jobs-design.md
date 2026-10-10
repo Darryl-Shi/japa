@@ -195,8 +195,8 @@ delivered.
    - If a changed component fails to load: `git revert -m 1` the merge commit, reconcile again, and report the load
      errors.
    - Changes to boot-phase extensions (storage, secrets) still need a restart, as now. The report says so.
-5. **Log.** One change, titled `Job <n>: changed extensions/x, skills/y`, with `undo.commits = [merge sha]`. Then
-   `scheduleGood`, as `install` does today.
+5. **Log.** One change, titled `Job <n>: changed extensions/x, skills/y`, with `undo.commits = [merge sha]` (undo
+   reverts a merge against its first parent). Then `scheduleGood`, as `install` does today.
 6. **Release** the lock. Delete the clone after success. Keep it after a failed check, a conflict or a load failure.
 
 ### 4.4 The workspace lock
@@ -218,7 +218,7 @@ The job's report (`[job <n> "<title>" done] …`) ends with exactly one outcome 
 |---|---|
 | Nothing changed | *(no line)* |
 | Only files outside the components changed | `Not live: the job changed nothing under extensions/ or skills/. Kept at ~/.japa/.jobs/<id>. Dropped: notes.md.` |
-| Live | `Live: extensions/anthropic-sub, skills/x (change 17).` plus `Dropped: settings.json.` when relevant |
+| Live | `Live: extensions/anthropic-sub, skills/x (change 17).` plus `Dropped: notes.md.` when relevant |
 | Check failed | `Not live: check failed for extensions/x: <problems>. Kept at ~/.japa/.jobs/<id>.` |
 | Conflict | `Not live: extensions/x/index.ts changed since this job started. Kept at ~/.japa/.jobs/<id>.` |
 | Load failure | `Not live: extensions/x failed to load: <error>. Reverted. Kept at ~/.japa/.jobs/<id>.` |
@@ -232,7 +232,7 @@ own covers `~/.japa`), so the CoS reads what matters from the kept path and puts
 ### 4.6 Clean-up
 
 - **Clones kept after a failure:** those of jobs that ended `failed` or `cancelled`, or that didn't go live, are
-  kept for 7 days.
+  kept for 7 days from the job's end (its report posted).
 - **Pruning:** at boot and with the hourly job pruning, japa deletes kept clones older than that, and orphaned clones (no matching job).
 
 ## 5. One kind of job
@@ -325,9 +325,12 @@ lock, each ending in a commit. `settings.json` keeps changing through the settin
 - auto-rollback;
 - safe mode.
 
-At every boot, before loading anything:
+At every boot, before loading anything, holding `daemon.lock`:
 
-1. If `MERGE_HEAD` or `REVERT_HEAD` exists, abort that operation.
+0. Before any git command, remove a leftover `.git/index.lock` (a git that stopped mid-write): it would block every
+   later commit, merge, undo and rollback. It's logged.
+1. If `MERGE_HEAD` or `REVERT_HEAD` exists, abort that operation; only then commit anything (the workspace's own
+   `.gitignore`, whenever it differs from `HEAD`'s).
 2. If `extensions/` or `skills/` has uncommitted changes (edits made by hand or by an older version), commit
    them as `Edits made outside japa` and log a change for it. They are what was running, because the daemon loaded
    the working tree.

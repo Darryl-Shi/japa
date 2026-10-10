@@ -33,7 +33,7 @@ test("the first call builds the image in the background and answers that the des
   release();
 });
 
-test("an operator's call waits for the build, then the container is created and started", async () => {
+test("a job's call waits for the build, then the container is created and started", async () => {
   const { fake, desktop } = setup();
   fake.state.image = false;
   const release = fake.holdBuild();

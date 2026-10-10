@@ -201,7 +201,8 @@ export function sandboxCheck(
 ): PublishDeps["check"] {
   const main = join(packageRoot, "src", "cli", "main.ts");
   return async (jobId, kind, name, signal) => {
-    // The sandbox passes no JAPA_HOME: without it, the CLI's home would be `~/.japa`, wherever `home` is.
+    // Set: the sandbox has JAPA_HOME only when the daemon does, and without it the CLI's home is `~/.japa`, wherever
+    // `home` is.
     const node = [process.execPath, "--disable-warning=ExperimentalWarning", main];
     const command = ["/usr/bin/env", `JAPA_HOME=${home}`, ...node, "check", kind, name];
     const { code, output, timedOut } = await runSandboxed(spec(jobId), command, {

@@ -8,6 +8,7 @@ when the job finishes; it rolls them back when they break.
 ## Requirements
 
 - git, tar, and curl or wget (the installer uses them; Node.js 24 is installed for you if your system doesn't have it)
+- bubblewrap, which sandboxes jobs (`sudo apt install bubblewrap`)
 - An account with a model provider supported by pi-ai (Anthropic, OpenAI, Google, OpenRouter, ...): a subscription
   you can sign in with (Claude Pro/Max, ChatGPT, GitHub Copilot, ...) or an API key
 
@@ -212,10 +213,12 @@ checked with `japa check` in the sandbox, then merged into `~/.japa` (a three-wa
 job started are kept), loaded and logged as one change you can undo. Anything else it changed in `~/.japa` is
 dropped. Its report to the CoS ends with the outcome: `Live: <paths> (change <id>).`, or `Not live: <why>. Kept at
 ~/.japa/.jobs/<id>.` when nothing went live, for example because the check failed, the merge conflicted or the
-change failed to load (then it's reverted); either is followed by `Dropped: <paths>.` when it changed other files.
-A job that changed only other files ends `Not live: the job changed nothing under extensions/ or skills/. Kept at
-~/.japa/.jobs/<id>. Dropped: <paths>.`; one that changed nothing in `~/.japa` has no outcome line. While a job's
-changes go live it can't be messaged. A kept clone is deleted after 7 days.
+change failed to load (then it's reverted). When it changed other files, a `Live` line ends with `Dropped: <paths>.`,
+and so does a `Not live` line, except one saying the job was stopped, its changes couldn't be committed, or
+publishing failed, which may not name them. A job that changed only other files ends `Not live: the job changed
+nothing under extensions/ or skills/. Kept at ~/.japa/.jobs/<id>. Dropped: <paths>.`; one that changed nothing in
+`~/.japa` has no outcome line. While a job's changes go live it can't be messaged. A kept clone is deleted 7 days
+after its job ends.
 
 ## Updating
 
