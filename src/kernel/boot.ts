@@ -195,7 +195,9 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         const life = jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs);
         pruneClones(home, life);
         // Read again under the lock: a job may have started going live meanwhile.
-        return await lock(async () => pruneJobRefs(home, jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs)));
+        return await lock(async () => {
+          return pruneJobRefs(home, jobLife((await opened.snapshot(JobsDoc, root.id, ctx))!.jobs));
+        });
       } catch (error) {
         const text = `Couldn't prune finished jobs: ${error instanceof Error ? error.message : String(error)}`;
         console.error(text);
@@ -504,6 +506,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       home,
       packageRoot,
       hidden,
+      // Nor may a path shared from the real home lead to one, wherever it is.
+      secret: [...secretsDirs, ...dbFiles],
       env: jobEnv,
       // A job going live: its clone is being published (see run.ts).
       refuse: async (jobId) => {

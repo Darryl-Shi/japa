@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, onTestFinished, test } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 import { cloneDir } from "../src/kernel/jobs/clone.ts";
 import { jobEnv } from "../src/kernel/sandbox/bwrap.ts";
 import { createJobSandboxes, hiddenPaths } from "../src/kernel/sandbox/jobs.ts";
@@ -27,10 +27,12 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
  * A japa workspace and a user home (`HOME`, until the test finishes) outside `/tmp`, which jobs see replaced by their
  * own, and the job sandboxes on them; with `o.node`, `<outside>/node` stands in for the daemon's Node dir. The missing
  * `<outside>/prefix/lib/node` (`lib` exists) always stands in for its `lib/node`, never touched in tests. Hidden are
- * `<outside>/vault`, which has a `key`, and the missing `<outside>/absent`. All closed and removed when the test
- * finishes.
+ * `<outside>/vault`, which has a `key`, and the missing `<outside>/absent`; `o.secret(home)` are the secret paths. All
+ * closed and removed when the test finishes.
  */
-function setup(o: { node?: boolean; refuse?: (jobId: string) => Promise<string | undefined> } = {}) {
+function setup(
+  o: { node?: boolean; refuse?: (jobId: string) => Promise<string | undefined>; secret?: (home: string) => string[] } = {},
+) {
   const outside = sandboxScratch("japa-job-sandboxes-");
   const [home, user, node] = [join(outside, "home"), join(outside, "user"), join(outside, "node")];
   const [vault, absent] = [join(outside, "vault"), join(outside, "absent")];
@@ -49,6 +51,7 @@ function setup(o: { node?: boolean; refuse?: (jobId: string) => Promise<string |
     env: jobEnv(),
     ...nodeDirs,
     ...(o.refuse && { refuse: o.refuse }),
+    ...(o.secret && { secret: o.secret(home) }),
   });
   onTestFinished(() => {
     sandboxes.closeAll();
@@ -342,6 +345,46 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     expect(existsSync(join(home, "attachments", "new"))).toBe(false);
     expect(readFileSync(join(home, "settings.json"), "utf8")).toBe('{"now":true}\n');
     expect(sandboxes.spec("1").readOnlyShared).toEqual([join(home, "attachments"), join(home, "settings.json")]);
+  });
+
+  test("a shared path that links to, into or above a secrets dir isn't mounted: the job can't read through it", async () => {
+    const { outside, home, user, vault, sandboxes } = setup({ secret: (home) => [join(home, "secrets")] });
+    mkdirSync(join(home, "secrets"));
+    writeFileSync(join(home, "secrets", "token"), "tok-1");
+    symlinkSync(join(home, "secrets"), join(home, "attachments")); // a secrets dir in the home, which isn't hidden
+    symlinkSync(join(vault, "key"), join(home, "settings.json")); // into a hidden one
+    mkdirSync(join(home, "desktop"));
+    symlinkSync(outside, join(home, "desktop", "shared")); // above one, and the home
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => errors.mockRestore());
+    const spec = sandboxes.spec("1");
+    expect(spec.shared).toEqual([]);
+    expect(spec.readOnlyShared).toEqual([]);
+    for (const path of ["attachments", "settings.json", "desktop/shared"]) {
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining(`Jobs don't get ${join(home, path)}: `));
+    }
+    const out = join(user, "out");
+    const script = [
+      `cat "${home}/attachments/token"`,
+      `cat "${home}/settings.json"`,
+      `cat "${home}/desktop/shared/vault/key"`,
+      `cat "${home}/desktop/shared/home/secrets/token"`,
+      "echo end",
+    ].join("; ");
+    expect((await sandboxes.env("c", "1").exec(`{ ${script}; } > "${out}" 2>/dev/null`, undefined, ctx)).ok).toBe(true);
+    expect(readFileSync(out, "utf8")).toBe("end\n");
+
+    // Nor elsewhere in the home (its database, say); but a folder elsewhere outside it is shared.
+    rmSync(join(home, "settings.json"));
+    writeFileSync(join(home, "state.db"), "db");
+    symlinkSync(join(home, "state.db"), join(home, "settings.json"));
+    rmSync(join(home, "attachments"));
+    mkdirSync(join(user, "pictures"));
+    symlinkSync(join(user, "pictures"), join(home, "attachments"));
+    expect(sandboxes.spec("1").readOnlyShared).toEqual([join(home, "attachments")]);
+    expect(errors).toHaveBeenCalledWith(
+      `Jobs don't get ${join(home, "settings.json")}: ${join(home, "state.db")} is elsewhere in the japa home`,
+    );
   });
 
   test("a job's calls share one sandbox, and closeAll stops it", async () => {

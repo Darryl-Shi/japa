@@ -4,7 +4,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { Module } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { cloneDir, cloneTmp, ensureClone } from "../jobs/clone.ts";
 import {
   bwrap,
@@ -88,11 +88,36 @@ export function hiddenPaths(home: string, paths: string[]): { hidden: string[]; 
 }
 
 /**
+ * Of `paths`, under `home` (shared with jobs from the real home), those that may be mounted: bwrap binds a symlink's
+ * target, so through a link a job would read what its sandbox hides. Not one whose real path is, holds or is inside
+ * one of `secret` (real paths), holds the home, or is elsewhere in it than its own place (the clone covers the home's
+ * secrets and database only where they are). Each one left out is logged.
+ */
+function mountable(home: string, paths: string[], secret: string[]): string[] {
+  const realHome = realPath(resolve(home)) ?? resolve(home);
+  const unsafe = (path: string): string | undefined => {
+    const real = realPath(path);
+    if (real === undefined) return "it's in a symlink loop";
+    if (secret.some((s) => within(real, s) || within(s, real))) return `${real} is, holds or is inside a secrets dir`;
+    if (within(realHome, real)) return `${real} holds the japa home`;
+    const own = join(realHome, relative(home, path));
+    if (within(real, realHome) && real !== own) return `${real} is elsewhere in the japa home`;
+    return undefined;
+  };
+  return paths.filter((path) => {
+    const why = unsafe(path);
+    if (why !== undefined) console.error(`Jobs don't get ${path}: ${why}`);
+    return why === undefined;
+  });
+}
+
+/**
  * The jobs' sandboxes for japa home `home`: each mounts the job's clone over it, and its own temp dir at /tmp; japa's
  * code at `packageRoot`, what the daemon runs, its Node dir `nodeDir` (the first in its PATH) and that Node's
  * `nodeLib`, `<prefix>/lib/node` (`JAPA_NODE_LIB` when set; where `require` still looks last, see `narrowRequire`),
- * are read-only, and the
- * `hidden` paths (see `hiddenPaths`) empty. `env` is the environment the jobs get.
+ * are read-only, and the `hidden` paths (see `hiddenPaths`) empty. The paths shared from the real home are left out
+ * where they lead to a hidden path or one of `secret` (the secrets dirs and database files, wherever they are), or hold
+ * one (see `mountable`). `env` is the environment the jobs get.
  *
  * A sandbox doesn't start while a hidden path that existed at creation is missing: moved away (by something outside
  * the sandboxes; in one, its folders are pinned), it would be found nowhere to hide, and read where it went. Nor while
@@ -102,6 +127,7 @@ export function createJobSandboxes(o: {
   home: string;
   packageRoot: string;
   hidden: string[];
+  secret?: string[];
   env: Record<string, string>;
   nodeDir?: string;
   nodeLib?: string;
@@ -118,19 +144,23 @@ export function createJobSandboxes(o: {
   const closes = new Map<string, number>();
   const present = o.hidden.filter((path) => existsSync(path));
 
-  const spec = (jobId: string): SandboxSpec => ({
-    home,
-    userHome: homedir(),
-    clone: cloneDir(home, jobId),
-    tmp: cloneTmp(home, jobId),
-    readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }, { path: nodeLib, dir: true }],
-    hidden: o.hidden,
-    shared: [join(home, "desktop", "shared")],
-    // The files the user sent, and the settings as they are now: the clone has neither (they're ignored, or changed
-    // since the last commit).
-    readOnlyShared: [join(home, "attachments"), join(home, "settings.json")],
-    env: o.env,
-  });
+  const spec = (jobId: string): SandboxSpec => {
+    // By real path each time: a link can change.
+    const secret = [...o.hidden, ...(o.secret ?? [])].flatMap((path) => realPath(resolve(path)) ?? []);
+    return {
+      home,
+      userHome: homedir(),
+      clone: cloneDir(home, jobId),
+      tmp: cloneTmp(home, jobId),
+      readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }, { path: nodeLib, dir: true }],
+      hidden: o.hidden,
+      shared: mountable(home, [join(home, "desktop", "shared")], secret),
+      // The files the user sent, and the settings as they are now: the clone has neither (they're ignored, or changed
+      // since the last commit).
+      readOnlyShared: mountable(home, [join(home, "attachments"), join(home, "settings.json")], secret),
+      env: o.env,
+    };
+  };
 
   /**
    * Job `jobId`'s running server, started (after its clone is made) if it has none and `refuse` gives no reason. The

@@ -101,8 +101,11 @@ const MB = 1024 * 1024;
 /** How long a list of paths on an outcome line may be, in characters, before the rest are only counted. */
 const MAX_LIST = 1000;
 
-/** Characters that would break, or disguise, an outcome line: controls, line separators and bidi overrides. */
-const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+/**
+ * Characters that would break, or disguise, an outcome line: controls, line separators, and bidi marks (LRM, RLM,
+ * ALM), embeddings, overrides and isolates.
+ */
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
 /** A path or message from the job, safe to show on one line. */
 const show = (text: string) => text.replace(UNSAFE, "?");

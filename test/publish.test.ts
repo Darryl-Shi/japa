@@ -1113,6 +1113,14 @@ test("a publish that throws ends in a Not live line, on one line and capped", as
   expect(await quiet(job)).toBe("Live: skills/s (change 1).");
 });
 
+test("controls, line separators and bidi marks, overrides and isolates in a failure are shown as ?", async () => {
+  const home = join(homedir(), ".japa");
+  const publish = reportingFailures(home, async () => {
+    throw new Error("a\u0007b\u2028c\u202ed\u2066e\u200ef\u200fg\u061ch");
+  });
+  expect(await publish(job)).toBe(`Not live: publishing failed: a?b?c?d?e?f?g?h. ${KEPT}`);
+});
+
 test("a publish aborted (the daemon closing) still rejects: it resumes after the restart", async () => {
   const home = join(homedir(), ".japa");
   const publish = reportingFailures(home, async (_job, signal) => {
