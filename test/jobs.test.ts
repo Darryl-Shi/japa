@@ -900,6 +900,53 @@ describe.skipIf(NO_BWRAP)("going live", { timeout: 60_000 }, () => {
     await daemon.close();
   });
 
+  test("a job's change can be undone: its extension and skill leave the tree and are unloaded", async () => {
+    const { daemon, faux, home } = await bootSandboxed();
+    const extension =
+      'import { defineJapaExtension } from "japa/sdk";\n' +
+      'export default defineJapaExtension({ name: "hi", summary: "Says hi", examples: ["hi"], docs: "Hi." });\n';
+    const command =
+      `mkdir -p "${home}/extensions/hi" && cat > "${home}/extensions/hi/index.ts" <<'EOF'\n${extension}EOF\n` +
+      writeHello(home);
+    script(faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Both", brief: "both" });
+      if (text === "both") return call("bash", { command });
+      if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote them" });
+    });
+    await ask(daemon, "start");
+    await waitFor(() => idle(daemon), 50_000);
+    expect(await reported(daemon)).toEqual([
+      '[job 1 "Both" done] wrote them\n\nLive: extensions/hi, skills/hello (change 1).',
+    ]);
+    expect(daemon.capabilities()).toContain("- hi: Says hi");
+    expect(await system(daemon, faux)).toContain("- hello: Says hello\n");
+
+    expect(await tool(daemon, faux, "change_undo", { id: "1" })).toBe(
+      "Undid: Job 1: changed extensions/hi, skills/hello",
+    );
+    expect(existsSync(join(home, "extensions", "hi"))).toBe(false);
+    expect(existsSync(join(home, "skills", "hello"))).toBe(false);
+    expect(daemon.capabilities()).not.toContain("- hi: ");
+    expect(await system(daemon, faux)).not.toContain("- hello: ");
+    await daemon.close();
+  });
+
+  test("a stale .git/index.lock in the real repo is cleared at boot, so a job then goes live", async () => {
+    const { daemon, home, kit } = await bootSandboxed();
+    await daemon.close();
+    writeFileSync(join(home, ".git", "index.lock"), ""); // a git that died mid-write
+    const again = await boot({ home, extensions: [kit.extension, probe] });
+    script(kit.faux, (role, text) => {
+      if (text === "start") return call("job_start", { title: "Hello", brief: "hello" });
+      if (text === "hello") return call("bash", { command: writeHello(home) });
+      if (role === "toolResult" && text.trim() === "written") return call("job_complete", { summary: "wrote it" });
+    });
+    await ask(again, "start");
+    await waitFor(() => idle(again), 50_000);
+    expect(await reported(again)).toEqual(['[job 1 "Hello" done] wrote it\n\nLive: skills/hello (change 1).']);
+    await again.close();
+  });
+
   test("a job stopped before publish is not merged", async () => {
     const { daemon, faux, home } = await bootSandboxed();
     const hold = held();

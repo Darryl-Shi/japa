@@ -81,7 +81,7 @@ import {
   writeUpdateState,
 } from "./update-state.ts";
 import { createWorkspaceLock } from "./workspace-lock.ts";
-import { dirHash, ensureWorkspace, tidyWorkspace } from "./workspace.ts";
+import { dirHash, tidyWorkspace } from "./workspace.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -128,8 +128,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
 
   try {
     linkSdk(home, packageRoot);
-    ensureWorkspace(home);
-    // Spec §6.1: before anything loads, the workspace's extensions and skills are as committed.
+    // Spec §6.1: before anything loads, the workspace's extensions and skills are as committed. First of all, as it
+    // runs no git before clearing a stale index lock, and aborts what's unfinished before committing anything.
     const { adopted, errors: tidyErrors } = tidyWorkspace(home);
     const safeMode = crashLooping(home) ? enterSafeMode(home, { defaultAdapters: false }) : undefined;
     recordBoot(home);

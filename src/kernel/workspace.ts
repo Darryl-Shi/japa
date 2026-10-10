@@ -77,20 +77,39 @@ function run(home: string, args: string[], input?: string): string {
 /** The components the daemon loads from the workspace; only japa commits changes to them. */
 const COMPONENTS = ["extensions", "skills"];
 
+/** Makes `home` a git repo on `main`, unless it is one. */
+function ensureRepo(home: string): void {
+  if (!existsSync(join(home, ".git"))) git(home, "init", "-q", "-b", "main");
+}
+
 /**
- * Makes `home` a git repo on `main` with an initial commit and the `LKG` tag, which starts at HEAD. Commits the
- * `IGNORED` lines missing from `.gitignore`.
+ * Makes `home` a git repo on `main` with an initial commit and the `LKG` tag, which starts at HEAD. Appends the
+ * `IGNORED` lines missing from `.gitignore`, and commits `.gitignore` whenever it differs from HEAD's (an earlier
+ * append, or a hand edit, left uncommitted).
  */
 export function ensureWorkspace(home: string): void {
-  if (!existsSync(join(home, ".git"))) git(home, "init", "-q", "-b", "main");
+  ensureRepo(home);
   const gitignore = join(home, ".gitignore");
   const existing = existsSync(gitignore) ? readFileSync(gitignore, "utf8") : "";
   const missing = IGNORED.filter((line) => !existing.split("\n").includes(line));
   const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
   if (missing.length > 0) appendFileSync(gitignore, `${separator}${missing.join("\n")}\n`);
   if (!hasHead(home)) commit(home, ["."], "Initial workspace");
-  if (missing.length > 0) commit(home, [".gitignore"], "Update .gitignore");
+  commit(home, [".gitignore"], "Update .gitignore");
   if (!hasTag(home, LKG)) tag(home, LKG);
+}
+
+/**
+ * Removes the `.git/index.lock` a git that stopped mid-write left in `home`: while it's there, every later git command
+ * that writes the index fails. Only at boot, holding `daemon.lock`, before the daemon runs any git: no git of japa's
+ * runs then. Returns whether there was one, and logs it.
+ */
+export function clearIndexLock(home: string): boolean {
+  const lock = join(home, ".git", "index.lock");
+  if (!existsSync(lock)) return false;
+  rmSync(lock, { force: true });
+  console.error(`Removed a stale ${lock} left by a git that stopped`);
+  return true;
 }
 
 /**
@@ -177,11 +196,14 @@ export function adoptOutsideEdits(home: string): string | undefined {
 }
 
 /**
- * Spec §6.1, at boot before anything loads: retires staging, aborts what's unfinished, and adopts edits made outside
- * japa. Never throws: `errors` says what failed. When aborting fails, nothing is adopted: the working tree may hold
- * an unfinished operation's changes.
+ * Spec §6.1, at boot (holding `daemon.lock`) before anything loads: clears a stale index lock, makes the repo if it's
+ * missing, retires staging, aborts what's unfinished, then ensures the workspace (`ensureWorkspace`: its first
+ * commits) and adopts edits made outside japa. Throws only when the workspace can't be ensured; else `errors` says what
+ * failed. When aborting fails, nothing is committed: the working tree may hold an unfinished operation's changes.
  */
 export function tidyWorkspace(home: string): { adopted?: string; errors: string[] } {
+  clearIndexLock(home);
+  ensureRepo(home);
   const errors = retireStaging(home);
   const failed = (error: unknown) => {
     let text = `Couldn't finish tidying the workspace: ${gitError(error)}`;
@@ -199,6 +221,7 @@ export function tidyWorkspace(home: string): { adopted?: string; errors: string[
   } catch (error) {
     return failed(error);
   }
+  ensureWorkspace(home);
   try {
     const adopted = adoptOutsideEdits(home);
     return { ...(adopted !== undefined && { adopted }), errors };
@@ -239,11 +262,15 @@ function inHead(home: string, path: string): boolean {
 
 /**
  * Reverts `shas` (given oldest first) newest first in one commit, or none when they are already undone; returns the
- * new HEAD. On a failure, aborts any revert in progress and throws git's error.
+ * new HEAD. A merge (a job's changes going live) is reverted against its first parent: what it brought in goes. On a
+ * failure, aborts any revert in progress and throws git's error.
  */
 export function revert(home: string, shas: string[]): string {
   try {
-    for (const sha of shas.toReversed()) git(home, "revert", "--no-commit", sha);
+    for (const sha of shas.toReversed()) {
+      const merge = git(home, "rev-list", "--no-walk", "--parents", sha).split(" ").length > 2;
+      git(home, "revert", "--no-commit", ...(merge ? ["-m", "1"] : []), sha);
+    }
   } catch (err) {
     if (existsSync(join(home, ".git", "REVERT_HEAD"))) git(home, "revert", "--abort");
     throw err;

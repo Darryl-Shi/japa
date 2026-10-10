@@ -202,6 +202,60 @@ test("boot aborts an unfinished merge", async () => {
   await daemon.close();
 });
 
+test("boot aborts an unfinished merge before committing .gitignore's new lines", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  // As an older japa left it: without a line japa now ignores.
+  write(home, ".gitignore", readFileSync(join(home, ".gitignore"), "utf8").replace("/.jobs/\n", ""));
+  commit(home, [".gitignore"], "older");
+  git(home, "checkout", "-q", "-b", "job");
+  write(home, "skills/s/SKILL.md", "job\n");
+  commit(home, ["skills"], "job");
+  git(home, "checkout", "-q", "main");
+  write(home, "skills/s/SKILL.md", "main\n");
+  const installed = commit(home, ["skills"], "main");
+  expect(() => git(home, "merge", "job")).toThrow();
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(join(home, ".git", "MERGE_HEAD"))).toBe(false);
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Update .gitignore");
+  expect(git(home, "rev-parse", "HEAD^")).toBe(installed);
+  expect(git(home, "show", "HEAD:.gitignore").split("\n")).toContain("/.jobs/");
+  expect(git(home, "status", "--porcelain", "--", ".gitignore", "skills")).toBe("");
+  await daemon.close();
+});
+
+test("boot commits a .gitignore edited by hand but not committed", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  write(home, ".gitignore", `${readFileSync(join(home, ".gitignore"), "utf8")}scratch/\n`);
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Update .gitignore");
+  expect(git(home, "show", "HEAD:.gitignore").split("\n")).toContain("scratch/");
+  expect(git(home, "status", "--porcelain", "--", ".gitignore")).toBe("");
+  await daemon.close();
+});
+
+test("boot removes a stale .git/index.lock first, says so, and commits", async () => {
+  const kit = testKit();
+  const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });
+  ensureWorkspace(home);
+  writeFileSync(join(home, ".git", "index.lock"), ""); // a git that died mid-write
+  write(home, "skills/hand/SKILL.md", "---\nname: hand\ndescription: By hand\n---\nDo it.\n");
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  onTestFinished(() => errors.mockRestore());
+
+  const daemon = await boot({ home, extensionDirs: [REPO_EXTENSIONS], extensions: [kit.extension] });
+  expect(existsSync(join(home, ".git", "index.lock"))).toBe(false);
+  expect(errors).toHaveBeenCalledWith(`Removed a stale ${join(home, ".git", "index.lock")} left by a git that stopped`);
+  expect(git(home, "log", "-1", "--format=%s")).toBe("Edits made outside japa");
+  expect(daemon.status().errors.filter((e) => e.name === "workspace")).toEqual([]);
+  await daemon.close();
+});
+
 test("boot logs adopted edits as a change", async () => {
   const kit = testKit();
   const home = tempHome({ storage: { adapter: "memory" }, models: { cos: kit.model } });

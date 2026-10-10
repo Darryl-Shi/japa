@@ -292,6 +292,32 @@ test("commit then revert restores the earlier content", () => {
   expect(readFileSync(file, "utf8")).toBe("one");
 });
 
+test("revert undoes a merge commit against its first parent, alone or with other commits", () => {
+  const home = workspace();
+  writeFileSync(join(home, "f"), "f\n");
+  const plain = commit(home, ["f"], "f")!;
+  git(home, "checkout", "-q", "-b", "side");
+  mkdirSync(join(home, "extensions", "x"), { recursive: true });
+  writeFileSync(join(home, "extensions", "x", "index.ts"), "x");
+  mkdirSync(join(home, "skills", "s"), { recursive: true });
+  writeFileSync(join(home, "skills", "s", "SKILL.md"), "s");
+  commit(home, ["extensions", "skills"], "side");
+  git(home, "checkout", "-q", "main");
+  git(home, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge side", "side");
+  const merge = git(home, "rev-parse", "HEAD");
+  const sha = revert(home, [merge]);
+  expect(git(home, "ls-files", "extensions", "skills")).toBe("");
+  expect(existsSync(join(home, "extensions", "x"))).toBe(false);
+  expect(git(home, "log", "-1", "--format=%s", sha)).toBe('Revert "merge side"');
+  expect(git(home, "status", "--porcelain")).toBe("");
+  // Again, with a plain commit before it: both undone in one commit.
+  revert(home, [sha]);
+  expect(git(home, "ls-files", "extensions", "skills")).not.toBe("");
+  revert(home, [plain, merge]);
+  expect(git(home, "ls-files", "f", "extensions", "skills")).toBe("");
+  expect(git(home, "status", "--porcelain")).toBe("");
+});
+
 test("restorePath removes a path that is absent at the ref", () => {
   const home = workspace();
   mkdirSync(join(home, "skills", "s"), { recursive: true });
