@@ -1,3 +1,4 @@
+import type { EntryId } from "@earendil-works/pi-durable";
 import type { HistoryMessage } from "./transcript.ts";
 
 /** A pause longer than this between the user's messages ends a conversation. */
@@ -22,12 +23,17 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
+/** What `cut` keeps of a text `length` long: its first `head` characters and those from `tail` on. */
+function cutBounds(length: number, over: number): { head: number; tail: number } {
+  const keep = Math.max(length - over - CUT.length, 0);
+  const head = Math.ceil(keep / 2);
+  return { head, tail: length - (keep - head) };
+}
+
 /** `text` shortened by `over` characters, its middle replaced by `[…]`. */
 export function cut(text: string, over: number): string {
-  const keep = text.length - over - CUT.length;
-  if (keep <= 0) return CUT;
-  const head = Math.ceil(keep / 2);
-  return text.slice(0, head) + CUT + text.slice(text.length - (keep - head));
+  const { head, tail } = cutBounds(text.length, over);
+  return text.slice(0, head) + CUT + text.slice(tail);
 }
 
 /** How long before `now` the time `at` was: "just now", "N min ago", "N h ago", "N d ago", else "YYYY-MM-DD". */
@@ -148,67 +154,133 @@ function fit(items: readonly Item[], cap: number, floor: number, now: number): v
   }
 }
 
-/**
- * The "[Conversation so far]" block for a run that starts at `now`, from `before` (every message before the run,
- * oldest first); undefined when there are no messages. It holds the current conversation (see `conversation`) within
- * `budget` tokens (8,000 by default, and at most), always:
- * 1. The newest exchange is cut to 2,000 tokens (less room for the header, on a smaller budget) in the middle of its
- *    longest parts. If that's not enough (a long run of inputs with no reply between them), its oldest inputs are
- *    dropped, keeping the last input and the reply; everything before them is dropped too, so the dropped messages
- *    are always the oldest.
- * 2. Older messages are shortened to their headline, oldest first, while over budget.
- * 3. Then the oldest are dropped. Dropped messages are counted in one `history_read` pointer line after the header.
- * 4. Whatever still doesn't fit is cut in the middle.
- */
+/** A rendered window: its text, and the messages on screen in it, shortened ones included and dropped ones not. */
+export type WindowView = { text: string; shown: EntryId[] };
+
+/** The "[Conversation so far]" block's text; see `windowView`. */
 export function renderWindow(
   before: readonly HistoryMessage[],
   now: number,
   options: { budget?: number } = {},
 ): string | undefined {
+  return windowView(before, now, options)?.text;
+}
+
+/**
+ * The "[Conversation so far]" block for a run that starts at `now`, from `before` (every message before the run,
+ * oldest first), with the ids of the messages it shows; undefined when there are no messages. It holds the current
+ * conversation (see `conversation`) within `budget` tokens (8,000 by default, and at most). The user's first message
+ * in it, the anchor, is dropped last: while it stays and messages after it are dropped, it's shown above the pointer
+ * line, as its headline if it had to be shortened. Always:
+ * 1. The newest exchange is cut to 2,000 tokens (less room for the header, the pointer and the anchor, on a smaller
+ *    budget) in the middle of its longest parts. If that's not enough (a long run of inputs with no reply between
+ *    them), its oldest inputs are dropped, keeping the last input and the reply (and the anchor, as its headline);
+ *    everything before them is dropped too, but the anchor.
+ * 2. Older messages are shortened to their headline, oldest first, while over budget.
+ * 3. Then the oldest are dropped, the anchor last. Dropped messages are counted in one pointer line,
+ *    `[N messages not shown: history_read <first dropped id>]`, after the anchor or else after the header.
+ * 4. Whatever still doesn't fit is cut in the middle; a message whose line starts in the cut isn't shown.
+ */
+export function windowView(
+  before: readonly HistoryMessage[],
+  now: number,
+  options: { budget?: number } = {},
+): WindowView | undefined {
   const messages = conversation(before, now);
   if (messages.length === 0) return undefined;
   const cap = Math.min(options.budget ?? WINDOW_TOKENS, WINDOW_TOKENS) * CHARS_PER_TOKEN;
   const items: Item[] = messages.map((message) => ({ message, text: message.text }));
-  const newest = items.slice(items.length - lastExchange(messages).length);
-  const olderCount = items.length - newest.length;
+  const start = items.length - lastExchange(messages).length; // the newest exchange's first item
+  const newest = items.slice(start);
+  const anchor = items.findIndex((i) => i.message.kind === "you"); // -1 when the user wrote none
+  const pinned = (k: number) => ({ message: items[k]!.message, text: headline(items[k]!.message.text) });
+  // Room for the anchor's headline when it's older than the newest exchange, so dropping never has to take it.
+  const reserve = anchor >= 0 && anchor < start ? 1 + show(pinned(anchor), now).length : 0;
+  const dropped = items.map(() => false);
 
   // 1. The newest exchange, up to 2,000 tokens: cut its texts, but not below a headline's length, ...
-  const newestCap = Math.min(NEWEST_TOKENS * CHARS_PER_TOKEN, cap - FRAME);
+  const newestCap = Math.min(NEWEST_TOKENS * CHARS_PER_TOKEN, cap - FRAME - reserve);
   fit(newest, newestCap, HEADLINE, now);
-  // ... then drop its oldest inputs, keeping the last one, ...
+  // ... then drop its oldest inputs, keeping the last one, the anchor shortened to its headline instead, ...
   const inputs = newest.filter((i) => i.message.kind !== "japa").length;
   const lengths = newest.map((i) => show(i, now).length);
   let length = size(lengths);
-  let newestDropped = 0;
-  while (length > newestCap && newestDropped < inputs - 1) length -= 1 + lengths[newestDropped++]!;
+  const local = anchor - start;
+  const order = Array.from({ length: Math.max(inputs - 1, 0) }, (_, k) => k).filter((k) => k !== local);
+  if (local >= 0 && local < inputs - 1) order.push(local);
+  let pin = false;
+  for (const k of order) {
+    if (length <= newestCap) break;
+    if (k === local) {
+      pin = true;
+      length += show(pinned(anchor), now).length - lengths[k]!;
+    } else {
+      dropped[start + k] = true;
+      length -= 1 + lengths[k]!;
+    }
+  }
   // ... and cut what's left afresh, down to `[…]` if it must.
-  const kept = newest.slice(newestDropped);
+  const kept = newest.filter((_, k) => !dropped[start + k]);
   for (const item of kept) item.text = item.message.text;
+  if (pin) items[anchor]!.text = pinned(anchor).text;
   fit(kept, newestCap, HEADLINE, now);
   fit(kept, newestCap, 0, now);
+  if (dropped.some((d) => d)) {
+    for (let i = 0; i < start; i++) {
+      if (i === anchor) items[i]!.text = pinned(i).text;
+      else dropped[i] = true;
+    }
+  }
 
-  // 2. Older messages, shortened oldest first; 3. then dropped oldest first.
-  const shown = items.map((i) => show(i, now));
-  const pointer = (n: number) => `[${n} earlier messages in this conversation: history_read ${messages[0]!.id}]`;
-  const pointerLength = (n: number) => (n === 0 ? 0 : 1 + pointer(n).length);
-  let dropped = newestDropped > 0 ? olderCount + newestDropped : 0;
-  let total = HEADER.length + pointerLength(dropped);
-  for (let i = dropped; i < items.length; i++) total += 1 + shown[i]!.length;
-  for (let i = dropped; i < olderCount && total > cap; i++) {
+  // 2. Older messages, shortened oldest first; 3. then dropped oldest first, the anchor last.
+  const lines = items.map((i) => show(i, now));
+  let count = dropped.filter((d) => d).length;
+  let first = dropped.indexOf(true);
+  const pointer = () => `[${count} messages not shown: history_read ${items[first]!.message.id}]`;
+  const pointerLength = () => (count === 0 ? 0 : 1 + pointer().length);
+  let total = HEADER.length + pointerLength();
+  items.forEach((_, i) => {
+    if (!dropped[i]) total += 1 + lines[i]!.length;
+  });
+  for (let i = 0; i < start && total > cap; i++) {
     const item = items[i]!;
-    if (item.message.kind === "auto") continue;
+    if (dropped[i] || item.message.kind === "auto") continue;
     item.text = headline(item.text);
     const next = show(item, now);
-    total += next.length - shown[i]!.length;
-    shown[i] = next;
+    total += next.length - lines[i]!.length;
+    lines[i] = next;
   }
-  while (dropped < olderCount && total > cap) {
-    total -= 1 + shown[dropped]!.length;
-    dropped++;
-    total += pointerLength(dropped) - pointerLength(dropped - 1);
+  const older = Array.from({ length: start }, (_, i) => i).filter((i) => i !== anchor && !dropped[i]);
+  if (anchor >= 0 && anchor < start) older.push(anchor);
+  for (const i of older) {
+    if (total <= cap) break;
+    const was = pointerLength();
+    total -= 1 + lines[i]!.length;
+    dropped[i] = true;
+    count++;
+    if (first < 0 || i < first) first = i;
+    total += pointerLength() - was;
   }
 
+  // The pointer goes after the anchor when it hides messages after it, else after the header.
+  const after = anchor >= 0 && !dropped[anchor] && dropped.some((d, i) => d && i > anchor) ? anchor : -1;
+  const rows: { line: string; id?: EntryId }[] = [{ line: HEADER }];
+  if (count > 0 && after < 0) rows.push({ line: pointer() });
+  items.forEach((item, i) => {
+    if (dropped[i]) return;
+    rows.push({ line: lines[i]!, id: item.message.id });
+    if (i === after) rows.push({ line: pointer() });
+  });
+
   // 4. The hard guarantee.
-  const out = [HEADER, ...(dropped > 0 ? [pointer(dropped)] : []), ...shown.slice(dropped)].join("\n");
-  return out.length <= cap ? out : cut(out, out.length - cap);
+  const out = rows.map((r) => r.line).join("\n");
+  const over = Math.max(out.length - cap, 0);
+  const { head, tail } = over > 0 ? cutBounds(out.length, over) : { head: out.length, tail: out.length };
+  const shown: EntryId[] = [];
+  let at = 0;
+  for (const row of rows) {
+    if (row.id !== undefined && (at < head || at >= tail)) shown.push(row.id);
+    at += row.line.length + 1;
+  }
+  return { text: over > 0 ? cut(out, over) : out, shown };
 }

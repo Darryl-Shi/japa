@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { type ConversationId, type EntryId, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { type ConversationId, type EntryId, type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { expect, test, vi } from "vitest";
 import type { Job } from "../src/kernel/jobs/state.ts";
 import { buildContext } from "../src/kernel/memory/context.ts";
@@ -101,6 +101,48 @@ test("after a 40-minute pause with a schedule firing in it, the user's question 
   expect(window).toContain("should we keep jellyfin?");
   expect(window).toContain("Keep it or drop it?");
   expect(window.indexOf("should we keep jellyfin?")).toBeLessThan(window.indexOf("run the nightly backup"));
+});
+
+test("a job report after a long unrelated exchange still brings back what the user asked", () => {
+  const ask = "clean up the server: jellyfin and maria can go";
+  const plan = `Here's a garden plan. ${"Plant tomatoes along the south fence and water them daily. ".repeat(300)}`;
+  // `you#n` asks for the cleanup, japa starts job 68, then a garden question gets a long plan; job 68 reports.
+  const replay = (earlier: EntryRecord[] = [], busy = false) => {
+    const at = earlier.length + 1;
+    const records = [
+      ...earlier,
+      you(at, ask, NOW - 20 * MIN),
+      ...reply(at + 1, "Started job 68.", NOW - 20 * MIN + 1000, [
+        { name: "job_start", args: { title: "Cleanup" }, result: "Started job 68." },
+      ]),
+      ...(busy
+        ? [you(at + 3, `also ${"x".repeat(1500)}`, NOW - 15 * MIN), ...reply(at + 4, `ok ${"y".repeat(1500)}`, NOW - 15 * MIN)]
+        : []),
+      you(at + 5, "what should I plant in the garden this spring?", NOW - 10 * MIN),
+      ...reply(at + 6, plan, NOW - 9 * MIN),
+    ];
+    const report = message(at + 8, "auto", '[job 68 "Cleanup" done] Server 1 cleanup is done.', NOW, "68");
+    return buildContext({
+      messages: [...transcriptMessages(records), report],
+      lastReset: id(at + 7),
+      ...empty,
+      jobs: { "68": job("68", "Cleanup", "removed the two services", at, NOW - MIN) },
+      now: NOW,
+    })!;
+  };
+  // The reviewer's replay: the window is 2,000 tokens, and the ask is in the window or recalled as the origin.
+  const text = replay();
+  expect(windowOf(text).length).toBeLessThanOrEqual(2000 * 4);
+  expect(text).toContain("jellyfin");
+  expect(text.includes("you asked")).toBe(!windowOf(text).includes("jellyfin"));
+
+  // With the ask dropped behind the pointer (the user's earlier message pinned instead), the origin is printed.
+  const dropped = replay([you(1, "morning", NOW - 25 * MIN), ...reply(2, "Morning!", NOW - 25 * MIN)], true);
+  const window = windowOf(dropped);
+  expect(window).toContain("#1: morning");
+  expect(window).toMatch(/messages not shown: history_read 2\]/);
+  expect(window).not.toContain("jellyfin");
+  expect(dropped).toContain(`you asked \u00b7 20 min ago \u00b7 #3: ${ask}`);
 });
 
 test("a job report the window shows isn't recalled as its job's result", () => {

@@ -5,7 +5,7 @@ import { renderRecall } from "./recall.ts";
 import type { Scratchpad } from "./scratchpad.ts";
 import type { Memory } from "./state.ts";
 import type { HistoryMessage } from "./transcript.ts";
-import { conversation, NEWEST_TOKENS, renderWindow } from "./window.ts";
+import { conversation, NEWEST_TOKENS, windowView } from "./window.ts";
 
 /** The run's inputs: the `you` and `auto` messages after the newest reset, every one when there is none. */
 const runInputs = (messages: readonly HistoryMessage[], lastReset?: EntryId) =>
@@ -37,13 +37,16 @@ export function buildContext(input: {
   const { messages, lastReset, memory, pad, jobs, now } = input;
   const inputs = runInputs(messages, lastReset);
   const before = lastReset === undefined ? [] : messages.filter((m) => m.id < lastReset);
-  const shown = conversation(before, now);
-
   const automated = inputs.length > 0 && inputs.every((m) => m.kind === "auto");
-  const window = renderWindow(before, now, automated ? { budget: NEWEST_TOKENS } : {});
-  const query = [...inputs.map((m) => m.text), ...shown.filter((m) => m.kind === "you").map((m) => m.text)].join("\n");
-  // What's already in view: the window's and the run's messages, and the result of each job they report on. A job
-  // whose result a report message anywhere already holds is left to that message, so recall doesn't repeat it.
+  const view = windowView(before, now, automated ? { budget: NEWEST_TOKENS } : {});
+  const window = view?.text;
+  // Only what the window renders is in view: a message it dropped behind its pointer line is still recalled.
+  const onScreen = new Set(view?.shown);
+  const shown = before.filter((m) => onScreen.has(m.id));
+  const talk = conversation(before, now);
+  const query = [...inputs.map((m) => m.text), ...talk.filter((m) => m.kind === "you").map((m) => m.text)].join("\n");
+  // What's already in view: the messages the window shows and the run's, and the result of each job they report on.
+  // A job whose result a report message anywhere already holds is left to that message, so recall doesn't repeat it.
   const exclude = new Set([
     ...[...shown, ...inputs].flatMap((m) => [String(m.id), ...(m.job === undefined ? [] : [`job:${m.job}`])]),
     ...messages.flatMap((m) => {

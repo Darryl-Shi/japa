@@ -1,7 +1,7 @@
 import type { EntryId } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
 import { type HistoryMessage, transcriptMessages } from "../src/kernel/memory/transcript.ts";
-import { ago, conversation, cut, renderWindow } from "../src/kernel/memory/window.ts";
+import { ago, conversation, cut, renderWindow, windowView } from "../src/kernel/memory/window.ts";
 import { auto, reply, you } from "./history-helpers.ts";
 
 const MIN = 60_000;
@@ -145,10 +145,11 @@ test("a smaller budget holds the whole window, the newest exchange included", ()
   expect(text.length).toBeLessThanOrEqual(8000);
   const lines = text.split("\n");
   expect(lines[0]).toBe("[Conversation so far]");
-  expect(lines[1]).toMatch(/^\[20 earlier messages in this conversation: history_read 1\]$/);
-  expect(lines[2]).toBe("you · 2 min ago · #21: hi");
-  expect(lines[3]!.startsWith("japa · 1 min ago: startyyy")).toBe(true);
-  expect(lines[3]!.endsWith("yyyend")).toBe(true);
+  expect(lines[1]!.startsWith("you · 40 min ago · #1: 1:zzz")).toBe(true); // the user's first message, pinned
+  expect(lines[2]).toMatch(/^\[19 messages not shown: history_read 2\]$/);
+  expect(lines[3]).toBe("you · 2 min ago · #21: hi");
+  expect(lines[4]!.startsWith("japa · 1 min ago: startyyy")).toBe(true);
+  expect(lines[4]!.endsWith("yyyend")).toBe(true);
 
   // The default is 8,000 tokens.
   expect(renderWindow(before, NOW)!.length).toBeGreaterThan(8000);
@@ -210,7 +211,7 @@ test("older messages are shortened before any are dropped", () => {
   );
   const text = renderWindow(before, NOW)!;
   expect(text.length).toBeLessThanOrEqual(32000);
-  expect(text).not.toContain("earlier messages");
+  expect(text).not.toContain("not shown");
   const lines = body(text);
   expect(lines).toHaveLength(40);
   const texts = lines.map((l) => l.slice(l.indexOf(": ") + 2));
@@ -246,14 +247,18 @@ test("drops leave a pointer line", () => {
   expect(text.length).toBeLessThanOrEqual(32000);
   const lines = text.split("\n");
   expect(lines[0]).toBe("[Conversation so far]");
-  const match = /^\[(\d+) earlier messages in this conversation: history_read 1000\]$/.exec(lines[1]!);
+  expect(lines[1]).toBe(`you · 6 min ago · #1000: ${before[0]!.text}`); // the user's first message, pinned
+  const match = /^\[(\d+) messages not shown: history_read 1001\]$/.exec(lines[2]!);
   expect(match).not.toBeNull();
   const dropped = Number(match![1]);
-  expect(lines).toHaveLength(2 + 400 - dropped);
-  expect(lines[2]).toContain(`#${1000 + dropped}: message ${dropped} `);
+  expect(lines).toHaveLength(3 + 399 - dropped);
+  expect(lines[3]).toContain(`: message ${1 + dropped} `);
   expect(lines.at(-1)).toContain("message 399 ");
   // nothing more is dropped than needed
-  expect(text.length + lines[2]!.length + 1).toBeGreaterThan(32000);
+  const last = before[dropped]!; // the newest dropped message
+  const label = last.kind === "you" ? `you \u00b7 ${ago(last.at, NOW)} \u00b7 #${last.id}` : `japa \u00b7 ${ago(last.at, NOW)}`;
+  const line = `${label}: ${last.text}`;
+  expect(text.length + line.length + 1).toBeGreaterThan(32000);
 });
 
 test("a steered run shows every input and no reply line when there was no reply", () => {
@@ -303,10 +308,12 @@ test("a long run of job reports with no reply stays within budget", () => {
   expect(lines.at(-1)).toContain("#159: ");
   expect(lines.at(-1)!.endsWith("(full: job_transcript 249)")).toBe(true);
   // the newest exchange is held to 2,000 tokens by dropping its oldest reports, counted in the pointer line
-  const match = /^\[(\d+) earlier messages in this conversation: history_read 1\]$/.exec(lines[1]!);
+  // the user's ask stays pinned above the pointer
+  expect(lines[1]).toBe("you · 20 min ago · #1: check every server");
+  const match = /^\[(\d+) messages not shown: history_read 2\]$/.exec(lines[2]!);
   expect(match).not.toBeNull();
-  expect(lines).toHaveLength(2 + 152 - Number(match![1]));
-  expect(lines.slice(2).join("\n").length).toBeLessThanOrEqual(8000);
+  expect(lines).toHaveLength(3 + 151 - Number(match![1]));
+  expect(lines.slice(3).join("\n").length).toBeLessThanOrEqual(8000);
 });
 
 test("a long run of inputs with no reply stays within budget, and keeps the last input whole", () => {
@@ -314,7 +321,8 @@ test("a long run of inputs with no reply stays within budget, and keeps the last
   const text = renderWindow(before, NOW)!;
   expect(text.length).toBeLessThanOrEqual(32000);
   const lines = text.split("\n");
-  expect(lines[1]).toMatch(/^\[\d+ earlier messages in this conversation: history_read 1\]$/);
+  expect(lines[1]).toBe(`you · 16 min ago · #1: ${before[0]!.text}`); // the first input, pinned
+  expect(lines[2]).toMatch(/^\[\d+ messages not shown: history_read 2\]$/);
   expect(lines.at(-1)).toBe(`you · just now · #1000: ${before[999]!.text}`);
   expect(text).not.toContain("[…]");
 });
@@ -341,6 +349,11 @@ test("the output is within budget even when nothing more can be cut or dropped",
   const text = renderWindow(before, NOW)!;
   expect(text.length).toBe(32000);
   expect(text.startsWith("[Conversation so far]\nyou · 10 min ago · #1: go\n")).toBe(true);
+  // the lines lost in the cut aren't shown
+  const { shown } = windowView(before, NOW)!;
+  expect(shown).toContain(1);
+  expect(shown).toContain(301);
+  expect(shown.length).toBeLessThan(301);
 });
 
 test("a whole-bracket arrival is its own headline", () => {
@@ -358,6 +371,50 @@ test("a job title holding brackets and quotes is stripped whole", () => {
 test("an image-only input renders as you", () => {
   const before = [msg(1, "you", "[image saved to /tmp/a.png]", NOW - MIN)];
   expect(body(renderWindow(before, NOW))).toEqual(["you · 1 min ago · #1: [image saved to /tmp/a.png]"]);
+});
+
+test("the user's first message stays pinned above the pointer when later ones are dropped", () => {
+  const ask = "clean up the server: jellyfin and maria can go";
+  const before = [
+    msg(1, "you", ask, NOW - 25 * MIN),
+    msg(2, "japa", "Started job 68.", NOW - 25 * MIN),
+    ...Array.from({ length: 8 }, (_, i) =>
+      msg(3 + i, i % 2 === 0 ? "you" : "japa", `${3 + i}:${"z".repeat(1500)}`, NOW - (20 - i) * MIN),
+    ),
+    msg(11, "you", "what should I plant in the garden?", NOW - 2 * MIN),
+    msg(12, "japa", `plan${"g".repeat(20000)}end`, NOW - MIN),
+  ];
+  const view = windowView(before, NOW, { budget: 2000 })!;
+  expect(view.text.length).toBeLessThanOrEqual(8000);
+  const lines = view.text.split("\n");
+  expect(lines[1]).toBe(`you · 25 min ago · #1: ${ask}`);
+  const match = /^\[(\d+) messages not shown: history_read 2\]$/.exec(lines[2]!);
+  expect(match).not.toBeNull();
+  expect(lines.at(-2)).toBe("you · 2 min ago · #11: what should I plant in the garden?");
+  // only what's on screen counts as shown: the pinned line yes, the dropped messages no
+  const dropped = Number(match![1]);
+  expect(view.shown).toEqual([1, ...Array.from({ length: 11 - dropped }, (_, i) => 2 + dropped + i)]);
+  expect(view.shown).not.toContain(2);
+  expect(view.text).toBe(renderWindow(before, NOW, { budget: 2000 }));
+
+  // A long first message is pinned as its headline.
+  const long = [msg(1, "you", `${"q".repeat(5000)}\nmore`, NOW - 25 * MIN), ...before.slice(1)];
+  const pinned = windowView(long, NOW, { budget: 2000 })!;
+  const first = pinned.text.split("\n")[1]!;
+  expect(first.startsWith("you · 25 min ago · #1: qqq")).toBe(true);
+  expect(first.slice(first.indexOf(": ") + 2).length).toBeLessThanOrEqual(200);
+  expect(pinned.text.split("\n")[2]).toMatch(/^\[\d+ messages not shown: history_read 2\]$/);
+  expect(pinned.shown[0]).toBe(1);
+});
+
+test("shown lists every message on screen, shortened ones included", () => {
+  const before = Array.from({ length: 40 }, (_, i) =>
+    msg(i + 1, i % 2 === 0 ? "you" : "japa", `${i + 1}:${"z".repeat(1500)}`, NOW - (40 - i) * MIN),
+  );
+  const view = windowView(before, NOW)!;
+  expect(view.text).not.toContain("not shown");
+  expect(view.shown).toEqual(before.map((m) => m.id));
+  expect(windowView([], NOW)).toBeUndefined();
 });
 
 test("an empty history renders nothing", () => {

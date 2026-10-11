@@ -112,7 +112,8 @@ japa · 38 min ago: The server cleanup is back, but it only did part of what you
 2. **Older messages.** If the window is still over budget, older messages are shortened, oldest first, to their
    first line (at most 200 characters).
 3. **Dropping.** If it is still over budget, the oldest messages are dropped and replaced by one line:
-   `[N earlier messages in this conversation: history_read <first id>]`.
+   `[N messages not shown: history_read <first id>]`. The user's first message in the window is dropped last: it
+   stays above that line, as its headline if need be. Recall treats only the messages the window renders as in view.
 
 ### 2.2 Sections
 
