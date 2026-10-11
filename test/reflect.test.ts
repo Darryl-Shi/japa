@@ -14,7 +14,7 @@ import { expect, test } from "vitest";
 import { boot, type Daemon } from "../src/kernel/boot.ts";
 import { reflectDelay, unreflectedTurns } from "../src/kernel/memory/reflect.ts";
 import { applyFactOps, MemoryDoc } from "../src/kernel/memory/state.ts";
-import { bootErrors, bootTest, carryOver, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootErrors, bootTest, resetDone, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, say, textOf, texts } from "./jobs-helpers.ts";
 
 type Respond = (
@@ -52,7 +52,7 @@ test("reflection saves facts, no episode, and advances the cursor", async () => 
     }
   });
   await ask(daemon, "I'm Ada, I prefer short answers");
-  await carryOver(daemon);
+  await resetDone(daemon);
   await daemon.reflect();
 
   const saved = await memory(daemon);
@@ -85,7 +85,7 @@ test("reflection does not change the root's context", async () => {
   const { daemon, faux } = await bootTest();
   route(faux, (system) => (system.startsWith("You reflect") ? save(facts()) : undefined));
   await ask(daemon, "hello");
-  await carryOver(daemon);
+  await resetDone(daemon);
   const before = (await daemon.root.context(ctx)).messages.length;
   await daemon.reflect();
   expect((await daemon.root.context(ctx)).messages.length).toBe(before);
@@ -103,9 +103,9 @@ test("a long range is reflected in chunks, oldest first", async () => {
     }
   });
   await ask(daemon, `A ${"x".repeat(5000)}`);
-  await carryOver(daemon);
+  await resetDone(daemon);
   await ask(daemon, `B ${"y".repeat(5000)}`);
-  await carryOver(daemon);
+  await resetDone(daemon);
   await daemon.reflect();
 
   expect(prompts).toHaveLength(2);
@@ -148,7 +148,7 @@ test("an entry larger than the chunk budget is sent truncated", async () => {
     }
   });
   await ask(daemon, `A ${"x".repeat(10_000)}`);
-  await carryOver(daemon);
+  await resetDone(daemon);
   await daemon.reflect();
 
   const sent = prompts[0]!.split("\n")[1]!; // the oversized entry's line

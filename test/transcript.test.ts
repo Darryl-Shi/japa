@@ -4,7 +4,7 @@ import { type AgentEvent, CompactionEntry } from "@earendil-works/pi-durable";
 import { expect, test, vi } from "vitest";
 import { connect } from "../extensions/gateway/client.ts";
 import { applyEvents, type Transcript } from "../extensions/gateway/transcript.ts";
-import { bootTest, carryOver } from "./helpers.ts";
+import { bootTest, resetDone } from "./helpers.ts";
 import { ask, script } from "./jobs-helpers.ts";
 
 test("transcript shows the exchange from real gateway events", async () => {
@@ -45,7 +45,7 @@ test("surfaces keep the whole history and hide the carry-over", async () => {
   const live = await attach();
   await vi.waitFor(() => expect(live.attached).toBe(true));
   await ask(daemon, "before");
-  await carryOver(daemon);
+  await resetDone(daemon);
   await ask(daemon, "after");
   const later = await attach();
 
