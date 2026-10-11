@@ -1,0 +1,6 @@
+{
+  "name": "japa-webui-app",
+  "private": true,
+  "type": "module",
+  "description": "The webui extension's SvelteKit app. Its dependencies live in japa's root package.json; build it with `npm run build` at the root."
+}
