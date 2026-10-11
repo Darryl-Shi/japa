@@ -108,7 +108,10 @@ export type Daemon = {
   capabilities(): string;
   /** Runs `Reflect` on the stored transcript and waits for it. */
   reflect(): Promise<void>;
-  /** Runs the one-time `Sort` of a version 2 memory and waits for it; once sorted, it does nothing. */
+  /**
+   * Starts the one-time `Sort` of a version 2 memory (unless one is running) and waits for it to settle; a failed Sort
+   * settles faulted rather than rejecting. Once the memory is sorted, the task it starts ends at once, with no model call.
+   */
   sort(): Promise<void>;
   /** Reloads the changed workspace extensions and the skills; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;

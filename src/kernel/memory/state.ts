@@ -126,6 +126,25 @@ export function applyFactOps(
   return { tooLong, rejected };
 }
 
+/**
+ * Keeps each fact of `before` that is gone from `memory.facts` and whose text no remaining item holds verbatim as a
+ * legacy episode `fact:<id>`, so it stays searchable until `legacyUntil`; returns how many it kept. Pass a copy of the
+ * facts taken before the change: `applyFactOps` updates facts in place.
+ */
+export function keepRemoved(memory: Memory, before: Fact[]): number {
+  const ids = new Set(memory.facts.map((f) => f.id));
+  let kept = 0;
+  for (const fact of before) {
+    if (ids.has(fact.id) || memory.facts.some((f) => f.text.includes(fact.text))) continue;
+    const id = `fact:${fact.id}`;
+    if (memory.legacyEpisodes?.some((e) => e.id === id)) continue;
+    memory.legacyEpisodes ??= [];
+    memory.legacyEpisodes.push({ id, at: fact.updatedAt, text: fact.text }); // read back: a doc draft copies on set
+    kept++;
+  }
+  return kept;
+}
+
 /** Drops the legacy episodes once `legacyUntil` has passed. */
 export function expireLegacy(memory: Memory, now: number): void {
   if (memory.legacyUntil === undefined || now <= memory.legacyUntil) return;

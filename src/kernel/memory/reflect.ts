@@ -23,6 +23,7 @@ import {
   type Fact,
   type FactOp,
   hasEvidence,
+  keepRemoved,
   type Memory,
   MemoryDoc,
   overCap,
@@ -302,7 +303,8 @@ export function reflection({ models, settings }: { models: Models; settings: Set
           drops.offScope += second.rejected.length;
           drops.tooLong += tooLong.length - kept.length + second.tooLong.length;
         }
-        if (overCap(memory.facts, settings.memory)) {
+        // Until the Sort has run, the facts are version 2 ones, of every kind: only the Sort may fold them to the cap.
+        if (memory.sorted && overCap(memory.facts, settings.memory)) {
           const merged = await ask<{ facts: unknown }>(merge(settings.memory), listed(memory.facts), saveFacts, runtime.signal);
           ops.push(...wellFormed(merged?.facts));
         }
@@ -334,8 +336,11 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         // task. `through` marks the checkpoint as changed (it differs from the previous one), so the task keeps going.
         await runtime.commit(async (tx) => {
           const draft = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
+          const before = draft.sorted ? [] : draft.facts.map((f) => ({ ...f }));
           applyFactOps(draft, ops, now);
-          draft.facts = truncateToCap(draft.facts, settings.memory); // a no-op under the cap
+          // Until the Sort has run, nothing truncates the facts, and one deleted stays searchable for the Sort to see.
+          if (draft.sorted) draft.facts = truncateToCap(draft.facts, settings.memory); // a no-op under the cap
+          else keepRemoved(draft, before);
           draft.reflectedThrough = piece.through;
           // A page changed since the reflection was shown it (or created meanwhile) keeps that change.
           const scratchpad = writes.length > 0 ? await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID) : undefined;

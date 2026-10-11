@@ -602,6 +602,34 @@ test("facts over the cap are merged", async () => {
   await daemon.close();
 });
 
+test("an unsorted memory is neither merged nor truncated by a reflection", async () => {
+  const v2 = ["Ada runs marathons", "Ada lives in Oslo", "Ada has two cats", "Ada plays chess"];
+  const { daemon, faux } = await bootTest({ memory: { maxFacts: 3 } });
+  await daemon.root.commit(async (tx) => {
+    const doc = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
+    delete doc.sorted; // a version 2 memory the Sort hasn't reached yet
+    doc.facts = v2.map((text, i) => ({ id: String(i + 1), text, updatedAt: i + 1 }));
+    doc.nextId = v2.length + 1;
+  }, ctx);
+  const prompts: string[] = [];
+  route(faux, (system) => {
+    if (!reflecting(system) && !system.startsWith("Merge")) return;
+    prompts.push(system.split(" ")[0]!);
+    if (system.startsWith("Merge")) return save({ facts: [{ op: "delete", id: "1" }] });
+    return save(profile({ op: "add", text: "Ada likes tea", evidence: EVIDENCE }, { op: "delete", id: "2" }));
+  });
+  await ask(daemon, SAID);
+  await daemon.reflect();
+
+  expect(prompts).toEqual(["You"]);
+  const saved = await memory(daemon);
+  expect(saved.reflectedThrough).toBe(await newest(daemon));
+  expect(saved.facts.map((f) => f.text)).toEqual(["Ada runs marathons", "Ada has two cats", "Ada plays chess", "Ada likes tea"]);
+  // The fact the reflection deleted stays searchable as a legacy episode, for the Sort to see.
+  expect(saved.legacyEpisodes).toEqual([{ id: "fact:2", at: 2, text: "Ada lives in Oslo" }]);
+  await daemon.close();
+});
+
 test.each([[0, undefined], [1, 900_000], [4, 900_000], [5, 0], [12, 0]])(
   "reflectDelay(%i) is %s",
   (turns, expected) => expect(reflectDelay(turns)).toBe(expected),

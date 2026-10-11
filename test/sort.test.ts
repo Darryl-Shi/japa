@@ -81,10 +81,11 @@ test("a v2 memory is sorted into profile and pages once", async () => {
   expect(findPage(tidied, "Software factory")?.archivedAt).toBeUndefined();
   expect(sorted.sorted).toBe(true);
   expect(sorted.legacyUntil).toBeGreaterThanOrEqual(before + DELETE_AFTER);
-  expect(sorted.legacyEpisodes).toEqual([EPISODE]); // kept, searchable until then
+  // Kept, searchable until then; so is the deleted fact, which no profile item holds verbatim.
+  expect(sorted.legacyEpisodes).toEqual([EPISODE, { id: "fact:2", at: 2, text: FACTS[1]!.text }]);
   expect(sorts).toHaveLength(1);
   expect(sorts[0]).toBe(
-    "Facts:\n1: Lives at Kopar at Newton\n2: Factory settings: global defaults plus per-project overrides\n\n" +
+    "Facts:\n1 (1970-01-01): Lives at Kopar at Newton\n2 (1970-01-01): Factory settings: global defaults plus per-project overrides\n\n" +
       `Episodes (newest first):\n${new Date(EPISODE.at).toISOString().slice(0, 10)}: ${EPISODE.text}`,
   );
 
@@ -129,7 +130,7 @@ test("the sort applies the caps but not the evidence check", async () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   await daemon.sort();
   expect(warn.mock.calls.map((c) => c[0])).toContain(
-    "japa.sort: dropped 1 malformed profile ops; 1 off-scope; 1 too long; 1 malformed pages; too-long pages: Huge; 2 pages over 15",
+    "japa.sort: dropped 1 malformed profile ops; 1 off-scope; 1 too long; 1 malformed pages; too-long pages: Huge; 2 pages over 15.",
   );
   warn.mockRestore();
 
@@ -144,6 +145,86 @@ test("the sort applies the caps but not the evidence check", async () => {
   await daemon.close();
 });
 
+test("the prompt states the caps and keeps the profile to the facts", async () => {
+  const { daemon, faux } = await bootTest({ memory: { maxFacts: 12, maxTokens: 345 } });
+  await asV2(daemon);
+  let prompt = "";
+  route(faux, (system) => {
+    if (!sorting(system)) return;
+    prompt = system;
+    return save({ profile: [], pages: [] });
+  });
+  await daemon.sort();
+  for (const cap of ["at most 12 items", "345 tokens", "at most 30 words", "at most 15", "at most 1,500 tokens"]) {
+    expect(prompt).toContain(cap);
+  }
+  expect(prompt).toContain("never for the profile");
+  await daemon.close();
+});
+
+test("a deleted fact whose replacement is dropped is kept as a legacy episode", async () => {
+  const { daemon, faux } = await bootTest();
+  await asV2(daemon);
+  route(faux, (system) =>
+    sorting(system)
+      ? save({ profile: [{ op: "delete", id: "2" }, { op: "add", text: "word ".repeat(31).trim() }], pages: [] })
+      : undefined,
+  );
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  await daemon.sort();
+  expect(warn.mock.calls.map((c) => c[0])).toContain(
+    "japa.sort: dropped 1 too long. Kept 1 removed facts as legacy episodes.",
+  );
+  warn.mockRestore();
+
+  const sorted = await memory(daemon);
+  expect(sorted.facts.map((f) => f.text)).toEqual(["Lives at Kopar at Newton"]);
+  expect(sorted.legacyEpisodes).toContainEqual({ id: "fact:2", at: 2, text: FACTS[1]!.text });
+  expect(sorted.legacyUntil).toBeDefined();
+  await daemon.close();
+});
+
+test("a fact folded verbatim into another isn't kept as a legacy episode", async () => {
+  const { daemon, faux } = await bootTest();
+  await asV2(daemon);
+  route(faux, (system) =>
+    sorting(system)
+      ? save({
+          profile: [
+            { op: "delete", id: "1" },
+            { op: "update", id: "2", text: "Lives at Kopar at Newton with his family" },
+          ],
+          pages: [],
+        })
+      : undefined,
+  );
+  await daemon.sort();
+  expect((await memory(daemon)).legacyEpisodes).toEqual([EPISODE]);
+  await daemon.close();
+});
+
+test("facts truncated to the cap are kept as legacy episodes", async () => {
+  const { daemon, faux } = await bootTest({ memory: { maxFacts: 2 } });
+  const facts = [
+    { id: "1", text: "Plays drums in a band", updatedAt: 3 },
+    { id: "2", text: "Prefers short answers", updatedAt: 1 },
+    { id: "3", text: "Runs marathons", updatedAt: 2 },
+  ];
+  await asV2(daemon, facts);
+  route(faux, (system) => (sorting(system) ? save({ profile: [], pages: [] }) : undefined));
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  await daemon.sort();
+  expect(warn.mock.calls.map((c) => c[0])).toContain(
+    "japa.sort: dropped 1 facts over the cap. Kept 1 removed facts as legacy episodes.",
+  );
+  warn.mockRestore();
+
+  const sorted = await memory(daemon);
+  expect(sorted.facts.map((f) => f.text)).toEqual(["Plays drums in a band", "Runs marathons"]);
+  expect(sorted.legacyEpisodes).toEqual([EPISODE, { id: "fact:2", at: 1, text: "Prefers short answers" }]);
+  await daemon.close();
+});
+
 test("a page the CoS already wrote is kept", async () => {
   const { daemon, faux } = await bootTest();
   await asV2(daemon);
@@ -155,7 +236,7 @@ test("a page the CoS already wrote is kept", async () => {
   route(faux, (system) => (sorting(system) ? save(SORTED) : undefined));
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   await daemon.sort();
-  expect(warn.mock.calls.map((c) => c[0])).toContain("japa.sort: dropped pages already written: Software factory");
+  expect(warn.mock.calls.map((c) => c[0])).toContain("japa.sort: dropped pages already written: Software factory. Kept 1 removed facts as legacy episodes.");
   warn.mockRestore();
 
   expect(findPage(await pad(daemon), "Software factory")?.text).toBe("The CoS's own notes.");
@@ -174,8 +255,13 @@ test("a failed sort leaves sorted unset and runs at the next boot", async () => 
   // `save` without its fields makes the phase throw, which faults the task.
   const sorts = route(kit.faux, (system) => (sorting(system) ? save(fail ? {} : SORTED) : undefined));
   const second = await boot({ home, extensions: [kit.extension] });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   await waitFor(() => sorts.length > 0);
   await second.sort(); // like `reflect`, it settles (faulted) rather than rejecting
+  expect(warn.mock.calls.map((c) => c[0])).toContain(
+    "japa.sort: failed (the model didn't save a profile list); it runs again at the next boot",
+  );
+  warn.mockRestore();
   expect((await memory(second)).sorted).toBeUndefined();
   expect((await memory(second)).facts).toHaveLength(2);
   await second.close();
