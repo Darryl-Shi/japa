@@ -59,13 +59,16 @@ async function checkExtension(name: string, dir: string, home: string): Promise<
 
   const tmp = mkdtempSync(join(tmpdir(), "japa-check-"));
   const config = join(tmp, "tsconfig.json");
+  // What japa's own tsc leaves out (e.g. webui's SvelteKit app, which svelte-check covers) stays out here too.
+  const rootExclude = (JSON.parse(readFileSync(join(packageRoot, "tsconfig.json"), "utf8")).exclude ?? []) as string[];
   writeFileSync(
     config,
     JSON.stringify({
       extends: join(packageRoot, "tsconfig.json"),
       compilerOptions: { typeRoots: [join(packageRoot, "node_modules", "@types")] },
       include: [source],
-      exclude: [join(source, "**/*.test.ts")], // `vitest` resolves only when they run, below
+      // `vitest` resolves only when they run, below
+      exclude: [join(source, "**/*.test.ts"), ...rootExclude.map((p) => join(packageRoot, p))],
     }),
   );
   const compiled = await run("@typescript/native/bin/tsc", ["-p", config], source); // TypeScript 7 (`typescript` is 6, for svelte-check)
@@ -98,8 +101,8 @@ async function smokeLoad(name: string, dir: string, extension: JapaExtension): P
   const kit = fauxKit();
   const home = mkdtempSync(join(tmpdir(), "japa-check-"));
   // A throwaway daemon mustn't bring up the real desktop: it shares the container's name, and would recreate it
-  // against this temp home.
-  const settings = { storage: { adapter: "memory" }, models: { cos: kit.model }, extensions: { desktop: { autostart: false } } };
+  // against this temp home. Nor take the web UI's port.
+  const settings = { storage: { adapter: "memory" }, models: { cos: kit.model }, extensions: { desktop: { autostart: false }, webui: { port: 0 } } };
   writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
   const problems: string[] = [];
   try {

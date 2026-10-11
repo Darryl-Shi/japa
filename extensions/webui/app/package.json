@@ -2,5 +2,8 @@
   "name": "japa-webui-app",
   "private": true,
   "type": "module",
-  "description": "The webui extension's SvelteKit app. Its dependencies live in japa's root package.json; build it with `npm run build` at the root."
+  "description": "The webui extension's SvelteKit app. Its dependencies live in japa's root package.json (one npm ci there); npm run build, here or at the root, builds it into ../build.",
+  "scripts": {
+    "build": "vite build"
+  }
 }
