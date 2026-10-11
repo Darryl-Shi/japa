@@ -170,7 +170,7 @@ test("every response carries the security headers", async () => {
   for (const res of [await fetch(`${base}/login`), await fetch(`${base}/api/x`), await fetch(`${base}/`, { redirect: "manual" })]) {
     expect(res.headers.get("content-security-policy")).toBe(DEFAULT_CSP);
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("referrer-policy")).toBe("same-origin");
     expect(res.headers.get("x-frame-options")).toBe("DENY");
   }
 });
@@ -193,4 +193,21 @@ test("token and session checks", () => {
   expect(validSession(cookie, TOKEN, now)).toBe(true);
   expect(validSession(cookie, undefined, now)).toBe(false);
   expect(validSession(undefined, TOKEN, now)).toBe(false);
+});
+
+test("a 304 carries no CSP, so the cached page keeps its own", async () => {
+  const { base } = await serve((_req, res) => {
+    res.writeHead(304, { etag: '"x"' }).end();
+  });
+  const res = await fetch(`${base}/login`, { headers: { "if-none-match": '"x"' } });
+  expect(res.status).toBe(304);
+  expect(res.headers.get("content-security-policy")).toBeNull();
+});
+
+test("a response written without writeHead still gets the default CSP", async () => {
+  const { base } = await serve((_req, res) => {
+    res.statusCode = 200;
+    res.end("x");
+  });
+  expect((await fetch(`${base}/login`)).headers.get("content-security-policy")).toBe(DEFAULT_CSP);
 });

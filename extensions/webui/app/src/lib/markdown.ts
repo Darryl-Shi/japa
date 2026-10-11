@@ -68,7 +68,10 @@ const md = new Marked({
     },
     // Ignore marked's `escaped` flag (set for text inside raw <script>/<pre> tags): always escape.
     text(token: Tokens.Text | Tokens.Escape): string {
-      return "tokens" in token && token.tokens ? this.parser.parseInline(token.tokens) : escapeHtml(token.text);
+      // marked leaves character references as typed (`&lt;`): decode them, so they show as what they stand for.
+      return "tokens" in token && token.tokens
+        ? this.parser.parseInline(token.tokens)
+        : escapeHtml(decodeEntities(token.text));
     },
     code(token: Tokens.Code): string {
       const body = escapeHtml(token.text.replace(/\n$/, ""));

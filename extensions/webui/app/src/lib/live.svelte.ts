@@ -4,7 +4,7 @@ import { API, type JobView, type Line, type LiveEvent, type SecretRequestView, t
 export type Connection = "connecting" | "live" | "reconnecting";
 
 /** A message sent from this tab that hasn't shown up in the transcript yet. */
-export type PendingMessage = { id: string; text: string };
+export type PendingMessage = { id: string; text: string; steer: boolean };
 
 const SUBMIT_ATTEMPTS = 5;
 const MAX_BACKOFF_MS = 5_000;
@@ -146,6 +146,8 @@ export class Live {
         this.secrets = event.pending;
         break;
     }
+    // A steer not taken before the run ended (it was stopped) is dropped by the kernel: so is its bubble.
+    if (!this.busy && this.pending.some((p) => p.steer)) this.pending = this.pending.filter((p) => !p.steer);
   }
 
   #flushDelta(): void {
@@ -182,7 +184,7 @@ export class Live {
   async submit(text: string): Promise<boolean> {
     const id = newId();
     const mode: SubmitMode = this.busy ? "steer" : "followUp";
-    this.pending = [...this.pending, { id, text }];
+    this.pending = [...this.pending, { id, text, steer: mode === "steer" }];
     const drop = () => (this.pending = this.pending.filter((p) => p.id !== id));
     for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt++) {
       if (attempt > 0) await sleep(Math.min(500 * 2 ** (attempt - 1), MAX_BACKOFF_MS));

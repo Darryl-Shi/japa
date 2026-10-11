@@ -36,9 +36,10 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
   };
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
-    res.setHeader("Content-Security-Policy", DEFAULT_CSP);
+    defaultCsp(res);
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "no-referrer");
+    // Not no-referrer: under it browsers send `Origin: null` on the sign-in form's POST.
+    res.setHeader("Referrer-Policy", "same-origin");
     res.setHeader("X-Frame-Options", "DENY");
 
     // DNS rebinding: only our own names for this server.
@@ -82,6 +83,24 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
     }
     deps.handler(req, res, () => send(res, 404, "Not found"));
   }
+}
+
+/**
+ * Gives every response that sets no CSP of its own the default one, as its headers are written -- except a 304,
+ * whose headers the browser merges into the cached page: SvelteKit's 304s carry no CSP, and the default would
+ * replace the page's hashed one.
+ */
+function defaultCsp(res: ServerResponse) {
+  const writeHead = res.writeHead.bind(res) as (...args: unknown[]) => ServerResponse;
+  res.writeHead = ((status: number, ...rest: unknown[]) => {
+    const headers = rest.find((r) => typeof r === "object" && r !== null);
+    const names = Array.isArray(headers)
+      ? headers.filter((_, i) => i % 2 === 0).map(String)
+      : Object.keys((headers ?? {}) as object);
+    const own = res.hasHeader("Content-Security-Policy") || names.some((n) => n.toLowerCase() === "content-security-policy");
+    if (status !== 304 && !own) res.setHeader("Content-Security-Policy", DEFAULT_CSP);
+    return writeHead(status, ...rest);
+  }) as typeof res.writeHead;
 }
 
 function send(res: ServerResponse, status: number, text: string) {

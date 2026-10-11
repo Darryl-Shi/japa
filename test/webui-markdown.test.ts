@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { renderMarkdown, safeUrl } from "../extensions/webui/app/src/lib/markdown.ts";
 
 describe("webui markdown", () => {
+  it("shows character references as what they stand for, still escaped", () => {
+    expect(renderMarkdown("&lt;b&gt; AT&amp;T &#60;i&#62;")).toBe("<p>&lt;b&gt; AT&amp;T &lt;i&gt;</p>\n");
+  });
+
   it("shows inline raw HTML as visible escaped text", () => {
     const html = renderMarkdown("hi <img src=x onerror=alert(1)> there");
     expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");

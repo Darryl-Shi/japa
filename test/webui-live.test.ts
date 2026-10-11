@@ -208,3 +208,14 @@ test("startLive watches the context and stop ends the watches", async () => {
   expect(stopped).toBe(3);
   expect(closed).toBe(1);
 });
+
+test("text carried on message_start shows in the stream", () => {
+  const { hub, seen } = subscribed();
+  hub.events([snapshot([])]);
+  seen.length = 0;
+  const start = ev("message_start", { message: { role: "assistant", content: [{ type: "text", text: "# Ti" }] } });
+  hub.events([start, delta("tle")]);
+  expect(hub.snapshot().streaming).toBe("# Title");
+  hub.events([ev("message_start", { message: { role: "user", content: "q" } })]);
+  expect(hub.snapshot().streaming).toBe("# Title");
+});

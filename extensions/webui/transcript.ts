@@ -1,5 +1,5 @@
 // The root conversation as the web UI shows it: the same rules as the gateway's (extensions/gateway/transcript.ts),
-// copied rather than imported so extensions stay independent.
+// copied rather than imported so extensions stay independent; it also shows text carried on `message_start`.
 import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
 import type { Line } from "./app/src/lib/protocol.ts";
 
@@ -11,6 +11,10 @@ export function applyEvents(t: Transcript, events: readonly AgentEvent[]): Trans
     switch (e.type) {
       case "snapshot":
         t = { lines: e.entries.flatMap(linesOf), streaming: "", busy: e.run !== undefined };
+        break;
+      case "message_start":
+        // A streamed reply's first text may come with its start rather than as a delta.
+        if (e.message.role === "assistant") t = { ...t, streaming: textOf(e.message.content) };
         break;
       case "message_update": {
         const deltas = e.changes.map((c) => (c.type === "text_delta" ? c.delta : ""));

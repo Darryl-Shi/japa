@@ -10,3 +10,4 @@
 
 Decisions: see docs/spec.md "Implementation notes". "not built" line names the app dir (app/package.json has a build script).
 No CI workflow: the repo has none and the spec doesn't ask for one.
+- [x] Round 2: F1 referrer same-origin (form POST Origin), F2 default CSP never on 304s / only when app sets none, F3 drop stale steer bubbles, F4 entity decoding, F5 message_start text. Verified in headless Chromium (sign-in paste, reload, second tab).
