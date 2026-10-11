@@ -21,7 +21,7 @@ import { JobsDoc } from "./jobs/state.ts";
 import { buildContext, runKey } from "./memory/context.ts";
 import type { History } from "./memory/history.ts";
 import type { HistoryMessage } from "./memory/transcript.ts";
-import { ScratchpadDoc } from "./memory/scratchpad.ts";
+import { renderIndex, ScratchpadDoc } from "./memory/scratchpad.ts";
 import { MemoryDoc, renderFacts } from "./memory/state.ts";
 import { memoryTools } from "./memory/tools.ts";
 import { renderPending, secretRequest, SecretRequestsDoc } from "./secret-requests.ts";
@@ -67,7 +67,7 @@ async function build(
 
 /**
  * The CoS's own Pi Durable extension: its identity, its capabilities (the current text of `capabilities()`), its
- * memory sections and tools, the built-in `read` tool, `secret_request`, the cap on tool results it sees, the
+ * memory sections (the profile and the scratchpad index) and tools, the built-in `read` tool, `secret_request`, the cap on tool results it sees, the
  * conversation context injected into each root run (built once per run from `history`), and the kernel's root tools
  * and tasks.
  */
@@ -90,12 +90,16 @@ export function cosExtension(
         const memory = await read.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context);
         return memory && renderFacts(memory.facts);
       }),
+      section("scratchpad", async ({ read }, context) => {
+        const pad = await read.snapshot(ScratchpadDoc, ROOT_CONVERSATION_ID, context);
+        return pad && renderIndex(pad, Date.now());
+      }),
       section("waiting-on-you", async ({ read }, context) => {
         const pending = await read.snapshot(SecretRequestsDoc, ROOT_CONVERSATION_ID, context);
         return pending && renderPending(pending.pending);
       }),
     ],
-    tools: [createReadTool(), ...memoryTools, secretRequest, ...tools],
+    tools: [createReadTool(), ...memoryTools(history), secretRequest, ...tools],
     tasks,
     hooks: [
       hook(GenerationTask, {
