@@ -7,8 +7,12 @@ when the job finishes; it rolls them back when they break.
 
 ## Requirements
 
-- git, tar, and curl or wget (the installer uses them; Node.js 24 is installed for you if your system doesn't have it)
-- bubblewrap, which sandboxes jobs (`sudo apt install bubblewrap`)
+- Linux on x64 or arm64 (WSL works for a native install), and curl or wget
+- For a **Docker install** (the default): Docker, usable by your user (`docker info` works; on Linux:
+  `sudo usermod -aG docker $USER`, then log in again), and the [Sysbox](https://github.com/nestybox/sysbox) runtime —
+  the installer offers to install it for you on Ubuntu or Debian. Everything else is inside the container.
+- For a **native install**: git and tar (Node.js 24 is installed for you if your system doesn't have it), and
+  bubblewrap, which sandboxes jobs (`sudo apt install bubblewrap`)
 - An account with a model provider supported by pi-ai (Anthropic, OpenAI, Google, OpenRouter, ...): a subscription
   you can sign in with (Claude Pro/Max, ChatGPT, GitHub Copilot, ...) or an API key
 
@@ -16,6 +20,24 @@ when the job finishes; it rolls them back when they break.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh
+```
+
+One installer, two modes. In a terminal it asks "Install japa via Docker (recommended) or natively?"; Enter picks
+Docker, and so does an install without a terminal. Pass `--mode docker` or `--mode native` to skip the question.
+Re-running it over an existing install upgrades that install in its own mode without asking: a native one if
+`<dir>/app` is a checkout, else a Docker instance of that name if there is one.
+
+- **Docker** runs japa in its own [Sysbox](https://github.com/nestybox/sysbox) system container — a small Linux
+  machine with systemd, its own Docker and working bubblewrap — where it is installed and runs exactly as a native
+  install does (same code, service, updates, job sandbox and desktop). Its state is in named Docker volumes; on the
+  host there's only the container, its volumes and network, and a `japa` launcher. Several instances (one per
+  tenant, say) can run side by side. See Docker install below.
+- **Native** installs japa straight into your home directory, as described next.
+
+### Native install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh -s -- --mode native
 ```
 
 This clones japa into `~/.local/share/japa/app`, downloads a private Node.js if your system doesn't have Node 24 or
@@ -27,6 +49,61 @@ Runs on Linux only, x64 or arm64 (WSL works); needs `git`, `tar`, and `curl` or 
 one is named, along with how to install it. Jobs also need bubblewrap (`sudo apt install bubblewrap`): `japa setup`
 checks that it works and, if not, says how to install it.
 
+If a step fails, or you press Ctrl-C, the installer names the step and removes the `app/` and `node/` it created.
+It never touches `~/.japa`, refuses a `--dir` whose `app/` isn't a japa checkout (changing nothing), and never
+replaces or removes a `node/` it didn't install itself.
+
+Running the same command again later upgrades an existing install (writing the launcher first if it's missing or
+points at another install) — see Updating.
+
+### Docker install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh -s -- --mode docker --instance alice
+```
+
+The installer first checks that Docker works for you and that the Sysbox runtime (`sysbox-runc`) is registered with
+it. If Sysbox is missing on Ubuntu or Debian, it offers to install it (Sysbox 0.7.1's `.deb`, checksum-verified,
+with `sudo apt-get install`) and warns that this **restarts Docker, briefly stopping running containers**; Enter
+means yes. Without a terminal it installs Sysbox only with `--install-sysbox`. Otherwise (another distro, you said
+no, or the install failed) it points at Sysbox's install docs and, in a terminal, offers a native install instead;
+without one it exits non-zero. Never `--privileged`, and never the host's `docker.sock`.
+
+A fresh install of instance `<name>` (default: your `$USER`, lower-cased, anything but `a-z0-9-` turned into `-`):
+
+1. builds the image `japa-host:<branch>` from the repo's `docker/` directory at `--branch` (a git build context,
+   so `--repo` must be a URL: `https://`, `git://`, `ssh://` or `git@`);
+2. creates the network `japa-<name>-net` and the volumes `japa-<name>-home` and `japa-<name>-docker`, and starts the
+   container `japa-<name>` with `--runtime=sysbox-runc` and `--restart unless-stopped` (so it comes back after a
+   reboot), publishing only the desktop on `127.0.0.1:<port>`; then waits for its systemd to boot;
+3. installs japa inside as user `japa` with this same installer's native mode (`--mode native --skip-setup`, same
+   `--repo` and `--branch`): the checkout, `npm ci` and the inner launcher;
+4. writes the host launcher `~/.local/bin/japa` (and the PATH line, as for a native install; see Running → Docker instances);
+5. runs `japa --instance <name> setup`, which runs the setup wizard inside the container and installs the
+   background service there. Without a terminal, or with `--skip-setup` or `--non-interactive`, it prints
+   ``run `japa --instance <name> setup` to finish`` instead.
+
+It refuses a name already used by a container that isn't a japa instance. If a step before setup fails, or you
+press Ctrl-C, it names the step and removes the container, volumes, network and launcher this run created —
+nothing that existed before.
+
+Re-running the installer for an existing instance (`--instance <name>`, or the default) upgrades it: it rebuilds
+`japa-host:<branch>` and, if the image, branch or `--desktop-port` changed, recreates `japa-<name>` with the same
+name, volumes, network, labels and port — the volumes and everything in them are kept — then runs `japa update`
+inside, as a native re-run does. It stays on the instance's branch unless you pass `--branch`. It also brings back an
+instance removed with `japa uninstall` (its volumes were kept).
+
+Run it again with `--mode docker --instance <another name>` for each further instance (one per tenant, say): each
+has its own container, volumes, network, settings, secrets, models, Telegram bot and desktop port, and can't reach
+the others' ports. The one host launcher serves them all.
+
+Native and Docker installs can share a machine, but only one owns `~/.local/bin/japa`. A Docker install over a
+native launcher asks whether to replace it (Enter: no); kept, the Docker launcher is `~/.local/bin/japa-docker`.
+Likewise a native install over the Docker launcher asks (Enter: no) and otherwise writes `~/.local/bin/japa-native`.
+Without a terminal the existing launcher is always kept. Use those names wherever this README says `japa`.
+
+### Installer flags
+
 To pass flags through the pipe, use `sh -s --`:
 
 ```sh
@@ -35,19 +112,16 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 
 | Flag | Env | Default | What it does |
 | --- | --- | --- | --- |
-| `--dir <path>` | `JAPA_INSTALL_DIR` | `~/.local/share/japa` | Where to install japa |
+| `--mode <docker\|native>` | `JAPA_INSTALL_MODE` | `docker` (asked in a terminal) | How to install; an existing install keeps its mode |
+| `--instance <name>` | `JAPA_INSTANCE` | `$USER` (sanitised) | Docker: instance to create or upgrade (`[a-z0-9][a-z0-9-]*`) |
+| `--desktop-port <n>` | | first free from 6080 | Docker: host port (on `127.0.0.1`) for the instance's desktop; skips ports other instances claimed or something listens on |
+| `--install-sysbox` | | off | Docker: install Sysbox if missing without asking (needs sudo, restarts Docker) |
+| `--dir <path>` | `JAPA_INSTALL_DIR` | `~/.local/share/japa` | Native: where to install japa (ignored in Docker mode, with a note) |
 | `--branch <name>` | `JAPA_BRANCH` | `main` | git branch to install |
-| `--repo <url>` | `JAPA_REPO` | `https://github.com/Darryl-Shi/japa.git` | git repo to clone |
+| `--repo <url>` | `JAPA_REPO` | `https://github.com/Darryl-Shi/japa.git` | git repo to clone (Docker mode: a URL only) |
 | `--non-interactive` | | off | Install but don't run `japa setup`; for scripted installs, see Non-interactive setup |
-| `--no-service` | | off | Passed to `japa setup`: don't install or start the background service |
+| `--no-service` | | off | Passed to `japa setup` (inside the container, in Docker mode): don't install or start the background service |
 | `--skip-setup` | | off | Install but don't run `japa setup` |
-
-If a step fails, or you press Ctrl-C, the installer names the step and removes the `app/` and `node/` it created.
-It never touches `~/.japa`, refuses a `--dir` whose `app/` isn't a japa checkout (changing nothing), and never
-replaces or removes a `node/` it didn't install itself.
-
-Running the same command again later upgrades an existing install (writing the launcher first if it's missing or
-points at another install) — see Updating.
 
 ### Install from a checkout
 
@@ -125,6 +199,14 @@ JAPA_PROVIDER=anthropic JAPA_MODEL=<model id> JAPA_API_KEY=<key> ~/.local/bin/ja
 | `JAPA_MODEL` | The CoS model's id |
 | `JAPA_API_KEY` | Its API key (read only together with the two above) — stored the same way as the interactive prompt |
 
+In a Docker instance, the host launcher passes only `TERM`, `LANG` and `TZ` into the container, so set the variables
+inside it, through `shell`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh -s -- --mode docker --instance alice --non-interactive
+~/.local/bin/japa --instance alice shell -c 'JAPA_PROVIDER=anthropic JAPA_MODEL=<model id> JAPA_API_KEY=<key> japa setup --non-interactive'
+```
+
 This sets `models.cos` and the key, installs the background service unless `--no-service`, and skips extensions.
 `japa setup` without a terminal (no tty) behaves the same way, with or without the flag. It exits with an error
 naming what's missing if `models.cos` is still unset afterwards.
@@ -149,6 +231,37 @@ In `japa chat`: Enter sends (while the CoS is replying, it steers the reply); Es
 Ctrl-C quits the chat (the daemon keeps running). When an extension asks for a secret, a masked prompt replaces
 the editor; Enter submits it, Esc hides it (it comes back when the pending requests change), and Ctrl-X declines
 the request, which tells the CoS you said no.
+
+### Docker instances
+
+With a Docker install, `~/.local/bin/japa` on the host is a small script that forwards each command into an
+instance: `docker exec` as user `japa` (with a TTY when you're in a terminal) running the japa inside, with your
+arguments, and exiting with its status. So `japa chat`, `setup`, `status`, `service ...`, `update`, `check`,
+`rollback`, `safe-mode` and `--version` behave as they do natively, masked prompts and Ctrl-C included; `japa service`
+manages the systemd user service inside the container.
+
+Which instance a command goes to:
+
+1. `--instance <name>` as the first argument (`japa --instance alice chat`);
+2. else `JAPA_INSTANCE`;
+3. else the only instance on the host;
+4. else the instance named after `$USER`.
+
+Otherwise it lists the instances and exits non-zero. A stopped instance is started first; one that doesn't exist
+is reported along with the ones that do.
+
+A few commands are the launcher's own and run on the host:
+
+| Command | What it does |
+| --- | --- |
+| `japa instances` | Lists every instance: name, state (running or stopped), branch, japa version, desktop URL |
+| `japa [--instance n] shell [args]` | A login shell as `japa` inside the container (args go to `bash -l`, e.g. `-c '<command>'`): to inspect `~/.japa`, or to hand a tenant a shell |
+| `japa [--instance n] uninstall [--purge]` | Removes the instance, see Uninstall |
+
+The instance's desktop is at `http://127.0.0.1:<port>/vnc.html` on the host (`japa instances` shows the port); from
+another machine, `ssh -L <port>:localhost:<port> <server>` first. Google sign-in (and any other sign-in) can't come
+back to japa by itself from your browser, so use the paste-the-redirect fallback: copy the address of the page that
+fails to load and paste it where japa asks, as over SSH (see Google).
 
 ### Service
 
@@ -250,6 +363,9 @@ it has told you about.
 
 You can also update from Telegram (or any messaging extension) with `/update`, as described under Telegram.
 
+In a Docker instance, `japa [--instance <name>] update` and `/update` work the same way, inside the container. They
+update japa but not the container's image; re-run the installer for that (see Docker install).
+
 ### Uninstall
 
 ```sh
@@ -260,7 +376,20 @@ Stops and removes the service and the `japa` launcher (if it runs this install),
 directory's `app/` and the private Node.js japa installed, then the directory itself once it's empty (a checkout you
 cloned and linked yourself is left in place). Your data stays in `~/.japa`; the command prints where. Add `--purge`
 to delete that too, once you type `delete` to confirm. The PATH line `install.sh` added to your shell's rc file is
-left as it is; the command names the file.
+left as it is; the command names the file. (A native install whose launcher is `~/.local/bin/japa-native` leaves
+that file in place; remove it by hand.)
+
+For a Docker instance:
+
+```sh
+japa [--instance <name>] uninstall [--purge]
+```
+
+runs on the host: it removes the container `japa-<name>` and its network, and says the data is kept in the volumes
+`japa-<name>-home` and `japa-<name>-docker` — re-run the installer with `--instance <name>` to bring the instance
+back. With `--purge` (needs a terminal) it deletes the volumes too, once you type the instance name to confirm. When
+no instances remain, it removes the host launcher. The image `japa-host:<branch>` stays; remove it with
+`docker image rm japa-host:<branch>`.
 
 ## Telegram
 
@@ -388,6 +517,24 @@ boots.json, daemon.lock, .cache/, node_modules/   runtime files
 
 The tag `japa-lkg` marks the last known good commit. `git log` in `~/.japa` shows every job's merge, undo and rollback.
 
+### Docker instances
+
+A Docker instance `<name>` is the same layout inside its container, under user `japa`'s home, with everything kept
+in Docker:
+
+| Thing | What it holds |
+| --- | --- |
+| volume `japa-<name>-home` → `/home/japa` | the whole home: the checkout `~/.local/share/japa/app`, the inner launcher `~/.local/bin/japa`, `~/.japa` (settings, secrets, history, jobs' work), the service unit |
+| volume `japa-<name>-docker` → `/var/lib/docker` | the instance's own Docker: the desktop's image, container and home (browser logins) |
+| network `japa-<name>-net` | a bridge used by this instance only |
+| container `japa-<name>` | labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>`; publishes only `127.0.0.1:<port>` |
+| image `japa-host:<branch>` | built from `docker/` (branch names with characters other than `A-Za-z0-9_.-` get `-` in the tag); shared by instances on that branch |
+
+No host paths are mounted. On the host, only `~/.local/bin/japa` (and the PATH line in your shell's rc file, if it
+was needed) is written. Recreating the container (a re-run after the image changed, or after `uninstall`) keeps both
+volumes, so everything above survives; software installed with apt into the container's root filesystem doesn't.
+`japa --instance <name> shell` is the way in to look around.
+
 ## Extending
 
 Ask the CoS: "when I say standup, draft my standup from my notes", or "add a tool that ...". It picks a mechanism
@@ -403,6 +550,10 @@ Extensions import only from `japa/sdk` (`src/sdk.ts`); the packaged ones in `ext
 npm test            # vitest
 npm run typecheck   # tsc --noEmit
 JAPA_DOCKER_TESTS=1 npx vitest --run test/desktop-docker.test.ts   # the desktop on Docker (builds its image)
+JAPA_SYSBOX_TESTS=1 npx vitest --run test/sysbox.test.ts           # Docker installs end to end (needs Sysbox)
 ```
+
+The Sysbox tests create real instances from `JAPA_SYSBOX_TEST_REPO` at `JAPA_SYSBOX_TEST_BRANCH` (default
+`https://github.com/Darryl-Shi/japa.git` at `main`), so they test what's pushed there, not your working tree.
 
 Set `JAPA_HOME` to a scratch directory to run a throwaway daemon.

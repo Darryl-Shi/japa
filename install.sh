@@ -168,6 +168,35 @@ download_node() {
   NODE_BIN="$NODE_DIR/bin/node"
 }
 
+# When ~/.local/bin isn't on PATH, adds it in the shell's rc file.
+ensure_path_line() {
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *)
+      case "${SHELL:-}" in
+        */zsh)
+          rcfile="$HOME/.zshrc"
+          line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+        */fish)
+          rcfile="$HOME/.config/fish/config.fish"
+          line='fish_add_path $HOME/.local/bin'
+          ;;
+        *)
+          rcfile="$HOME/.bashrc"
+          line='export PATH="$HOME/.local/bin:$PATH"'
+          ;;
+      esac
+      if [ ! -f "$rcfile" ] || ! grep -qF "$line" "$rcfile"; then
+        mkdir -p "$(dirname "$rcfile")"
+        printf '%s\n' "$line" >>"$rcfile"
+        say "added PATH line to $rcfile"
+      fi
+      echo 'open a new shell or run: export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+  esac
+}
+
 # --- Docker mode (docs/spec.md, "Docker hosting") ---
 # Each instance <name> is the Sysbox system container japa-<name>, its volumes japa-<name>-home (/home/japa) and
 # japa-<name>-docker (/var/lib/docker), its network japa-<name>-net and the image japa-host:<branch>; inside it,
@@ -957,35 +986,6 @@ install_launcher() {
   write_launcher "$NODE_BIN" "$APP_DIR" >"$LAUNCHER"
   chmod 755 "$LAUNCHER"
   ensure_path_line
-}
-
-# When ~/.local/bin isn't on PATH, adds it in the shell's rc file.
-ensure_path_line() {
-  case ":$PATH:" in
-    *":$HOME/.local/bin:"*) ;;
-    *)
-      case "${SHELL:-}" in
-        */zsh)
-          rcfile="$HOME/.zshrc"
-          line='export PATH="$HOME/.local/bin:$PATH"'
-          ;;
-        */fish)
-          rcfile="$HOME/.config/fish/config.fish"
-          line='fish_add_path $HOME/.local/bin'
-          ;;
-        *)
-          rcfile="$HOME/.bashrc"
-          line='export PATH="$HOME/.local/bin:$PATH"'
-          ;;
-      esac
-      if [ ! -f "$rcfile" ] || ! grep -qF "$line" "$rcfile"; then
-        mkdir -p "$(dirname "$rcfile")"
-        printf '%s\n' "$line" >>"$rcfile"
-        say "added PATH line to $rcfile"
-      fi
-      echo 'open a new shell or run: export PATH="$HOME/.local/bin:$PATH"'
-      ;;
-  esac
 }
 
 # Whether the launcher is there and runs this install's checkout (as src/cli/layout.ts's launcherPointsAt checks).
