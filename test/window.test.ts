@@ -193,6 +193,72 @@ test("a steered run shows every input and no reply line when there was no reply"
   expect(lines.join("\n").length).toBe(8000);
 });
 
+test("a long run of job reports with no reply stays within budget", () => {
+  const before = transcriptMessages([
+    you(1, "check every server", NOW - 20 * MIN),
+    ...reply(2, "Started 150 jobs.", NOW - 19 * MIN),
+    ...Array.from({ length: 150 }, (_, i) =>
+      auto(10 + i, `[job ${100 + i} "Check ${i}" done] ${"r".repeat(300)}`, NOW - (150 - i) * 5000),
+    ),
+  ]);
+  const text = renderWindow(before, NOW)!;
+  expect(text.length).toBeLessThanOrEqual(32000);
+  const lines = text.split("\n");
+  expect(lines.at(-1)).toContain("#159: ");
+  expect(lines.at(-1)!.endsWith("(full: job_transcript 249)")).toBe(true);
+  // the newest exchange is held to 2,000 tokens by dropping its oldest reports, counted in the pointer line
+  const match = /^\[(\d+) earlier messages in this conversation: history_read 1\]$/.exec(lines[1]!);
+  expect(match).not.toBeNull();
+  expect(lines).toHaveLength(2 + 152 - Number(match![1]));
+  expect(lines.slice(2).join("\n").length).toBeLessThanOrEqual(8000);
+});
+
+test("a long run of inputs with no reply stays within budget, and keeps the last input whole", () => {
+  const before = Array.from({ length: 1000 }, (_, i) => msg(i + 1, "you", `line ${i} ${"v".repeat(90)}`, NOW - (1000 - i) * 1000));
+  const text = renderWindow(before, NOW)!;
+  expect(text.length).toBeLessThanOrEqual(32000);
+  const lines = text.split("\n");
+  expect(lines[1]).toMatch(/^\[\d+ earlier messages in this conversation: history_read 1\]$/);
+  expect(lines.at(-1)).toBe(`you · just now · #1000: ${before[999]!.text}`);
+  expect(text).not.toContain("[…]");
+});
+
+test("automated labels are at most 60 characters", () => {
+  const label = `[${"x".repeat(5000)}]`;
+  const before = transcriptMessages([
+    you(1, "hi", NOW - 10 * MIN),
+    ...Array.from({ length: 100 }, (_, i) => auto(10 + i, `${label} event ${i}`, NOW - (100 - i) * 1000)),
+  ]);
+  const text = renderWindow(before, NOW)!;
+  expect(text.length).toBeLessThanOrEqual(32000);
+  const last = text.split("\n").at(-1)!;
+  expect(last).toBe(`[${"x".repeat(57)}…] · just now · #109: event 99 (full: history_read 109)`);
+  expect(last.indexOf(" · ")).toBe(60);
+});
+
+test("the output is within budget even when nothing more can be cut or dropped", () => {
+  const did = `did: ${"d".repeat(155)}`;
+  const before = [
+    msg(1, "you", "go", NOW - 10 * MIN),
+    ...Array.from({ length: 300 }, (_, i) => msg(2 + i, "japa", "x".repeat(100), NOW - 5 * MIN, { did })),
+  ];
+  const text = renderWindow(before, NOW)!;
+  expect(text.length).toBe(32000);
+  expect(text.startsWith("[Conversation so far]\nyou · 10 min ago · #1: go\n")).toBe(true);
+});
+
+test("a whole-bracket arrival is its own headline", () => {
+  const before = transcriptMessages([auto(5, "[secret X provided]", NOW - MIN)]);
+  expect(body(renderWindow(before, NOW))).toEqual([
+    "[secret X provided] · 1 min ago · #5: secret X provided (full: history_read 5)",
+  ]);
+});
+
+test("a job title holding brackets and quotes is stripped whole", () => {
+  const before = transcriptMessages([auto(5, '[job 7 "fix [a] and "b]" failed] It broke.', NOW - MIN)]);
+  expect(body(renderWindow(before, NOW))).toEqual(["job 7 report · 1 min ago · #5: It broke. (full: job_transcript 7)"]);
+});
+
 test("an image-only input renders as you", () => {
   const before = [msg(1, "you", "[image saved to /tmp/a.png]", NOW - MIN)];
   expect(body(renderWindow(before, NOW))).toEqual(["you · 1 min ago · #1: [image saved to /tmp/a.png]"]);

@@ -11,7 +11,10 @@ const CHARS_PER_TOKEN = 4;
 const HEADER = "[Conversation so far]";
 const HEADLINE = 200;
 const CUT = "[…]";
+const LABEL = 60;
 const PREFIX = /^\[[^\]\n]*\]/;
+/** A job report's prefix, `[job <n> "<title>" <status>]`; the title may hold `]` or `"`. */
+const JOB_PREFIX = /^\[job \d+ "[\s\S]*?" [a-z_]+\]/;
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -65,6 +68,11 @@ function headline(text: string): string {
 
 type Item = { message: HistoryMessage; text: string };
 
+/** `label` at most 60 characters, its end replaced by `…]` when longer. */
+function capLabel(label: string): string {
+  return label.length <= LABEL ? label : `${label.slice(0, LABEL - 2)}…]`;
+}
+
 /** `item` as its line group: `you`, `japa` and its `did:` line, or an automated arrival's headline and pointer. */
 function show(item: Item, now: number): string {
   const { message: m } = item;
@@ -74,55 +82,94 @@ function show(item: Item, now: number): string {
     const did = m.did === undefined ? "" : `\n  ${m.did.replace(/\s+/g, " ")}`;
     return `japa · ${when}: ${item.text}${did}`;
   }
-  const prefix = PREFIX.exec(m.text)?.[0];
+  const prefix = ((m.job !== undefined && JOB_PREFIX.exec(m.text)) || PREFIX.exec(m.text))?.[0];
   const rest = prefix === undefined ? m.text : m.text.slice(prefix.length);
-  const label = m.job !== undefined ? `job ${m.job} report` : (prefix ?? "[auto]");
+  const label = m.job !== undefined ? `job ${m.job} report` : capLabel(prefix ?? "[auto]");
   const pointer = m.job !== undefined ? `job_transcript ${m.job}` : `history_read ${m.id}`;
-  return `${label} · ${when} · #${m.id}: ${headline(rest)} (full: ${pointer})`;
+  // a whole-bracket arrival such as `[secret X provided]` is its own headline
+  const head = headline(rest) || headline(prefix?.slice(1, -1) ?? "");
+  return `${label} · ${when} · #${m.id}: ${head} (full: ${pointer})`;
+}
+
+/** The rendered length of `items` joined by newlines. */
+const size = (lengths: readonly number[]) => lengths.reduce((sum, n) => sum + 1 + n, -1);
+
+/**
+ * Cuts the `you` and `japa` texts of `items` in the middle, longest first, until they render within `cap`
+ * characters or every text is down to `floor` characters (or `[…]`).
+ */
+function fit(items: readonly Item[], cap: number, floor: number, now: number): void {
+  const lengths = items.map((i) => show(i, now).length);
+  let length = size(lengths);
+  const cuttable = items.flatMap((i, k) => (i.message.kind === "auto" ? [] : [k]));
+  while (length > cap && cuttable.length > 0) {
+    const k = cuttable.reduce((a, b) => (items[b]!.text.length > items[a]!.text.length ? b : a));
+    const item = items[k]!;
+    const room = item.text.length - Math.max(floor, CUT.length);
+    if (room <= 0) return; // every text is down to the floor
+    item.text = cut(item.text, Math.min(length - cap, room));
+    const next = show(item, now).length;
+    length += next - lengths[k]!;
+    lengths[k] = next;
+  }
 }
 
 /**
  * The "[Conversation so far]" block for a run that starts at `now`, from `before` (every message before the run,
  * oldest first); undefined when there are no messages. It holds the current conversation (see `conversation`) within
- * 8,000 tokens: the newest exchange is cut to 2,000 tokens in the middle of its longest part, then older messages are
- * shortened to their headline, oldest first, then the oldest are dropped behind one `history_read` pointer line.
+ * 8,000 tokens, always:
+ * 1. The newest exchange is cut to 2,000 tokens in the middle of its longest parts. If that's not enough (a long run
+ *    of inputs with no reply between them), its oldest inputs are dropped, keeping the last input and the reply;
+ *    everything before them is dropped too, so the dropped messages are always the oldest.
+ * 2. Older messages are shortened to their headline, oldest first, while over budget.
+ * 3. Then the oldest are dropped. Dropped messages are counted in one `history_read` pointer line after the header.
+ * 4. Whatever still doesn't fit is cut in the middle.
  */
 export function renderWindow(before: readonly HistoryMessage[], now: number): string | undefined {
   const messages = conversation(before, now);
   if (messages.length === 0) return undefined;
   const items: Item[] = messages.map((message) => ({ message, text: message.text }));
   const newest = items.slice(items.length - lastExchange(messages).length);
-  const older = items.slice(0, items.length - newest.length);
+  const olderCount = items.length - newest.length;
 
-  // 1. The newest exchange, up to 2,000 tokens.
+  // 1. The newest exchange, up to 2,000 tokens: cut its texts, but not below a headline's length, ...
   const newestCap = NEWEST_TOKENS * CHARS_PER_TOKEN;
-  const cuttable = newest.filter((i) => i.message.kind !== "auto");
-  let length = newest.map((i) => show(i, now)).join("\n").length;
-  while (length > newestCap && cuttable.length > 0) {
-    const longest = cuttable.reduce((a, b) => (b.text.length > a.text.length ? b : a));
-    if (longest.text.length <= CUT.length) break; // every part is cut to the bone
-    longest.text = cut(longest.text, length - newestCap);
-    length = newest.map((i) => show(i, now)).join("\n").length;
-  }
+  fit(newest, newestCap, HEADLINE, now);
+  // ... then drop its oldest inputs, keeping the last one, ...
+  const inputs = newest.filter((i) => i.message.kind !== "japa").length;
+  const lengths = newest.map((i) => show(i, now).length);
+  let length = size(lengths);
+  let newestDropped = 0;
+  while (length > newestCap && newestDropped < inputs - 1) length -= 1 + lengths[newestDropped++]!;
+  // ... and cut what's left afresh, down to `[…]` if it must.
+  const kept = newest.slice(newestDropped);
+  for (const item of kept) item.text = item.message.text;
+  fit(kept, newestCap, HEADLINE, now);
+  fit(kept, newestCap, 0, now);
 
   // 2. Older messages, shortened oldest first; 3. then dropped oldest first.
   const cap = WINDOW_TOKENS * CHARS_PER_TOKEN;
   const shown = items.map((i) => show(i, now));
-  let total = HEADER.length + shown.reduce((sum, s) => sum + 1 + s.length, 0);
-  for (let i = 0; i < older.length && total > cap; i++) {
-    const item = older[i]!;
+  const pointer = (n: number) => `[${n} earlier messages in this conversation: history_read ${messages[0]!.id}]`;
+  const pointerLength = (n: number) => (n === 0 ? 0 : 1 + pointer(n).length);
+  let dropped = newestDropped > 0 ? olderCount + newestDropped : 0;
+  let total = HEADER.length + pointerLength(dropped);
+  for (let i = dropped; i < items.length; i++) total += 1 + shown[i]!.length;
+  for (let i = dropped; i < olderCount && total > cap; i++) {
+    const item = items[i]!;
     if (item.message.kind === "auto") continue;
     item.text = headline(item.text);
     const next = show(item, now);
     total += next.length - shown[i]!.length;
     shown[i] = next;
   }
-  let dropped = 0;
-  const pointer = (n: number) => `[${n} earlier messages in this conversation: history_read ${messages[0]!.id}]`;
-  while (dropped < older.length && total > cap) {
+  while (dropped < olderCount && total > cap) {
     total -= 1 + shown[dropped]!.length;
     dropped++;
-    total += (dropped === 1 ? 1 + pointer(1).length : pointer(dropped).length - pointer(dropped - 1).length);
+    total += pointerLength(dropped) - pointerLength(dropped - 1);
   }
-  return [HEADER, ...(dropped > 0 ? [pointer(dropped)] : []), ...shown.slice(dropped)].join("\n");
+
+  // 4. The hard guarantee.
+  const out = [HEADER, ...(dropped > 0 ? [pointer(dropped)] : []), ...shown.slice(dropped)].join("\n");
+  return out.length <= cap ? out : cut(out, out.length - cap);
 }
