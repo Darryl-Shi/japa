@@ -31,11 +31,14 @@ import {
 import { AUTOMATED } from "./transcript.ts";
 import { ago } from "./window.ts";
 
+/** What stays out of the profile, with a good and a bad item; shared by reflection and Sort. */
+export const SCOPE = `Keep out of the profile: japa's own setup (extensions, models, settings, schedules, jobs); file paths, repos, commits, hosts and IPs; credentials and contact numbers; task status and one-off events; a project's internals, which belong on a page.
+  A good item: "Protective of his Claude subscription limits; expects integrations to be efficient by default."
+  A bad item: "Factory settings: global defaults plus per-project overrides (behaviour, model/thinking per role, sandbox, ci)." That is a project's internals: it belongs on a page.`;
+
 const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and update what it remembers: the user's profile and its scratchpad pages. Call save once with:
 - profile: operations on the profile ("About you"), short items strictly about the user, not a log. Each item is one lasting aspect in at most 30 words: who the user is, people in their life, what they're working toward and why, life and interests, taste, how they like to work with the assistant. Use add(text, evidence), update(id, text, evidence) or delete(id); an empty list when nothing changes.
-  Keep out of the profile: japa's own setup (extensions, models, settings, schedules, jobs); file paths, repos, commits, hosts and IPs; credentials and contact numbers; task status and one-off events; a project's internals, which belong on a page.
-  A good item: "Protective of his Claude subscription limits; expects integrations to be efficient by default."
-  A bad item: "Factory settings: global defaults plus per-project overrides (behaviour, model/thinking per role, sandbox, ci)." That is a project's internals: it belongs on a page.
+  ${SCOPE}
   Rules:
   - every add and update needs evidence: a verbatim quote, at least 3 words, from a \`user:\` line in these turns that isn't automated. An operation without it is rejected;
   - if the user corrected something later in these turns, the correction is what you record;
@@ -52,6 +55,12 @@ const SHORTEN_PAGE = `Shorten this page to at most 1,500 tokens, keeping its cur
 const merge = (limits: Settings["memory"]) =>
   `Merge these user facts: they exceed the limit of ${limits.maxFacts} entries and ${limits.maxTokens} tokens (about 4 characters per token). Combine related entries and delete the least useful until the list fits. Call save with update(id, text), delete(id) and add(text) operations.`;
 
+/** The model that reflects and sorts: the consolidation model when set, the CoS's otherwise. Call it live: settings change. */
+export function reflectionModel(models: Models, settings: Settings) {
+  const ref = settings.models.consolidation ?? settings.models.cos!;
+  return models.getModel(ref.provider, ref.modelId)!;
+}
+
 const factOps = Type.Array(
   Type.Union([
     Type.Object({ op: Type.Literal("add"), text: Type.String() }),
@@ -59,7 +68,7 @@ const factOps = Type.Array(
     Type.Object({ op: Type.Literal("delete"), id: Type.String() }),
   ]),
 );
-const saveTool = (properties: Record<string, TSchema>): Tool => ({
+export const saveTool = (properties: Record<string, TSchema>): Tool => ({
   name: "save",
   description: "Save your result.",
   parameters: Type.Object(properties),
@@ -94,11 +103,11 @@ type Drops = {
   stalePages: string[];
 };
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
-const isString = (v: unknown): v is string => typeof v === "string";
+export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+export const isString = (v: unknown): v is string => typeof v === "string";
 
 /** `o` as a fact operation (with its evidence, if it gave a string one), or undefined when it's malformed. */
-function factOp(o: unknown): ProfileOp | undefined {
+export function factOp(o: unknown): ProfileOp | undefined {
   if (!isRecord(o)) return undefined;
   const evidence = isString(o.evidence) ? { evidence: o.evidence } : {};
   if (o.op === "delete") return isString(o.id) ? { op: "delete", id: o.id } : undefined;
@@ -119,7 +128,7 @@ const wellFormed = (ops: unknown): FactOp[] =>
   });
 
 /** `w` as a page write, or undefined when it's malformed. A `basedOn` the model sent as a string is coerced. */
-function pageWrite(w: unknown): PageWrite | undefined {
+export function pageWrite(w: unknown): PageWrite | undefined {
   if (!isRecord(w) || !isString(w.title) || !isString(w.text)) return undefined;
   return w.basedOn === undefined || w.basedOn === null
     ? { title: w.title, text: w.text }
@@ -213,11 +222,7 @@ function chunk(entries: EntryRecord[], budget: number): Chunk {
  * `startReflect`, which starts it unless it is already running.
  */
 export function reflection({ models, settings }: { models: Models; settings: Settings }) {
-  /** The model that reflects: the consolidation model when set, the CoS's otherwise. Read live: settings change. */
-  const reflectModel = () => {
-    const ref = settings.models.consolidation ?? settings.models.cos!;
-    return models.getModel(ref.provider, ref.modelId)!;
-  };
+  const reflectModel = () => reflectionModel(models, settings);
 
   /** The `save` arguments of the reflection model's answer, if it called `save`. */
   async function ask<T>(systemPrompt: string, text: string, tool: Tool, signal: AbortSignal): Promise<T | undefined> {
