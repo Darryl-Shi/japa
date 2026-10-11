@@ -44,15 +44,18 @@ test("a remembered fact reaches the about-you section; forget removes it", async
   await daemon.close();
 });
 
-test("a too-long or duplicate fact is refused", async () => {
+test("a too-long, off-scope or duplicate fact is refused", async () => {
   const { daemon, faux } = await bootTest();
   run(faux, (_role, text) => {
-    if (text === "long") return call("memory_remember", { text: "word ".repeat(51) });
+    if (text === "long") return call("memory_remember", { text: "word ".repeat(31) });
+    if (text === "ip") return call("memory_remember", { text: "Dana's server is at 192.168.0.32" });
     if (text === "tea") return call("memory_remember", { text: "Dana prefers tea over coffee" });
     if (text === "tea again") return call("memory_remember", { text: "Dana prefers tea over coffee!" });
   });
   await ask(daemon, "long");
-  expect(await lastResult(daemon)).toBe("Too long — keep it to about two sentences (50 words).");
+  expect(await lastResult(daemon)).toBe("Too long — keep it to 30 words.");
+  await ask(daemon, "ip");
+  expect(await lastResult(daemon)).toBe("Not about the user (an IP address): put it on a scratchpad page instead.");
   await ask(daemon, "tea");
   await ask(daemon, "tea again");
   expect(await lastResult(daemon)).toBe("Already remembered: Dana prefers tea over coffee");
