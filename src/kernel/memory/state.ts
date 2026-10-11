@@ -33,7 +33,7 @@ export const MemoryDoc = defineDoc<Memory>({
 
 const MAX_WORDS = 50;
 
-function words(text: string): string[] {
+export function words(text: string): string[] {
   return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/).filter(Boolean);
 }
 
