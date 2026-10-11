@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { FauxProviderHandle } from "@earendil-works/pi-ai";
-import { type EntryRecord, ResetEntry } from "@earendil-works/pi-durable";
+import { ResetEntry } from "@earendil-works/pi-durable";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -103,15 +103,9 @@ export async function waitFor(fn: () => Promise<boolean> | boolean, timeoutMs = 
   }
 }
 
-/** The carry-over of the latest reset, waiting until the turn in flight has reset. */
-export async function carryOver(daemon: Daemon): Promise<string | undefined> {
-  let newest: EntryRecord | undefined;
-  await waitFor(async () => {
-    newest = (await daemon.root.entries({}, 1, undefined, ctx)).items[0];
-    return newest?.kind === ResetEntry.kind;
-  });
-  const content = newest!.model?.[0]?.content;
-  return typeof content === "string" ? content : undefined;
+/** Waits until the turn in flight has reset: the root's newest entry is a `ResetEntry`. */
+export async function resetDone(daemon: Daemon): Promise<void> {
+  await waitFor(async () => (await daemon.root.entries({}, 1, undefined, ctx)).items[0]?.kind === ResetEntry.kind);
 }
 
 /**

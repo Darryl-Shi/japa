@@ -42,6 +42,7 @@ import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish
 import { unstickPublishing } from "./jobs/run.ts";
 import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
+import { createHistory } from "./memory/history.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
 import { MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
@@ -544,7 +545,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         scheduleGood: () => safety.scheduleGood(),
       }),
     );
-    const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
+    const history = createHistory();
+    const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities, history);
     const rt = createRuntime({
       home,
       packageRoot,
@@ -599,6 +601,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     registry.install(WorkerExtension);
     registry.install(CodingTools);
     const root = await ensureRoot(harness, model, ctx);
+    history.attach(root);
     rootReady = true;
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
