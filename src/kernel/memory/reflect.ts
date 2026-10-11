@@ -19,7 +19,7 @@ import type { Settings } from "../settings.ts";
 import { applyFactOps, estimateTokens, type FactOp, type Memory, MemoryDoc, overCap, truncateToCap } from "./state.ts";
 
 const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and update what it remembers about the user. Call save once with:
-- facts: operations on the user facts ("About you"), a high-level picture of the user, not a log. Each entry is one lasting aspect in at most two sentences (50 words): who the user is, what they're working toward, how they like to work, key people and projects, standing preferences. Use add(text), update(id, text) or delete(id); an empty list when nothing changes. Rules:
+- facts: operations on the user facts ("About you"), a high-level picture of the user, not a log. Each entry is one lasting aspect in at most 30 words: who the user is, what they're working toward, how they like to work, key people and projects, standing preferences. Use add(text), update(id, text) or delete(id); an empty list when nothing changes. Rules:
   - record patterns and lasting context, not events or task details;
   - fold new details into an existing entry and generalize, rather than adding entries;
   - rewrite entries that have become too specific at a higher level;
@@ -27,7 +27,7 @@ const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and up
 - episode: a short summary of these turns, for later search. Name the people, projects and decisions.
 \`user:\` lines starting with \`[job \` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user.`;
 
-const SHORTEN = `Shorten each of these user fact operations to at most 50 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
+const SHORTEN = `Shorten each of these user fact operations to at most 30 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
 
 const merge = (limits: Settings["memory"]) =>
   `Merge these user facts: they exceed the limit of ${limits.maxFacts} entries and ${limits.maxTokens} tokens (about 4 characters per token). Combine related entries and delete the least useful until the list fits. Call save with update(id, text), delete(id) and add(text) operations.`;
@@ -83,7 +83,7 @@ function chunk(entries: EntryRecord[], budget: number): Chunk {
 
 /**
  * The `Reflect` task, which reads the root's stored transcript since the last reflection and saves what it taught
- * about the user as facts and an episode, and `startReflect`, which starts it unless it is already running.
+ * about the user as facts, and `startReflect`, which starts it unless it is already running.
  */
 export function reflection({ models, settings }: { models: Models; settings: Settings }) {
   /** The model that reflects: the consolidation model when set, the CoS's otherwise. Read live: settings change. */
@@ -145,7 +145,6 @@ export function reflection({ models, settings }: { models: Models; settings: Set
           const draft = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
           applyFactOps(draft, ops, now);
           draft.facts = truncateToCap(draft.facts, settings.memory); // a no-op under the cap
-          draft.episodes.push({ id: String(draft.nextId++), at: now, text: saved.episode });
           draft.reflectedThrough = piece.through;
           return piece.more
             ? { status: "running", checkpoint: { phase: "reflect", through: piece.through } }

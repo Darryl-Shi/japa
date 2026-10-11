@@ -44,7 +44,7 @@ const memory = async (daemon: Daemon) => (await daemon.harness.snapshot(MemoryDo
 const factTexts = async (daemon: Daemon) => (await memory(daemon)).facts.map((f) => f.text);
 const facts = (...ops: object[]) => ({ facts: ops, episode: "e" });
 
-test("reflection saves facts and an episode and advances the cursor", async () => {
+test("reflection saves facts, no episode, and advances the cursor", async () => {
   const { daemon, faux } = await bootTest();
   route(faux, (system) => {
     if (system.startsWith("You reflect")) {
@@ -57,7 +57,7 @@ test("reflection saves facts and an episode and advances the cursor", async () =
 
   const saved = await memory(daemon);
   expect(saved.facts.map((f) => f.text)).toEqual(["Ada prefers short answers"]);
-  expect(saved.episodes.map((e) => e.text)).toEqual(["Ada introduced herself."]);
+  expect(saved.legacyEpisodes).toBeUndefined();
   expect(saved.reflectedThrough).toBe((await daemon.root.entries({}, 1, undefined, ctx)).items[0]!.id);
   await daemon.close();
 });
@@ -112,7 +112,6 @@ test("a long range is reflected in chunks, oldest first", async () => {
   expect(prompts[0]!.includes("A ")).toBe(true);
   expect(prompts[0]!.includes("B ")).toBe(false);
   expect((await memory(daemon)).reflectedThrough).toBe((await daemon.root.entries({}, 1, undefined, ctx)).items[0]!.id);
-  expect((await memory(daemon)).episodes).toHaveLength(2);
   await daemon.close();
 });
 
@@ -286,7 +285,7 @@ test("a version 1 memory drops its loops and keeps its facts", () => {
       },
       1,
     ),
-  ).toEqual({ nextId: 4, facts: [fact], episodes: [], upgraded: { loops: ["call the bank"] } });
+  ).toEqual({ nextId: 4, facts: [fact], legacyEpisodes: [], upgraded: { loops: ["call the bank"] } });
 });
 
 test("the upgrade notice is delivered once and sets the cursor", async () => {

@@ -40,10 +40,10 @@ test("jobs.thinking rejects an unknown level", () => {
 
 test("context and memory defaults; partial context merges over its default", () => {
   expect(DEFAULT_SETTINGS.context).toEqual({ toolResultTokens: 2000 });
-  expect(DEFAULT_SETTINGS.memory).toEqual({ maxFacts: 30, maxTokens: 1500 });
+  expect(DEFAULT_SETTINGS.memory).toEqual({ maxFacts: 30, maxTokens: 1000 });
   const s = loadSettings(tempHome({ context: { toolResultTokens: 500 } }));
   expect(s.context).toEqual({ toolResultTokens: 500 });
-  expect(s.memory).toEqual({ maxFacts: 30, maxTokens: 1500 });
+  expect(s.memory).toEqual({ maxFacts: 30, maxTokens: 1000 });
 });
 
 test("invalid JSON names the file", () => {

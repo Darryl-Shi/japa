@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
   secrets: { adapter: "file" },
   jobs: { maxConcurrent: 4, keepFinishedDays: 7, thinking: "medium" },
   context: { toolResultTokens: 2000 },
-  memory: { maxFacts: 30, maxTokens: 1500 },
+  memory: { maxFacts: 30, maxTokens: 1000 },
   safety: { toolErrorThreshold: 5, goodAfterMinutes: 10 },
   extensions: {},
 };
