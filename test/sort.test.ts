@@ -275,6 +275,19 @@ test("a failed sort leaves sorted unset and runs at the next boot", async () => 
   await third.close();
 });
 
+test("a v2 memory with nothing in it is sorted without the model", async () => {
+  const { daemon, faux } = await bootTest();
+  await asV2(daemon, [], []);
+  const sorts = route(faux, (system) => (sorting(system) ? save(SORTED) : undefined));
+  await daemon.sort();
+  expect(sorts).toEqual([]);
+  const sorted = await memory(daemon);
+  expect(sorted.sorted).toBe(true);
+  expect(sorted.facts).toEqual([]);
+  expect((await pad(daemon)).pages).toEqual([]);
+  await daemon.close();
+});
+
 test("a fresh install never sorts", async () => {
   const { daemon, faux } = await bootTest();
   const sorts = route(faux, () => undefined);

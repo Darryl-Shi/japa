@@ -1,6 +1,5 @@
 import { defineDoc } from "@earendil-works/pi-durable";
 import { estimateTokens } from "./state.ts";
-import { ago } from "./window.ts";
 
 /** One project or topic: its current state in free-form markdown, not a log. */
 export type Page = { id: string; title: string; text: string; updatedAt: number; archivedAt?: number };
@@ -73,8 +72,17 @@ export function tidyPages(pad: Scratchpad, now: number): void {
   }
 }
 
-/** One line per active page, newest first: `- <title> (updated <ago>)`; undefined when there are none. */
+/** The UTC calendar day `at` falls on, relative to `now`'s: `today`, `yesterday` or `N d ago`. */
+function dayAgo(at: number, now: number): string {
+  const days = Math.max(0, Math.floor(now / DAY) - Math.floor(at / DAY));
+  return days === 0 ? "today" : days === 1 ? "yesterday" : `${days} d ago`;
+}
+
+/**
+ * One line per active page, in creation order: `- <title> (updated <day>)`; undefined when there are none. It is part
+ * of the cached system prompt, so it changes only when a page is created or archived, or a label's day changes.
+ */
 export function renderIndex(pad: Scratchpad, now: number): string | undefined {
-  const pages = active(pad).toSorted((a, b) => b.updatedAt - a.updatedAt);
-  return pages.length ? pages.map((p) => `- ${p.title} (updated ${ago(p.updatedAt, now)})`).join("\n") : undefined;
+  const pages = active(pad).toSorted((a, b) => Number(a.id) - Number(b.id));
+  return pages.length ? pages.map((p) => `- ${p.title} (updated ${dayAgo(p.updatedAt, now)})`).join("\n") : undefined;
 }

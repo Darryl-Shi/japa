@@ -109,7 +109,7 @@ test("page_write then page_read round-trips and the index appears in the system 
   await ask(daemon, "read");
   expect(await lastResult(daemon)).toBe("# Factory (updated just now)\nRuns on hermes.\nCI is done.");
   const prompt = prompts.at(-1)!;
-  expect(prompt).toMatch(/about-you[\s\S]*- Dana prefers tea over coffee[\s\S]*scratchpad[\s\S]*- Factory \(updated just now\)/);
+  expect(prompt).toMatch(/about-you[\s\S]*- Dana prefers tea over coffee[\s\S]*scratchpad[\s\S]*- Factory \(updated today\)/);
   await ask(daemon, "fuzzy");
   expect(await lastResult(daemon)).toBe('No page "hermes"; closest: # Factory (updated just now)\nRuns on hermes.\nCI is done.');
   await ask(daemon, "missing");
@@ -189,6 +189,28 @@ test("history_search names a page by its title", async () => {
   await resetDone(daemon);
   await ask(daemon, "search");
   expect(await lastResult(daemon)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} page "Factory": Factory Runs on hermes\.$/m);
+  await daemon.close();
+});
+
+test("history_search shows a legacy episode as a note without an id", async () => {
+  const { daemon, faux } = await bootTest();
+  await daemon.root.commit(async (tx) => {
+    const memory = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
+    memory.legacyEpisodes = [
+      { id: "12", at: Date.now() - DAY, text: "Set up the theremin rig" },
+      { id: "fact:3", at: Date.now() - DAY, text: "Theremin lessons on Fridays" },
+    ];
+  }, ctx);
+  run(faux, (_role, text) => {
+    if (text === "search") return call("history_search", { query: "theremin" });
+  });
+  await ask(daemon, "search");
+  const result = (await lastResult(daemon))!;
+  expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} note: Set up the theremin rig$/m);
+  expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} note: Theremin lessons on Fridays$/m);
+  expect(result).not.toContain("#");
+  const search = daemon.registry.snapshot().tools().find((t) => t.tool.name === "history_search")!.tool;
+  for (const tool of ["history_read", "page_read", "job_transcript"]) expect(search.description).toContain(`\`${tool}\``);
   await daemon.close();
 });
 

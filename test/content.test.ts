@@ -85,7 +85,7 @@ test("the identity text and the two skills state the promise rule", () => {
 });
 
 const THREAD_RULE =
-  'You see the current conversation, and what search found for it. Your context is cleared after every reply. Before you say what the user said, decided or prefers, find it: in view, in "From earlier", or with `history_search`. If you can\'t find it, say so. Never reconstruct it.';
+  'You see the current conversation, and what search found for it. Your context is cleared after every reply. Before you say what the user said, decided or prefers, find it: in view, in "From earlier", or with `history_search`. If you can\'t find it, say so. Never reconstruct it. Only `you` lines show what the user said; your own earlier replies don\'t.';
 
 test("the identity text states the thread rule and the memory tools", () => {
   const identity = readFileSync(join(packageRoot, "src/kernel/identity.md"), "utf8");

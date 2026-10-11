@@ -94,16 +94,34 @@ test("pages archive after 14 days and are deleted 90 days later", () => {
   expect(findPage(p, "New")!.archivedAt).toBeDefined(); // archived long ago itself by now, not yet deleted
 });
 
-test("the index lists active pages newest first with their age", () => {
+test("the index lists active pages in creation order with their day", () => {
   const p = pad();
-  const now = 30 * DAY;
+  const now = 30 * DAY + 12 * 3_600_000; // noon (UTC)
   expect(renderIndex(p, now)).toBeUndefined();
   writePage(p, "Software factory", "t", now - 2 * 3_600_000);
   writePage(p, "LM07", "t", now - 30_000);
   writePage(p, "Home servers", "t", now - 3 * DAY);
+  writePage(p, "Garden", "t", now - 13 * 3_600_000); // 23:00 the day before
   writePage(p, "Gone", "t", now - 20 * DAY);
   tidyPages(p, now); // archives "Gone"
   expect(renderIndex(p, now)).toBe(
-    "- LM07 (updated just now)\n- Software factory (updated 2 h ago)\n- Home servers (updated 3 d ago)",
+    "- Software factory (updated today)\n- LM07 (updated today)\n- Home servers (updated 3 d ago)\n- Garden (updated yesterday)",
+  );
+});
+
+test("the index doesn't change within a day, nor when a page is rewritten that day", () => {
+  const p = pad();
+  const t = 30 * DAY + 60_000; // 00:01 (UTC)
+  writePage(p, "Software factory", "t", t - 2 * DAY);
+  writePage(p, "LM07", "t", t);
+  writePage(p, "Home servers", "t", t - 3 * DAY);
+  const index = renderIndex(p, t);
+  expect(renderIndex(p, t + 59 * 60_000)).toBe(index);
+  writePage(p, "LM07", "new text", t + 59 * 60_000); // an in-place rewrite
+  expect(renderIndex(p, t + 59 * 60_000)).toBe(index);
+  expect(renderIndex(p, t + 23 * 3_600_000)).toBe(index);
+  writePage(p, "Home servers", "new text", t + 23 * 3_600_000); // updated today now: relabelled, not reordered
+  expect(renderIndex(p, t + 23 * 3_600_000)).toBe(
+    "- Software factory (updated 2 d ago)\n- LM07 (updated today)\n- Home servers (updated today)",
   );
 });

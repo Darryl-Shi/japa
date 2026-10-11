@@ -313,7 +313,9 @@ test("a long single turn compacts the root instead of overflowing", { timeout: 3
   const kit = testKit({ models: [{ id: "wide", contextWindow: 40_000 }] });
   const { daemon, faux } = await bootTest({}, [bulky], kit);
   let calls = 0;
-  script(faux, (role) => {
+  script(faux, (role, text) => {
+    // The compaction's summary request gets a summary, whenever it comes: a tool call there would fail it.
+    if (role === "user" && text.startsWith("<conversation>")) return say("Called bulky a few times.");
     if (role === "user" || role === "toolResult") return calls++ < 8 ? call("bulky", {}) : say("done");
   });
   await ask(daemon, "work");
