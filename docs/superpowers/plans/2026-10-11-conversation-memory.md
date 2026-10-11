@@ -98,8 +98,8 @@ export function transcriptMessages(entries: readonly EntryRecord[]): HistoryMess
 - A `pi.user` entry becomes a `you` message, or an `auto` message if `AUTOMATED` matches its text. Text is the text
   parts joined; other parts become `[<type>]` (as `render` in `reset.ts` does today).
 - Each maximal run of `pi.assistant`/`pi.tool-result` entries between user entries becomes one `japa` message. Its
-  text is every assistant text part, joined with `\n`. If that is empty, there is no message, but the run's `did`
-  still attaches to nothing and is dropped.
+  text is every assistant text part, joined with `\n`. A run with no assistant text produces no message (its `did`
+  is dropped with it).
 - `pi.reset`, `pi.compaction` and system messages are skipped.
 - `at` is the message `timestamp`, or the previous message's `at` (0 for the first).
 - `did` lists tool calls except read-only ones, matched by
@@ -205,7 +205,7 @@ export function renderWindow(before: readonly HistoryMessage[], now: number): st
     is intact (up to 2,000 tokens), older messages are at most 200 characters, and the total is at most 32,000
     characters.
   - `drops leave a pointer line`: 400 short messages render a `[N earlier messages in this conversation:
-    history_read #<id>]` line, and the total is at most 32,000 characters.
+    history_read <id>]` line, and the total is at most 32,000 characters.
   - `a steered run shows every input and no reply line when there was no reply`.
   - `an empty history renders nothing`.
 - [ ] **Step 2:** Run `npx vitest --run test/window.test.ts`. Expected: FAIL.
