@@ -45,6 +45,7 @@ import { WorkerExtension } from "./jobs/worker.ts";
 import { createHistory } from "./memory/history.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
 import { ScratchpadDoc, tidyPages } from "./memory/scratchpad.ts";
+import { sorting } from "./memory/sort.ts";
 import { expireLegacy, MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
@@ -107,6 +108,8 @@ export type Daemon = {
   capabilities(): string;
   /** Runs `Reflect` on the stored transcript and waits for it. */
   reflect(): Promise<void>;
+  /** Runs the one-time `Sort` of a version 2 memory and waits for it; once sorted, it does nothing. */
+  sort(): Promise<void>;
   /** Reloads the changed workspace extensions and the skills; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
   /** Tags the workspace's HEAD as last known good, under the workspace lock. */
@@ -471,6 +474,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
     const { Reflect, startReflect } = reflection({ models, settings });
+    const { Sort, startSort } = sorting({ models, settings });
     const reconcile = async () => {
       const result = await rt.reconcile(root);
       await refreshAvailability();
@@ -559,7 +563,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       }),
     );
     const history = createHistory();
-    const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities, history);
+    const cos = cosExtension(settings, [Reflect, Sort], tools, () => rt.capabilities, history);
     const rt = createRuntime({
       home,
       packageRoot,
@@ -662,6 +666,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const reflect = async () => {
       await opened.waitForTask(await startReflect(root), ctx);
     };
+    const sort = async () => {
+      await opened.waitForTask(await startSort(root), ctx);
+    };
+    // A version 2 memory is sorted once, in the background; until it succeeds, every boot tries again.
+    if (!(await opened.snapshot(MemoryDoc, root.id, ctx))!.sorted) void sort().catch(() => {});
     // Reflection follows the resets: now once enough turns are unreflected, otherwise after 15 quiet minutes.
     let quiet: ReturnType<typeof setTimeout> | undefined;
     const afterReset = async () => {
@@ -684,6 +693,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       status,
       capabilities: () => rt.capabilities,
       reflect,
+      sort,
       reconcile,
       markGood: safety.markGood,
       close: async () => {
