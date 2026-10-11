@@ -38,6 +38,7 @@ import {
   say,
   script,
   system,
+  textOf,
   texts,
   tool,
 } from "./jobs-helpers.ts";
@@ -148,6 +149,42 @@ test.skipIf(NO_BWRAP)("a job runs and reports once", async () => {
   await waitFor(async () => (await reported(daemon)).length > 0);
   expect((await jobs(daemon))["1"]).toMatchObject({ status: "done", result: "4", progress: "adding" });
   expect(await reported(daemon)).toEqual(['[job 1 "Sum" done] 4']);
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("job_start records the input that started it", async () => {
+  const { daemon, faux } = await bootWith();
+  script(faux, (role, text) => {
+    if (role === "user" && text === "clean up") return call("job_start", { title: "Cleanup", brief: "Tidy the disk" });
+    if (text === "Tidy the disk") return call("job_complete", { summary: "tidied" });
+  });
+  await ask(daemon, "clean up");
+  const entries = (await daemon.root.entries({}, 200, undefined, ctx)).items;
+  const input = entries.find((e) => e.kind === "pi.user" && e.model?.some((m) => textOf(m) === "clean up"));
+  expect(input).toBeDefined();
+  expect((await jobs(daemon))["1"]!.origin).toBe(input!.id);
+  await waitFor(() => idle(daemon));
+  await daemon.close();
+});
+
+test.skipIf(NO_BWRAP)("job_start finds its input past 20 entries of the run", async () => {
+  const { daemon, faux } = await bootWith();
+  let looks = 0;
+  script(faux, (role, text) => {
+    if (text === "Tidy the disk") return call("job_complete", { summary: "tidied" });
+    if (role === "user" && text === "clean up") return call("job_list", {});
+    // 15 look-ups (30 entries) before the job starts.
+    if (role === "toolResult" && looks < 15) {
+      looks++;
+      return looks < 15 ? call("job_list", {}) : call("job_start", { title: "Cleanup", brief: "Tidy the disk" });
+    }
+  });
+  await ask(daemon, "clean up");
+  const entries = (await daemon.root.entries({}, 200, undefined, ctx)).items;
+  const input = entries.find((e) => e.kind === "pi.user" && e.model?.some((m) => textOf(m) === "clean up"));
+  expect(entries.findIndex((e) => e === input)).toBeGreaterThan(20);
+  expect((await jobs(daemon))["1"]!.origin).toBe(input!.id);
+  await waitFor(() => idle(daemon));
   await daemon.close();
 });
 

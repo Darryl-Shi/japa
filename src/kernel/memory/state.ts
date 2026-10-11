@@ -1,14 +1,16 @@
 import { defineDoc, type EntryId, type TaskId } from "@earendil-works/pi-durable";
-import type { Job } from "../jobs/state.ts";
 
 export type Fact = { id: string; text: string; updatedAt: number };
 export type Episode = { id: string; at: number; text: string };
 export type Memory = {
   nextId: number;
-  facts: Fact[];
-  episodes: Episode[];
+  facts: Fact[]; // the profile: items strictly about the user
+  legacyEpisodes?: Episode[]; // version 2 episodes, searchable until `legacyUntil`
+  legacyUntil?: number; // set by Sort: when the legacy episodes are dropped
   reflectedThrough?: EntryId;
   reflecting?: TaskId; // the latest `Reflect` task, live unless terminal
+  sorting?: TaskId; // the one-time Sort task, live unless terminal
+  sorted?: true; // the profile and legacy episodes were sorted into profile items and scratchpad pages
   upgraded?: { loops: string[] }; // dropped version 1 loops, delivered to the CoS as a one-time notice
 };
 export type Limits = { maxFacts: number; maxTokens: number };
@@ -16,25 +18,39 @@ export type Limits = { maxFacts: number; maxTokens: number };
 export type FactOp = { op: "add"; text: string } | { op: "update"; id: string; text: string } | { op: "delete"; id: string };
 
 type MemoryV1 = { nextId: number; facts: Fact[]; loops: { text: string }[]; episodes: Episode[] };
+type MemoryV2 = Omit<Memory, "legacyEpisodes" | "legacyUntil" | "sorting" | "sorted"> & { episodes: Episode[] };
 
 // On the root conversation.
 export const MemoryDoc = defineDoc<Memory>({
   kind: "japa.memory",
-  version: 2,
+  version: 3,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({ nextId: 1, facts: [], episodes: [] }),
-  migrate: (value) => {
-    const v1 = value as unknown as MemoryV1;
-    return { nextId: v1.nextId, facts: v1.facts, episodes: v1.episodes, upgraded: { loops: v1.loops.map((l) => l.text) } };
+  initial: () => ({ nextId: 1, facts: [], sorted: true }), // a fresh install has nothing to sort
+  migrate: (value, fromVersion) => {
+    if (fromVersion === 1) {
+      const v1 = value as unknown as MemoryV1;
+      return { nextId: v1.nextId, facts: v1.facts, legacyEpisodes: v1.episodes, upgraded: { loops: v1.loops.map((l) => l.text) } };
+    }
+    const { episodes, ...rest } = value as unknown as MemoryV2;
+    return { ...rest, legacyEpisodes: episodes }; // `sorted` unset: Sort runs at the next boot
   },
 });
 
-const MAX_WORDS = 50;
+export const MAX_WORDS = 30;
 
-function words(text: string): string[] {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/).filter(Boolean);
+/**
+ * The lowercased words of `text`, split on whitespace and punctuation ("dshi-home-server" is three words);
+ * apostrophes join ("don't" is "dont").
+ */
+export function words(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/['\u2019]/g, "")
+    .replace(/[^\p{L}\p{N}]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
 export function wordCount(text: string): number {
@@ -53,12 +69,48 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Applies ops to `memory` in place; adds and updates over 50 words are returned instead. */
-export function applyFactOps(memory: Memory, ops: FactOp[], now: number): { tooLong: FactOp[] } {
+/** Operational detail that belongs on a scratchpad page, not in the profile, checked in order. */
+const OFF_SCOPE: [RegExp, string][] = [
+  [/(^|\s)(~\/|\/[\w.-]+\/[\w.-]+)/, "a file path"],
+  [/https?:\/\//, "a URL"],
+  [/\b\d{1,3}(\.\d{1,3}){3}\b/, "an IP address"],
+  [/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b/i, "a commit or hash"], // a digit and a hex letter
+  [/\bjob #?\d+\b(?!\s*(day|week|month|year)s?\b)/i, "a job reference"], // not "a new job 2 weeks ago"
+];
+
+/** Why `text` is not about the user (a path, URL, IP, hash or job reference), or undefined when it's fine. */
+export function offScope(text: string): string | undefined {
+  return OFF_SCOPE.find(([pattern]) => pattern.test(text))?.[1];
+}
+
+const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** `evidence` has at least 3 words and, lowercased with whitespace collapsed, is a substring of one of `userLines`. */
+export function hasEvidence(evidence: string, userLines: readonly string[]): boolean {
+  if (wordCount(evidence) < 3) return false;
+  const quote = normalize(evidence);
+  return userLines.some((l) => normalize(l).includes(quote));
+}
+
+/**
+ * Applies ops to `memory` in place. Adds and updates that are off scope are returned in `rejected` with the reason;
+ * the rest over `MAX_WORDS` words in `tooLong`.
+ */
+export function applyFactOps(
+  memory: Memory,
+  ops: FactOp[],
+  now: number,
+): { tooLong: FactOp[]; rejected: { op: FactOp; reason: string }[] } {
   const tooLong: FactOp[] = [];
+  const rejected: { op: FactOp; reason: string }[] = [];
   for (const op of ops) {
     if (op.op === "delete") {
       memory.facts = memory.facts.filter((f) => f.id !== op.id);
+      continue;
+    }
+    const reason = offScope(op.text);
+    if (reason !== undefined) {
+      rejected.push({ op, reason });
     } else if (wordCount(op.text) > MAX_WORDS) {
       tooLong.push(op);
     } else if (op.op === "add") {
@@ -71,7 +123,33 @@ export function applyFactOps(memory: Memory, ops: FactOp[], now: number): { tooL
       fact.updatedAt = now;
     }
   }
-  return { tooLong };
+  return { tooLong, rejected };
+}
+
+/**
+ * Keeps each fact of `before` that is gone from `memory.facts` and whose text no remaining item holds verbatim as a
+ * legacy episode `fact:<id>`, so it stays searchable until `legacyUntil`; returns how many it kept. Pass a copy of the
+ * facts taken before the change: `applyFactOps` updates facts in place.
+ */
+export function keepRemoved(memory: Memory, before: Fact[]): number {
+  const ids = new Set(memory.facts.map((f) => f.id));
+  let kept = 0;
+  for (const fact of before) {
+    if (ids.has(fact.id) || memory.facts.some((f) => f.text.includes(fact.text))) continue;
+    const id = `fact:${fact.id}`;
+    if (memory.legacyEpisodes?.some((e) => e.id === id)) continue;
+    memory.legacyEpisodes ??= [];
+    memory.legacyEpisodes.push({ id, at: fact.updatedAt, text: fact.text }); // read back: a doc draft copies on set
+    kept++;
+  }
+  return kept;
+}
+
+/** Drops the legacy episodes once `legacyUntil` has passed. */
+export function expireLegacy(memory: Memory, now: number): void {
+  if (memory.legacyUntil === undefined || now <= memory.legacyUntil) return;
+  delete memory.legacyEpisodes;
+  delete memory.legacyUntil;
 }
 
 export function overCap(facts: Fact[], limits: Limits): boolean {
@@ -91,24 +169,4 @@ export function truncateToCap(facts: Fact[], limits: Limits): Fact[] {
 
 export function renderFacts(facts: Fact[]): string | undefined {
   return facts.length ? facts.map((f) => `- ${f.text}`).join("\n") : undefined;
-}
-
-/** Episodes and job results ranked by distinct query words matched, newest first on ties. */
-export function search(memory: Memory, jobs: Record<string, Job>, query: string, limit = 5): string[] {
-  const terms = new Set(words(query));
-  const items = [
-    ...memory.episodes.map((e) => ({ at: e.at, text: e.text, line: `${new Date(e.at).toISOString()} episode: ${e.text}` })),
-    ...Object.values(jobs)
-      .filter((j) => j.result)
-      .map((j) => ({ at: j.updatedAt, text: j.result!, line: `${new Date(j.updatedAt).toISOString()} job ${j.id} "${j.title}": ${j.result}` })),
-  ];
-  return items
-    .map((i) => {
-      const w = new Set(words(i.text));
-      return { ...i, score: [...terms].filter((t) => w.has(t)).length };
-    })
-    .filter((i) => i.score > 0)
-    .sort((a, b) => b.score - a.score || b.at - a.at)
-    .slice(0, limit)
-    .map((i) => i.line);
 }

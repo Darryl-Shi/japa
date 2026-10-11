@@ -42,8 +42,11 @@ import { createPublisher, reportingFailures, sandboxCheck } from "./jobs/publish
 import { unstickPublishing } from "./jobs/run.ts";
 import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
+import { createHistory } from "./memory/history.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
-import { MemoryDoc } from "./memory/state.ts";
+import { ScratchpadDoc, tidyPages } from "./memory/scratchpad.ts";
+import { sorting } from "./memory/sort.ts";
+import { expireLegacy, MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { PROMPT_HISTORY } from "./messaging/prompts.ts";
@@ -105,6 +108,11 @@ export type Daemon = {
   capabilities(): string;
   /** Runs `Reflect` on the stored transcript and waits for it. */
   reflect(): Promise<void>;
+  /**
+   * Starts the one-time `Sort` of a version 2 memory (unless one is running) and waits for it to settle; a failed Sort
+   * settles faulted rather than rejecting. Once the memory is sorted, the task it starts ends at once, with no model call.
+   */
+  sort(): Promise<void>;
   /** Reloads the changed workspace extensions and the skills; its errors also go to `status()`. */
   reconcile(): Promise<{ errors: LoadError[]; notices: string[] }>;
   /** Tags the workspace's HEAD as last known good, under the workspace lock. */
@@ -202,6 +210,18 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         const text = `Couldn't prune finished jobs: ${error instanceof Error ? error.message : String(error)}`;
         console.error(text);
         return [text];
+      }
+    };
+    // Archives and deletes stale scratchpad pages, and drops the legacy episodes once due. Never rejects: logged.
+    const tidyMemory = async () => {
+      try {
+        await root.commit(async (tx) => {
+          const now = Date.now();
+          tidyPages(await tx.doc(ScratchpadDoc, root.id), now);
+          expireLegacy(await tx.doc(MemoryDoc, root.id), now);
+        }, ctx);
+      } catch (error) {
+        console.error(`Couldn't tidy the memory: ${error instanceof Error ? error.message : String(error)}`);
       }
     };
     const runTool: MessagingContext["tool"] = async (name, args) => {
@@ -457,6 +477,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // The root's extension selection: filled once `japa-jobs` is installed, before any work runs.
     const selection: Extension[] = [];
     const { Reflect, startReflect } = reflection({ models, settings });
+    const { Sort, startSort } = sorting({ models, settings });
     const reconcile = async () => {
       const result = await rt.reconcile(root);
       await refreshAvailability();
@@ -544,7 +565,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         scheduleGood: () => safety.scheduleGood(),
       }),
     );
-    const cos = cosExtension(settings, [Reflect], tools, () => rt.capabilities);
+    const history = createHistory();
+    const cos = cosExtension(settings, [Reflect, Sort], tools, () => rt.capabilities, history);
     const rt = createRuntime({
       home,
       packageRoot,
@@ -599,10 +621,17 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     registry.install(WorkerExtension);
     registry.install(CodingTools);
     const root = await ensureRoot(harness, model, ctx);
+    history.attach(root);
+    // Warm the mirror now, so the first turn doesn't scan the whole transcript; a turn retries what fails here.
+    void history.refresh(ctx).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`japa.context: warming the history failed: ${message}`);
+    });
     rootReady = true;
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
       await tx.doc(MemoryDoc, root.id);
+      await tx.doc(ScratchpadDoc, root.id);
       await tx.doc(ChangesDoc, root.id);
       // A chat sign-in doesn't survive a restart: its request goes too.
       const requests = await tx.doc(SecretRequestsDoc, root.id);
@@ -615,6 +644,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // the one before's, so they go once it succeeds.
     let pruneErrors: LoadError[] = [];
     const pruneAndReport = async () => {
+      await tidyMemory();
       const fresh = (await pruneOld()).map((error) => kernelError("workspace", error));
       const stale = pruneErrors;
       rt.errors.splice(0, rt.errors.length, ...rt.errors.filter((e) => !stale.includes(e)), ...fresh);
@@ -644,6 +674,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const reflect = async () => {
       await opened.waitForTask(await startReflect(root), ctx);
     };
+    const sort = async () => {
+      await opened.waitForTask(await startSort(root), ctx);
+    };
+    // A version 2 memory is sorted once, in the background; until it succeeds, every boot tries again.
+    if (!(await opened.snapshot(MemoryDoc, root.id, ctx))!.sorted) void sort().catch(() => {});
     // Reflection follows the resets: now once enough turns are unreflected, otherwise after 15 quiet minutes.
     let quiet: ReturnType<typeof setTimeout> | undefined;
     const afterReset = async () => {
@@ -666,6 +701,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       status,
       capabilities: () => rt.capabilities,
       reflect,
+      sort,
       reconcile,
       markGood: safety.markGood,
       close: async () => {

@@ -775,7 +775,7 @@ describe("general", { timeout: 30_000 }, () => {
       "Max concurrent jobs: 4",
       "Keep finished jobs (days): 7",
       "Memory: max facts: 30",
-      "Memory: max tokens: 1500",
+      "Memory: max tokens: 1000",
       "Tool errors before rollback: 5",
       "Minutes until marked good: 10",
       "Tool result tokens: 2000",

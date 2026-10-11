@@ -16,7 +16,7 @@ import {
   updateLog,
   writeUpdateState,
 } from "../src/kernel/update-state.ts";
-import { bootTest, carryOver, probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
+import { bootTest, probe, REPO_EXTENSIONS, tempHome, testKit, waitFor } from "./helpers.ts";
 import { ask, call, held, say, script, texts, tool } from "./jobs-helpers.ts";
 import { bootMessaging, fakeAdapter, sleep } from "./messaging-helpers.ts";
 
@@ -128,7 +128,6 @@ test("an image is saved under attachments and sent as an image part with its pat
     { type: "text", text: `look\n[image saved to ${path}]` },
     { type: "image", data: Buffer.from(PNG).toString("base64"), mimeType: "image/png" },
   ]);
-  expect(await carryOver(daemon)).toContain(`[image saved to ${path}]`);
   await daemon.close();
 });
 

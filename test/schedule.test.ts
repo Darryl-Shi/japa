@@ -17,7 +17,7 @@ async function tool(daemon: Daemon, faux: FauxProviderHandle, name: string, args
   let called = false;
   const step: FauxResponseFactory = ({ messages }) => {
     if (getSystemMessageText(messages.findLast((m) => m.role === "system")!).startsWith("You reflect")) {
-      return fauxAssistantMessage([fauxToolCall("save", { facts: [], episode: "e" })], { stopReason: "toolUse" });
+      return fauxAssistantMessage([fauxToolCall("save", { profile: [], pages: [] })], { stopReason: "toolUse" });
     }
     if (called) return say("ok");
     called = true;

@@ -78,11 +78,13 @@ in-process transcript mirror (§3.1), not from the context view.
 **Boundary: the current conversation.**
 
 - **Current conversation.** It runs back from the run's first input to the first gap of more than **30 minutes**
-  between consecutive messages. Times come from each message's `timestamp`. A message without one takes the time of
-  the input before it.
+  between consecutive **user** (`you`) messages, and includes every japa reply and automated arrival after the
+  earliest included user message. Automated arrivals never extend or open a conversation. Times come from each
+  message's `timestamp`. A message without one takes the time of the input before it.
 - **Previous exchange.** If the current conversation is empty (the input arrives after a pause), the window shows
-  the previous conversation's last exchange, marked with its age. That way "yes" or "back to that" still resolves
-  after a break.
+  the last exchange that contains a user message, plus any later automated arrivals as headlines, marked with their
+  ages. That way "yes" or "back to that" still resolves after a break, even if a schedule fired in between.
+- **Automated runs.** A run whose inputs are all automated gets a window capped at 2,000 tokens instead of 8,000.
 
 **Rendering.** One message per line group, with the role, a relative time and the entry id:
 
@@ -110,7 +112,8 @@ japa · 38 min ago: The server cleanup is back, but it only did part of what you
 2. **Older messages.** If the window is still over budget, older messages are shortened, oldest first, to their
    first line (at most 200 characters).
 3. **Dropping.** If it is still over budget, the oldest messages are dropped and replaced by one line:
-   `[N earlier messages in this conversation: history_read <first id>]`.
+   `[N messages not shown: history_read <first id>]`. The user's first message in the window is dropped last: it
+   stays above that line, as its headline if need be. Recall treats only the messages the window renders as in view.
 
 ### 2.2 Sections
 
