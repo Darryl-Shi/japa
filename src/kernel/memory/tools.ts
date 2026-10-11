@@ -64,19 +64,23 @@ const READ_CHARS = 16_000;
 const ISO = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/i;
 
 /**
- * The time `text` (an ISO date or datetime, UTC unless it names a zone) stands for; a date is its first millisecond,
- * or its last when `end`. Undefined when it isn't one.
+ * The time `text` (an ISO date or datetime, UTC unless it names a zone) stands for; a date or datetime is its first
+ * millisecond, or with `end` its last (a whole day for a date, a whole minute or second for a datetime). Undefined
+ * when it isn't one.
  */
 function parseTime(text: string, end: boolean): number | undefined {
   const t = text.trim();
-  if (!ISO.test(t)) return undefined;
+  const match = ISO.exec(t);
+  if (!match) return undefined;
   if (t.length === 10) {
     const ms = Date.parse(`${t}T00:00Z`);
     return Number.isNaN(ms) ? undefined : end ? ms + DAY_MS - 1 : ms;
   }
   const iso = t.replace(" ", "T");
   const ms = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
-  return Number.isNaN(ms) ? undefined : ms;
+  if (Number.isNaN(ms)) return undefined;
+  const [, , seconds, fraction] = match;
+  return !end || fraction ? ms : ms + (seconds ? 999 : 59_999);
 }
 
 /** `at` as `YYYY-MM-DD HH:MM`, UTC. */
@@ -133,6 +137,7 @@ const pageWrite = defineTool({
     "state of a project or topic (what it is, decisions and why, where it lives, what's open), not a log.",
   parameters: Type.Object({ title: Type.String(), text: Type.String() }),
   execute: async ({ title, text }, api, context) => {
+    if (!title.trim()) return reply("Give the page a title.");
     const answer = await api.commit(async (tx) => {
       const pad = await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID);
       const result = writePage(pad, title, text, Date.now());
@@ -142,6 +147,18 @@ const pageWrite = defineTool({
     return reply(answer);
   },
 });
+
+/**
+ * How a `history_search` hit names itself, in a form another tool takes: `page "<title>"` (`page_read`), `job <id>`
+ * (`job_transcript`), or `<kind> #<id>` (`history_read`), a job's report as `job <n> report #<id>`.
+ */
+function label(d: Doc, jobReports: ReadonlyMap<number, string>): string {
+  if (d.kind === "page") return `page "${d.title}"`;
+  if (d.kind === "job") return `job ${d.key.replace(/^job:/, "")}`;
+  const job = d.id === undefined ? undefined : jobReports.get(d.id);
+  if (job !== undefined) return `job ${job} report #${d.id}`;
+  return `${d.kind} #${d.id ?? d.key}`;
+}
 
 /** The tools that read the conversation `history`. */
 function historyTools(history: History) {
@@ -161,7 +178,10 @@ function historyTools(history: History) {
       if (from === undefined) return reply(invalidTime("since", since!));
       const to = until === undefined ? Infinity : parseTime(until, true);
       if (to === undefined) return reply(invalidTime("until", until!));
-      const { messages } = await history.refresh(context);
+      const { messages: all, lastReset } = await history.refresh(context);
+      // The current run's own messages (after the newest reset) are its input, not history.
+      const messages = lastReset === undefined ? [] : all.filter((m) => m.id <= lastReset);
+      const jobReports = new Map(messages.flatMap((m) => (m.job === undefined ? [] : [[m.id, m.job] as const])));
       const [memory, pad, jobs] = await Promise.all([
         api.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context),
         api.snapshot(ScratchpadDoc, ROOT_CONVERSATION_ID, context),
@@ -174,9 +194,7 @@ function historyTools(history: History) {
         jobs?.jobs ?? {},
       ).filter((d) => d.at >= from && d.at <= to);
       const hits = rank(docs, query, Date.now(), SEARCH_HITS);
-      const lines = hits.map(
-        (d) => `${stamp(d.at)} ${d.kind} #${d.id ?? d.key}: ${snippet(flat(d.text), query, SNIPPET)}`,
-      );
+      const lines = hits.map((d) => `${stamp(d.at)} ${label(d, jobReports)}: ${snippet(flat(d.text), query, SNIPPET)}`);
       return reply(lines.length ? lines.join("\n") : "Nothing found.");
     },
   });
@@ -192,7 +210,11 @@ function historyTools(history: History) {
     }),
     execute: async ({ id, before, after }, _api, context) => {
       const { messages } = await history.refresh(context);
-      const i = messages.findIndex((m) => m.id === id);
+      // An entry inside a message (a tool call, a result) stands for the message it belongs to; past the newest
+      // message's first entry, there is no telling where the transcript ends, so only an exact id counts there.
+      const exact = messages.findIndex((m) => m.id === id);
+      const inside = messages.findLastIndex((m) => m.id < id);
+      const i = exact !== -1 ? exact : inside < messages.length - 1 ? inside : -1;
       if (i === -1) return reply(`No message #${id}.`);
       const from = Math.max(0, i - reach(before, AROUND));
       const shown = messages.slice(from, i + reach(after, AROUND) + 1);

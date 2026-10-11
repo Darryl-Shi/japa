@@ -99,6 +99,7 @@ test("page_write then page_read round-trips and the index appears in the system 
     if (text === "read") return call("page_read", { title: "FACTORY" });
     if (text === "fuzzy") return call("page_read", { title: "hermes" });
     if (text === "missing") return call("page_read", { title: "Garden" });
+    if (text === "untitled") return call("page_write", { title: "  ", text: "x" });
   });
   await ask(daemon, "remember");
   await ask(daemon, "create");
@@ -113,6 +114,8 @@ test("page_write then page_read round-trips and the index appears in the system 
   expect(await lastResult(daemon)).toBe('No page "hermes"; closest: # Factory (updated just now)\nRuns on hermes.\nCI is done.');
   await ask(daemon, "missing");
   expect(await lastResult(daemon)).toBe('No page "Garden".');
+  await ask(daemon, "untitled");
+  expect(await lastResult(daemon)).toBe("Give the page a title.");
   await daemon.close();
 });
 
@@ -132,23 +135,31 @@ test("page_write over 1,500 tokens is refused with the copy", async () => {
   await daemon.close();
 });
 
-/** Today's date (UTC), `offset` days on. */
-const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+/** The date (UTC) `offset` days from `date` (YYYY-MM-DD). */
+const dayFrom = (date: string, offset: number) => new Date(Date.parse(`${date}T00:00Z`) + offset * DAY).toISOString().slice(0, 10);
 
 test("history_search finds an earlier message by keyword", async () => {
   const { daemon, faux } = await bootTest();
+  // The hit's own minute (YYYY-MM-DD HH:MM), read off the first search, so the filters can't straddle midnight.
+  let minute = "";
+  const date = () => minute.slice(0, 10);
   run(faux, (_role, text) => {
-    if (text === "search") return call("history_search", { query: "NUX" });
-    if (text === "search since") return call("history_search", { query: "NUX", since: day(0) });
-    if (text === "search until") return call("history_search", { query: "NUX", until: day(0) });
-    if (text === "search later") return call("history_search", { query: "NUX", since: day(1) });
-    if (text === "search earlier") return call("history_search", { query: "NUX", until: day(-1) });
+    if (text === "search" || text === "what was the NUX thing") return call("history_search", { query: "NUX" });
+    if (text === "search since") return call("history_search", { query: "NUX", since: date() });
+    if (text === "search until") return call("history_search", { query: "NUX", until: date() });
+    if (text === "search until minute") return call("history_search", { query: "NUX", until: minute });
+    if (text === "search since minute") return call("history_search", { query: "NUX", since: minute });
+    if (text === "search later") return call("history_search", { query: "NUX", since: dayFrom(date(), 1) });
+    if (text === "search earlier") return call("history_search", { query: "NUX", until: dayFrom(date(), -1) });
     if (text === "search bad") return call("history_search", { query: "NUX", since: "last week" });
     if (text === "search none") return call("history_search", { query: "theremin" });
   });
   await ask(daemon, "the drum monitor is NUX");
   const found = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} you #\d+: the drum monitor is NUX$/;
-  for (const q of ["search", "search since", "search until"]) {
+  await resetDone(daemon);
+  await ask(daemon, "search");
+  minute = (await lastResult(daemon))!.slice(0, 16);
+  for (const q of ["search since", "search until", "search until minute", "search since minute"]) {
     await resetDone(daemon);
     await ask(daemon, q);
     expect([q, await lastResult(daemon)]).toEqual([q, expect.stringMatching(found)]);
@@ -161,6 +172,23 @@ test("history_search finds an earlier message by keyword", async () => {
   await resetDone(daemon);
   await ask(daemon, "search bad");
   expect(await lastResult(daemon)).toBe('Invalid since "last week": use an ISO date or datetime, e.g. 2026-10-11 or 2026-10-11T14:30.');
+  // The run's own question isn't history: only the earlier message comes back.
+  await resetDone(daemon);
+  await ask(daemon, "what was the NUX thing");
+  expect(await lastResult(daemon)).toMatch(found);
+  await daemon.close();
+});
+
+test("history_search names a page by its title", async () => {
+  const { daemon, faux } = await bootTest();
+  run(faux, (_role, text) => {
+    if (text === "create") return call("page_write", { title: "Factory", text: "Runs on hermes." });
+    if (text === "search") return call("history_search", { query: "hermes" });
+  });
+  await ask(daemon, "create");
+  await resetDone(daemon);
+  await ask(daemon, "search");
+  expect(await lastResult(daemon)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} page "Factory": Factory Runs on hermes\.$/m);
   await daemon.close();
 });
 
@@ -175,9 +203,9 @@ test.skipIf(NO_BWRAP)("history_search finds a done job's result", async () => {
   await waitFor(async () => (await reported(daemon)).length > 0 && (await idle(daemon)));
   await resetDone(daemon);
   await ask(daemon, "search");
-  expect(await lastResult(daemon)).toMatch(
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} job #job:1: "Report": Quarterly revenue grew 12 percent$/m,
-  );
+  const result = await lastResult(daemon);
+  expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} job 1: "Report": Quarterly revenue grew 12 percent$/m);
+  expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} job 1 report #\d+: .*Quarterly revenue grew 12 percent/m);
   await daemon.close();
 });
 
@@ -228,6 +256,12 @@ test("history_read returns the messages around an id", async () => {
   const result = (await lastResult(daemon))!;
   expect(result.length).toBe(16_000);
   expect(result).toMatch(new RegExp(`^you · just now · #${long}: x+\\[…\\]x+$`));
+
+  // An id inside a message (here the reply to "three") reads around that message.
+  await resetDone(daemon);
+  read = { id: (await inputId(daemon, "four")) - 1, before: 0, after: 0 };
+  await ask(daemon, "read");
+  expect(await lastResult(daemon)).toBe("japa · just now: re three");
 
   await resetDone(daemon);
   read = { id: 99_999 };
