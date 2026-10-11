@@ -105,3 +105,29 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
 13. With the build folder deleted, the daemon still starts, `japa chat` works, and `japa status` shows `webui`'s line as `not built — run npm run build …`. If the port is already in use, the line names the conflict instead.
 14. `npm test` and `npm run typecheck` (including `svelte-check`) pass, and `japa check extension webui` passes in a checkout without a build.
 15. A `japa update` that changes only the UI's source rebuilds it, and an update whose UI build fails is rolled back with the build named as the failed step.
+
+## Implementation notes (builder)
+
+Decisions made while building, within the spec above:
+
+- **SvelteKit 2** (`@sveltejs/kit` 2.70, `@sveltejs/adapter-node` 5, Svelte 5, Vite 8), configured in
+  `extensions/webui/app/svelte.config.js`. The app has its own tiny `package.json` (no dependencies; a `build` script
+  so the status line's `npm run build in <app dir>` works); all dependencies live in the root `package.json`.
+- **TypeScript**: svelte-check and SvelteKit need the TypeScript 5/6 JS API, which TypeScript 7 doesn't ship. Following
+  svelte-check's own guidance, the root `typescript` dev dependency is 6 and TypeScript 7 is installed as
+  `@typescript/native` (`npm:typescript@^7`); the root typecheck and `japa check` call its `tsc` explicitly.
+- **Request pipeline** (`extensions/webui/server.ts`), in front of the SvelteKit handler: the Host check, the Origin
+  check on every non-GET/HEAD request, default security headers (a `default-src 'none'` CSP that SvelteKit's pages
+  replace with their own hashed one, `nosniff`, `no-referrer`, `DENY` framing), sign-in (`POST /login`,
+  `?token=`), and the session gate (401 JSON for `/api/*`, a redirect to `/login` for pages).
+- **Sessions** are stateless: the cookie `japa_webui_session` is `<expiry>.<HMAC-SHA256(token, expiry)>`, valid 30
+  days. Sessions survive daemon restarts, and changing the token invalidates them all.
+- **API** (`extensions/webui/app/src/lib/protocol.ts`): `GET /api/events` (SSE: a snapshot, then `lines`, `delta`,
+  `streaming`, `busy`, `transcript`, `jobs`, `secrets`), `POST /api/submit|abort|secrets/fulfil|secrets/decline`,
+  `GET /api/status`.
+- **CSP**: `style-src 'self'`, plus SvelteKit's route announcer's one inline style attribute, allowed by its hash
+  (`style-src-attr 'unsafe-hashes' 'sha256-…'`).
+- **Tests**: vitest sets `JAPA_WEBUI_AUTOSTART=0` so the suite's many daemons don't bind 7337. The webui tests turn it
+  back on and use port 0. `japa check`'s throwaway daemon runs webui on port 0.
+- `japa update` runs `npm run build` as its own step, `build`, after dependencies, and a rollback rebuilds the old UI.
+  `install.sh` has a `build` step after `dependencies`.
