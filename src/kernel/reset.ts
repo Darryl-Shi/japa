@@ -12,6 +12,7 @@ import {
   ROOT_CONVERSATION_ID,
   UserEntry,
 } from "@earendil-works/pi-durable";
+import { cut } from "./memory/window.ts";
 
 const HEADER = "[Your last exchange]";
 const CAP = 8000; // 2 000 tokens, at 4 characters per token
@@ -28,14 +29,6 @@ const render = (message: Message): string =>
         .join("");
 
 const show = (lines: Line[]) => [HEADER, ...lines.map((l) => `${l.label}: ${l.text}`)].join("\n");
-
-/** `text` shortened by `over` characters, its middle replaced by `[…]`. */
-function cut(text: string, over: number): string {
-  const keep = text.length - over - CUT.length;
-  if (keep <= 0) return CUT;
-  const head = Math.ceil(keep / 2);
-  return text.slice(0, head) + CUT + text.slice(text.length - (keep - head));
-}
 
 /**
  * The carry-over of the run `entries` cover: its inputs and its final answer, capped at 2 000 tokens; undefined when
