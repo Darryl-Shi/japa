@@ -1,10 +1,10 @@
 import type { HistoryMessage } from "./transcript.ts";
 
-/** A pause longer than this ends a conversation. */
+/** A pause longer than this between the user's messages ends a conversation. */
 export const PAUSE_MS = 1_800_000;
 /** The window's budget, header included. */
 export const WINDOW_TOKENS = 8000;
-/** The newest exchange's share of the budget. */
+/** The newest exchange's share of the budget; also the whole budget of a run with no user input. */
 export const NEWEST_TOKENS = 2000;
 
 const CHARS_PER_TOKEN = 4;
@@ -15,6 +15,8 @@ const LABEL = 60;
 const PREFIX = /^\[[^\]\n]*\]/;
 /** A job report's prefix, `[job <n> "<title>" <status>]`; the title may hold `]` or `"`. */
 const JOB_PREFIX = /^\[job \d+ "[\s\S]*?" [a-z_]+\]/;
+/** Room kept beside the newest exchange for the header and the dropped-messages pointer line. */
+const FRAME = 100;
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -47,17 +49,26 @@ function lastExchange(messages: readonly HistoryMessage[]): HistoryMessage[] {
 }
 
 /**
- * The current conversation in `before` (every message before the run that starts at `now`, oldest first): it runs
- * back to the first gap of more than 30 minutes. When it's empty, because the run starts after such a pause, it is
- * the previous conversation's last exchange instead.
+ * The current conversation in `before` (every message before the run that starts at `now`, oldest first). Only the
+ * user's messages set it, so automated arrivals neither extend nor displace it:
+ * - It runs from the earliest `you` message that is chained to the run by gaps of at most 30 minutes between the
+ *   user's messages, with every message after it.
+ * - After such a pause (the last `you` message is more than 30 minutes old), it is the exchange holding that message
+ *   (from the first input before its reply) with every message after it.
+ * - With no `you` message at all, it is the last exchange.
  */
 export function conversation(before: readonly HistoryMessage[], now: number): HistoryMessage[] {
-  const last = before.at(-1);
-  if (last === undefined) return [];
-  if (now - last.at > PAUSE_MS) return lastExchange(before);
-  let i = before.length - 1;
-  while (i > 0 && before[i]!.at - before[i - 1]!.at <= PAUSE_MS) i--;
-  return before.slice(i);
+  const yours = before.flatMap((m, i) => (m.kind === "you" ? [i] : []));
+  const last = yours.at(-1);
+  if (last === undefined) return lastExchange(before);
+  if (now - before[last]!.at > PAUSE_MS) {
+    let i = last;
+    while (i > 0 && before[i - 1]!.kind !== "japa") i--;
+    return before.slice(i);
+  }
+  let k = yours.length - 1;
+  while (k > 0 && before[yours[k]!]!.at - before[yours[k - 1]!]!.at <= PAUSE_MS) k--;
+  return before.slice(yours[k]!);
 }
 
 /** The first line of `text`, at most 200 characters. */
@@ -82,13 +93,23 @@ function show(item: Item, now: number): string {
     const did = m.did === undefined ? "" : `\n  ${m.did.replace(/\s+/g, " ")}`;
     return `japa · ${when}: ${item.text}${did}`;
   }
-  const prefix = ((m.job !== undefined && JOB_PREFIX.exec(m.text)) || PREFIX.exec(m.text))?.[0];
-  const rest = prefix === undefined ? m.text : m.text.slice(prefix.length);
-  const label = m.job !== undefined ? `job ${m.job} report` : capLabel(prefix ?? "[auto]");
+  const { label, body } = arrival(m);
   const pointer = m.job !== undefined ? `job_transcript ${m.job}` : `history_read ${m.id}`;
-  // a whole-bracket arrival such as `[secret X provided]` is its own headline
-  const head = headline(rest) || headline(prefix?.slice(1, -1) ?? "");
-  return `${label} · ${when} · #${m.id}: ${head} (full: ${pointer})`;
+  return `${label} · ${when} · #${m.id}: ${headline(body)} (full: ${pointer})`;
+}
+
+/**
+ * How an automated arrival (`text`, with `job` for a job report) is labelled wherever it's shown, and its text after
+ * the label: `job <n> report` and the text after `[job <n> "<title>" <status>]`, else its bracketed prefix (at most 60
+ * characters) or `[auto]`, and the text after the prefix. A whole-bracket arrival such as `[secret X provided]` is its
+ * own body.
+ */
+export function arrival(message: { text: string; job?: string }): { label: string; body: string } {
+  const { text, job } = message;
+  const prefix = ((job !== undefined && JOB_PREFIX.exec(text)) || PREFIX.exec(text))?.[0];
+  const rest = (prefix === undefined ? text : text.slice(prefix.length)).trim();
+  const label = job !== undefined ? `job ${job} report` : capLabel(prefix ?? "[auto]");
+  return { label, body: rest || (prefix?.slice(1, -1).trim() ?? "") };
 }
 
 /**
@@ -130,23 +151,29 @@ function fit(items: readonly Item[], cap: number, floor: number, now: number): v
 /**
  * The "[Conversation so far]" block for a run that starts at `now`, from `before` (every message before the run,
  * oldest first); undefined when there are no messages. It holds the current conversation (see `conversation`) within
- * 8,000 tokens, always:
- * 1. The newest exchange is cut to 2,000 tokens in the middle of its longest parts. If that's not enough (a long run
- *    of inputs with no reply between them), its oldest inputs are dropped, keeping the last input and the reply;
- *    everything before them is dropped too, so the dropped messages are always the oldest.
+ * `budget` tokens (8,000 by default, and at most), always:
+ * 1. The newest exchange is cut to 2,000 tokens (less room for the header, on a smaller budget) in the middle of its
+ *    longest parts. If that's not enough (a long run of inputs with no reply between them), its oldest inputs are
+ *    dropped, keeping the last input and the reply; everything before them is dropped too, so the dropped messages
+ *    are always the oldest.
  * 2. Older messages are shortened to their headline, oldest first, while over budget.
  * 3. Then the oldest are dropped. Dropped messages are counted in one `history_read` pointer line after the header.
  * 4. Whatever still doesn't fit is cut in the middle.
  */
-export function renderWindow(before: readonly HistoryMessage[], now: number): string | undefined {
+export function renderWindow(
+  before: readonly HistoryMessage[],
+  now: number,
+  options: { budget?: number } = {},
+): string | undefined {
   const messages = conversation(before, now);
   if (messages.length === 0) return undefined;
+  const cap = Math.min(options.budget ?? WINDOW_TOKENS, WINDOW_TOKENS) * CHARS_PER_TOKEN;
   const items: Item[] = messages.map((message) => ({ message, text: message.text }));
   const newest = items.slice(items.length - lastExchange(messages).length);
   const olderCount = items.length - newest.length;
 
   // 1. The newest exchange, up to 2,000 tokens: cut its texts, but not below a headline's length, ...
-  const newestCap = NEWEST_TOKENS * CHARS_PER_TOKEN;
+  const newestCap = Math.min(NEWEST_TOKENS * CHARS_PER_TOKEN, cap - FRAME);
   fit(newest, newestCap, HEADLINE, now);
   // ... then drop its oldest inputs, keeping the last one, ...
   const inputs = newest.filter((i) => i.message.kind !== "japa").length;
@@ -161,7 +188,6 @@ export function renderWindow(before: readonly HistoryMessage[], now: number): st
   fit(kept, newestCap, 0, now);
 
   // 2. Older messages, shortened oldest first; 3. then dropped oldest first.
-  const cap = WINDOW_TOKENS * CHARS_PER_TOKEN;
   const shown = items.map((i) => show(i, now));
   const pointer = (n: number) => `[${n} earlier messages in this conversation: history_read ${messages[0]!.id}]`;
   const pointerLength = (n: number) => (n === 0 ? 0 : 1 + pointer(n).length);

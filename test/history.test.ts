@@ -64,6 +64,17 @@ test("the mirror pages past 200 entries, and a run split across refreshes keeps 
   });
 });
 
+test("entries the mirror doesn't keep aren't read again", async () => {
+  const stub = stubRoot();
+  const system = { id: 3, conversationId: 1, kind: "pi.system", model: [{ role: "system", content: "s".repeat(50_000) }] };
+  stub.log.push(you(1, "one", 1), ...reply(2, "two", 2), system as unknown as EntryRecord);
+  const history = createHistory();
+  history.attach(stub.root);
+  expect((await history.refresh(ctx)).messages.map((m) => m.text)).toEqual(["one", "two"]);
+  await history.refresh(ctx);
+  expect(stub.reads.at(-1)!.query.minEntryId).toBe(4);
+});
+
 test("re-attaching mid-refresh drops the stale refresh", async () => {
   const stub = stubRoot();
   stub.log.push(you(1, "one", 1), ...reply(2, "two", 2));

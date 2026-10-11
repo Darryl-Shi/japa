@@ -129,6 +129,23 @@ test("each kind of hit has its own line", () => {
   expect(lines).toHaveLength(4);
 });
 
+test("automated messages are labelled as the window labels them", () => {
+  const report: Doc = { ...msgDoc(5, '[job 68 "Cleanup" done] the server cleanup freed 29 GB', NOW - HOUR, "auto"), job: "68" };
+  const event = msgDoc(6, "[whatsapp] the server link dropped", NOW - 2 * HOUR, "auto");
+  const secret = msgDoc(7, "[secret server-key provided]", NOW - 3 * HOUR, "auto");
+  const lines = renderRecall({ query: "server", docs: [report, event, secret, msgDoc(99, "other")], exclude: new Set(), now: NOW })!
+    .split("\n")
+    .slice(1);
+  expect(lines).toHaveLength(3);
+  expect(lines).toEqual(
+    expect.arrayContaining([
+      "job 68 report \u00b7 1 h ago \u00b7 #5: the server cleanup freed 29 GB",
+      "[whatsapp] \u00b7 2 h ago \u00b7 #6: the server link dropped",
+      "[secret server-key provided] \u00b7 3 h ago \u00b7 #7: secret server-key provided",
+    ]),
+  );
+});
+
 test("an origin hit comes first and is labelled you asked", () => {
   const origin = message(11765, "you", "clean up the server: jellyfin and maria can go", NOW - 2 * HOUR);
   const docs = [msgDoc(11765, origin.text, origin.at), msgDoc(12000, "the server is slow today"), msgDoc(99, "other")];
@@ -211,6 +228,13 @@ test("corpus includes archived pages, job results and legacy episodes", () => {
   );
   expect(docs).toHaveLength(6);
   expect(corpus([], { nextId: 1, facts: [] }, { nextId: 1, pages: [] }, {})).toEqual([]);
+});
+
+test("a job report's doc carries its job", () => {
+  const report = { ...message(3, "auto", '[job 1 "Job 1" done] all clean'), job: "1" };
+  expect(corpus([report], { nextId: 1, facts: [] }, { nextId: 1, pages: [] }, {})).toEqual([
+    { key: "3", kind: "auto", text: report.text, at: report.at, id: 3, job: "1" },
+  ]);
 });
 
 test("the mirror catches up incrementally", async () => {

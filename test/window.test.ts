@@ -59,6 +59,102 @@ test("after a pause, only the previous exchange is shown, with its age", () => {
   expect(body(renderWindow(before, NOW))).toEqual(["you · 3 h ago · #3: second", "japa · 3 h ago: Two."]);
 });
 
+test("the conversation is measured on the user's messages; automated arrivals don't extend it", () => {
+  // A schedule every 20 minutes would chain the old topic to the new one if every message counted.
+  const before = transcriptMessages([
+    you(1, "old topic", NOW - 3 * HOUR),
+    ...reply(2, "Old answer.", NOW - 3 * HOUR + MIN),
+    ...Array.from({ length: 8 }, (_, i) => [
+      auto(10 + 2 * i, `[schedule 3 "Check"] tick ${i}`, NOW - 3 * HOUR + (i + 1) * 20 * MIN),
+      ...reply(11 + 2 * i, `Checked ${i}.`, NOW - 3 * HOUR + (i + 1) * 20 * MIN + 1000),
+    ]).flat(),
+    you(40, "new topic", NOW - 10 * MIN),
+    ...reply(41, "New answer.", NOW - 9 * MIN),
+    auto(42, '[schedule 3 "Check"] tick 8', NOW - 5 * MIN),
+    ...reply(43, "Checked 8.", NOW - 5 * MIN + 1000),
+  ]);
+  expect(conversation(before, NOW).map((m) => m.id)).toEqual([40, 41, 42, 43]);
+
+  // Two user messages 40 minutes apart, an arrival between them: the conversation starts at the second.
+  const split = transcriptMessages([
+    you(1, "first", NOW - 50 * MIN),
+    ...reply(2, "One.", NOW - 49 * MIN),
+    auto(3, "[whatsapp] linked", NOW - 30 * MIN),
+    ...reply(4, "WhatsApp is linked.", NOW - 29 * MIN),
+    you(5, "second", NOW - 10 * MIN),
+    ...reply(6, "Two.", NOW - 9 * MIN),
+  ]);
+  expect(conversation(split, NOW).map((m) => m.id)).toEqual([5, 6]);
+
+  // Within 30 minutes of each other, the user's messages chain, with everything between them.
+  const chained = transcriptMessages([
+    you(1, "first", NOW - 50 * MIN),
+    ...reply(2, "One.", NOW - 49 * MIN),
+    auto(3, "[whatsapp] linked", NOW - 30 * MIN),
+    you(5, "second", NOW - 25 * MIN),
+    ...reply(6, "Two.", NOW - 24 * MIN),
+  ]);
+  expect(conversation(chained, NOW).map((m) => m.id)).toEqual([1, 2, 3, 5, 6]);
+});
+
+test("after a pause, the user's last exchange is shown with the arrivals after it", () => {
+  const before = transcriptMessages([
+    you(1, "earlier", NOW - 2 * HOUR),
+    ...reply(2, "Sure.", NOW - 2 * HOUR + MIN),
+    you(3, "should we keep jellyfin?", NOW - 80 * MIN),
+    ...reply(4, "It's your call: it uses 30 GB. Keep it or drop it?", NOW - 79 * MIN),
+    auto(5, '[schedule 3 "Backup"] run the nightly backup', NOW - 40 * MIN),
+    ...reply(6, "Started the backup.", NOW - 39 * MIN),
+  ]);
+  expect(conversation(before, NOW).map((m) => m.id)).toEqual([3, 4, 5, 6]);
+  expect(body(renderWindow(before, NOW))).toEqual([
+    "you · 1 h ago · #3: should we keep jellyfin?",
+    "japa · 1 h ago: It's your call: it uses 30 GB. Keep it or drop it?",
+    '[schedule 3 "Backup"] · 40 min ago · #5: run the nightly backup (full: history_read 5)',
+    "japa · 39 min ago: Started the backup.",
+  ]);
+
+  // The exchange starts at its first input, automated or not.
+  const steered = transcriptMessages([
+    auto(1, "[whatsapp] unlinked", NOW - 2 * HOUR),
+    you(2, "relink it", NOW - 2 * HOUR + 1000),
+    ...reply(3, "Here's a code.", NOW - 2 * HOUR + MIN),
+  ]);
+  expect(conversation(steered, NOW).map((m) => m.id)).toEqual([1, 2, 3]);
+});
+
+test("with no user message, the last exchange is shown", () => {
+  const before = transcriptMessages([
+    auto(1, "[whatsapp] unlinked", NOW - 20 * MIN),
+    ...reply(2, "WhatsApp is unlinked.", NOW - 19 * MIN),
+    auto(3, '[schedule 3 "Check"] tick', NOW - 10 * MIN),
+    ...reply(4, "Checked.", NOW - 9 * MIN),
+  ]);
+  expect(conversation(before, NOW).map((m) => m.id)).toEqual([3, 4]);
+});
+
+test("a smaller budget holds the whole window, the newest exchange included", () => {
+  const before = [
+    ...Array.from({ length: 20 }, (_, i) =>
+      msg(i + 1, i % 2 === 0 ? "you" : "japa", `${i + 1}:${"z".repeat(1500)}`, NOW - (40 - i) * MIN),
+    ),
+    msg(21, "you", "hi", NOW - 2 * MIN),
+    msg(22, "japa", `start${"y".repeat(20000)}end`, NOW - MIN),
+  ];
+  const text = renderWindow(before, NOW, { budget: 2000 })!;
+  expect(text.length).toBeLessThanOrEqual(8000);
+  const lines = text.split("\n");
+  expect(lines[0]).toBe("[Conversation so far]");
+  expect(lines[1]).toMatch(/^\[20 earlier messages in this conversation: history_read 1\]$/);
+  expect(lines[2]).toBe("you · 2 min ago · #21: hi");
+  expect(lines[3]!.startsWith("japa · 1 min ago: startyyy")).toBe(true);
+  expect(lines[3]!.endsWith("yyyend")).toBe(true);
+
+  // The default is 8,000 tokens.
+  expect(renderWindow(before, NOW)!.length).toBeGreaterThan(8000);
+  expect(renderWindow(before, NOW, { budget: 8000 })).toBe(renderWindow(before, NOW));
+});
+
 test("automated arrivals are one headline with a pointer", () => {
   const report = `[job 68 "Cleanup" done] Server 1 cleanup is done: ${"x".repeat(5000)}\nsecond line`;
   const before = transcriptMessages([you(1, "clean up", NOW - 10 * MIN), auto(2, report, NOW - 2 * MIN)]);

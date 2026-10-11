@@ -1,6 +1,6 @@
 import { type Doc, rank, snippet } from "./search.ts";
 import type { HistoryMessage } from "./transcript.ts";
-import { ago } from "./window.ts";
+import { ago, arrival } from "./window.ts";
 
 /** At most this many hits, the origin included. */
 export const RECALL_HITS = 5;
@@ -38,6 +38,10 @@ function line(doc: Doc, query: string, now: number): string {
     }
     case "episode":
       return `note · ${when}: ${snippet(flat(doc.text), query, MESSAGE_SNIPPET)}`;
+    case "auto": {
+      const { label, body } = arrival(doc);
+      return `${label} · ${when} · #${doc.id ?? doc.key}: ${snippet(flat(body), query, MESSAGE_SNIPPET)}`;
+    }
     default:
       return `${doc.kind} · ${when} · #${doc.id ?? doc.key}: ${snippet(flat(doc.text), query, MESSAGE_SNIPPET)}`;
   }

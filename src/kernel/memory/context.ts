@@ -5,7 +5,7 @@ import { renderRecall } from "./recall.ts";
 import type { Scratchpad } from "./scratchpad.ts";
 import type { Memory } from "./state.ts";
 import type { HistoryMessage } from "./transcript.ts";
-import { conversation, renderWindow } from "./window.ts";
+import { conversation, NEWEST_TOKENS, renderWindow } from "./window.ts";
 
 /** The run's inputs: the `you` and `auto` messages after the newest reset, every one when there is none. */
 const runInputs = (messages: readonly HistoryMessage[], lastReset?: EntryId) =>
@@ -23,7 +23,8 @@ export function runKey(messages: readonly HistoryMessage[], lastReset?: EntryId)
 /**
  * The context injected ahead of a run (spec §2): the "[Conversation so far]" window over the messages before the
  * newest reset, and "[From earlier]" recall for the run's inputs (the `you` and `auto` messages after it), joined by a
- * blank line; undefined when both are empty. With no reset yet, every input is the run's and the window is empty.
+ * blank line; undefined when both are empty. With no reset yet, every input is the run's and the window is empty. A
+ * run whose inputs are all automated gets a window of 2,000 tokens, not 8,000: the user isn't there to read it.
  */
 export function buildContext(input: {
   messages: readonly HistoryMessage[];
@@ -38,12 +39,17 @@ export function buildContext(input: {
   const before = lastReset === undefined ? [] : messages.filter((m) => m.id < lastReset);
   const shown = conversation(before, now);
 
-  const window = renderWindow(before, now);
+  const automated = inputs.length > 0 && inputs.every((m) => m.kind === "auto");
+  const window = renderWindow(before, now, automated ? { budget: NEWEST_TOKENS } : {});
   const query = [...inputs.map((m) => m.text), ...shown.filter((m) => m.kind === "you").map((m) => m.text)].join("\n");
-  // What's already in view: the window's and the run's messages, and each reported job's own result.
+  // What's already in view: the window's and the run's messages, and the result of each job they report on. A job
+  // whose result a report message anywhere already holds is left to that message, so recall doesn't repeat it.
   const exclude = new Set([
-    ...[...shown, ...inputs].map((m) => String(m.id)),
-    ...inputs.flatMap((m) => (m.job === undefined ? [] : [`job:${m.job}`])),
+    ...[...shown, ...inputs].flatMap((m) => [String(m.id), ...(m.job === undefined ? [] : [`job:${m.job}`])]),
+    ...messages.flatMap((m) => {
+      const result = m.job === undefined ? undefined : jobs[m.job]?.result;
+      return result && m.text.includes(result) ? [`job:${m.job}`] : [];
+    }),
   ]);
   const job = inputs.find((m) => m.kind === "auto" && m.job !== undefined)?.job;
   const originId = job === undefined ? undefined : jobs[job]?.origin;

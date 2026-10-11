@@ -4,7 +4,7 @@ import type { Job } from "../jobs/state.ts";
 import type { Scratchpad } from "./scratchpad.ts";
 import type { Doc } from "./search.ts";
 import type { Memory } from "./state.ts";
-import { type HistoryMessage, transcriptMessages } from "./transcript.ts";
+import { type HistoryMessage, slim, transcriptMessages } from "./transcript.ts";
 
 const PAGE = 200;
 
@@ -16,12 +16,15 @@ export type History = {
 };
 
 /**
- * A history that keeps the root's raw entries (a japa message's `did:` needs its tool results) and re-derives the
- * messages from them when new ones arrive. Refreshes run one at a time, so overlapping callers never read twice.
+ * A history that keeps `slim` copies of the root's entries (a japa message's `did:` needs its tool results) and
+ * re-derives the messages from them when new ones arrive. Refreshes run one at a time, so overlapping callers never
+ * read twice.
  */
 export function createHistory(): History {
   let root: Conversation | undefined;
   let entries: EntryRecord[] = [];
+  /** The newest entry read, kept or not. */
+  let seen: EntryId | undefined;
   let messages: HistoryMessage[] = [];
   let lastReset: EntryId | undefined;
   let queue: Promise<unknown> = Promise.resolve();
@@ -30,7 +33,7 @@ export function createHistory(): History {
 
   const catchUp = async (conversation: Conversation, context: Context) => {
     const started = generation;
-    const last = entries.at(-1)?.id;
+    const last = seen;
     const fresh: EntryRecord[] = [];
     let cursor;
     do {
@@ -43,9 +46,11 @@ export function createHistory(): History {
     if (started !== generation || conversation !== root) return; // re-attached meanwhile
     const added = fresh.reverse().filter((e) => last === undefined || e.id > last);
     if (added.length > 0) {
-      entries.push(...added);
-      for (const e of added) if (e.kind === ResetEntry.kind) lastReset = e.id;
-      messages = transcriptMessages(entries);
+      seen = added.at(-1)!.id;
+      const kept = added.flatMap((e) => slim(e) ?? []);
+      entries.push(...kept);
+      for (const e of kept) if (e.kind === ResetEntry.kind) lastReset = e.id;
+      if (kept.some((e) => e.kind !== ResetEntry.kind)) messages = transcriptMessages(entries);
     }
   };
 
@@ -54,6 +59,7 @@ export function createHistory(): History {
       root = conversation;
       generation++;
       entries = [];
+      seen = undefined;
       messages = [];
       lastReset = undefined;
     },
@@ -68,9 +74,9 @@ export function createHistory(): History {
 }
 
 /**
- * The search corpus: one doc per message (keyed by its entry id), per job with a result (`job:<id>`), per page,
- * active or archived (`page:<id>`), and per legacy episode (`episode:<id>`). Titles are part of the text, since only
- * the text is indexed.
+ * The search corpus: one doc per message (keyed by its entry id; a job report's carries its job), per job with a
+ * result (`job:<id>`), per page, active or archived (`page:<id>`), and per legacy episode (`episode:<id>`). Titles are
+ * part of the text, since only the text is indexed.
  */
 export function corpus(
   messages: readonly HistoryMessage[],
@@ -78,7 +84,14 @@ export function corpus(
   pad: Scratchpad,
   jobs: Record<string, Job>,
 ): Doc[] {
-  const docs: Doc[] = messages.map((m) => ({ key: String(m.id), kind: m.kind, text: m.text, at: m.at, id: m.id }));
+  const docs: Doc[] = messages.map((m) => ({
+    key: String(m.id),
+    kind: m.kind,
+    text: m.text,
+    at: m.at,
+    id: m.id,
+    ...(m.job === undefined ? {} : { job: m.job }),
+  }));
   for (const job of Object.values(jobs)) {
     if (!job.result) continue;
     docs.push({ key: `job:${job.id}`, kind: "job", text: `"${job.title}": ${job.result}`, at: job.updatedAt, title: job.title });

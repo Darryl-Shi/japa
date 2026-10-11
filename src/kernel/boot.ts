@@ -622,6 +622,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     registry.install(CodingTools);
     const root = await ensureRoot(harness, model, ctx);
     history.attach(root);
+    // Warm the mirror now, so the first turn doesn't scan the whole transcript; a turn retries what fails here.
+    void history.refresh(ctx).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`japa.context: warming the history failed: ${message}`);
+    });
     rootReady = true;
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);

@@ -8,6 +8,7 @@ export type Doc = {
   at: number;
   id?: EntryId; // transcript docs
   title?: string; // pages and jobs
+  job?: string; // a job report's job id
 };
 
 const K1 = 1.2;
