@@ -43,7 +43,7 @@ const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and up
   - fold new details into an existing item and generalize, rather than adding items; revise items that are stale or too specific;
   - skip sensitive details unless the user explicitly asks to remember them.
 - pages: the scratchpad, one page per project or topic, each its whole text in free-form markdown, at most 1,500 tokens. A page records the state these turns reached (what it is, decisions and why, where it lives, what's open), not how they got there. To change a page, write its whole new text and pass back the basedOn you were shown; a new page has no basedOn. Leave out pages that didn't change; an empty list when none did.
-\`user:\` lines starting with \`[job \`, \`[schedule \`, \`[japa]\` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user, and don't quote them as evidence.`;
+\`user:\` lines starting with \`[job \`, \`[schedule \`, \`[secret \`, \`[japa]\` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user, and don't quote them as evidence.`;
 
 const SHORTEN = `Shorten each of these user fact operations to at most 30 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
 
@@ -80,8 +80,65 @@ const saveText = saveTool({ text: Type.String() });
 
 type ProfileOp = FactOp & { evidence?: string };
 type PageWrite = { title: string; text: string; basedOn?: number };
-type Saved = { profile: ProfileOp[]; pages?: PageWrite[] };
+type Saved = { profile: unknown[]; pages?: unknown };
 type Chunk = { taken: EntryRecord[]; lines: string[]; more: boolean };
+
+/** What a reflection pass dropped, for its one-line report. */
+type Drops = {
+  malformedOps: number;
+  noEvidence: number;
+  offScope: number;
+  tooLong: number;
+  malformedPages: number;
+  longPages: string[];
+  stalePages: string[];
+};
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+const isString = (v: unknown): v is string => typeof v === "string";
+
+/** `o` as a fact operation (with its evidence, if it gave a string one), or undefined when it's malformed. */
+function factOp(o: unknown): ProfileOp | undefined {
+  if (!isRecord(o)) return undefined;
+  const evidence = isString(o.evidence) ? { evidence: o.evidence } : {};
+  if (o.op === "delete") return isString(o.id) ? { op: "delete", id: o.id } : undefined;
+  if (o.op === "add") return isString(o.text) ? { op: "add", text: o.text, ...evidence } : undefined;
+  if (o.op === "update") {
+    return isString(o.id) && isString(o.text) ? { op: "update", id: o.id, text: o.text, ...evidence } : undefined;
+  }
+  return undefined;
+}
+
+/** The well-formed fact operations among `ops` (a model's answer), without evidence. */
+const wellFormed = (ops: unknown): FactOp[] =>
+  (Array.isArray(ops) ? ops : []).flatMap((o) => {
+    const op = factOp(o);
+    if (op === undefined) return [];
+    const { evidence: _, ...bare } = op;
+    return [bare as FactOp];
+  });
+
+/** `w` as a page write, or undefined when it's malformed. A `basedOn` the model sent as a string is coerced. */
+function pageWrite(w: unknown): PageWrite | undefined {
+  if (!isRecord(w) || !isString(w.title) || !isString(w.text)) return undefined;
+  return w.basedOn === undefined || w.basedOn === null
+    ? { title: w.title, text: w.text }
+    : { title: w.title, text: w.text, basedOn: Number(w.basedOn) };
+}
+
+/** The pass's one-line report, or undefined when it dropped nothing. Names page titles only, never user text. */
+function report(d: Drops): string | undefined {
+  const parts = [
+    d.malformedOps > 0 && `${d.malformedOps} malformed profile ops`,
+    d.noEvidence > 0 && `${d.noEvidence} without evidence`,
+    d.offScope > 0 && `${d.offScope} off-scope`,
+    d.tooLong > 0 && `${d.tooLong} too long`,
+    d.malformedPages > 0 && `${d.malformedPages} malformed pages`,
+    d.longPages.length > 0 && `too-long pages: ${d.longPages.join(", ")}`,
+    d.stalePages.length > 0 && `stale pages: ${d.stalePages.join(", ")}`,
+  ].filter(isString);
+  return parts.length > 0 ? `japa.reflect: dropped ${parts.join("; ")}` : undefined;
+}
 
 const listed = (items: { id: string; text: string }[]) => items.map((i) => `${i.id}: ${i.text}`).join("\n") || "(none)";
 
@@ -100,7 +157,7 @@ const shown = (pad: Scratchpad) =>
 const textOf = (message: Message) =>
   typeof message.content === "string"
     ? message.content
-    : message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
+    : message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
 
 /** What the user said in `entries`: the texts of their inputs that aren't automated. */
 const userLines = (entries: EntryRecord[]) =>
@@ -202,30 +259,57 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         const saved = await ask<Saved>(REFLECT, text, save, runtime.signal);
         if (!Array.isArray(saved?.profile)) throw new Error("The reflection model didn't save a profile list."); // faults the task
 
-        // An add or update must quote what the user said in this chunk; the others are dropped.
+        const drops: Drops = {
+          malformedOps: 0,
+          noEvidence: 0,
+          offScope: 0,
+          tooLong: 0,
+          malformedPages: 0,
+          longPages: [],
+          stalePages: [],
+        };
+
+        // A malformed operation is dropped; an add or update must quote what the user said in this chunk.
         const said = userLines(piece.taken);
-        const proven: FactOp[] = saved.profile.flatMap((o): FactOp[] => {
+        const proven: FactOp[] = saved.profile.flatMap((raw): FactOp[] => {
+          const o = factOp(raw);
+          if (o === undefined) {
+            drops.malformedOps++;
+            return [];
+          }
           if (o.op === "delete") return [{ op: "delete", id: o.id }];
-          if (typeof o.evidence !== "string" || !hasEvidence(o.evidence, said)) return [];
+          if (o.evidence === undefined || !hasEvidence(o.evidence, said)) {
+            drops.noEvidence++;
+            return [];
+          }
           return [o.op === "add" ? { op: "add", text: o.text } : { op: "update", id: o.id, text: o.text }];
         });
         // The decisions are made on the snapshot; the operations they produce are applied to the live memory below.
         const ops = [...proven];
-        const { tooLong } = applyFactOps(memory, proven, now); // off-scope ops are rejected, here and below
+        const first = applyFactOps(memory, proven, now); // off-scope ops are rejected, here and below
+        drops.offScope += first.rejected.length;
+        const { tooLong } = first;
         if (tooLong.length > 0) {
-          const shortened = await ask<{ facts: FactOp[] }>(SHORTEN, JSON.stringify(tooLong), saveFacts, runtime.signal);
-          const kept = matching(tooLong, shortened?.facts ?? []);
+          const shortened = await ask<{ facts: unknown }>(SHORTEN, JSON.stringify(tooLong), saveFacts, runtime.signal);
+          const kept = matching(tooLong, wellFormed(shortened?.facts));
           ops.push(...kept);
-          applyFactOps(memory, kept, now); // still too long: dropped
+          const second = applyFactOps(memory, kept, now); // still too long: dropped
+          drops.offScope += second.rejected.length;
+          drops.tooLong += tooLong.length - kept.length + second.tooLong.length;
         }
         if (overCap(memory.facts, settings.memory)) {
-          const merged = await ask<{ facts: FactOp[] }>(merge(settings.memory), listed(memory.facts), saveFacts, runtime.signal);
-          ops.push(...(merged?.facts ?? []));
+          const merged = await ask<{ facts: unknown }>(merge(settings.memory), listed(memory.facts), saveFacts, runtime.signal);
+          ops.push(...wellFormed(merged?.facts));
         }
 
-        // A page over the cap gets one shorten pass and is dropped if it's still over.
+        // A malformed page write is dropped; a page over the cap gets one shorten pass and is dropped if still over.
         const writes: PageWrite[] = [];
-        for (const write of saved.pages ?? []) {
+        for (const raw of Array.isArray(saved.pages) ? saved.pages : []) {
+          const write = pageWrite(raw);
+          if (write === undefined) {
+            drops.malformedPages++;
+            continue;
+          }
           if (estimateTokens(write.text) <= PAGE_TOKENS) {
             writes.push(write);
             continue;
@@ -234,9 +318,12 @@ export function reflection({ models, settings }: { models: Models; settings: Set
           const shorter = await ask<{ text: string }>(SHORTEN_PAGE, page, saveText, runtime.signal);
           if (typeof shorter?.text === "string" && estimateTokens(shorter.text) <= PAGE_TOKENS) {
             writes.push({ ...write, text: shorter.text });
+          } else {
+            drops.longPages.push(write.title);
           }
         }
 
+        let stale: string[] = []; // reset on each attempt of the commit below
         // One commit applies the operations to the memory as it stands now — so a `memory_remember` or
         // `memory_forget` made while the models ran survives — and either continues with the next chunk or ends the
         // task. `through` marks the checkpoint as changed (it differs from the previous one), so the task keeps going.
@@ -247,15 +334,21 @@ export function reflection({ models, settings }: { models: Models; settings: Set
           draft.reflectedThrough = piece.through;
           // A page changed since the reflection was shown it (or created meanwhile) keeps that change.
           const scratchpad = writes.length > 0 ? await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID) : undefined;
+          stale = [];
           for (const write of writes) {
             const page = findPage(scratchpad!, write.title);
-            if (page !== undefined && write.basedOn !== page.updatedAt) continue;
+            if (page !== undefined && write.basedOn !== page.updatedAt) {
+              stale.push(write.title);
+              continue;
+            }
             writePage(scratchpad!, write.title, write.text, now);
           }
           return piece.more
             ? { status: "running", checkpoint: { phase: "reflect", through: piece.through } }
             : { status: "terminal", outcome: { status: "completed", result: null } };
         }, context);
+        const summary = report({ ...drops, stalePages: stale });
+        if (summary !== undefined) console.warn(summary);
       },
     },
     abort: (_task, runtime, context) =>

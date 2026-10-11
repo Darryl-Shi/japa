@@ -210,6 +210,115 @@ test("a page write with a current basedOn replaces the page", async () => {
   await daemon.close();
 });
 
+test("a basedOn given as a string still matches the page", async () => {
+  const { daemon, faux } = await bootTest();
+  await daemon.root.commit(async (tx) => {
+    writePage(await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID), "Home servers", "NAS in the hallway.", 1000);
+  }, ctx);
+  route(faux, (system) => {
+    if (reflecting(system)) return save(pages({ title: "Home servers", text: "NAS in the closet.", basedOn: "1000" }));
+  });
+  await ask(daemon, "the NAS moved to the closet");
+  await resetDone(daemon);
+  await daemon.reflect();
+
+  expect((await pad(daemon)).pages.map((p) => [p.title, p.text])).toEqual([["Home servers", "NAS in the closet."]]);
+  await daemon.close();
+});
+
+test("malformed entries are dropped, the valid ones applied, and the drops reported", async () => {
+  const { daemon, faux } = await bootTest();
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => void warned.push(args.join(" "));
+  try {
+    route(faux, (system) => {
+      if (reflecting(system)) {
+        return save({
+          profile: [
+            { op: "add", evidence: "I like tea" }, // no text
+            { op: "update", text: "Ada likes tea a lot", evidence: "I like tea" }, // no id
+            { op: "delete" }, // no id
+            null,
+            { op: "add", text: "Ada likes tea", evidence: "I like tea" },
+          ],
+          pages: [{ title: "Garden" }, { text: "no title" }, "junk", { title: "Tea", text: "Green, mostly." }],
+        });
+      }
+    });
+    await ask(daemon, "hello, I like tea");
+    await resetDone(daemon);
+    await daemon.reflect();
+  } finally {
+    console.warn = warn;
+  }
+
+  expect(await factTexts(daemon)).toEqual(["Ada likes tea"]);
+  expect((await pad(daemon)).pages.map((p) => [p.title, p.text])).toEqual([["Tea", "Green, mostly."]]);
+  expect((await memory(daemon)).reflectedThrough).toBe(await newest(daemon));
+  const reports = warned.filter((w) => w.startsWith("japa.reflect:"));
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toContain("4 malformed profile ops");
+  expect(reports[0]).toContain("3 malformed pages");
+  await daemon.close();
+});
+
+test("dropped operations are reported once per pass, without the user's text", async () => {
+  const { daemon, faux } = await bootTest();
+  await daemon.root.commit(async (tx) => {
+    writePage(await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID), "Home servers", "NAS in the hallway.", 1000);
+  }, ctx);
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => void warned.push(args.join(" "));
+  try {
+    route(faux, (system) => {
+      if (reflecting(system)) {
+        return save({
+          profile: [
+            { op: "add", text: "Ada loves opera", evidence: "I love opera" },
+            { op: "add", text: "Ada's server is at 10.0.0.5", evidence: "my server is at 10.0.0.5" },
+          ],
+          pages: [{ title: "Home servers", text: "stale", basedOn: 5 }],
+        });
+      }
+    });
+    await ask(daemon, "my server is at 10.0.0.5 now");
+    await resetDone(daemon);
+    await daemon.reflect();
+  } finally {
+    console.warn = warn;
+  }
+
+  const reports = warned.filter((w) => w.startsWith("japa.reflect:"));
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toContain("1 without evidence");
+  expect(reports[0]).toContain("1 off-scope");
+  expect(reports[0]).toContain("stale pages: Home servers");
+  expect(reports[0]).not.toContain("opera");
+  expect(reports[0]).not.toContain("10.0.0.5");
+  await daemon.close();
+});
+
+test("a clean pass reports nothing", async () => {
+  const { daemon, faux } = await bootTest();
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => void warned.push(args.join(" "));
+  try {
+    route(faux, (system) =>
+      reflecting(system) ? save(profile({ op: "add", text: "Ada likes tea", evidence: "I like tea" })) : undefined,
+    );
+    await ask(daemon, "hello, I like tea");
+    await resetDone(daemon);
+    await daemon.reflect();
+  } finally {
+    console.warn = warn;
+  }
+  expect(warned.filter((w) => w.startsWith("japa.reflect:"))).toEqual([]);
+  await daemon.close();
+});
+
 test("an oversized page is shortened once, then dropped if still too long", async () => {
   const { daemon, faux } = await bootTest();
   const shortened: string[] = [];
@@ -263,6 +372,7 @@ test("the prompt shows profile ages and active pages", async () => {
     "Factory settings: global defaults plus per-project overrides (behaviour, model/thinking per role, sandbox, ci).",
   );
   expect(system).toContain("evidence");
+  expect(system).toContain("`[secret `");
   expect(system).toContain("basedOn");
   await daemon.close();
 });
