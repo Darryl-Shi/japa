@@ -48,8 +48,17 @@ export type Status = {
 /** Where an input came from: a surface and chat, or the kernel on its own (`"proactive"`). */
 export type Origin = { surface: string; chat?: string } | "proactive";
 
-/** A finished assistant message's text, its turn's origin, and the cursor to resume `replies` after it. */
-export type Reply = { cursor: string; origin: Origin; text: string };
+/** A file the CoS sent with `send_file`: its resolved path on japa's host, name, MIME type, size in bytes and caption. */
+export type OutgoingFile = { path: string; name: string; mimeType: string; size: number; caption?: string };
+
+/**
+ * A finished assistant message's text, or a successful `send_file` (its `file` set, its `text` the caption or ""); its
+ * turn's origin, and the cursor to resume `replies` after it.
+ */
+export type Reply = { cursor: string; origin: Origin; text: string; file?: OutgoingFile };
+
+/** A file received from the user: its bytes, MIME type and, when the platform has one, its original name. */
+export type IncomingFile = { data: Uint8Array; mimeType: string; name?: string };
 
 export type SurfaceContext = {
   home: string;
@@ -87,6 +96,11 @@ export type SurfaceContext = {
     decline(requestId: string): Promise<void>;
   };
   status(): Status;
+  /**
+   * The CoS input for `messages`, merged (the messaging surface's conversion): their texts, then a note per file,
+   * each saved under `<home>/attachments/<date>/`; PDFs' text extracted, images inline when the CoS model has vision.
+   */
+  input(messages: { id: string; text?: string; files?: IncomingFile[] }[]): Promise<UserInput>;
 };
 
 export type Surface = { name: string; start(ctx: SurfaceContext): Promise<Dispose> };
@@ -100,6 +114,10 @@ export interface MessagingAdapter {
   delete(chat: string, messageId: string): Promise<void>;
   typing(chat: string): Promise<void>; // shows "typing…" for a few seconds
   commands(list: { name: string; description: string }[]): Promise<void>; // registers slash commands
+  /** Sends a file the CoS sent (read from `f.path` now), its caption as markdown; returns the message id. */
+  sendFile?(chat: string, f: OutgoingFile): Promise<string>;
+  /** The largest file `sendFile` can send, in bytes; larger ones are sent as a text line naming their path. */
+  maxFileBytes?: number;
 }
 
 export interface MessagingAdapterContext {
@@ -112,6 +130,8 @@ export type Incoming = {
   messageId: string;
   id: string; // platform-unique, used for dedup
   text?: string;
+  files?: IncomingFile[];
+  /** @deprecated Use `files`: each image is handled exactly as a file without a name. */
   images?: { data: Uint8Array; mimeType: string }[];
   command?: string; // "jobs" for "/jobs"
   action?: string; // a pressed button's action
@@ -280,7 +300,7 @@ const CORE_CONTRACTS: Contract[] = [
     name: "messaging",
     docs:
       "A chat platform the user talks to the CoS through. Implement only transport; japa provides commands, " +
-      "settings, secrets, routing and images.",
+      "settings, secrets, routing and files (in and out).",
     phase: "runtime",
     cardinality: "many",
     validate: (c) =>
