@@ -96,7 +96,7 @@ export async function system(daemon: Daemon, faux: FauxProviderHandle) {
   const step: FauxResponseFactory = ({ messages }) => {
     const prompt = getSystemMessageText(messages.findLast((m) => m.role === "system")!);
     if (prompt.startsWith("You reflect")) {
-      return fauxAssistantMessage([fauxToolCall("save", { facts: [], episode: "e" })], { stopReason: "toolUse" });
+      return fauxAssistantMessage([fauxToolCall("save", { profile: [], pages: [] })], { stopReason: "toolUse" });
     }
     text = prompt;
     return say("ok");

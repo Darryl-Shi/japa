@@ -34,7 +34,7 @@ function reflections(faux: FauxProviderHandle): string[] {
   script(faux, (_role, text) => {
     if (!text.startsWith("Turns since")) return;
     prompts.push(text);
-    return fauxAssistantMessage([fauxToolCall("save", { facts: [], episode: "e" })], { stopReason: "toolUse" });
+    return fauxAssistantMessage([fauxToolCall("save", { profile: [], pages: [] })], { stopReason: "toolUse" });
   });
   return prompts;
 }
