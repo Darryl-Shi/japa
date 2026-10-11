@@ -374,6 +374,9 @@ test("the prompt shows profile ages and active pages", async () => {
   expect(system).toContain("evidence");
   expect(system).toContain("`[secret `");
   expect(system).toContain("basedOn");
+  expect(system).toContain(
+    "What the user said, decided or prefers comes only from `user:` lines; the assistant's own statements about the user are not a source.",
+  );
   await daemon.close();
 });
 
@@ -510,6 +513,36 @@ test("an entry larger than the chunk budget is sent truncated", async () => {
   await daemon.close();
 });
 
+test("the chunk budget leaves room for the profile and pages, down to a floor", async () => {
+  /** The length of the oversized entry's line as sent, with `n` 1,500-token pages, on a model with `contextWindow`. */
+  async function sent(contextWindow: number, n: number): Promise<number> {
+    const kit = testKit({ models: [{ id: "narrow", contextWindow }] });
+    const { daemon, faux } = await bootTest({}, [], kit);
+    await daemon.root.commit(async (tx) => {
+      const scratchpad = await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID);
+      for (let i = 0; i < n; i++) writePage(scratchpad, `P${i}`, "p".repeat(6000), 1000 + i);
+    }, ctx);
+    const prompts: string[] = [];
+    route(faux, (system, text) => {
+      if (reflecting(system)) {
+        prompts.push(text);
+        return save(profile());
+      }
+    });
+    await ask(daemon, `A ${"x".repeat(60_000)}`);
+    await resetDone(daemon);
+    await daemon.reflect();
+    await daemon.close();
+    return prompts[0]!.split("\n")[1]!.length;
+  }
+  // Half of 20 000 tokens is 10 000; four pages take about 6 000 of them, leaving about 4 000 (16 000 characters).
+  const roomy = await sent(20_000, 4);
+  expect(roomy).toBeLessThan(16_000);
+  expect(roomy).toBeGreaterThan(15_800);
+  // Pages larger than half the window: the budget is the floor, 2 000 tokens (8 000 characters).
+  expect(await sent(4000, 2)).toBe(8000);
+});
+
 test("a reflection that faults leaves the cursor and is retried", async () => {
   const { daemon, faux } = await bootTest();
   let calls = 0;
@@ -582,23 +615,27 @@ test("the shorten pass can't introduce operations it wasn't given", async () => 
   await daemon.close();
 });
 
-test("facts over the cap are merged", async () => {
+test("facts over the cap are merged, and the merge pass can't add", async () => {
   const added = ["Ada likes tea", "Ada runs marathons", "Ada lives in Oslo", "Ada has two cats"];
+  let merging = "";
   const { daemon, prompts } = await reflected(
-    (system) =>
-      system.startsWith("Merge")
-        ? save({
-            facts: [
-              { op: "delete", id: "1" },
-              { op: "delete", id: "2" },
-              { op: "add", text: "Ada is sporty and likes tea" },
-            ],
-          })
-        : save(profile(...added.map((text) => ({ op: "add", text, evidence: EVIDENCE })))),
+    (system) => {
+      if (!system.startsWith("Merge")) return save(profile(...added.map((text) => ({ op: "add", text, evidence: EVIDENCE }))));
+      merging = system;
+      return save({
+        facts: [
+          { op: "delete", id: "1" },
+          { op: "update", id: "2", text: "Ada is sporty and likes tea" },
+          { op: "add", text: "Ada secretly loves opera" }, // nothing backs it: dropped
+        ],
+      });
+    },
     { memory: { maxFacts: 3 } },
   );
   expect(prompts).toEqual(["You", "Merge"]);
-  expect(await factTexts(daemon)).toEqual(["Ada lives in Oslo", "Ada has two cats", "Ada is sporty and likes tea"]);
+  expect(merging).toContain("update(id, text) and delete(id)");
+  expect(merging).not.toContain("add(");
+  expect(await factTexts(daemon)).toEqual(["Ada is sporty and likes tea", "Ada lives in Oslo", "Ada has two cats"]);
   await daemon.close();
 });
 

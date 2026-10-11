@@ -46,7 +46,7 @@ const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and up
   - record patterns and lasting context, not events or task details;
   - fold new details into an existing item and generalize, rather than adding items; revise items that are stale or too specific;
   - skip sensitive details unless the user explicitly asks to remember them.
-- pages: the scratchpad, one page per project or topic, each its whole text in free-form markdown, at most 1,500 tokens. A page records the state these turns reached (what it is, decisions and why, where it lives, what's open), not how they got there. To change a page, write its whole new text and pass back the basedOn you were shown; a new page has no basedOn. Leave out pages that didn't change; an empty list when none did.
+- pages: the scratchpad, one page per project or topic, each its whole text in free-form markdown, at most 1,500 tokens. A page records the state these turns reached (what it is, decisions and why, where it lives, what's open), not how they got there. To change a page, write its whole new text and pass back the basedOn you were shown; a new page has no basedOn. Leave out pages that didn't change; an empty list when none did. What the user said, decided or prefers comes only from \`user:\` lines; the assistant's own statements about the user are not a source.
 \`user:\` lines starting with \`[job \`, \`[schedule \`, \`[secret \`, \`[japa]\` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user, and don't quote them as evidence.`;
 
 const SHORTEN = `Shorten each of these user fact operations to at most 30 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
@@ -54,7 +54,10 @@ const SHORTEN = `Shorten each of these user fact operations to at most 30 words,
 const SHORTEN_PAGE = `Shorten this page to at most 1,500 tokens, keeping its current state. Call save with its new text.`;
 
 const merge = (limits: Settings["memory"]) =>
-  `Merge these user facts: they exceed the limit of ${limits.maxFacts} entries and ${limits.maxTokens} tokens (about 4 characters per token). Combine related entries and delete the least useful until the list fits. Call save with update(id, text), delete(id) and add(text) operations.`;
+  `Merge these user facts: they exceed the limit of ${limits.maxFacts} entries and ${limits.maxTokens} tokens (about 4 characters per token). Combine related entries into one of them and delete the least useful until the list fits. Call save with update(id, text) and delete(id) operations.`;
+
+/** The reflection's chunk budget never drops below this many tokens, however large the profile and pages are. */
+const MIN_CHUNK = 2000;
 
 /** The model that reflects and sorts: the consolidation model when set, the CoS's otherwise. Call it live: settings change. */
 export function reflectionModel(models: Models, settings: Settings) {
@@ -62,13 +65,9 @@ export function reflectionModel(models: Models, settings: Settings) {
   return models.getModel(ref.provider, ref.modelId)!;
 }
 
-const factOps = Type.Array(
-  Type.Union([
-    Type.Object({ op: Type.Literal("add"), text: Type.String() }),
-    Type.Object({ op: Type.Literal("update"), id: Type.String(), text: Type.String() }),
-    Type.Object({ op: Type.Literal("delete"), id: Type.String() }),
-  ]),
-);
+const updateOp = Type.Object({ op: Type.Literal("update"), id: Type.String(), text: Type.String() });
+const deleteOp = Type.Object({ op: Type.Literal("delete"), id: Type.String() });
+const factOps = Type.Array(Type.Union([Type.Object({ op: Type.Literal("add"), text: Type.String() }), updateOp, deleteOp]));
 export const saveTool = (properties: Record<string, TSchema>): Tool => ({
   name: "save",
   description: "Save your result.",
@@ -86,6 +85,7 @@ const pageWrites = Type.Array(
 );
 const save = saveTool({ profile: profileOps, pages: pageWrites });
 const saveFacts = saveTool({ facts: factOps });
+const saveMerge = saveTool({ facts: Type.Array(Type.Union([updateOp, deleteOp])) });
 const saveText = saveTool({ text: Type.String() });
 
 type ProfileOp = FactOp & { evidence?: string };
@@ -240,7 +240,12 @@ export function reflection({ models, settings }: { models: Models; settings: Set
       reflect: async (_task, runtime, context) => {
         const memory = structuredClone((await runtime.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context))!) as Memory;
         const pad = (await runtime.snapshot(ScratchpadDoc, ROOT_CONVERSATION_ID, context)) ?? { nextId: 1, pages: [] };
-        const budget = Math.floor(reflectModel().contextWindow / 2);
+        const now = runtime.now();
+        const profileText = aged(memory.facts, now);
+        const pagesText = shown(pad);
+        // Half the window for the turns, less what the profile and pages shown with them take.
+        const half = Math.floor(reflectModel().contextWindow / 2);
+        const budget = Math.max(MIN_CHUNK, half - estimateTokens(`${profileText}\n${pagesText}`));
         const from = memory.reflectedThrough !== undefined ? ((memory.reflectedThrough + 1) as EntryId) : undefined;
 
         // Read-only: finds this invocation's chunk, or ends the task at once when nothing is left to reflect on.
@@ -256,11 +261,10 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         if (batch === undefined) return;
         const piece = batch;
 
-        const now = runtime.now();
         const text = [
           `Turns since the last reflection:\n${piece.lines.join("\n")}`,
-          `Profile:\n${aged(memory.facts, now)}`,
-          `Pages:\n${shown(pad)}`,
+          `Profile:\n${profileText}`,
+          `Pages:\n${pagesText}`,
         ].join("\n\n");
         const saved = await ask<Saved>(REFLECT, text, save, runtime.signal);
         if (!Array.isArray(saved?.profile)) throw new Error("The reflection model didn't save a profile list."); // faults the task
@@ -305,8 +309,9 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         }
         // Until the Sort has run, the facts are version 2 ones, of every kind: only the Sort may fold them to the cap.
         if (memory.sorted && overCap(memory.facts, settings.memory)) {
-          const merged = await ask<{ facts: unknown }>(merge(settings.memory), listed(memory.facts), saveFacts, runtime.signal);
-          ops.push(...wellFormed(merged?.facts));
+          const merged = await ask<{ facts: unknown }>(merge(settings.memory), listed(memory.facts), saveMerge, runtime.signal);
+          // Only updates and deletes: an add would be a new item no evidence backs.
+          ops.push(...wellFormed(merged?.facts).filter((o) => o.op !== "add"));
         }
 
         // A malformed page write is dropped; a page over the cap gets one shorten pass and is dropped if still over.

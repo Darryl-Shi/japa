@@ -150,11 +150,13 @@ const pageWrite = defineTool({
 
 /**
  * How a `history_search` hit names itself, in a form another tool takes: `page "<title>"` (`page_read`), `job <id>`
- * (`job_transcript`), or `<kind> #<id>` (`history_read`), a job's report as `job <n> report #<id>`.
+ * (`job_transcript`), or `<kind> #<id>` (`history_read`), a job's report as `job <n> report #<id>`. A legacy episode
+ * is a `note`, with no id: no tool opens it.
  */
 function label(d: Doc, jobReports: ReadonlyMap<number, string>): string {
   if (d.kind === "page") return `page "${d.title}"`;
   if (d.kind === "job") return `job ${d.key.replace(/^job:/, "")}`;
+  if (d.kind === "episode") return "note";
   const job = d.id === undefined ? undefined : jobReports.get(d.id);
   if (job !== undefined) return `job ${job} report #${d.id}`;
   return `${d.kind} #${d.id ?? d.key}`;
@@ -167,7 +169,8 @@ function historyTools(history: History) {
     description:
       "Search everything said in this conversation, job results and scratchpad pages by keywords. `since` and " +
       "`until` are ISO dates or datetimes (UTC), inclusive. Returns up to 10 hits, best first, each with its date " +
-      "(UTC), kind and id; read around a message with `history_read`.",
+      "(UTC) and what it is: read around a message (`#<id>`) with `history_read`, a page with `page_read`, a job " +
+      "with `job_transcript`.",
     parameters: Type.Object({
       query: Type.String(),
       since: Type.Optional(Type.String()),

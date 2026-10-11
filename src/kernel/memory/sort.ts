@@ -132,6 +132,15 @@ export function sorting({ models, settings }: { models: Models; settings: Settin
       await runtime.commit(async () => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
       return;
     }
+    // Nothing to sort: no model call.
+    if (memory.facts.length === 0 && (memory.legacyEpisodes ?? []).length === 0) {
+      await runtime.commit(async (tx) => {
+        const draft = await tx.doc(MemoryDoc, ROOT_CONVERSATION_ID);
+        draft.sorted = true;
+        return { status: "terminal", outcome: { status: "completed", result: null } };
+      }, context);
+      return;
+    }
     const model = reflectionModel(models, settings);
     const budget = Math.floor(model.contextWindow / 2);
     const facts = memory.facts.map((f) => `${f.id} (${day(f.updatedAt)}): ${f.text}`).join("\n") || "(none)";
