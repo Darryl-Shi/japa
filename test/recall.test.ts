@@ -32,37 +32,41 @@ const msgDoc = (n: number, text: string, at = NOW - HOUR, kind: Doc["kind"] = "y
   id: id(n),
 });
 
-// Everyday chat with none of the query's words.
+// Everyday chat sharing the query's common words ("do", "about", "my", "remember", "what", "the", …), never its rare one.
 const FILLER = [
-  "can you water the plants tomorrow",
-  "what's the weather in Singapore this week",
-  "is there a good place for dinner near the office",
-  "remind me of the dentist on friday",
-  "the laptop battery is losing charge",
-  "book a table for two at seven",
-  "how should I reset the router",
-  "send the invoice to the accountant, and copy the bank",
-  "is the parcel delivered yet?",
-  "the new phone arrived, set it up later for mum",
+  "what do you think about the weather this week",
+  "do you remember my dentist is on friday",
+  "remember to water the plants tomorrow",
+  "what about dinner near the office",
+  "do I need to book the table for my mum",
+  "can you remind me what the router password is",
+  "tell me about the parcel, is it delivered",
+  "what did the accountant say about my invoice",
+  "do the laptop battery thing again",
+  "I don't remember where my keys are",
 ];
 
 test("the superpowers replay", () => {
   const complaint =
     "yeah it's basically that because too much ceremony. spec and discovery and planning before every change, " +
-    "superpowers makes the agent ask five questions before touching a file";
+    "every small fix turns into a design review and a plan with checkboxes and then a subagent review of the plan, " +
+    "and by the time anything is written I have forgotten what I wanted. superpowers makes the agent ask five " +
+    "questions before touching a file, and that's the bit I can't stand anymore on small personal projects";
   const docs = [
     msgDoc(9846, complaint, Date.UTC(2026, 9, 10, 11, 42)),
     ...Array.from({ length: 50 }, (_, i) => msgDoc(10_000 + i, FILLER[i % FILLER.length]!, NOW - (i + 1) * HOUR)),
   ];
-  const out = renderRecall({
-    query: "do u not remember my complaint about superpowers",
-    docs,
-    exclude: new Set(),
-    now: NOW,
-  })!;
+  const query = "do u not remember my complaint about superpowers";
+  const out = renderRecall({ query, docs, exclude: new Set(), now: NOW })!;
   const lines = out.split("\n");
   expect(lines[0]).toBe(HEADER);
-  expect(lines[1]).toBe(`you · 1 d ago · #9846: ${complaint}`);
+  expect(lines[1]).toMatch(/^you · 1 d ago · #9846: …/);
+  // The snippet is centred on the rare term, not on an early "the" or "what".
+  const body = lines[1]!.slice(lines[1]!.indexOf(": ") + 2);
+  expect(body.length).toBeLessThanOrEqual(400);
+  const at = body.indexOf("superpowers");
+  expect(at).toBeGreaterThan(100);
+  expect(at).toBeLessThan(300);
 });
 
 test("excluded keys never appear", () => {
@@ -136,6 +140,34 @@ test("an origin hit comes first and is labelled you asked", () => {
   ]);
   // The origin alone, even with no other hit.
   expect(renderRecall({ query: "zzz", docs, exclude: new Set(), origin, now: NOW })!.split("\n")).toHaveLength(2);
+});
+
+test("an automated origin is labelled started by", () => {
+  const origin = message(11770, "auto", '[schedule 3 "Weekly"] tidy the server', NOW - 2 * HOUR);
+  const docs = [msgDoc(11770, origin.text, origin.at, "auto"), msgDoc(99, "other")];
+  expect(renderRecall({ query: "server", docs, exclude: new Set(), origin, now: NOW })!.split("\n")).toEqual([
+    HEADER,
+    'started by · 2 h ago · #11770: [schedule 3 "Weekly"] tidy the server',
+  ]);
+});
+
+test("a hit too big to fit is skipped, and smaller later ones still fit", () => {
+  // Pages with very long titles (~2,650 characters a line): two fit in 6,000, the third doesn't.
+  const title = (i: number) => `Garden ${i} ${"x".repeat(990)}`;
+  const pages: Doc[] = Array.from({ length: 3 }, (_, i) => ({
+    key: `page:${i + 1}`,
+    kind: "page",
+    text: `${title(i)}\n${"plan ".repeat(200)}`,
+    at: NOW - HOUR - i * MIN,
+    title: title(i),
+  }));
+  // A month old: it ranks after the pages.
+  const small = msgDoc(7, "the garden gate", NOW - 30 * DAY);
+  const out = renderRecall({ query: "garden", docs: [...pages, small, msgDoc(99, "other")], exclude: new Set(), now: NOW })!;
+  const hits = out.split("\n").slice(1);
+  expect(hits).toHaveLength(3);
+  expect(hits[2]).toBe("you · 2026-09-11 · #7: the garden gate");
+  expect(out.length).toBeLessThanOrEqual(6000);
 });
 
 test("no hits renders nothing", () => {

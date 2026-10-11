@@ -25,8 +25,11 @@ export function createHistory(): History {
   let messages: HistoryMessage[] = [];
   let lastReset: EntryId | undefined;
   let queue: Promise<unknown> = Promise.resolve();
+  /** Bumped by each `attach`: a refresh begun before it is stale, even for the same root. */
+  let generation = 0;
 
   const catchUp = async (conversation: Conversation, context: Context) => {
+    const started = generation;
     const last = entries.at(-1)?.id;
     const fresh: EntryRecord[] = [];
     let cursor;
@@ -37,7 +40,7 @@ export function createHistory(): History {
       fresh.push(...page.items);
       cursor = page.next;
     } while (cursor !== undefined);
-    if (conversation !== root) return; // re-attached meanwhile
+    if (started !== generation || conversation !== root) return; // re-attached meanwhile
     const added = fresh.reverse().filter((e) => last === undefined || e.id > last);
     if (added.length > 0) {
       entries.push(...added);
@@ -49,6 +52,7 @@ export function createHistory(): History {
   return {
     attach(conversation) {
       root = conversation;
+      generation++;
       entries = [];
       messages = [];
       lastReset = undefined;

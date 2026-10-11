@@ -37,7 +37,9 @@ test("add assigns ids and skips near-duplicates", () => {
 
 test("words split on punctuation", () => {
   expect(words("dshi-home-server, v2.1!")).toEqual(["dshi", "home", "server", "v2", "1"]);
-  expect(words("Dan's  CAFÉ")).toEqual(["dan", "s", "café"]);
+  expect(words("Dan's  CAFÉ")).toEqual(["dans", "café"]);
+  // Apostrophes join, straight or curly.
+  expect(words("don't, I’m sure")).toEqual(["dont", "im", "sure"]);
 });
 
 test("update replaces text unless it duplicates another fact or the id is unknown", () => {

@@ -40,9 +40,17 @@ export const MemoryDoc = defineDoc<Memory>({
 
 export const MAX_WORDS = 30;
 
-/** The lowercased words of `text`, split on whitespace and punctuation ("dshi-home-server" is three words). */
+/**
+ * The lowercased words of `text`, split on whitespace and punctuation ("dshi-home-server" is three words);
+ * apostrophes join ("don't" is "dont").
+ */
 export function words(text: string): string[] {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, " ").split(/\s+/).filter(Boolean);
+  return text
+    .toLowerCase()
+    .replace(/['\u2019]/g, "")
+    .replace(/[^\p{L}\p{N}]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
 export function wordCount(text: string): number {

@@ -100,10 +100,21 @@ export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<voi
   }
 }
 
-/** The newest root user entry among the last 20: the input of the run that's calling. */
+/** How far back `newestInput` looks, in root entries. */
+const INPUT_SCAN = 200;
+
+/** The newest root user entry among the last 200: the input of the run that's calling. */
 async function newestInput(tx: Tx): Promise<EntryId | undefined> {
-  const { items } = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, 20);
-  return items.find((e) => e.kind === UserEntry.kind)?.id;
+  let cursor;
+  let seen = 0;
+  do {
+    const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, Math.min(50, INPUT_SCAN - seen), cursor);
+    const input = page.items.find((e) => e.kind === UserEntry.kind);
+    if (input !== undefined) return input.id;
+    seen += page.items.length;
+    cursor = page.next;
+  } while (cursor !== undefined && seen < INPUT_SCAN);
+  return undefined;
 }
 
 /** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */

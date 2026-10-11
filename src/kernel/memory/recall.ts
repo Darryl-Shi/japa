@@ -44,9 +44,10 @@ function line(doc: Doc, query: string, now: number): string {
 }
 
 /**
- * The "[From earlier]" block: `origin` (the input that started a job this run hears about) first, as `you asked`,
- * then the best matches for `query` among `docs` that aren't in `exclude` (already in view), at most 5 hits within
- * 6,000 characters; undefined when there are none.
+ * The "[From earlier]" block: `origin` (the input that started a job this run hears about) first, as `you asked` when
+ * the user wrote it or `started by` when it was automated (a schedule firing, a job's report), then the best matches
+ * for `query` among `docs` that aren't in `exclude` (already in view): at most 5 hits within 6,000 characters, a hit
+ * too big for what's left being skipped. Undefined when there are none.
  */
 export function renderRecall(input: {
   query: string;
@@ -67,12 +68,14 @@ export function renderRecall(input: {
   };
 
   if (origin !== undefined) {
-    add(`you asked · ${ago(origin.at, now)} · #${origin.id}: ${snippet(flat(origin.text), query, MESSAGE_SNIPPET)}`);
+    const label = origin.kind === "you" ? "you asked" : "started by";
+    add(`${label} · ${ago(origin.at, now)} · #${origin.id}: ${snippet(flat(origin.text), query, MESSAGE_SNIPPET)}`);
   }
   const shown = origin === undefined ? undefined : String(origin.id);
   const candidates = docs.filter((d) => !exclude.has(d.key) && d.key !== shown);
   for (const doc of rank(candidates, query, now, RECALL_HITS)) {
-    if (!add(line(doc, query, now))) break;
+    if (lines.length >= RECALL_HITS) break;
+    add(line(doc, query, now));
   }
   return lines.length > 0 ? [HEADER, ...lines].join("\n") : undefined;
 }

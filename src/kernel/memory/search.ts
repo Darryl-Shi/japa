@@ -15,13 +15,39 @@ const B = 0.75;
 const HALF_LIFE_DAYS = 14;
 const PAGE_BONUS = 1.5;
 const DAY_MS = 86_400_000;
+/** With at least this many docs, a query term in more than `COMMON_SHARE` of them is too common to search on. */
+const COMMON_MIN_DOCS = 10;
+const COMMON_SHARE = 0.2;
+
+/** Words too common in chat to search on: articles, pronouns, auxiliaries, small connectives and asking verbs. */
+const STOPWORDS = new Set(
+  (
+    "the an and or but if so as than then that this these those there here " +
+    "me my mine you your yours ur we us our ours he him his she her hers it its they them their theirs " +
+    "im ive youre dont didnt doesnt cant wont isnt arent wasnt thats whats " +
+    "am is are was were be been being have has had having do does did doing done " +
+    "will would shall should can could may might must " +
+    "of in on at to for with from by about into onto over under after before up down out off again " +
+    "not no yes " +
+    "what which who whom whose how when where why " +
+    "remember please just like know think tell said say any some all"
+  ).split(" "),
+);
+
+/** `w` is a stopword, or a single letter. */
+const isStopword = (w: string) => STOPWORDS.has(w) || /^\p{L}$/u.test(w);
+
+/** The distinct words of `query` worth searching on. */
+const queryTerms = (query: string) => [...new Set(words(query))].filter((w) => !isStopword(w));
 
 /**
  * Okapi BM25 over `words(text)`, with IDF and average length taken from `docs`, multiplied by
- * `0.5 ** (ageDays / 14)` and by 1.5 for pages. Returns up to `limit` docs with a positive score, best first.
+ * `0.5 ** (ageDays / 14)` and by 1.5 for pages. Stopwords in the query are ignored, and so, among 10 docs or more, is
+ * a term found in more than 20% of them (unless every term is). Returns up to `limit` docs with a positive score, best
+ * first.
  */
 export function rank(docs: readonly Doc[], query: string, now: number, limit: number): Doc[] {
-  const terms = [...new Set(words(query))];
+  let terms = queryTerms(query);
   if (terms.length === 0 || docs.length === 0 || limit <= 0) return [];
 
   const tfs = docs.map((d) => {
@@ -33,9 +59,14 @@ export function rank(docs: readonly Doc[], query: string, now: number, limit: nu
   });
   const N = docs.length;
   const avgdl = tfs.reduce((sum, t) => sum + t.length, 0) / N || 1;
+  const df = new Map(terms.map((term) => [term, tfs.filter((t) => t.tf.has(term)).length]));
+  if (N >= COMMON_MIN_DOCS) {
+    const rare = terms.filter((term) => df.get(term)! <= COMMON_SHARE * N);
+    if (rare.length > 0) terms = rare;
+  }
   const idf = new Map<string, number>();
   for (const term of terms) {
-    const n = tfs.filter((t) => t.tf.has(term)).length;
+    const n = df.get(term)!;
     idf.set(term, Math.log(1 + (N - n + 0.5) / (n + 0.5)));
   }
 
@@ -58,11 +89,14 @@ export function rank(docs: readonly Doc[], query: string, now: number, limit: nu
   return scored.slice(0, limit).map((s) => s.doc);
 }
 
-/** At most `max` characters of `text` centred on the first word matching `query` (the start if none); "…" marks cuts. */
+/**
+ * At most `max` characters of `text` centred on the first word matching a non-stopword of `query` (the start if none);
+ * "…" marks cuts.
+ */
 export function snippet(text: string, query: string, max: number): string {
   if (text.length <= max) return text;
   if (max <= 1) return text.slice(0, Math.max(0, max));
-  const terms = new Set(words(query));
+  const terms = new Set(queryTerms(query));
   let matchStart = 0;
   let matchEnd = 0;
   for (const m of text.matchAll(/\S+/g)) {

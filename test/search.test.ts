@@ -92,3 +92,31 @@ test("snippet at the very start or end has a cut only on the other side", () => 
   expect(e.endsWith("dentist")).toBe(true);
   expect(e.length).toBeLessThanOrEqual(30);
 });
+
+test("stopwords in the query don't match", () => {
+  const docs = [doc("a", "what do you think about the weather"), doc("b", "dentist booked"), doc("c", "other")];
+  expect(rank(docs, "what about the dentist", NOW, 10).map((d) => d.key)).toEqual(["b"]);
+  // A query of only stopwords finds nothing.
+  expect(rank(docs, "what do you think about it", NOW, 10)).toEqual([]);
+});
+
+test("terms in more than 20% of 10+ docs are dropped, unless every term is", () => {
+  const docs = [
+    ...Array.from({ length: 4 }, (_, i) => doc(`m${i}`, `meeting ${i}`)),
+    doc("budget", `the budget ${"plan ".repeat(40)}`),
+    ...Array.from({ length: 6 }, (_, i) => doc(`x${i}`, `other ${i}`)),
+  ];
+  // "meeting" is in 4 of 11 docs: dropped, so only the budget doc matches.
+  expect(rank(docs, "meeting budget", NOW, 10).map((d) => d.key)).toEqual(["budget"]);
+  // Alone, it's kept.
+  expect(rank(docs, "meeting", NOW, 10)).toHaveLength(4);
+  // Fewer than 10 docs: nothing is dropped.
+  expect(rank(docs.slice(0, 9), "meeting budget", NOW, 10)).toHaveLength(5);
+});
+
+test("snippet centres on the first non-stopword match", () => {
+  const text = `the ${"lorem ipsum ".repeat(40)}superpowers ${"dolor sit ".repeat(40)}`;
+  const s = snippet(text, "do you remember the superpowers", 60);
+  expect(s).toContain("superpowers");
+  expect(s.startsWith("…")).toBe(true);
+});
