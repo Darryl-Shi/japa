@@ -24,6 +24,7 @@ export type Job = {
   completed?: boolean; // job_complete called in the run not yet reported
   asked?: boolean; // job_ask called in the run not yet reported
   publishing?: number; // going live (see run.ts): the seq of the report its outcome line goes on
+  origin?: EntryId; // the root input whose run started it; none on jobs started before origins were kept
 };
 
 /** Why job `n` can't be messaged, nor its sandbox start, while it's `publishing`. */

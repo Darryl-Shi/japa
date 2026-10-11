@@ -4,11 +4,13 @@ import {
   configure,
   defineExtension,
   defineTool,
+  type EntryId,
   type Extension,
   type ModelRef,
   ROOT_CONVERSATION_ID,
   section,
   type Tx,
+  UserEntry,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { sandboxRefusal } from "../sandbox/jobs.ts";
@@ -98,6 +100,12 @@ export async function reconfigureJobs(tx: Tx, options: JobsOptions): Promise<voi
   }
 }
 
+/** The newest root user entry among the last 20: the input of the run that's calling. */
+async function newestInput(tx: Tx): Promise<EntryId | undefined> {
+  const { items } = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID }, 20);
+  return items.find((e) => e.kind === UserEntry.kind)?.id;
+}
+
 /** The CoS's job extension: the job tools, the jobs board section, and the job tasks. */
 export function jobsExtension(options: JobsOptions): Extension {
   const { settings } = options;
@@ -135,6 +143,7 @@ export function jobsExtension(options: JobsOptions): Extension {
       }
       const job = { model: modelText(model), thinking: thinking ?? settings.jobs.thinking };
       const started = await api.commit(async (tx) => {
+        const origin = await newestInput(tx); // before any write: a scan can't follow one
         const doc = await tx.doc(JobsDoc, ROOT_CONVERSATION_ID);
         const id = String(doc.nextId++);
         const anchor = await tx.createTask(Anchor, null, BACKGROUND);
@@ -147,6 +156,7 @@ export function jobsExtension(options: JobsOptions): Extension {
           title,
           brief,
           ...job,
+          ...(origin === undefined ? {} : { origin }),
           status: "queued",
           conversationId: child.id,
           createdAt: now,
