@@ -41,6 +41,14 @@ test("writing a page creates it, then replaces it by case-insensitive title", ()
   expect(findPage(p, "Home")).toBeUndefined();
 });
 
+test("titles are trimmed when finding and writing", () => {
+  const p = pad();
+  expect(writePage(p, "  Home servers ", "two boxes", 1)).toMatchObject({ page: { title: "Home servers" }, created: true });
+  expect(findPage(p, "Home servers ")?.id).toBe("1");
+  expect(writePage(p, "Home servers ", "three boxes", 2)).toMatchObject({ page: { id: "1", text: "three boxes" }, created: false });
+  expect(p.pages).toHaveLength(1);
+});
+
 test("the 16th active page archives the least recently updated", () => {
   const p = pad();
   for (let i = 1; i <= 15; i++) writePage(p, `P${i}`, "t", 100 + i);

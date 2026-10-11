@@ -40,8 +40,9 @@ export const MemoryDoc = defineDoc<Memory>({
 
 export const MAX_WORDS = 30;
 
+/** The lowercased words of `text`, split on whitespace and punctuation ("dshi-home-server" is three words). */
 export function words(text: string): string[] {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/).filter(Boolean);
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, " ").split(/\s+/).filter(Boolean);
 }
 
 export function wordCount(text: string): number {
@@ -65,8 +66,8 @@ const OFF_SCOPE: [RegExp, string][] = [
   [/(^|\s)(~\/|\/[\w.-]+\/[\w.-]+)/, "a file path"],
   [/https?:\/\//, "a URL"],
   [/\b\d{1,3}(\.\d{1,3}){3}\b/, "an IP address"],
-  [/\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b/i, "a commit or hash"],
-  [/\bjob \d+/i, "a job reference"],
+  [/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b/i, "a commit or hash"], // a digit and a hex letter
+  [/\bjob #?\d+\b(?!\s*(day|week|month|year)s?\b)/i, "a job reference"], // not "a new job 2 weeks ago"
 ];
 
 /** Why `text` is not about the user (a path, URL, IP, hash or job reference), or undefined when it's fine. */

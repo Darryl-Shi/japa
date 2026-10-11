@@ -53,6 +53,11 @@ test("matching ignores case and punctuation", () => {
   expect(out.map((d) => d.key)).toEqual(["a"]);
 });
 
+test("hyphenated names match their parts", () => {
+  const out = rank([doc("a", "rebooted dshi-home-server"), doc("b", "other")], "home server", NOW, 10);
+  expect(out.map((d) => d.key)).toEqual(["a"]);
+});
+
 test("snippet centres on the match and is at most max characters", () => {
   const text = `${"lorem ipsum ".repeat(40)}the Dentist appointment is on Friday ${"dolor sit ".repeat(40)}`;
   const s = snippet(text, "dentist", 60);

@@ -1,5 +1,6 @@
 import { defineDoc } from "@earendil-works/pi-durable";
 import { estimateTokens } from "./state.ts";
+import { ago } from "./window.ts";
 
 /** One project or topic: its current state in free-form markdown, not a log. */
 export type Page = { id: string; title: string; text: string; updatedAt: number; archivedAt?: number };
@@ -21,27 +22,16 @@ export const ACTIVE_PAGES = 15;
 export const ARCHIVE_AFTER = 14 * DAY;
 export const DELETE_AFTER = 90 * DAY;
 
-/** The age of `at` at `now`: "just now", "N min ago", "N h ago", "N d ago", then the date (the window's format). */
-function ago(at: number, now: number): string {
-  const minutes = Math.floor((now - at) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  const days = Math.floor(hours / 24);
-  return days < 7 ? `${days} d ago` : new Date(at).toISOString().slice(0, 10);
-}
-
 const active = (pad: Scratchpad) => pad.pages.filter((p) => p.archivedAt === undefined);
 
-/** The page titled `title`, case-insensitively, active or archived. */
+/** The page titled `title`, trimmed and case-insensitively, active or archived. */
 export function findPage(pad: Scratchpad, title: string): Page | undefined {
-  const wanted = title.toLowerCase();
+  const wanted = title.trim().toLowerCase();
   return pad.pages.find((p) => p.title.toLowerCase() === wanted);
 }
 
 /**
- * Creates the page titled `title` or replaces its text, making it active; over `PAGE_TOKENS` it is refused. When more
+ * Creates the page titled `title` (trimmed) or replaces its text, making it active; over `PAGE_TOKENS` it is refused. When more
  * than `ACTIVE_PAGES` are then active, the least recently updated other ones are archived.
  */
 export function writePage(
@@ -59,7 +49,7 @@ export function writePage(
   let page = findPage(pad, title);
   const created = page === undefined;
   if (page === undefined) {
-    page = { id: String(pad.nextId++), title, text, updatedAt: now };
+    page = { id: String(pad.nextId++), title: title.trim(), text, updatedAt: now };
     pad.pages.push(page);
   } else {
     page.text = text;

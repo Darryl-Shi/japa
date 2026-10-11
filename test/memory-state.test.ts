@@ -11,6 +11,7 @@ import {
   truncateToCap,
   type Fact,
   type Memory,
+  words,
 } from "../src/kernel/memory/state.ts";
 
 function memory(...texts: string[]): Memory {
@@ -32,6 +33,11 @@ test("add assigns ids and skips near-duplicates", () => {
   expect(m.nextId).toBe(3);
   expect(renderFacts(m.facts)).toBe("- Dan prefers short replies.\n- Dan lives in Berlin.");
   expect(renderFacts([])).toBeUndefined();
+});
+
+test("words split on punctuation", () => {
+  expect(words("dshi-home-server, v2.1!")).toEqual(["dshi", "home", "server", "v2", "1"]);
+  expect(words("Dan's  CAFÉ")).toEqual(["dan", "s", "café"]);
 });
 
 test("update replaces text unless it duplicates another fact or the id is unknown", () => {
@@ -68,6 +74,10 @@ test("a path, URL, IP, hash or job reference is rejected with its reason", () =>
   expect(offScope("Prefers RMB/SGD prices")).toBeUndefined();
   expect(offScope("Uses boat.dev")).toBeUndefined();
   expect(offScope("Was deadbeefed by accident")).toBeUndefined(); // hex letters only, no digit
+  expect(offScope("Started a new job 2 weeks ago")).toBeUndefined(); // a span of time, not a job
+  expect(offScope("Budget is 1000000 SGD")).toBeUndefined(); // digits only, no hex letter
+  expect(offScope("Pinned to commit 8cad62a")).toBe("a commit or hash");
+  expect(offScope("Waiting on job #68")).toBe("a job reference");
 
   const m = memory("Dan lives in Berlin.");
   const add = { op: "add" as const, text: "Server at 192.168.0.32" };
