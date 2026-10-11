@@ -44,7 +44,8 @@ import { byId, DAY, goingLive, JobDoc, JobsDoc, prune } from "./jobs/state.ts";
 import { WorkerExtension } from "./jobs/worker.ts";
 import { createHistory } from "./memory/history.ts";
 import { reflectDelay, reflection, unreflectedTurns, upgradeMemory } from "./memory/reflect.ts";
-import { MemoryDoc } from "./memory/state.ts";
+import { ScratchpadDoc, tidyPages } from "./memory/scratchpad.ts";
+import { expireLegacy, MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { PROMPT_HISTORY } from "./messaging/prompts.ts";
@@ -203,6 +204,18 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         const text = `Couldn't prune finished jobs: ${error instanceof Error ? error.message : String(error)}`;
         console.error(text);
         return [text];
+      }
+    };
+    // Archives and deletes stale scratchpad pages, and drops the legacy episodes once due. Never rejects: logged.
+    const tidyMemory = async () => {
+      try {
+        await root.commit(async (tx) => {
+          const now = Date.now();
+          tidyPages(await tx.doc(ScratchpadDoc, root.id), now);
+          expireLegacy(await tx.doc(MemoryDoc, root.id), now);
+        }, ctx);
+      } catch (error) {
+        console.error(`Couldn't tidy the memory: ${error instanceof Error ? error.message : String(error)}`);
       }
     };
     const runTool: MessagingContext["tool"] = async (name, args) => {
@@ -606,6 +619,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     await root.commit(async (tx) => {
       await tx.doc(JobsDoc, root.id);
       await tx.doc(MemoryDoc, root.id);
+      await tx.doc(ScratchpadDoc, root.id);
       await tx.doc(ChangesDoc, root.id);
       // A chat sign-in doesn't survive a restart: its request goes too.
       const requests = await tx.doc(SecretRequestsDoc, root.id);
@@ -618,6 +632,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     // the one before's, so they go once it succeeds.
     let pruneErrors: LoadError[] = [];
     const pruneAndReport = async () => {
+      await tidyMemory();
       const fresh = (await pruneOld()).map((error) => kernelError("workspace", error));
       const stale = pruneErrors;
       rt.errors.splice(0, rt.errors.length, ...rt.errors.filter((e) => !stale.includes(e)), ...fresh);

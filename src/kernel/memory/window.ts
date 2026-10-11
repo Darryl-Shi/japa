@@ -91,6 +91,19 @@ function show(item: Item, now: number): string {
   return `${label} · ${when} · #${m.id}: ${head} (full: ${pointer})`;
 }
 
+/**
+ * `message` as its window line group, but with its full text: for `history_read`. An automated arrival shows all of
+ * it after its label, with no pointer; a job report keeps its `[job <n> "<title>" <status>]` prefix.
+ */
+export function fullLine(message: HistoryMessage, now: number): string {
+  if (message.kind !== "auto") return show({ message, text: message.text }, now);
+  const when = ago(message.at, now);
+  if (message.job !== undefined) return `job ${message.job} report · ${when} · #${message.id}: ${message.text}`;
+  const prefix = PREFIX.exec(message.text)?.[0];
+  const rest = prefix === undefined ? message.text : message.text.slice(prefix.length).trim();
+  return `${prefix ?? "[auto]"} · ${when} · #${message.id}: ${rest || (prefix?.slice(1, -1) ?? "")}`;
+}
+
 /** The rendered length of `items` joined by newlines. */
 const size = (lengths: readonly number[]) => lengths.reduce((sum, n) => sum + 1 + n, -1);
 
