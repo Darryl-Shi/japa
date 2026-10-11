@@ -114,11 +114,17 @@ export function cosExtension(
           // Built once per run; the memo keeps it for this request's retries, across restarts too.
           let text = await api.memo<string | null>("japa.context", context);
           if (text === undefined) {
-            const { messages: transcript, lastReset } = await history.refresh(context);
-            const key = runKey(transcript, lastReset);
-            text = latest?.key === key ? latest.text : await build(api, transcript, lastReset, context);
-            text = await api.memo<string | null>("japa.context", text, context);
-            latest = { key, text };
+            // Fails open: a context that can't be built leaves the request as it is, for this request's retries too.
+            let built: { key: string; text: string | null } | undefined;
+            try {
+              const { messages: transcript, lastReset } = await history.refresh(context);
+              const key = runKey(transcript, lastReset);
+              built = { key, text: latest?.key === key ? latest.text : await build(api, transcript, lastReset, context) };
+            } catch (error) {
+              console.error(`japa.context: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            text = await api.memo<string | null>("japa.context", built?.text ?? null, context);
+            if (built !== undefined) latest = { key: built.key, text };
           }
           return { messages: text === null ? sent : inject(sent, text) };
         },
