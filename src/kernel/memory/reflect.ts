@@ -16,18 +16,38 @@ import {
 import { line } from "../jobs/cos.ts";
 import { BACKGROUND } from "../jobs/run.ts";
 import type { Settings } from "../settings.ts";
-import { applyFactOps, estimateTokens, type FactOp, type Memory, MemoryDoc, overCap, truncateToCap } from "./state.ts";
+import { findPage, PAGE_TOKENS, type Scratchpad, ScratchpadDoc, writePage } from "./scratchpad.ts";
+import {
+  applyFactOps,
+  estimateTokens,
+  type Fact,
+  type FactOp,
+  hasEvidence,
+  type Memory,
+  MemoryDoc,
+  overCap,
+  truncateToCap,
+} from "./state.ts";
+import { AUTOMATED } from "./transcript.ts";
+import { ago } from "./window.ts";
 
-const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and update what it remembers about the user. Call save once with:
-- facts: operations on the user facts ("About you"), a high-level picture of the user, not a log. Each entry is one lasting aspect in at most 30 words: who the user is, what they're working toward, how they like to work, key people and projects, standing preferences. Use add(text), update(id, text) or delete(id); an empty list when nothing changes. Rules:
+const REFLECT = `You reflect on a chief-of-staff assistant's recent turns and update what it remembers: the user's profile and its scratchpad pages. Call save once with:
+- profile: operations on the profile ("About you"), short items strictly about the user, not a log. Each item is one lasting aspect in at most 30 words: who the user is, people in their life, what they're working toward and why, life and interests, taste, how they like to work with the assistant. Use add(text, evidence), update(id, text, evidence) or delete(id); an empty list when nothing changes.
+  Keep out of the profile: japa's own setup (extensions, models, settings, schedules, jobs); file paths, repos, commits, hosts and IPs; credentials and contact numbers; task status and one-off events; a project's internals, which belong on a page.
+  A good item: "Protective of his Claude subscription limits; expects integrations to be efficient by default."
+  A bad item: "Factory settings: global defaults plus per-project overrides (behaviour, model/thinking per role, sandbox, ci)." That is a project's internals: it belongs on a page.
+  Rules:
+  - every add and update needs evidence: a verbatim quote, at least 3 words, from a \`user:\` line in these turns that isn't automated. An operation without it is rejected;
+  - if the user corrected something later in these turns, the correction is what you record;
   - record patterns and lasting context, not events or task details;
-  - fold new details into an existing entry and generalize, rather than adding entries;
-  - rewrite entries that have become too specific at a higher level;
+  - fold new details into an existing item and generalize, rather than adding items; revise items that are stale or too specific;
   - skip sensitive details unless the user explicitly asks to remember them.
-- episode: a short summary of these turns, for later search. Name the people, projects and decisions.
-\`user:\` lines starting with \`[job \` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user.`;
+- pages: the scratchpad, one page per project or topic, each its whole text in free-form markdown, at most 1,500 tokens. A page records the state these turns reached (what it is, decisions and why, where it lives, what's open), not how they got there. To change a page, write its whole new text and pass back the basedOn you were shown; a new page has no basedOn. Leave out pages that didn't change; an empty list when none did.
+\`user:\` lines starting with \`[job \`, \`[schedule \`, \`[japa]\` or \`[<name>]\` are automated reports, not the user: don't record them as facts about the user, and don't quote them as evidence.`;
 
 const SHORTEN = `Shorten each of these user fact operations to at most 30 words, keeping its meaning. Call save with the same operations and the shortened texts.`;
+
+const SHORTEN_PAGE = `Shorten this page to at most 1,500 tokens, keeping its current state. Call save with its new text.`;
 
 const merge = (limits: Settings["memory"]) =>
   `Merge these user facts: they exceed the limit of ${limits.maxFacts} entries and ${limits.maxTokens} tokens (about 4 characters per token). Combine related entries and delete the least useful until the list fits. Call save with update(id, text), delete(id) and add(text) operations.`;
@@ -44,13 +64,62 @@ const saveTool = (properties: Record<string, TSchema>): Tool => ({
   description: "Save your result.",
   parameters: Type.Object(properties),
 });
-const save = saveTool({ facts: factOps, episode: Type.String() });
+const profileOps = Type.Array(
+  Type.Union([
+    Type.Object({ op: Type.Literal("add"), text: Type.String(), evidence: Type.String() }),
+    Type.Object({ op: Type.Literal("update"), id: Type.String(), text: Type.String(), evidence: Type.String() }),
+    Type.Object({ op: Type.Literal("delete"), id: Type.String() }),
+  ]),
+);
+const pageWrites = Type.Array(
+  Type.Object({ title: Type.String(), text: Type.String(), basedOn: Type.Optional(Type.Number()) }),
+);
+const save = saveTool({ profile: profileOps, pages: pageWrites });
 const saveFacts = saveTool({ facts: factOps });
+const saveText = saveTool({ text: Type.String() });
 
-type Saved = { facts: FactOp[]; episode: string };
+type ProfileOp = FactOp & { evidence?: string };
+type PageWrite = { title: string; text: string; basedOn?: number };
+type Saved = { profile: ProfileOp[]; pages?: PageWrite[] };
 type Chunk = { taken: EntryRecord[]; lines: string[]; more: boolean };
 
 const listed = (items: { id: string; text: string }[]) => items.map((i) => `${i.id}: ${i.text}`).join("\n") || "(none)";
+
+/** The profile as the reflection sees it: `<id> (<age>): <text>` per item. */
+const aged = (facts: Fact[], now: number) =>
+  facts.map((f) => `${f.id} (${ago(f.updatedAt, now)}): ${f.text}`).join("\n") || "(none)";
+
+/** The active pages in full: `## <title> (basedOn <updatedAt>)` and the text. */
+const shown = (pad: Scratchpad) =>
+  pad.pages
+    .filter((p) => p.archivedAt === undefined)
+    .map((p) => `## ${p.title} (basedOn ${p.updatedAt})\n${p.text}`)
+    .join("\n\n") || "(none)";
+
+/** The text of `message`'s text parts. */
+const textOf = (message: Message) =>
+  typeof message.content === "string"
+    ? message.content
+    : message.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("");
+
+/** What the user said in `entries`: the texts of their inputs that aren't automated. */
+const userLines = (entries: EntryRecord[]) =>
+  entries
+    .flatMap((e) => (e.model ?? []).filter((m) => m.role === "user").map(textOf))
+    .filter((t) => !AUTOMATED.test(t));
+
+/**
+ * The shortened `ops` among `shortened`, in order: as many adds as `ops` had, and updates of the ids it updated; the
+ * pass can't introduce operations of its own.
+ */
+function matching(ops: FactOp[], shortened: FactOp[]): FactOp[] {
+  let adds = ops.filter((o) => o.op === "add").length;
+  const ids = new Set(ops.flatMap((o) => (o.op === "update" ? [o.id] : [])));
+  return shortened.filter((o) => {
+    if (o.op === "add") return adds-- > 0;
+    return o.op === "update" && ids.delete(o.id);
+  });
+}
 
 /** `entry`'s non-system model messages, one per line. */
 const entryText = (entry: EntryRecord) => (entry.model ?? []).filter((m) => m.role !== "system").map(line).join("\n");
@@ -83,7 +152,8 @@ function chunk(entries: EntryRecord[], budget: number): Chunk {
 
 /**
  * The `Reflect` task, which reads the root's stored transcript since the last reflection and saves what it taught
- * about the user as facts, and `startReflect`, which starts it unless it is already running.
+ * about the user as profile items (each backed by a quote of the user) and what it changed as scratchpad pages, and
+ * `startReflect`, which starts it unless it is already running.
  */
 export function reflection({ models, settings }: { models: Models; settings: Settings }) {
   /** The model that reflects: the consolidation model when set, the CoS's otherwise. Read live: settings change. */
@@ -106,6 +176,7 @@ export function reflection({ models, settings }: { models: Models; settings: Set
     phases: {
       reflect: async (_task, runtime, context) => {
         const memory = structuredClone((await runtime.snapshot(MemoryDoc, ROOT_CONVERSATION_ID, context))!) as Memory;
+        const pad = (await runtime.snapshot(ScratchpadDoc, ROOT_CONVERSATION_ID, context)) ?? { nextId: 1, pages: [] };
         const budget = Math.floor(reflectModel().contextWindow / 2);
         const from = memory.reflectedThrough !== undefined ? ((memory.reflectedThrough + 1) as EntryId) : undefined;
 
@@ -122,20 +193,48 @@ export function reflection({ models, settings }: { models: Models; settings: Set
         if (batch === undefined) return;
         const piece = batch;
 
-        const text = `Turns since the last reflection:\n${piece.lines.join("\n")}\n\nFacts:\n${listed(memory.facts)}`;
-        const saved = (await ask<Saved>(REFLECT, text, save, runtime.signal))!; // a missing field throws below, faulting the task
         const now = runtime.now();
+        const text = [
+          `Turns since the last reflection:\n${piece.lines.join("\n")}`,
+          `Profile:\n${aged(memory.facts, now)}`,
+          `Pages:\n${shown(pad)}`,
+        ].join("\n\n");
+        const saved = await ask<Saved>(REFLECT, text, save, runtime.signal);
+        if (!Array.isArray(saved?.profile)) throw new Error("The reflection model didn't save a profile list."); // faults the task
+
+        // An add or update must quote what the user said in this chunk; the others are dropped.
+        const said = userLines(piece.taken);
+        const proven: FactOp[] = saved.profile.flatMap((o): FactOp[] => {
+          if (o.op === "delete") return [{ op: "delete", id: o.id }];
+          if (typeof o.evidence !== "string" || !hasEvidence(o.evidence, said)) return [];
+          return [o.op === "add" ? { op: "add", text: o.text } : { op: "update", id: o.id, text: o.text }];
+        });
         // The decisions are made on the snapshot; the operations they produce are applied to the live memory below.
-        const ops = [...saved.facts];
-        const { tooLong } = applyFactOps(memory, saved.facts, now);
+        const ops = [...proven];
+        const { tooLong } = applyFactOps(memory, proven, now); // off-scope ops are rejected, here and below
         if (tooLong.length > 0) {
           const shortened = await ask<{ facts: FactOp[] }>(SHORTEN, JSON.stringify(tooLong), saveFacts, runtime.signal);
-          ops.push(...(shortened?.facts ?? []));
-          applyFactOps(memory, shortened?.facts ?? [], now); // still too long: dropped
+          const kept = matching(tooLong, shortened?.facts ?? []);
+          ops.push(...kept);
+          applyFactOps(memory, kept, now); // still too long: dropped
         }
         if (overCap(memory.facts, settings.memory)) {
           const merged = await ask<{ facts: FactOp[] }>(merge(settings.memory), listed(memory.facts), saveFacts, runtime.signal);
           ops.push(...(merged?.facts ?? []));
+        }
+
+        // A page over the cap gets one shorten pass and is dropped if it's still over.
+        const writes: PageWrite[] = [];
+        for (const write of saved.pages ?? []) {
+          if (estimateTokens(write.text) <= PAGE_TOKENS) {
+            writes.push(write);
+            continue;
+          }
+          const page = `## ${write.title}\n${write.text}`;
+          const shorter = await ask<{ text: string }>(SHORTEN_PAGE, page, saveText, runtime.signal);
+          if (typeof shorter?.text === "string" && estimateTokens(shorter.text) <= PAGE_TOKENS) {
+            writes.push({ ...write, text: shorter.text });
+          }
         }
 
         // One commit applies the operations to the memory as it stands now — so a `memory_remember` or
@@ -146,6 +245,13 @@ export function reflection({ models, settings }: { models: Models; settings: Set
           applyFactOps(draft, ops, now);
           draft.facts = truncateToCap(draft.facts, settings.memory); // a no-op under the cap
           draft.reflectedThrough = piece.through;
+          // A page changed since the reflection was shown it (or created meanwhile) keeps that change.
+          const scratchpad = writes.length > 0 ? await tx.doc(ScratchpadDoc, ROOT_CONVERSATION_ID) : undefined;
+          for (const write of writes) {
+            const page = findPage(scratchpad!, write.title);
+            if (page !== undefined && write.basedOn !== page.updatedAt) continue;
+            writePage(scratchpad!, write.title, write.text, now);
+          }
           return piece.more
             ? { status: "running", checkpoint: { phase: "reflect", through: piece.through } }
             : { status: "terminal", outcome: { status: "completed", result: null } };
