@@ -73,8 +73,9 @@ export type SurfaceContext = {
     /** Delivers the current snapshot as the first event, then live events. */
     events(listener: (events: readonly AgentEvent[]) => void): Promise<{ stop(): Promise<void> }>;
     /**
-     * Delivers each finished assistant message with text, in order, one at a time (awaiting a returned promise);
-     * after the cursor `after`, or from now when absent. `stop()` waits for the delivery in progress.
+     * Delivers each finished assistant message with text and each successful `send_file` (a reply with `file` set), in
+     * transcript order, one at a time (awaiting a returned promise); after the cursor `after`, or from now when absent.
+     * `stop()` waits for the delivery in progress.
      */
     replies(listener: (r: Reply) => void | Promise<void>, after?: string): Promise<{ stop(): Promise<void> }>;
   };
@@ -273,6 +274,13 @@ function requireFields(
   return undefined;
 }
 
+/** Like `requireFields`, for fields that may be absent. */
+function optionalFields(c: unknown, fields: Record<string, "string" | "number" | "function">): string | undefined {
+  const o = c as Record<string, unknown>;
+  const present = Object.entries(fields).filter(([field]) => o[field] !== undefined);
+  return requireFields(c, Object.fromEntries(present));
+}
+
 const CORE_CONTRACTS: Contract[] = [
   {
     name: "provider",
@@ -313,7 +321,7 @@ const CORE_CONTRACTS: Contract[] = [
         delete: "function",
         typing: "function",
         commands: "function",
-      }),
+      }) ?? optionalFields(c, { sendFile: "function", maxFileBytes: "number" }),
     activate: (c, ctx, messaging) => startMessaging(c as MessagingAdapter, ctx, messaging),
   },
   {

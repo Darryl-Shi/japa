@@ -574,7 +574,7 @@ const jobConversation = async (daemon: Daemon) =>
 test.skipIf(NO_BWRAP)("every job has all four coding tools and every available extension", async () => {
   const { daemon, faux } = await bootWith();
   const root = await names(daemon.root);
-  expect(root).toEqual(expect.arrayContaining(["read", "job_start", "probe_write"]));
+  expect(root).toEqual(expect.arrayContaining(["read", "job_start", "probe_write", "send_file"]));
   for (const name of ["write", "edit", "bash", "job_progress", "job_complete", "job_ask"]) {
     expect(root).not.toContain(name);
   }
@@ -589,6 +589,7 @@ test.skipIf(NO_BWRAP)("every job has all four coding tools and every available e
     expect.arrayContaining(["read", "write", "edit", "bash", "job_progress", "job_complete", "job_ask", "skill_read", "probe_write"]),
   );
   expect(tools).not.toContain("job_start");
+  expect(tools).not.toContain("send_file"); // only the CoS sends files
   await waitFor(() => idle(daemon));
   await daemon.close();
 });
@@ -1302,6 +1303,7 @@ test("the CoS has no install tool", async () => {
   const { daemon } = await bootWith();
   const tools = (await daemon.root.agent(ctx)).tools.map((t) => t.name);
   expect(tools).toContain("rollback");
+  expect(tools).toContain("send_file");
   expect(tools).not.toContain("install");
   await daemon.close();
 });

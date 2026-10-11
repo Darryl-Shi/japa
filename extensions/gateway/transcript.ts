@@ -35,6 +35,12 @@ function linesOf(entry: EntryRecord): Line[] {
   if (entry.kind === "pi.reset" || entry.kind === "pi.compaction") return [];
   return (entry.model ?? []).flatMap((m): Line[] => {
     if (m.role === "user") return [{ kind: "user", text: typeof m.content === "string" ? m.content : textOf(m.content) }];
+    // A file the CoS sent: it's already local, so just its path.
+    if (m.role === "toolResult") {
+      const sent = m.toolName === "send_file" && !m.isError;
+      const file = sent ? (m.details as { file?: { path?: unknown } } | undefined)?.file : undefined;
+      return typeof file?.path === "string" ? [{ kind: "tool", text: `📎 ${file.path}` }] : [];
+    }
     if (m.role !== "assistant") return [];
     const lines: Line[] = [];
     const text = textOf(m.content);

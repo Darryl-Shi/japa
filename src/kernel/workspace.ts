@@ -31,6 +31,7 @@ const IGNORED = [
   "/attachments/",
   "/desktop/",
   "/logs/",
+  "/outbox/",
   "setup.json",
   "update.json*",
   "/.jobs/",

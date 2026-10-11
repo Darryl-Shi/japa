@@ -240,8 +240,10 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(read(clone, "package.json")).toBe('{"type":"module"}\n');
     // The real shared folder, which the sandbox mounts in the clone. The job un-ignores it, and node_modules.
     write(home, "desktop/shared/shot.png", "png");
+    write(home, "outbox/1/report.md", "r\n"); // the outbox too
     const ignored = read(clone, ".gitignore").split("\n");
-    write(clone, ".gitignore", ignored.filter((line) => line !== "/desktop/" && line !== "node_modules/").join("\n"));
+    const unignored = ["/desktop/", "/outbox/", "node_modules/"];
+    write(clone, ".gitignore", ignored.filter((line) => !unignored.includes(line)).join("\n"));
     rmSync(join(clone, "notes.md"));
     write(clone, "new.md", "new\n");
     write(clone, ".cache/junk", "j"); // still ignored: never staged
@@ -251,6 +253,7 @@ describe.skipIf(NO_BWRAP)("publish", () => {
     expect(read(home, "notes.md")).toBe("n\n");
     expect(existsSync(join(home, "new.md"))).toBe(false);
     expect(read(home, "desktop/shared/shot.png")).toBe("png");
+    expect(read(home, "outbox/1/report.md")).toBe("r\n");
     expect(git(home, "status", "--porcelain")).toBe("");
   });
 

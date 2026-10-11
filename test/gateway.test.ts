@@ -3,6 +3,8 @@ import { writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { expect, test, vi } from "vitest";
 import { connect } from "../extensions/gateway/client.ts";
+import { join } from "node:path";
+import { applyEvents, type Transcript } from "../extensions/gateway/transcript.ts";
 import { type ServerMessage, socketPath } from "../extensions/gateway/protocol.ts";
 import { boot } from "../src/kernel/boot.ts";
 import type { Status } from "../src/kernel/contracts.ts";
@@ -162,5 +164,42 @@ test("a stale socket file is replaced", async () => {
   writeFileSync(socketPath(home), "");
   const daemon = await boot({ home, extensions: [kit.extension] });
   expect(bootErrors(daemon)).toEqual([]);
+  await daemon.close();
+});
+
+test("the transcript shows a line with the path of each file the CoS sent", async () => {
+  const { daemon, faux, home } = await bootTest();
+  const path = join(home, "outbox", "report.pdf");
+  writeFileSync(path, "%PDF");
+  script(faux, (role, text) => {
+    if (role === "user" && text === "send it") return call("send_file", { path, caption: "The report" });
+    if (role === "user" && text === "send nothing") return call("send_file", { path: join(home, "missing.pdf") });
+    return undefined;
+  });
+  const client = await connect(home);
+  let t: Transcript = { lines: [], streaming: "", busy: false };
+  client.onMessage((m) => {
+    if (m.type === "events") t = applyEvents(t, m.events);
+  });
+  client.send({ type: "attach" });
+  client.send({ type: "submit", text: "send it" });
+  await vi.waitFor(() =>
+    expect(t.lines).toEqual([
+      { kind: "user", text: "send it" },
+      { kind: "tool", text: "⚙ send_file" },
+      { kind: "tool", text: `📎 ${path}` },
+      { kind: "assistant", text: "ok" },
+    ]),
+  );
+  client.send({ type: "submit", text: "send nothing" });
+  // A failed send_file shows no file line.
+  await vi.waitFor(() =>
+    expect(t.lines.slice(4)).toEqual([
+      { kind: "user", text: "send nothing" },
+      { kind: "tool", text: "⚙ send_file" },
+      { kind: "assistant", text: "ok" },
+    ]),
+  );
+  client.close();
   await daemon.close();
 });
