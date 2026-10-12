@@ -62,8 +62,10 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   - `extensions/webui/auth.ts` — token + HMAC session cookies; `live.ts` + `transcript.ts` — live hub / projection
   - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract
 - `skills/` — packaged skills (e.g. `writing-job-briefs`).
-- `install.sh` — the installer: native mode (steps: clone, node, dependencies, build, launcher), Docker mode (Sysbox
-  instances) and the embedded host launcher (`docker_launcher_text`). POSIX sh, runs under `curl | sh`.
+- `install.sh` — the installer: with a terminal, a menu first (Install / Update / Uninstall / Quit); native mode
+  (steps: clone, node, dependencies, build, launcher; Uninstall delegates to `japa uninstall` or removes directly),
+  Docker mode (Sysbox instances) and the embedded host launcher (`docker_launcher_text`). POSIX sh, runs under
+  `curl | sh` (tests: `JAPA_INSTALL_TTY`).
 - `docker/` — the `japa-host` system container image (systemd, dockerd, Node 24, bwrap, noVNC forward on 16080).
 - `test/` — vitest suites (`test/webui*.test.ts` for the web UI; `*-helpers.ts` hold fakes: fake messaging adapter,
   fake Telegram Bot API); `test/fake-docker.ts` is the fake `docker` for the installer/launcher tests;

@@ -52,6 +52,27 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 - README + docs/spec.md Outcome written; AGENTS.md, scripts/setup.sh, scripts/run.sh added.
 - --non-interactive in Docker mode skips setup (as §4.3 step 5); --no-service is passed to the inner setup.
 
+# Progress: installer menu (docs/specs/run-mv4qu21g-84sb.md)
+
+## Done
+- install.sh: menu (Install/Update/Uninstall/Quit) on fd 3 from `JAPA_INSTALL_TTY` (default /dev/tty); foreign app/
+  refused before the menu; prerequisites only for Install/Update; Uninstall: removal + data prompts, probe
+  (launcher → marked node/ ≥24 → system node ≥24, then `--version`), delegated `uninstall [--purge]` or shell fallback
+  mirroring uninstall.ts (best-effort, non-zero on failed steps).
+- mini-japa fixture: `mini-dep` file: dependency (so removing node_modules breaks the probe) + `uninstall` stand-in.
+- 19 new tests in test/install-sh.test.ts; README, docs/spec.md (incl. implementation notes), AGENTS.md.
+
+## Decisions
+- See docs/spec.md "installer menu" → Implementation notes. EOF at any prompt = no; Ctrl-C at menu = 130.
+- No CI workflow: the spec doesn't ask for one.
+
+## Integration (bundle-5: installer menu + Docker hosting)
+- The menu comes first; Install then asks the Docker/native mode question (unless `--mode`), Update upgrades the
+  existing install in its own mode (native `<dir>/app`, else the Docker instance), Uninstall removes the native install
+  at `<dir>` (a Docker instance is removed with `japa --instance <n> uninstall`).
+- The "replace the Docker launcher?" question moved after the menu (only for a native Install/Update).
+- One `has_tty`/`TTY` at the top; after the menu every terminal read (mode, Sysbox, launcher questions, setup) uses fd 3.
+
 ---
 
 # Progress: provider building blocks in japa/sdk

@@ -558,10 +558,13 @@ function runInPty(c: Ctx, args: string[], input: string, extraEnv: NodeJS.Proces
   return { status: r.status, output: `${r.stdout}${r.stderr}` };
 }
 
+// With a terminal the installer menu comes first (docs/spec.md "installer menu"): each run's answers start with the
+// menu's (Enter: Install on a fresh machine), then the mode question and the rest.
 describe("with a terminal", () => {
   test.skipIf(!hasScript)("pressing Enter at the mode question picks Docker", () => {
     const c = setup();
-    const r = runInPty(c, ["--repo", REPO, "--skip-setup"], "\n");
+    const r = runInPty(c, ["--repo", REPO, "--skip-setup"], "\n\n");
+    expect(r.output).toContain("Choose [1]:");
     expect(r.output).toContain("Install japa via Docker (recommended) or natively?");
     expect(r.status, r.output).toBe(0);
     expect(Object.keys(c.fake.state().containers)).toEqual(["japa-alice"]);
@@ -574,11 +577,29 @@ describe("with a terminal", () => {
     writeFileSync(osRelease, "ID=debian\n");
     writeFakeTool(c.fake.binDir, "apt-get", "exit 1");
     writeFakeTool(c.fake.binDir, "sudo", 'echo "fake sudo $*"; exit 1');
-    const r = runInPty(c, ["--mode", "docker", "--repo", REPO, "--skip-setup"], "n\nn\n", { JAPA_OS_RELEASE: osRelease });
+    const r = runInPty(c, ["--mode", "docker", "--repo", REPO, "--skip-setup"], "\nn\nn\n", { JAPA_OS_RELEASE: osRelease });
     expect(r.output).toContain("Install Sysbox now?");
     expect(r.output).toContain("Install japa natively instead?");
     expect(r.output).not.toContain("fake sudo");
     expect(r.status).not.toBe(0);
     expect(c.fake.callsOf("build")).toEqual([]);
+  });
+
+  test.skipIf(!hasScript)("with a terminal, the menu marks the instance installed and Enter (Update) upgrades it", () => {
+    const c = setup({
+      containers: Object.fromEntries([instance("alice", { port: 6085, image: "sha256:image1", branch: "main" })]),
+      volumes: ["japa-alice-home", "japa-alice-docker"],
+      networks: ["japa-alice-net"],
+      images: { "japa-host:main": "sha256:image1" },
+      buildImageId: "sha256:image1",
+    });
+    const r = runInPty(c, ["--repo", REPO], "1\n\n");
+    expect(r.status, r.output).toBe(0);
+    expect(r.output).toContain("Docker instance alice installed)");
+    expect(r.output).toContain("Choose [2]:");
+    expect(r.output).toContain("japa is already installed as Docker instance alice; choose Update");
+    expect(r.output).not.toContain("Install japa via Docker (recommended) or natively?");
+    expect(c.fake.callsOf("run")).toEqual([]);
+    expect(innerInstalls(c.fake).length).toBe(1);
   });
 });

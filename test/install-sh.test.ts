@@ -2,7 +2,7 @@
 // these tests exercise the real clone / Node-detection / npm ci / launcher-writing logic without network access.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -547,4 +547,366 @@ test("--non-interactive without --skip-setup still skips setup with the finish m
 test("sh -n accepts install.sh (syntax check)", () => {
   const result = spawnSync("sh", ["-n", INSTALL_SH], { encoding: "utf8" });
   expect(result.status, result.stderr).toBe(0);
+});
+
+// --- The menu (docs/spec.md "installer menu"). JAPA_INSTALL_TTY stands in for /dev/tty: a file of scripted answers. ---
+
+/** A fake `systemctl` first on PATH that records each call's arguments, one line per call, in `log`. */
+function fakeSystemctl(): { bin: string; log: string } {
+  const bin = tmp();
+  const log = join(tmp(), "systemctl.log");
+  writeFileSync(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >>"${log}"\n`);
+  chmodSync(join(bin, "systemctl"), 0o755);
+  return { bin, log };
+}
+
+/** A temporary user: HOME, XDG_CONFIG_HOME, JAPA_HOME (with a file in it), a fake systemctl, an install dir. */
+function menuUser() {
+  const home = tmp();
+  const config = join(home, ".config");
+  const japaHome = join(home, ".japa");
+  mkdirSync(japaHome, { recursive: true });
+  writeFileSync(join(japaHome, "settings.json"), "{}\n");
+  const systemctl = fakeSystemctl();
+  const dir = join(tmp(), "d");
+  const env = {
+    HOME: home,
+    XDG_CONFIG_HOME: config,
+    JAPA_HOME: japaHome,
+    PATH: `${systemctl.bin}:${basePath()}`,
+    SHELL: "/bin/sh",
+  };
+  return { home, config, japaHome, dir, env, systemctlLog: systemctl.log, launcher: join(home, ".local", "bin", "japa") };
+}
+
+/** Runs install.sh with `answers` as the terminal's input. */
+function runMenu(args: string[], env: NodeJS.ProcessEnv, answers: string) {
+  const tty = join(tmp(), "tty");
+  writeFileSync(tty, answers);
+  return runInstall(args, { ...env, JAPA_INSTALL_TTY: tty });
+}
+
+/** A healthy install in `u.dir` (no menu), plus a service unit file as `japa setup` would have written. */
+function installed(u: ReturnType<typeof menuUser>, bare = fixtureRepo()) {
+  const result = runInstall(["--dir", u.dir, "--repo", bare, "--non-interactive", "--skip-setup"], u.env);
+  expect(result.status, result.output).toBe(0);
+  const unit = join(u.config, "systemd", "user", "japa.service");
+  mkdirSync(dirname(unit), { recursive: true });
+  writeFileSync(unit, "[Service]\n");
+  return { bare, unit };
+}
+
+const countOf = (text: string, needle: string) => text.split(needle).length - 1;
+
+test("the menu on a fresh machine: Install is the default, and Enter installs and runs setup", () => {
+  const u = menuUser();
+  const bare = fixtureRepo();
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`==> japa installer (${u.dir})\n  1) Install\n  2) Update\n  3) Uninstall\n  4) Quit\nChoose [1]:`);
+  expect(existsSync(join(u.dir, "app", ".git"))).toBe(true);
+  expect(readFileSync(join(u.dir, "app", "built.txt"), "utf8")).toBe("built\n");
+  expect(execFileSync(u.launcher, ["--version"], { encoding: "utf8" })).toBe("japa 0.0.0 (fixture)\n");
+  expect(result.output).toContain("setup called");
+});
+
+test("the menu on an installed machine: marked installed, Update is the default, and Enter runs japa update", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`==> japa installer (${u.dir}, installed)`);
+  expect(result.output).toContain("Choose [2]:");
+  expect(result.output).toContain("update called");
+  expect(result.output).not.toMatch(/--branch/);
+});
+
+test("Update with --branch forwards it through the menu", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare, "--branch", "dev"], u.env, "2\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain("update called --branch dev");
+});
+
+test("Update on a fresh machine says so and shows the menu again", () => {
+  const u = menuUser();
+
+  const result = runMenu(["--dir", u.dir, "--repo", fixtureRepo()], u.env, "2\n4\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`no japa install at ${u.dir}; choose Install`);
+  expect(countOf(result.output, "1) Install")).toBe(2);
+  expect(existsSync(u.dir)).toBe(false);
+  expect(existsSync(u.launcher)).toBe(false);
+});
+
+test("Install on an installed machine says so and shows the menu again", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "1\n4\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`japa is already installed at ${u.dir}; choose Update`);
+  expect(countOf(result.output, "1) Install")).toBe(2);
+  expect(result.output).not.toContain("update called");
+});
+
+test("Quit, closed input, and other input change nothing", () => {
+  const u = menuUser();
+  const bare = fixtureRepo();
+
+  for (const answers of ["4\n", "", "x\n9\n4\n"]) {
+    const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, answers);
+    expect(result.status, result.output).toBe(0);
+    expect(existsSync(u.dir)).toBe(false);
+    expect(existsSync(u.launcher)).toBe(false);
+    if (answers.startsWith("x")) expect(countOf(result.output, "1) Install")).toBe(3);
+  }
+});
+
+test("Ctrl-C at the menu exits 130 with nothing done", async () => {
+  const u = menuUser();
+  const fifo = join(tmp(), "tty");
+  execFileSync("mkfifo", [fifo]);
+  const writer = openSync(fifo, "r+"); // keeps the FIFO open so install.sh's reads block instead of seeing EOF
+  try {
+    const child = spawn("sh", [INSTALL_SH, "--dir", u.dir, "--repo", fixtureRepo()], {
+      env: { ...u.env, JAPA_INSTALL_TTY: fifo },
+      detached: true,
+    });
+    let output = "";
+    child.stdout.on("data", (d: Buffer) => (output += d));
+    child.stderr.on("data", (d: Buffer) => (output += d));
+    const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
+    for (let i = 0; i < 200 && !output.includes("Choose ["); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(output).toContain("Choose [1]:");
+
+    process.kill(-child.pid!, "SIGINT");
+
+    expect(await closed, output).toBe(130);
+    expect(existsSync(u.dir)).toBe(false);
+  } finally {
+    closeSync(writer);
+  }
+}, 30_000);
+
+test("--non-interactive shows no menu even with a terminal", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare, "--non-interactive"], u.env, "3\ny\ny\ndelete\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).not.toContain("1) Install");
+  expect(result.output).toContain("update called");
+  expect(existsSync(join(u.dir, "app"))).toBe(true);
+});
+
+test("a foreign app/ is refused before the menu", () => {
+  const u = menuUser();
+  const app = join(u.dir, "app");
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, "keep.txt"), "mine");
+
+  const result = runMenu(["--dir", u.dir, "--repo", fixtureRepo()], u.env, "3\ny\ny\ndelete\n");
+
+  expect(result.status, result.output).toBe(1);
+  expect(result.output).toContain(`${app} exists and isn't a japa checkout; remove it or choose another --dir`);
+  expect(result.output).not.toContain("1) Install");
+  expect(readFileSync(join(app, "keep.txt"), "utf8")).toBe("mine");
+});
+
+test("with --mode docker (which ignores --dir), the menu's Uninstall still never touches a foreign app/", () => {
+  const u = menuUser();
+  const app = join(u.dir, "app");
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, "keep.txt"), "mine");
+
+  const result = runMenu(["--mode", "docker", "--dir", u.dir, "--repo", fixtureRepo()], u.env, "3\ny\nn\n4\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`no japa install at ${u.dir}`);
+  expect(result.output).not.toContain("Uninstall japa from");
+  expect(readFileSync(join(app, "keep.txt"), "utf8")).toBe("mine");
+  expect(existsSync(u.systemctlLog)).toBe(false);
+});
+
+test("Uninstall with nothing there says so and shows the menu again", () => {
+  const u = menuUser();
+
+  const result = runMenu(["--dir", u.dir], u.env, "3\n4\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`no japa install at ${u.dir}\n`);
+  expect(countOf(result.output, "1) Install")).toBe(2);
+});
+
+test("Uninstall on a healthy install delegates to japa uninstall, keeping data", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\nn\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`Uninstall japa from ${u.dir}? [y/N]`);
+  expect(result.output).toContain(`Also delete your data in ${u.japaHome} (settings, secrets, memory)? [y/N]`);
+  expect(result.output).toContain("==> Uninstalling with japa uninstall");
+  expect(result.output).toMatch(/uninstall called \n/);
+  expect(result.output).not.toContain("removing it directly");
+  expect(result.output).not.toContain("Checking prerequisites");
+});
+
+test("Uninstall delegates with --purge, passing the terminal on for its delete confirmation", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\nyes\ndelete\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain("uninstall called --purge");
+  expect(result.output).toContain("uninstall confirm: delete");
+});
+
+test("Uninstall delegates through a usable system Node when the launcher is gone", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+  rmSync(u.launcher);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\n\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain("==> Uninstalling with japa uninstall");
+  expect(result.output).toContain("uninstall called");
+});
+
+test("declining the removal prompt returns to the menu and removes nothing", () => {
+  const u = menuUser();
+  const { bare, unit } = installed(u);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\nn\n4\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(countOf(result.output, "1) Install")).toBe(2);
+  expect(result.output).not.toContain("uninstall called");
+  expect(existsSync(join(u.dir, "app"))).toBe(true);
+  expect(existsSync(u.launcher)).toBe(true);
+  expect(existsSync(unit)).toBe(true);
+  expect(existsSync(u.systemctlLog)).toBe(false);
+});
+
+test("a broken install (no node_modules) is removed directly, keeping data and naming the PATH line", () => {
+  const u = menuUser();
+  const { bare, unit } = installed(u);
+  rmSync(join(u.dir, "app", "node_modules"), { recursive: true });
+  // japa's own Node, as a previous install would have left it.
+  mkdirSync(join(u.dir, "node", "bin"), { recursive: true });
+  writeFileSync(join(u.dir, "node", NODE_MARKER), "");
+  const bashrc = join(u.home, ".bashrc");
+  const rcText = '# mine\nexport PATH="$HOME/.local/bin:$PATH"\n';
+  writeFileSync(bashrc, rcText);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\nn\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain(`==> japa can't run from ${u.dir}; removing it directly`);
+  expect(result.output).not.toContain("uninstall called");
+  expect(readFileSync(u.systemctlLog, "utf8")).toBe("--user disable --now japa\n--user daemon-reload\n");
+  expect(existsSync(unit)).toBe(false);
+  expect(existsSync(u.launcher)).toBe(false);
+  expect(existsSync(u.dir)).toBe(false);
+  expect(readFileSync(join(u.japaHome, "settings.json"), "utf8")).toBe("{}\n");
+  expect(result.output).toContain(`kept ${u.japaHome}`);
+  expect(result.output).toContain(`the PATH line install.sh added is still in ${bashrc}`);
+  expect(readFileSync(bashrc, "utf8")).toBe(rcText);
+});
+
+test("an install without a usable Node 24 is removed directly", () => {
+  const u = menuUser();
+  const { bare, unit } = installed(u);
+  // The launcher points here but its Node is gone, and the only node on PATH is too old.
+  writeFileSync(u.launcher, launcherText("/nonexistent/node/bin/node", join(u.dir, "app")));
+  const fakeBin = tmp();
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\necho 20.0.0\n");
+  chmodSync(join(fakeBin, "node"), 0o755);
+  const env = { ...u.env, PATH: `${fakeBin}:${u.env.PATH}` };
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], env, "3\ny\n\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain("removing it directly");
+  expect(existsSync(unit)).toBe(false);
+  expect(existsSync(u.launcher)).toBe(false);
+  expect(existsSync(u.dir)).toBe(false);
+  expect(existsSync(u.japaHome)).toBe(true);
+});
+
+test("a direct uninstall with data deletes it once you type delete, and anything else removes nothing", () => {
+  const u = menuUser();
+  const { bare, unit } = installed(u);
+  rmSync(join(u.dir, "app", "node_modules"), { recursive: true });
+
+  const cancelled = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\ny\nnope\n");
+
+  expect(cancelled.status, cancelled.output).toBe(0);
+  expect(cancelled.output).toContain(`Type "delete" to permanently remove ${u.japaHome}`);
+  expect(cancelled.output).toContain("purge cancelled; nothing was removed");
+  expect(existsSync(join(u.dir, "app"))).toBe(true);
+  expect(existsSync(u.launcher)).toBe(true);
+  expect(existsSync(unit)).toBe(true);
+  expect(existsSync(u.japaHome)).toBe(true);
+  expect(existsSync(u.systemctlLog)).toBe(false);
+
+  const purged = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\ny\ndelete\n");
+
+  expect(purged.status, purged.output).toBe(0);
+  expect(purged.output).toContain(`removed ${u.japaHome}`);
+  expect(existsSync(u.japaHome)).toBe(false);
+  expect(existsSync(u.dir)).toBe(false);
+  expect(existsSync(u.launcher)).toBe(false);
+});
+
+test("a direct uninstall leaves other people's files: another install's launcher, an unmarked node/, extra files", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+  rmSync(join(u.dir, "app", "node_modules"), { recursive: true });
+  const other = launcherText("/elsewhere/node/bin/node", "/elsewhere/app");
+  writeFileSync(u.launcher, other);
+  mkdirSync(join(u.dir, "node"), { recursive: true });
+  writeFileSync(join(u.dir, "node", "keep.txt"), "mine");
+  writeFileSync(join(u.dir, "notes.txt"), "mine");
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\nn\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(result.output).toContain("removing it directly");
+  expect(existsSync(join(u.dir, "app"))).toBe(false);
+  expect(readFileSync(u.launcher, "utf8")).toBe(other);
+  expect(readFileSync(join(u.dir, "node", "keep.txt"), "utf8")).toBe("mine");
+  expect(readFileSync(join(u.dir, "notes.txt"), "utf8")).toBe("mine");
+});
+
+test("a direct uninstall leaves an npm link launcher symlink alone", () => {
+  const u = menuUser();
+  const { bare } = installed(u);
+  rmSync(join(u.dir, "app", "node_modules"), { recursive: true });
+  const devMain = join(tmp(), "main.ts");
+  writeFileSync(devMain, "// a dev checkout's main.ts\n");
+  chmodSync(devMain, 0o755);
+  rmSync(u.launcher);
+  symlinkSync(devMain, u.launcher);
+
+  const result = runMenu(["--dir", u.dir, "--repo", bare], u.env, "3\ny\nn\n");
+
+  expect(result.status, result.output).toBe(0);
+  expect(lstatSync(u.launcher).isSymbolicLink()).toBe(true);
+  expect(readFileSync(devMain, "utf8")).toBe("// a dev checkout's main.ts\n");
+  expect(existsSync(u.dir)).toBe(false);
 });
