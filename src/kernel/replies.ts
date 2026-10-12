@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
   type Conversation,
@@ -10,9 +10,10 @@ import {
   ROOT_CONVERSATION_ID,
   type Storage,
   type SubmissionRecord,
+  ToolResultEntry,
   UserEntry,
 } from "@earendil-works/pi-durable";
-import type { Origin, Reply } from "./contracts.ts";
+import type { Origin, OutgoingFile, Reply } from "./contracts.ts";
 import { originOf } from "./origin.ts";
 
 /** Every item of a paged scan, in scan order. */
@@ -27,9 +28,21 @@ async function all<T>(scan: (cursor: Cursor | undefined) => Promise<Page<T, Curs
   return items;
 }
 
+/** The file a successful `send_file` result recorded in its details; undefined for anything else. */
+function sentFile(message: ToolResultMessage): OutgoingFile | undefined {
+  if (message.toolName !== "send_file" || message.isError) return undefined;
+  const file = (message.details as { file?: unknown } | undefined)?.file as Partial<OutgoingFile> | undefined;
+  if (typeof file !== "object" || file === null) return undefined;
+  const { path, name, mimeType, size, caption } = file;
+  if (typeof path !== "string" || typeof name !== "string" || typeof mimeType !== "string") return undefined;
+  if (typeof size !== "number" || (caption !== undefined && typeof caption !== "string")) return undefined;
+  return { path, name, mimeType, size, ...(caption ? { caption } : {}) };
+}
+
 /**
- * Delivers each of the root's finished assistant messages with text, in entry order and one at a time, with the
- * origin of its turn's latest input; after the entry `after`, or from the newest entry when absent.
+ * Delivers, in entry order and one at a time, each of the root's finished assistant messages with text and each
+ * successful `send_file` result (a reply with `file` set and the caption, or "", as text), with the origin of its
+ * turn's latest input; after the entry `after`, or from the newest entry when absent. Both share the entry-id cursor.
  */
 export async function watchReplies(
   harness: Harness,
@@ -57,6 +70,16 @@ export async function watchReplies(
         if (text !== "") {
           try {
             await listener({ cursor: String(e.id), origin, text });
+          } catch (error) {
+            console.error(error);
+          }
+        }
+      }
+      if (e.kind === ToolResultEntry.kind) {
+        const file = sentFile(e.model![0] as ToolResultMessage);
+        if (file !== undefined) {
+          try {
+            await listener({ cursor: String(e.id), origin, text: file.caption ?? "", file });
           } catch (error) {
             console.error(error);
           }

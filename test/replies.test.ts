@@ -1,6 +1,9 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { defineJapaExtension, type JapaExtension, type Reply, type TriggerContext } from "../src/sdk.ts";
 import { bootTest, probe, waitFor } from "./helpers.ts";
 import { ask, held, say, script } from "./jobs-helpers.ts";
@@ -113,5 +116,58 @@ test("a model error reaches replies as its message", async () => {
   faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: "No API key for faux" })]);
   await ask(daemon, "hi");
   await vi.waitFor(() => expect(replies.at(-1)!.text).toBe("No API key for faux"));
+  await close();
+});
+
+test("a sent file is a reply after the text before it, with the caption as text; a failed send isn't", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "japa-replies-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "chart.png");
+  writeFileSync(path, "png");
+  const { daemon, surface, replies, close } = await start((role, text) => {
+    if (text === "go") {
+      const send = fauxToolCall("send_file", { path, caption: "The chart" });
+      return fauxAssistantMessage([fauxText("Here it is."), send], { stopReason: "toolUse" });
+    }
+    if (text === "plain") return fauxAssistantMessage([fauxToolCall("send_file", { path })], { stopReason: "toolUse" });
+    if (text === "missing") {
+      const send = fauxToolCall("send_file", { path: join(dir, "gone.png") });
+      return fauxAssistantMessage([send], { stopReason: "toolUse" });
+    }
+    if (role === "toolResult") return say("Sent.");
+  });
+  await ask(daemon, "go");
+  const file = { path, name: "chart.png", mimeType: "image/png", size: 3 };
+  await vi.waitFor(() => expect(replies).toHaveLength(3));
+  expect(replies.map(({ text, file }) => ({ text, file }))).toEqual([
+    { text: "Here it is.", file: undefined },
+    { text: "The chart", file: { ...file, caption: "The chart" } },
+    { text: "Sent.", file: undefined },
+  ]);
+  const cursors = replies.map((r) => Number(r.cursor));
+  expect(cursors).toEqual(cursors.toSorted((a, b) => a - b));
+  expect(new Set(cursors).size).toBe(3);
+
+  // Without a caption the text is empty; a failed send_file isn't a reply.
+  await ask(daemon, "plain");
+  await ask(daemon, "missing");
+  await vi.waitFor(() => expect(replies).toHaveLength(6));
+  expect(replies.slice(3).map(({ text, file }) => ({ text, file }))).toEqual([
+    { text: "", file },
+    { text: "Sent.", file: undefined },
+    { text: "Sent.", file: undefined },
+  ]);
+
+  // Resuming after the text before the file delivers the file again; after the file, not.
+  const again: Reply[] = [];
+  const watch = await surface().root.replies((r) => void again.push(r), replies[0]!.cursor);
+  await vi.waitFor(() => expect(again).toHaveLength(5));
+  expect(again[0]!.file).toEqual({ ...file, caption: "The chart" });
+  const after: Reply[] = [];
+  const watch2 = await surface().root.replies((r) => void after.push(r), replies[1]!.cursor);
+  await vi.waitFor(() => expect(after).toHaveLength(4));
+  expect(after.filter((r) => r.file !== undefined)).toEqual([replies[3]]);
+  await watch.stop();
+  await watch2.stop();
   await close();
 });

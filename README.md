@@ -221,8 +221,9 @@ refuses to start jobs, and `japa status` says why.
 Each job runs in a bubblewrap sandbox. It sees your files and the network as you do, except:
 
 - `~/.japa` is the job's own clone of it (made at `~/.japa/.jobs/<id>`), without your secrets, `state.db` or japa's
-  socket; `~/.japa/desktop/shared` is the real shared folder, and `~/.japa/attachments` (the files you sent) and
-  `~/.japa/settings.json` are the real ones, read-only.
+  socket; `~/.japa/desktop/shared` is the real shared folder, `~/.japa/attachments` (the files you sent) and
+  `~/.japa/settings.json` are the real ones, read-only, and `~/.japa/outbox` is the real one, writable: a job puts
+  files meant for you there (by convention `~/.japa/outbox/<job id>/`), and the CoS sends them to you.
 - `/tmp` and `/var/tmp` are private to the job.
 - japa's install directory, the `japa` launcher, and your systemd user units and `environment.d` are read-only, so a
   job can't change what japa runs with your secrets.
@@ -300,10 +301,17 @@ go by themselves after `jobs.keepFinishedDays`). `/status` shows the model, exte
 on) and errors. `/settings` sets models, extensions (secrets, settings, on/off, rollback), schedules
 (pause, resume, remove) and general settings, and undoes recent changes; a value you type there goes to
 the menu, not the CoS, and a secret is deleted at once (a prompt left 10 minutes expires; your next
-message goes to the CoS again). Photos and image files are saved under
-`~/.japa/attachments/` and handed to the CoS. The CoS's markdown — bold, links, nested lists, task lists
+message goes to the CoS again). The CoS's markdown — bold, links, nested lists, task lists
 (☐/☑), code, quotes, `||spoilers||` — is shown as Telegram formatting; tables come out in monospace, and
 long quotes collapse until you expand them. If Telegram still rejects a message, it's sent as plain text.
+
+You can send files too: photos, documents, audio, voice notes, video and animations, with or without a caption
+(Telegram lets bots download up to 20 MB). Each is saved under `~/.japa/attachments/<date>/` and handed to the CoS:
+images inline when its model can see them, PDFs with their text extracted (also saved beside the PDF as `.txt`), and
+anything else by its path, so the CoS can read it or start a job on it (say, to transcribe a voice note). Stickers,
+locations, contacts and polls aren't read. The CoS can send files back, up to 50 MB, as a photo, audio, voice note,
+video or document depending on the type, with a caption; a bigger one arrives as a message naming its path on
+japa's host.
 
 When japa needs a secret, it sends a prompt — ``japa needs `<name>`: <why>. Reply to this message with it;
 I'll delete your reply at once.`` — with Telegram's reply box already open, then ``Don't want to provide
@@ -400,7 +408,8 @@ extensions/          extensions jobs built             (git-tracked)
 skills/              skills jobs built                 (git-tracked)
 .jobs/               each job's clone of ~/.japa and its private /tmp; failed ones kept 7 days (ignored by git)
 secrets/             secrets, one file per secret      (ignored by git); webui.token is the web UI's access token
-attachments/         images received over Telegram, files from Google (ignored by git)
+attachments/         every file you sent (plus a `.txt` beside each PDF with its text), files from Google (ignored by git)
+outbox/              files jobs made for you, for the CoS to send; not pruned automatically (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
 logs/                update.log, `/update`'s log (ignored by git)
 update.json          the last `/update`: how it went and whether it's been reported (ignored by git)

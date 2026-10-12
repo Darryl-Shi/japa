@@ -154,7 +154,8 @@ export function createJobSandboxes(o: {
       tmp: cloneTmp(home, jobId),
       readOnly: [...readOnlyPaths(packageRoot), { path: nodeDir, dir: true }, { path: nodeLib, dir: true }],
       hidden: o.hidden,
-      shared: mountable(home, [join(home, "desktop", "shared")], secret),
+      // Read-write: the outbox is where jobs leave files for the CoS to send the user.
+      shared: mountable(home, [join(home, "desktop", "shared"), join(home, "outbox")], secret),
       // The files the user sent, and the settings as they are now: the clone has neither (they're ignored, or changed
       // since the last commit).
       readOnlyShared: mountable(home, [join(home, "attachments"), join(home, "settings.json")], secret),
@@ -185,6 +186,7 @@ export function createJobSandboxes(o: {
     if (missing !== undefined) throw new Error(`The job's sandbox can't start: ${missing} is missing`);
     ensureClone(home, packageRoot, jobId);
     mkdirSync(join(home, "attachments"), { recursive: true });
+    mkdirSync(join(home, "outbox"), { recursive: true });
     const s = spec(jobId);
     // bwrap gets only the sandbox's environment: its own is readable in the sandbox, at /proc/1/environ.
     const command = [bwrap(), ...sandboxArgs(s), process.execPath, SERVER, ENV_MODULE];

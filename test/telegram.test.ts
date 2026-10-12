@@ -251,6 +251,138 @@ test("edit, delete and typing call their methods", async () => {
   expect(params("sendChatAction")).toEqual([{ chat_id: "42", action: "typing" }]);
 });
 
+/** A file `name` of `mimeType` holding `bytes`, written to a fresh temp dir, as an `OutgoingFile`. */
+const outgoing = (name: string, mimeType: string, bytes: Uint8Array = new Uint8Array([1, 2, 3]), caption?: string) => {
+  const path = join(mkdtempSync(join(tmpdir(), "japa-telegram-")), name);
+  writeFileSync(path, bytes);
+  return { path, name, mimeType, size: bytes.byteLength, ...(caption === undefined ? {} : { caption }) };
+};
+const uploads = () => fake.calls.filter((c) => c.params.multipart);
+
+test("the adapter takes files up to 50 MB", async () =>
+  expect((await connect()).maxFileBytes).toBe(50 * 1024 * 1024));
+
+test.each([
+  ["image/jpeg", "a.jpg", "sendPhoto", "photo", "upload_photo"],
+  ["image/png", "a.png", "sendPhoto", "photo", "upload_photo"],
+  ["image/webp", "a.webp", "sendPhoto", "photo", "upload_photo"],
+  ["audio/ogg", "v.ogg", "sendVoice", "voice", "upload_voice"],
+  ["audio/mpeg", "s.mp3", "sendAudio", "audio", "upload_voice"],
+  ["audio/mp4", "s.m4a", "sendAudio", "audio", "upload_voice"],
+  ["audio/x-m4a", "s.m4a", "sendAudio", "audio", "upload_voice"],
+  ["audio/aac", "s.aac", "sendAudio", "audio", "upload_voice"],
+  ["audio/flac", "s.flac", "sendAudio", "audio", "upload_voice"],
+  ["video/mp4", "c.mp4", "sendVideo", "video", "upload_video"],
+  ["image/gif", "a.gif", "sendDocument", "document", "upload_document"],
+  ["text/markdown", "todo.md", "sendDocument", "document", "upload_document"],
+  ["application/zip", "a.zip", "sendDocument", "document", "upload_document"],
+  ["video/quicktime", "c.mov", "sendDocument", "document", "upload_document"],
+])("a %s file is sent with %s as multipart, keeping its name", async (mimeType, name, method, field, action) => {
+  const adapter = await connect();
+  const bytes = new Uint8Array([5, 6, 7]);
+  expect(await adapter.sendFile!("42", outgoing(name, mimeType, bytes))).toBe("1");
+  expect(uploads().map((c) => c.method)).toEqual([method]);
+  expect(uploads()[0]!.params).toEqual({ multipart: true, chat_id: "42", [field]: { name, type: mimeType, data: bytes } });
+  await vi.waitFor(() => expect(params("sendChatAction")).toEqual([{ chat_id: "42", action }]));
+  expect(sends()).toEqual([]);
+});
+
+test("the file is read when it is sent; a missing file fails without uploading", async () => {
+  const adapter = await connect();
+  const f = outgoing("n.txt", "text/plain", new Uint8Array([1]));
+  writeFileSync(f.path, "later");
+  await adapter.sendFile!("42", f);
+  expect(new TextDecoder().decode(uploads()[0]!.params.document.data)).toBe("later");
+  await expect(adapter.sendFile!("42", { ...f, path: `${f.path}.gone` })).rejects.toThrow("ENOENT");
+  expect(uploads()).toHaveLength(1);
+});
+
+test("an image over 10 MB is sent as a document", async () => {
+  const adapter = await connect();
+  await adapter.sendFile!("42", outgoing("big.png", "image/png", new Uint8Array(10 * 1024 * 1024 + 1)));
+  expect(uploads().map((c) => c.method)).toEqual(["sendDocument"]);
+  expect(uploads()[0]!.params.document.name).toBe("big.png");
+});
+
+test("a photo Telegram rejects is sent as a document with its caption", async () => {
+  const adapter = await connect();
+  const invalid = { ok: false, error_code: 400, description: "Bad Request: PHOTO_INVALID_DIMENSIONS" };
+  fake.fail("sendPhoto", 400, invalid, 1);
+  const id = await adapter.sendFile!("42", outgoing("wide.png", "image/png", undefined, "**look**"));
+  expect(id).toBe("1");
+  expect(uploads().map((c) => c.method)).toEqual(["sendPhoto", "sendDocument"]);
+  expect(uploads()[1]!.params).toMatchObject({
+    chat_id: "42",
+    caption: "<b>look</b>",
+    parse_mode: "HTML",
+    document: { name: "wide.png", type: "image/png" },
+  });
+});
+
+test("other upload errors are not retried as documents", async () => {
+  const adapter = await connect();
+  fake.fail("sendVoice", 400, { ok: false, error_code: 400, description: "Bad Request: nope" }, 1);
+  await expect(adapter.sendFile!("42", outgoing("v.ogg", "audio/ogg"))).rejects.toThrow("nope");
+  expect(uploads().map((c) => c.method)).toEqual(["sendVoice"]);
+});
+
+test("a caption is sent as HTML, or as plain text when Telegram can't parse it", async () => {
+  const adapter = await connect();
+  await adapter.sendFile!("42", outgoing("a.md", "text/markdown", undefined, "**hi** `x`"));
+  expect(uploads()[0]!.params).toMatchObject({ caption: "<b>hi</b> <code>x</code>", parse_mode: "HTML" });
+  fake.fail("sendDocument", 400, unparsable, 1);
+  expect(await adapter.sendFile!("42", outgoing("b.md", "text/markdown", undefined, "**hi**"))).toBe("2");
+  const last = uploads().at(-1)!.params;
+  expect(last.caption).toBe("hi");
+  expect(last.parse_mode).toBeUndefined();
+  expect(last.document.name).toBe("b.md");
+});
+
+test("a caption rendering over 1024 characters follows the file as its own message", async () => {
+  const adapter = await connect();
+  const caption = `**${"x".repeat(1025)}**`;
+  expect(await adapter.sendFile!("42", outgoing("a.mp3", "audio/mpeg", undefined, caption))).toBe("1");
+  expect(uploads()[0]!.params.caption).toBeUndefined();
+  expect(sends()).toEqual([{ chat_id: "42", text: `<b>${"x".repeat(1025)}</b>`, parse_mode: "HTML" }]);
+  const [file, message] = [uploads()[0]!, fake.calls.find((c) => c.method === "sendMessage")!];
+  expect(fake.calls.indexOf(file)).toBeLessThan(fake.calls.indexOf(message));
+});
+
+test("a caption of exactly 1024 characters stays on the file", async () => {
+  const adapter = await connect();
+  await adapter.sendFile!("42", outgoing("a.mp3", "audio/mpeg", undefined, "y".repeat(1024)));
+  expect(uploads()[0]!.params.caption).toBe("y".repeat(1024));
+  expect(sends()).toEqual([]);
+});
+
+test("a multipart upload is retried after a 429 with the whole file", async () => {
+  const adapter = await connect();
+  const tooMany = { ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 1 } };
+  fake.fail("sendDocument", 429, tooMany, 1);
+  const bytes = new Uint8Array([3, 1, 4]);
+  expect(await adapter.sendFile!("42", outgoing("a.zip", "application/zip", bytes))).toBe("1");
+  const [first, second] = uploads();
+  expect(second!.at - first!.at).toBeGreaterThanOrEqual(1000);
+  expect(second!.params.document).toEqual({ name: "a.zip", type: "application/zip", data: bytes });
+});
+
+test("a 401 on upload drops the token, so the next send reads it again", async () => {
+  const stub = kernelStub("T");
+  const adapter = await connect(stub);
+  fake.fail("sendDocument", 401, { ok: false, error_code: 401, description: "Unauthorized" }, 1);
+  await expect(adapter.sendFile!("42", outgoing("a.zip", "application/zip"))).rejects.toThrow("Unauthorized");
+  stub.provide("NEW");
+  await adapter.sendFile!("42", outgoing("a.zip", "application/zip"));
+  expect(uploads().map((c) => c.token)).toEqual(["T", "NEW"]);
+});
+
+test("a failing chat action doesn't stop the upload", async () => {
+  const adapter = await connect();
+  fake.fail("sendChatAction", 400, { ok: false, error_code: 400, description: "Bad Request" });
+  expect(await adapter.sendFile!("42", outgoing("v.ogg", "audio/ogg"))).toBe("1");
+  await vi.waitFor(() => expect(params("sendChatAction")).toEqual([{ chat_id: "42", action: "upload_voice" }]));
+});
+
 const text = (id: number, t: string, extra = {}) => ({
   update_id: id,
   message: { message_id: id - 95, from: { id: 42 }, chat: { id: 42, type: "private" }, text: t, ...extra },
@@ -323,31 +455,78 @@ test("a photo is read at its largest size with its caption; an album is one Inco
     media(101, { media_group_id: "g", photo: sizes("l2") }),
   );
   await vi.waitFor(() => expect(received).toHaveLength(2));
-  expect(received[0]).toMatchObject({ text: "trip", images: [{ data: L_BYTES, mimeType: "image/jpeg" }] });
-  expect(received[1]!.images).toEqual([{ data: new Uint8Array([4]), mimeType: "image/jpeg" }]);
+  expect(received[0]).toEqual({
+    chat: "42",
+    user: "42",
+    messageId: "100",
+    id: "100",
+    text: "trip",
+    files: [{ data: L_BYTES, mimeType: "image/jpeg" }],
+  });
+  expect(received[1]!.files).toEqual([{ data: new Uint8Array([4]), mimeType: "image/jpeg" }]);
+  expect(received.some((m) => "images" in m)).toBe(false);
   expect(params("getFile").map((p) => p.file_id)).toEqual(["l", "l2"]);
 });
 
-test("an image document is read with its type; other documents and messages are refused", async () => {
+test("an image document is read with its type and name", async () => {
   fake.file("d", new Uint8Array([9]));
   const received = await listen();
+  fake.push(media(100, { document: { file_id: "d", mime_type: "image/png", file_name: "shot.png" } }));
+  await vi.waitFor(() => expect(received).toHaveLength(1));
+  expect(received[0]).toMatchObject({ id: "100", files: [{ data: new Uint8Array([9]), mimeType: "image/png", name: "shot.png" }] });
+  expect(received[0]!.images).toBeUndefined();
+  expect(sends()).toEqual([]);
+});
+
+test.each([
+  ["a PDF document", { document: { file_id: "f", mime_type: "application/pdf", file_name: "r.pdf" } }, { mimeType: "application/pdf", name: "r.pdf" }],
+  ["a document without a MIME type", { document: { file_id: "f", file_name: "a.zip" } }, { mimeType: "application/octet-stream", name: "a.zip" }],
+  ["an audio file", { audio: { file_id: "f", mime_type: "audio/mpeg", file_name: "song.mp3" } }, { mimeType: "audio/mpeg", name: "song.mp3" }],
+  ["a voice note", { voice: { file_id: "f", mime_type: "audio/ogg", duration: 2 } }, { mimeType: "audio/ogg", name: "voice.ogg" }],
+  ["a video", { video: { file_id: "f", mime_type: "video/quicktime", file_name: "clip.mov" } }, { mimeType: "video/quicktime", name: "clip.mov" }],
+  ["a video without a MIME type or name", { video: { file_id: "f" } }, { mimeType: "video/mp4" }],
+  ["a video note", { video_note: { file_id: "f", length: 240 } }, { mimeType: "video/mp4", name: "video_note.mp4" }],
+  ["an animation", { animation: { file_id: "f", mime_type: "video/mp4", file_name: "cat.mp4" } }, { mimeType: "video/mp4", name: "cat.mp4" }],
+])("%s becomes a file with its type, name and caption", async (_, message, file) => {
+  fake.file("f", new Uint8Array([7, 8]));
+  const received = await listen();
+  fake.push(media(100, { ...message, caption: "look", reply_to_message: { message_id: 3 } }));
+  await vi.waitFor(() => expect(received).toHaveLength(1));
+  expect(received[0]).toEqual({
+    chat: "42",
+    user: "42",
+    messageId: "100",
+    id: "100",
+    replyTo: "3",
+    text: "look",
+    files: [{ data: new Uint8Array([7, 8]), ...file }],
+  });
+  expect(params("getFile")).toEqual([{ file_id: "f" }]);
+  expect(sends()).toEqual([]);
+});
+
+test("stickers, locations, contacts and polls are refused", async () => {
+  const received = await listen();
   fake.push(
-    media(100, { document: { file_id: "d", mime_type: "image/png" } }),
-    media(101, { document: { file_id: "p", mime_type: "application/pdf" } }),
-    media(102, { sticker: { file_id: "x" } }),
+    media(100, { sticker: { file_id: "x" } }),
+    media(101, { location: { latitude: 1, longitude: 2 } }),
+    media(102, { contact: { phone_number: "1", first_name: "A" } }),
+    media(103, { poll: { id: "p", question: "q", options: [] } }),
   );
-  await vi.waitFor(() => expect(sends()).toHaveLength(2));
-  expect(received).toMatchObject([{ id: "100", images: [{ data: new Uint8Array([9]), mimeType: "image/png" }] }]);
-  expect(sends().map((s) => [s.chat_id, s.text])).toEqual([
-    ["42", "I can only read text and images here."],
-    ["42", "I can only read text and images here."],
-  ]);
+  await vi.waitFor(() => expect(sends()).toHaveLength(4));
+  expect(sends().map((s) => [s.chat_id, s.text])).toEqual(Array(4).fill(["42", "I can read text and files here."]));
+  expect(received).toEqual([]);
+  expect(params("getFile")).toEqual([]);
 });
 
 test("a file over 20 MB is refused without downloading", async () => {
   const received = await listen();
-  fake.push(media(100, { photo: [{ file_id: "big", file_size: 20 * 1024 * 1024 + 1 }] }));
-  await vi.waitFor(() => expect(sends()).toHaveLength(1));
+  fake.push(
+    media(100, { photo: [{ file_id: "big", file_size: 20 * 1024 * 1024 + 1 }] }),
+    media(101, { voice: { file_id: "big2", file_size: 20 * 1024 * 1024 + 1 } }),
+  );
+  await vi.waitFor(() => expect(sends()).toHaveLength(2));
+  expect(sends()[0]!.text).toBe("That file is too large: Telegram bots can only download files up to 20 MB.");
   expect(sends().at(-1)!.text).toBe("That file is too large: Telegram bots can only download files up to 20 MB.");
   expect(fake.calls.some((c) => c.method === "getFile")).toBe(false);
   expect(received).toEqual([]);
