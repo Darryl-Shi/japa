@@ -59,33 +59,36 @@ async function checkExtension(name: string, dir: string, home: string): Promise<
 
   const tmp = mkdtempSync(join(tmpdir(), "japa-check-"));
   const config = join(tmp, "tsconfig.json");
+  // What japa's own tsc leaves out (e.g. webui's SvelteKit app, which svelte-check covers) stays out here too.
+  const rootExclude = (JSON.parse(readFileSync(join(packageRoot, "tsconfig.json"), "utf8")).exclude ?? []) as string[];
   writeFileSync(
     config,
     JSON.stringify({
       extends: join(packageRoot, "tsconfig.json"),
       compilerOptions: { typeRoots: [join(packageRoot, "node_modules", "@types")] },
       include: [source],
-      exclude: [join(source, "**/*.test.ts")], // `vitest` resolves only when they run, below
+      // `vitest` resolves only when they run, below
+      exclude: [join(source, "**/*.test.ts"), ...rootExclude.map((p) => join(packageRoot, p))],
     }),
   );
-  const compiled = await run("tsc", ["-p", config], source);
+  const compiled = await run("@typescript/native/bin/tsc", ["-p", config], source); // TypeScript 7 (`typescript` is 6, for svelte-check)
   rmSync(tmp, { recursive: true, force: true });
   if (compiled !== undefined) return [compiled];
   if (globSync("**/*.test.ts", { cwd: source }).length > 0) {
-    const tested = await run("vitest", ["run", "--root", source, "--no-cache"], source);
+    const tested = await run(".bin/vitest", ["run", "--root", source, "--no-cache"], source);
     if (tested !== undefined) return [tested];
   }
   return smokeLoad(name, dir, extension);
 }
 
 /**
- * Runs japa's own `bin` with `args`; its output when it fails. The bins' `#!/usr/bin/env node` must find the Node
+ * Runs japa's own `bin` (a path under its node_modules) with `args`; its output when it fails. The bins' `#!/usr/bin/env node` must find the Node
  * japa runs on, which a private-Node install doesn't put on PATH (or puts behind an older one).
  */
 async function run(bin: string, args: string[], cwd: string): Promise<string | undefined> {
   const env = { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` };
   try {
-    await promisify(execFile)(join(packageRoot, "node_modules", ".bin", bin), args, { cwd, env });
+    await promisify(execFile)(join(packageRoot, "node_modules", bin), args, { cwd, env });
     return undefined;
   } catch (error) {
     const { stdout, stderr } = error as { stdout: string; stderr: string };
@@ -98,8 +101,8 @@ async function smokeLoad(name: string, dir: string, extension: JapaExtension): P
   const kit = fauxKit();
   const home = mkdtempSync(join(tmpdir(), "japa-check-"));
   // A throwaway daemon mustn't bring up the real desktop: it shares the container's name, and would recreate it
-  // against this temp home.
-  const settings = { storage: { adapter: "memory" }, models: { cos: kit.model }, extensions: { desktop: { autostart: false } } };
+  // against this temp home. Nor take the web UI's port.
+  const settings = { storage: { adapter: "memory" }, models: { cos: kit.model }, extensions: { desktop: { autostart: false }, webui: { port: 0 } } };
   writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
   const problems: string[] = [];
   try {
