@@ -347,6 +347,10 @@ STEP="dependencies"
 say "Installing dependencies"
 (cd "$APP_DIR" && PATH="$(dirname "$NODE_BIN"):$PATH" npm ci)
 
+STEP="build"
+say "Building the web UI"
+(cd "$APP_DIR" && PATH="$(dirname "$NODE_BIN"):$PATH" npm run build)
+
 STEP="launcher"
 install_launcher
 

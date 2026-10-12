@@ -347,6 +347,19 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     expect(sandboxes.spec("1").readOnlyShared).toEqual([join(home, "attachments"), join(home, "settings.json")]);
   });
 
+  test("a job writes to the real outbox, made when the sandbox starts", async () => {
+    const { outside, home, sandboxes } = setup();
+    expect(existsSync(join(home, "outbox"))).toBe(false);
+    expect(sandboxes.spec("1").shared).toEqual([join(home, "desktop", "shared"), join(home, "outbox")]);
+    const env = sandboxes.env("c", "1");
+    const out = join(outside, "out");
+    const script = `mkdir -p "${home}/outbox/1" && echo report > "${home}/outbox/1/r.md" && echo wrote`;
+    expect((await env.exec(`{ ${script}; } > "${out}"`, undefined, ctx)).ok).toBe(true);
+    expect(readFileSync(out, "utf8")).toBe("wrote\n");
+    expect(readFileSync(join(home, "outbox", "1", "r.md"), "utf8")).toBe("report\n");
+    expect(existsSync(join(cloneDir(home, "1"), "outbox", "1", "r.md"))).toBe(false);
+  });
+
   test("a shared path that links to, into or above a secrets dir isn't mounted: the job can't read through it", async () => {
     const { outside, home, user, vault, sandboxes } = setup({ secret: (home) => [join(home, "secrets")] });
     mkdirSync(join(home, "secrets"));
@@ -355,12 +368,13 @@ describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
     symlinkSync(join(vault, "key"), join(home, "settings.json")); // into a hidden one
     mkdirSync(join(home, "desktop"));
     symlinkSync(outside, join(home, "desktop", "shared")); // above one, and the home
+    symlinkSync(join(vault, "key"), join(home, "outbox")); // into a hidden one
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => errors.mockRestore());
     const spec = sandboxes.spec("1");
     expect(spec.shared).toEqual([]);
     expect(spec.readOnlyShared).toEqual([]);
-    for (const path of ["attachments", "settings.json", "desktop/shared"]) {
+    for (const path of ["attachments", "settings.json", "desktop/shared", "outbox"]) {
       expect(errors).toHaveBeenCalledWith(expect.stringContaining(`Jobs don't get ${join(home, path)}: `));
     }
     const out = join(user, "out");

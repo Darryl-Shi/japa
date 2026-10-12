@@ -50,6 +50,7 @@ import { expireLegacy, MemoryDoc } from "./memory/state.ts";
 import { discoverExtensions, type LoadError, linkSdk, loadExtensions, message } from "./loader.ts";
 import { acquireLock } from "./lock.ts";
 import { PROMPT_HISTORY } from "./messaging/prompts.ts";
+import { inputOf } from "./messaging/attachments.ts";
 import { MessagingDoc } from "./messaging/surface.ts";
 import { alreadyRunning } from "./messaging/update-report.ts";
 import { requestIdFor } from "./origin.ts";
@@ -63,6 +64,7 @@ import {
   removeSecretRequest,
   SecretRequestsDoc,
 } from "./secret-requests.ts";
+import { sendFile } from "./send-file.ts";
 import { clearBoots, crashLooping, createSafety, enterSafeMode, recordBoot } from "./safety.ts";
 import { setSetting, settingsSchema, settingsTools } from "./settings-tools.ts";
 import { createRuntime, isKernelError, kernelError, type Runtime } from "./runtime.ts";
@@ -128,6 +130,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
   const jobEnv = narrowPath();
   narrowRequire();
   mkdirSync(home, { recursive: true });
+  mkdirSync(join(home, "outbox"), { recursive: true }); // jobs' hand-off of files for the CoS to send
   const release = acquireLock(home);
   let runtime: Runtime | undefined;
   let storage: Storage | undefined;
@@ -464,6 +467,11 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           decline,
         },
         status,
+        input: (messages) => {
+          const m = status().model!;
+          const vision = models.getModel(m.provider, m.modelId)?.input.includes("image") ?? false;
+          return inputOf(home, messages, vision, settings.context.toolResultTokens * 4);
+        },
       },
       trigger: {
         home,
@@ -495,6 +503,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const tools = [
       ...settingsTools(settingsDeps, undone, lock),
       rollbackTool(home, reconcile, lock),
+      sendFile,
       // Its `<extension>.authorize` requests need no `secrets` declaration.
       connectTool({
         extensions: () => rt.extensions,

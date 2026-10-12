@@ -161,9 +161,18 @@ test("an image that cannot be saved still lets the text through, with a note", a
   const { daemon, home } = await bootMessaging(fake);
   writeFileSync(join(home, "attachments"), "not a dir");
   await fake.receive({ id: "61", text: "look", images: [{ data: PNG, mimeType: "image/png" }] });
-  const content = (await userContent(daemon)) as { type: string; text: string }[];
-  expect(content).toHaveLength(1);
-  expect(content[0].text).toMatch(/^look\n\[image could not be saved: .+\]$/);
+  expect(await userContent(daemon)).toMatch(/^look\n\[file could not be saved: .+\]$/); // nothing to inline
+  await daemon.close();
+});
+
+test("a message with only files is submitted, each file saved under its name and noted", async () => {
+  const fake = fakeAdapter();
+  const { daemon, home } = await bootMessaging(fake);
+  const data = new TextEncoder().encode("hello");
+  await fake.receive({ id: "71", files: [{ data, mimeType: "text/plain", name: "notes.txt" }] });
+  const path = join(home, "attachments", day(), "71-notes.txt");
+  expect(await userContent(daemon)).toBe(`[file saved to ${path} (text/plain, 5 B)]`);
+  expect(readFileSync(path, "utf8")).toBe("hello");
   await daemon.close();
 });
 

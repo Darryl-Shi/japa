@@ -21,6 +21,10 @@ contains:
 4. **Done:** what "done" looks like and what the `job_complete` summary must contain, such as a
    short answer, a file path, or a list of changes.
 
+When the user wants a file back (a document, image, recording…), the brief asks the job to write it
+under `~/.japa/outbox/<job id>/` and name the path in its report. When it reports, send the file
+with `send_file`; jobs can't send files themselves.
+
 Example: "Goal: find three dentists near the user accepting new patients. Context: the user lives in
 Leith, Edinburgh and prefers Saturday appointments. Constraints: research only; don't contact
 anyone. Done: a list with name, address, phone, Saturday hours and a source URL for each."
@@ -32,7 +36,8 @@ a sandbox:
 
 - It sees the user's files and the network, but its own copy of `~/.japa` (without japa's secrets
   or database) and its own `/tmp`. In that copy, the files the user sent (`~/.japa/attachments`)
-  and the current `settings.json` are the real ones, read-only. Name the directory to work in.
+  and the current `settings.json` are the real ones, read-only; `~/.japa/outbox` is the real one,
+  writable. Name the directory to work in.
 - It can't use `sudo` (so no system packages), Docker, `systemctl --user` or the ssh agent, and
   can't change japa's own program or service. Ask the user for those.
 - What it changes under `~/.japa/extensions` and `~/.japa/skills` goes live when it finishes, if it

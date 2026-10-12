@@ -137,6 +137,8 @@ If the background service is running (the default after `japa setup`), japa is a
 japa chat
 ```
 
+or open the web UI at http://127.0.0.1:7337 (see Web UI).
+
 Otherwise — you used `--no-service`, or are on Linux without a systemd
 user session (common on WSL) — run the daemon yourself:
 
@@ -187,6 +189,28 @@ Other commands:
 japa enters safe mode by itself after three crashes within five minutes. A setup that has run for
 `safety.goodAfterMinutes` is tagged as the last known good one.
 
+## Web UI
+
+japa also serves a chat app in your browser, on by default, at **http://127.0.0.1:7337**. It shows the same
+conversation as `japa chat` and Telegram — messages from any of them, the CoS's replies streaming in, tool calls,
+job reports — plus a live Jobs panel, a Status sheet and a card for pending secret requests. Enter sends (while
+the CoS is replying, it steers the reply), Shift+Enter adds a line, Stop or Esc stops the reply. Any number of
+tabs and devices can be open; they all stay in sync, and reconnect on their own after a restart.
+
+- **Signing in**: the access token is in `~/.japa/secrets/webui.token`, generated on first start. Paste it into the
+  sign-in page, or open `http://127.0.0.1:7337/?token=<token>` (the token is dropped from the address). The
+  session lasts 30 days; changing the token (delete the file and restart, or set a new value) signs everyone out.
+- **From another machine**: tunnel it over SSH, `ssh -L 7337:localhost:7337 <server>`, then open
+  `http://localhost:7337`; or, to reach it from your phone, set `extensions.webui.bind` to the server's Tailscale
+  address and open `http://<tailscale address>:7337`.
+- **Settings** (`extensions.webui`), all optional: `bind` (default `"127.0.0.1"`), `port` (`7337`) and `enabled`
+  (`false` turns it off). A change takes effect when japa restarts.
+- `japa status` shows its address under `webui`, or why it isn't running: `not built` (run `npm run build` in the
+  checkout) or `can't listen on …` (e.g. the port is taken). Either way the rest of japa keeps running.
+
+It's served by the daemon itself (a SvelteKit app in `extensions/webui/app`, built by `install.sh`, `japa update`
+and `npm install`), accepts only requests addressed to its own host names, and loads nothing from other sites.
+
 ## Jobs
 
 The CoS hands anything longer than a quick lookup to a background job: an agent with `read`, `write`, `edit` and
@@ -197,8 +221,9 @@ refuses to start jobs, and `japa status` says why.
 Each job runs in a bubblewrap sandbox. It sees your files and the network as you do, except:
 
 - `~/.japa` is the job's own clone of it (made at `~/.japa/.jobs/<id>`), without your secrets, `state.db` or japa's
-  socket; `~/.japa/desktop/shared` is the real shared folder, and `~/.japa/attachments` (the files you sent) and
-  `~/.japa/settings.json` are the real ones, read-only.
+  socket; `~/.japa/desktop/shared` is the real shared folder, `~/.japa/attachments` (the files you sent) and
+  `~/.japa/settings.json` are the real ones, read-only, and `~/.japa/outbox` is the real one, writable: a job puts
+  files meant for you there (by convention `~/.japa/outbox/<job id>/`), and the CoS sends them to you.
 - `/tmp` and `/var/tmp` are private to the job.
 - japa's install directory, the `japa` launcher, and your systemd user units and `environment.d` are read-only, so a
   job can't change what japa runs with your secrets.
@@ -229,7 +254,7 @@ japa update
 Fetches the branch you're on (`main` by default) and fast-forwards your checkout to it. Local edits in the
 checkout are stashed first and restored after; a history that has diverged (local commits that aren't upstream)
 is refused rather than guessed at, leaving your checkout unchanged. It reinstalls dependencies if they changed,
-downloads a newer private Node.js if one is needed, and validates the result before doing anything else; on
+downloads a newer private Node.js if one is needed, rebuilds the web UI, and validates the result before doing anything else; on
 failure it rolls back to the commit you were on and says why (the step and, for a command that failed, the command
 and the end of its error output). It then lists what's new since your last update — new extensions, and new secrets
 or settings in existing ones — and, in a terminal, offers to configure them (the same step `japa setup` runs). Last,
@@ -276,10 +301,17 @@ go by themselves after `jobs.keepFinishedDays`). `/status` shows the model, exte
 on) and errors. `/settings` sets models, extensions (secrets, settings, on/off, rollback), schedules
 (pause, resume, remove) and general settings, and undoes recent changes; a value you type there goes to
 the menu, not the CoS, and a secret is deleted at once (a prompt left 10 minutes expires; your next
-message goes to the CoS again). Photos and image files are saved under
-`~/.japa/attachments/` and handed to the CoS. The CoS's markdown — bold, links, nested lists, task lists
+message goes to the CoS again). The CoS's markdown — bold, links, nested lists, task lists
 (☐/☑), code, quotes, `||spoilers||` — is shown as Telegram formatting; tables come out in monospace, and
 long quotes collapse until you expand them. If Telegram still rejects a message, it's sent as plain text.
+
+You can send files too: photos, documents, audio, voice notes, video and animations, with or without a caption
+(Telegram lets bots download up to 20 MB). Each is saved under `~/.japa/attachments/<date>/` and handed to the CoS:
+images inline when its model can see them, PDFs with their text extracted (also saved beside the PDF as `.txt`), and
+anything else by its path, so the CoS can read it or start a job on it (say, to transcribe a voice note). Stickers,
+locations, contacts and polls aren't read. The CoS can send files back, up to 50 MB, as a photo, audio, voice note,
+video or document depending on the type, with a caption; a bigger one arrives as a message naming its path on
+japa's host.
 
 When japa needs a secret, it sends a prompt — ``japa needs `<name>`: <why>. Reply to this message with it;
 I'll delete your reply at once.`` — with Telegram's reply box already open, then ``Don't want to provide
@@ -375,8 +407,9 @@ settings.json        your settings
 extensions/          extensions jobs built             (git-tracked)
 skills/              skills jobs built                 (git-tracked)
 .jobs/               each job's clone of ~/.japa and its private /tmp; failed ones kept 7 days (ignored by git)
-secrets/             secrets, one file per secret      (ignored by git)
-attachments/         images received over Telegram, files from Google (ignored by git)
+secrets/             secrets, one file per secret      (ignored by git); webui.token is the web UI's access token
+attachments/         every file you sent (plus a `.txt` beside each PDF with its text), files from Google (ignored by git)
+outbox/              files jobs made for you, for the CoS to send; not pruned automatically (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)
 logs/                update.log, `/update`'s log (ignored by git)
 update.json          the last `/update`: how it went and whether it's been reported (ignored by git)
@@ -401,7 +434,8 @@ Extensions import only from `japa/sdk` (`src/sdk.ts`); the packaged ones in `ext
 
 ```sh
 npm test            # vitest
-npm run typecheck   # tsc --noEmit
+npm run typecheck   # tsc --noEmit, then svelte-check on the web UI
+npm run build       # builds the web UI (extensions/webui/app → extensions/webui/build); npm install runs it too
 JAPA_DOCKER_TESTS=1 npx vitest --run test/desktop-docker.test.ts   # the desktop on Docker (builds its image)
 ```
 

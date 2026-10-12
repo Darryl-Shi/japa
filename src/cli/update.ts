@@ -35,6 +35,8 @@ export type UpdateDeps = {
   node: string;
   ensureNode(version: string, nodeDir: string): Promise<string>;
   npmCi(app: string, node: string): Promise<void>;
+  /** Builds the web UI (`npm run build`), on every update: its source may change without the lockfile. */
+  build(app: string, node: string): Promise<void>;
   validate(app: string, node: string): Promise<void>;
   baseline(home: string): Promise<void>;
   /** What's new in the new code: shown in a terminal (nothing returned), otherwise logged and returned line by line. */
@@ -116,6 +118,11 @@ function defaultDeps(o: UpdateOptions): UpdateDeps {
       const env = { ...process.env, PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ""}` };
       const r = await exec("npm", ["ci"], { cwd: app, env });
       if (r.code !== 0) throw commandFailed("npm", ["ci"], r);
+    },
+    build: async (app, node) => {
+      const env = { ...process.env, PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ""}` };
+      const r = await exec("npm", ["run", "build"], { cwd: app, env });
+      if (r.code !== 0) throw commandFailed("npm", ["run", "build"], r);
     },
     validate: async (app, node) => {
       const args = [NO_WARNINGS, join(app, "src/cli/main.ts"), "--version"];
@@ -341,9 +348,10 @@ async function updateCheckout(
     throw new UpdateFailed(why);
   }
 
-  // 4-6. The new code's Node and dependencies, then prove it runs; any failure puts all three back.
+  // 4-6. The new code's Node, dependencies and web UI build, then prove it runs; any failure puts them all back.
   const lockChanged = (await out("diff", "--name-only", old, target, "--", "package-lock.json")) !== "";
-  let step: "node" | "dependencies" | "validation" = "node";
+  let step: "node" | "dependencies" | "build" | "validation" = "node";
+  let built = false; // the build ran (or started): a rollback rebuilds the old web UI
   let node = deps.node;
   let replacedNode: string | undefined;
   let launcherBefore: string | undefined;
@@ -357,6 +365,7 @@ async function updateCheckout(
     const launcher = launcherBefore;
     if (launcher !== undefined) await attempt("restore the launcher", () => writeFileSync(layout.launcher, launcher));
     if (lockChanged) await attempt("reinstall the dependencies", () => deps.npmCi(o.app, deps.node));
+    if (built) await attempt("rebuild the web UI", () => deps.build(o.app, deps.node));
     const back = (await out("rev-parse", "HEAD")) === old && (await out("symbolic-ref", "--short", "HEAD")) === original;
     return back ? `still on ${short(old)}` : `rollback failed, the checkout is ${await describe()}`;
   };
@@ -373,6 +382,9 @@ async function updateCheckout(
     }
     step = "dependencies";
     if (lockChanged) await deps.npmCi(o.app, node);
+    step = "build";
+    built = true;
+    await deps.build(o.app, node);
     step = "validation";
     await deps.validate(o.app, node);
   } catch (error) {

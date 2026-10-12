@@ -1,4 +1,10 @@
-import type { Incoming, MessagingAdapter, MessagingAdapterContext, OutgoingMessage } from "../src/kernel/contracts.ts";
+import type {
+  Incoming,
+  MessagingAdapter,
+  MessagingAdapterContext,
+  OutgoingFile,
+  OutgoingMessage,
+} from "../src/kernel/contracts.ts";
 import type { JapaExtension } from "../src/kernel/extension.ts";
 import type { Updater } from "../src/kernel/update-state.ts";
 import { bootTest, testKit } from "./helpers.ts";
@@ -14,7 +20,12 @@ type Input = OutgoingMessage["input"];
  * `slowSends` makes each send take that many ms (also telling `held`); one the adapter stops meanwhile is delivered
  * but fails, as an aborted request whose message already went out does. `closed` tells that the adapter has stopped.
  */
-export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
+export function fakeAdapter({
+  name = "fake",
+  maxMessageChars = 4096,
+  files = false,
+  maxFileBytes = undefined as number | undefined,
+} = {}) {
   let receive!: MessagingAdapterContext["receive"];
   let stop!: () => void;
   const stopped = new Promise<void>((resolve) => (stop = resolve));
@@ -28,6 +39,9 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
     commands: [] as { name: string; description: string }[][],
     failSend: undefined as ((m: OutgoingMessage) => boolean) | undefined,
     failDelete: false,
+    /** With `files`: the files `sendFile` sent; `failSendFile` makes it throw. */
+    files: [] as { chat: string; file: OutgoingFile }[],
+    failSendFile: undefined as string | undefined,
     holdSends: false,
     slowSends: 0,
     held: false,
@@ -84,6 +98,14 @@ export function fakeAdapter({ name = "fake", maxMessageChars = 4096 } = {}) {
     commands: async (list) => {
       fake.commands.push(list);
     },
+    ...(maxFileBytes !== undefined && { maxFileBytes }),
+    ...(files && {
+      sendFile: async (chat: string, file: OutgoingFile) => {
+        if (fake.failSendFile !== undefined) throw new Error(fake.failSendFile);
+        fake.files.push({ chat, file });
+        return `file-${fake.files.length}`;
+      },
+    }),
   };
   const extension: JapaExtension = { name, summary: "Fake chat", provides: { messaging: [adapter] } };
   return Object.assign(fake, { adapter, extension });

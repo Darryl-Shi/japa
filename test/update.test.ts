@@ -117,7 +117,7 @@ function harness(
   setup: {
     options?: Partial<UpdateOptions>;
     node?: string;
-    fail?: "ensureNode" | "npmCi" | "validate" | "restart";
+    fail?: "ensureNode" | "npmCi" | "build" | "validate" | "restart";
     whatsNew?: string[];
     restarted?: Restarted;
   } = {},
@@ -139,6 +139,7 @@ function harness(
       return privateNode(nodeDir, version);
     },
     npmCi: async (app, usedNode) => record("npmCi", app, usedNode),
+    build: async (app, usedNode) => record("build", app, usedNode),
     validate: async (app, usedNode) => record("validate", app, usedNode),
     baseline: async (home) => record("baseline", home),
     whatsNew: async (app, usedNode, interactive) => {
@@ -207,10 +208,10 @@ test("fast-forward updates, skips npm when the lockfile is unchanged, runs whats
 
   expect(result).toBe("updated");
   expect(head(c.app)).toBe(target);
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
   expect(h.calls[0].args).toEqual([c.app, "/usr/bin/node"]);
-  expect(h.calls[1].args).toEqual([c.app, "/usr/bin/node", false]);
-  expect(h.calls[1].head).toBe(target); // what's new runs on the new code
+  expect(h.calls[2].args).toEqual([c.app, "/usr/bin/node", false]);
+  expect(h.calls[2].head).toBe(target); // what's new runs on the new code
   expect(h.logs).toContain(`${short(old)} → ${short(target)}`);
   expect(h.logs.join("\n")).toContain("two");
 });
@@ -222,7 +223,7 @@ test("a changed lockfile runs npm ci", async () => {
 
   await update(h.o, h.deps);
 
-  expect(h.names()).toEqual(["npmCi", "validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["npmCi", "build", "validate", "whatsNew", "restart"]);
   expect(h.calls[0].args).toEqual([c.app, "/usr/bin/node"]);
 });
 
@@ -289,7 +290,7 @@ test("a failing validate rolls back to the old sha and re-runs npm ci when the l
   await expect(update(h.o, h.deps)).rejects.toThrow(`update failed at validation: boom; still on ${short(old)}`);
 
   expect(head(c.app)).toBe(old);
-  expect(h.names()).toEqual(["npmCi", "validate", "npmCi"]);
+  expect(h.names()).toEqual(["npmCi", "build", "validate", "npmCi", "build"]);
   expect(readFileSync(join(c.app, "package-lock.json"), "utf8")).toBe(FIRST["package-lock.json"]);
   expect(readFileSync(join(c.app, "scratch.txt"), "utf8")).toBe("scratch\n");
   expect(git(c.app, "stash", "list")).toBe("");
@@ -311,6 +312,52 @@ test("a new version that crashes reports the command and its error, not Node's t
   expect(error.message).not.toMatch(/Node\.js v\d/);
   expect(error.message).not.toMatch(/^\s+at /m);
   expect(head(c.app)).toBe(old);
+});
+
+test("a change to only the web UI's source rebuilds it, even with the lockfile unchanged", async () => {
+  const c = checkout();
+  const target = push(c, "ui", { "extensions/webui/app/src/app.css": "body { margin: 0 }\n" });
+  const h = harness(c);
+
+  await update(h.o, h.deps);
+
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
+  expect(h.calls[0].head).toBe(target); // it builds the new code
+});
+
+test("a failing web UI build rolls back, naming the build, and rebuilds the old UI", async () => {
+  const c = checkout();
+  const old = head(c.app);
+  push(c, "ui", { "extensions/webui/app/src/app.css": "body {\n" });
+  const h = harness(c, { fail: "build" });
+
+  await expect(update(h.o, h.deps)).rejects.toThrow(`update failed at build: boom; still on ${short(old)}`);
+
+  expect(head(c.app)).toBe(old);
+  expect(h.names()).toEqual(["build", "build"]); // the new one fails, the rollback rebuilds the old one
+  expect(h.calls[1].head).toBe(old);
+});
+
+test("the build is npm run build, and its failure output reaches the user", async () => {
+  const c = checkout();
+  const built = join(c.root, "built.txt");
+  const script = (what: string) => `node -e "require('fs').appendFileSync('${built}', '${what}\\n')"`;
+  const pkg = (build: string) => `${JSON.stringify({ name: "japa", private: true, scripts: { build } })}\n`;
+  push(c, "builds", { "package.json": pkg(script("old")) });
+  await update(harness(c).o, harness(c).deps); // stubbed: now on the commit with the working build
+  const old = head(c.app);
+  const fail = `node -e "console.error('vite: syntax error in app.css'); process.exit(3)"`;
+  push(c, "breaks the build", { "package.json": pkg(fail) });
+  const h = harness(c, { node: process.execPath });
+  const { build: _, ...deps } = h.deps; // the real build
+
+  const error = (await update(h.o, deps).catch((e: unknown) => e)) as Error;
+
+  const [first, ...rest] = error.message.split("\n");
+  expect(first).toBe(`update failed at build: npm run build exited with code 3; still on ${short(old)}`);
+  expect(rest).toContain("vite: syntax error in app.css");
+  expect(head(c.app)).toBe(old);
+  expect(readFileSync(built, "utf8")).toBe("old\n"); // the rollback rebuilt the old UI
 });
 
 test("the new code runs with Node's experimental warnings off", async () => {
@@ -354,7 +401,7 @@ test("--no-restart updates and runs whatsNew without restarting", async () => {
 
   await update(h.o, h.deps);
 
-  expect(h.names()).toEqual(["validate", "whatsNew"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew"]);
   expect(head(c.app)).toBe(target);
   expect(h.patches.at(-1)).toMatchObject({ state: "updated", restarted: "none" });
 });
@@ -372,7 +419,7 @@ test("--branch checks out a branch we don't have yet and leaves the current one 
   expect(head(c.app)).toBe(target);
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("dev\n");
   expect(git(c.app, "rev-parse", "main")).toBe(old);
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
 });
 
 test("--branch fast-forwards a local branch that is behind", async () => {
@@ -402,7 +449,7 @@ test("--branch switches to a branch whose code is already current", async () => 
   expect(head(c.app)).toBe(dev);
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("dev one\n");
   expect(git(c.app, "rev-parse", "main")).toBe(old);
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
 });
 
 test("--check --branch reports the switch and changes nothing", async () => {
@@ -451,7 +498,7 @@ test("--to checks out an older commit", async () => {
   expect(head(c.app)).toBe(first);
   expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("one\n");
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
 });
 
 test("offline, --to (a Roll back) goes to a commit the checkout has; --ff-only, no --to or an unknown commit still fail", async () => {
@@ -479,7 +526,7 @@ test("offline, --to (a Roll back) goes to a commit the checkout has; --ff-only, 
   expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("one\n");
   expect(h.logs[0]).toMatch(/^could not fetch origin main: [\s\S]+; rolling back with what's here$/);
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
 });
 
 test("--to --ff-only fast-forwards to exactly that commit, not the branch tip", async () => {
@@ -494,7 +541,7 @@ test("--to --ff-only fast-forwards to exactly that commit, not the branch tip", 
   expect(head(c.app)).toBe(two);
   expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("main");
   expect(readFileSync(join(c.app, "README"), "utf8")).toBe("two\n");
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
 });
 
 test("--to --ff-only on diverged history refuses, keeps the local commit and edits", async () => {
@@ -598,6 +645,7 @@ test("record gets each failure with its summary and output, after the rollback",
   const cases = [
     { fail: "ensureNode", step: "node", files: { ".node-version": "99.9.9\n" } },
     { fail: "npmCi", step: "dependencies", files: { "package-lock.json": '{ "lockfileVersion": 2 }\n' } },
+    { fail: "build", step: "build", files: { "extensions/webui/app/src/app.css": "body {}\n" } },
     { fail: "validate", step: "validation", files: { README: "two\n" } },
   ] as const;
   for (const { fail, step, files } of cases) {
@@ -757,7 +805,7 @@ test("a changed .node-version on a private Node downloads it and rewrites the la
 
   await update(h.o, h.deps);
 
-  expect(h.names()).toEqual(["ensureNode", "validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["ensureNode", "build", "validate", "whatsNew", "restart"]);
   expect(h.calls[0].args).toEqual(["99.9.9", nodeDir]);
   expect(h.calls[1].args).toEqual([c.app, node]);
   expect(readFileSync(node, "utf8")).toBe("99.9.9");
@@ -793,7 +841,7 @@ test("a dev checkout updates its own branch and writes no launcher", async () =>
   expect(result).toBe("updated");
   expect(head(c.app)).toBe(target);
   expect(git(c.app, "symbolic-ref", "--short", "HEAD")).toBe("dev");
-  expect(h.names()).toEqual(["validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["build", "validate", "whatsNew", "restart"]);
   expect(existsSync(layoutOf(c.app, c.userHome).launcher)).toBe(false);
 });
 
@@ -805,7 +853,7 @@ test("a home without setup.json gets the old manifests as baseline", async () =>
 
   await update(h.o, h.deps);
 
-  expect(h.names()).toEqual(["baseline", "validate", "whatsNew", "restart"]);
+  expect(h.names()).toEqual(["baseline", "build", "validate", "whatsNew", "restart"]);
   expect(h.calls[0].args).toEqual([c.home]);
   expect(h.calls[0].head).toBe(old); // the pre-update manifests are what gets recorded
   expect(head(c.app)).toBe(target);

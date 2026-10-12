@@ -37,12 +37,14 @@ function gitIn(cwd: string, ...args: string[]): string {
   });
 }
 
-/** A local bare repo at a tmp path, seeded with the mini-japa fixture committed and pushed to `main`. */
-function fixtureRepo(): string {
+/** A local bare repo at a tmp path, seeded with the mini-japa fixture (`edit` may change it first) committed and
+ * pushed to `main`. */
+function fixtureRepo(edit?: (work: string) => void): string {
   const bare = join(tmp(), "mini-japa.git");
   execFileSync("git", ["init", "--bare", "-q", "-b", "main", bare]);
   const work = tmp();
   cpSync(FIXTURE, work, { recursive: true });
+  edit?.(work);
   gitIn(work, "init", "-q", "-b", "main");
   gitIn(work, "add", "-A");
   gitIn(work, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "mini-japa");
@@ -122,6 +124,25 @@ test("install.sh installs the fixture", () => {
   expect(readFileSync(launcherPath, "utf8")).toBe(launcherText(node, join(dir, "app")));
 
   expect(execFileSync(launcherPath, ["--version"], { encoding: "utf8" })).toBe("japa 0.0.0 (fixture)\n");
+  expect(readFileSync(join(dir, "app", "built.txt"), "utf8")).toBe("built\n"); // npm run build ran
+});
+
+test("a failing web UI build fails the install at build and removes what it created", () => {
+  const bare = fixtureRepo((work) => {
+    const pkg = JSON.parse(readFileSync(join(work, "package.json"), "utf8"));
+    pkg.scripts.build = 'node -e "process.exit(1)"';
+    writeFileSync(join(work, "package.json"), JSON.stringify(pkg));
+  });
+  const home = tmp();
+  const dir = join(tmp(), "d");
+  const env = { HOME: home, PATH: basePath(), SHELL: "/bin/sh" };
+
+  const result = runInstall(["--dir", dir, "--repo", bare, "--branch", "main", "--non-interactive", "--skip-setup"], env);
+
+  expect(result.status, result.output).not.toBe(0);
+  expect(result.output).toContain("install failed at: build");
+  expect(existsSync(join(dir, "app"))).toBe(false);
+  expect(existsSync(join(home, ".local", "bin", "japa"))).toBe(false);
 });
 
 test("a second run takes the update path", () => {

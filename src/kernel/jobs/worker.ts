@@ -10,10 +10,13 @@ import {
 } from "@earendil-works/pi-durable";
 import { type Job, JobDoc, JobsDoc } from "./state.ts";
 
+/** The worker's role; `<job id>` is replaced by its job's id when known. */
 const WORKER_TEXT =
   "You are working on a job for the chief of staff. Work in the directory the brief names; if it names none and you " +
   "need one, ask with job_ask. Report notable progress with job_progress. When finished, call job_complete with a " +
-  "short summary of what you did and found. If you need an answer to continue, call job_ask with one clear question.";
+  "short summary of what you did and found. Files meant for the user go in ~/.japa/outbox/<job id>/ (your /tmp is " +
+  "private and your clone may be deleted); name their paths in the summary. If you need an answer to continue, call " +
+  "job_ask with one clear question.";
 
 /** Changes the caller's job in one commit and returns `change`'s result; a job already cleared stays gone. */
 async function updateJob<T>(
@@ -96,6 +99,11 @@ const jobAsk = defineTool({
 /** What every job conversation runs with: its role and the tools to report on its job. */
 export const WorkerExtension: Extension = defineExtension({
   name: "japa-worker",
-  sections: [section("worker", () => WORKER_TEXT)],
+  sections: [
+    section("worker", async ({ read, conversationId }, context) => {
+      const jobId = (await read.snapshot(JobDoc, conversationId, context))?.jobId;
+      return jobId ? WORKER_TEXT.replace("<job id>", jobId) : WORKER_TEXT;
+    }),
+  ],
   tools: [jobProgress, jobComplete, jobAsk],
 });

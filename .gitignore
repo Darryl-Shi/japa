@@ -2,3 +2,7 @@
 .pi/npm/
 node_modules/
 .superpowers/
+
+# webui: the SvelteKit build and its generated files
+extensions/webui/build/
+extensions/webui/app/.svelte-kit/

@@ -8,7 +8,7 @@ const API = "https://api.telegram.org";
 
 /**
  * A fake Bot API on a local HTTP server, which `fetch` to api.telegram.org is sent to until `close()`. It records every
- * call; `fail` answers a method's next `times` calls (all, when absent) with `status` and `body`.
+ * call (a multipart call's params are its fields, files as `{ name, type, data }`, plus `multipart: true`); `fail` answers a method's next `times` calls (all, when absent) with `status` and `body`.
  */
 export async function fakeBotApi() {
   const realFetch = globalThis.fetch;
@@ -21,7 +21,7 @@ export async function fakeBotApi() {
   let messageId = 0;
 
   const result = async (method: string, params: any): Promise<unknown> => {
-    if (method === "sendMessage") return { message_id: ++messageId };
+    if (method.startsWith("send") && method !== "sendChatAction") return { message_id: ++messageId };
     if (method === "getFile") return { file_path: params.file_id };
     if (method !== "getUpdates") return true;
     queue = queue.filter((u) => u.update_id >= (params.offset ?? 0));
@@ -38,9 +38,11 @@ export async function fakeBotApi() {
     const file = req.url!.match(/^\/file\/bot[^/]+\/(.+)$/);
     if (file) return void res.end(files.get(decodeURIComponent(file[1]!)));
     const [, token, method] = req.url!.match(/^\/bot([^/]+)\/(.+)$/)!;
-    let body = "";
-    for await (const chunk of req) body += chunk;
-    const params = JSON.parse(body || "{}");
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    const type = req.headers["content-type"] ?? "";
+    const params = type.startsWith("multipart/form-data") ? await formParams(type, body) : JSON.parse(String(body) || "{}");
     calls.push({ token: token!, method: method!, params, at: Date.now() });
     const failure = failures.get(method!);
     const [status, json] =
@@ -66,6 +68,17 @@ export async function fakeBotApi() {
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+/** A multipart body's fields: strings as they are, files as `{ name, type, data }`. */
+async function formParams(contentType: string, body: Buffer) {
+  const form = await new Request("http://x/", { method: "POST", headers: { "content-type": contentType }, body: new Uint8Array(body) }).formData();
+  const params: Record<string, unknown> = { multipart: true };
+  for (const [key, value] of form) {
+    params[key] =
+      typeof value === "string" ? value : { name: value.name, type: value.type, data: new Uint8Array(await value.arrayBuffer()) };
+  }
+  return params;
 }
 
 /** A `KernelContext` holding only the bot token's secret functions; `provide` sets the token and fulfils the waiters. */

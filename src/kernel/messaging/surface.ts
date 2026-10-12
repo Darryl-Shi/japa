@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { defineDoc } from "@earendil-works/pi-durable";
 import type {
   Dispose,
@@ -6,13 +7,14 @@ import type {
   MessagingAdapter,
   MessagingContext,
   Origin,
+  OutgoingFile,
   Reply,
 } from "../contracts.ts";
+import { humanSize } from "../files.ts";
 import type { Job } from "../jobs/state.ts";
 import { message } from "../loader.ts";
 import { originOf } from "../origin.ts";
 import { liveness } from "../update-state.ts";
-import { inputOf } from "./attachments.ts";
 import { COMMANDS, createMenu, fitted, UNDELETED } from "./menu/index.ts";
 import { INPUT_MS } from "./menu/nav.ts";
 import { createPrompts } from "./prompts.ts";
@@ -54,9 +56,10 @@ export const MessagingDoc = defineDoc<{
 
 /**
  * The kernel's messaging surface for `adapter`: handles its messages one at a time, in arrival order, answering anyone
- * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts and images, merged,
- * to the CoS. Every pending secret request has its own prompt (see `createPrompts`), synced when the pending list
- * changes and before each owner message is handled, so prompts go out once an owner is set and first writes. Only a
+ * but the owner (`extensions.<adapter>.owner`) with their user id, and submitting the owner's texts and files (images
+ * are files without a name), merged and converted by `kernel.surface.input`, to the CoS. Every pending secret request
+ * has its own prompt (see `createPrompts`), synced when the pending list changes and before each owner message is
+ * handled, so prompts go out once an owner is set and first writes. Only a
  * reply to a prompt fulfils its request, ahead of any menu screen waiting for a value; it is deleted at once and,
  * delivered again, dropped and deleted again. A Decline button declines its request. Commands and the menu's button
  * presses go to the menu, never to the CoS, as does the next other text while a menu screen waits for a value. A
@@ -101,10 +104,9 @@ export async function startMessaging(
     if (first !== undefined) {
       buffer = [];
       const origin = { surface: adapter.name, chat: first.chat, id: first.id };
-      const m = kernel.surface.status().model!;
-      const vision = kernel.models.getModel(m.provider, m.modelId)?.input.includes("image") ?? false;
+      const merged = messages.map((m) => ({ id: m.id, text: m.text, files: [...(m.files ?? []), ...(m.images ?? [])] }));
       submitted = submitted
-        .then(() => kernel.surface.root.submit(inputOf(kernel.home, messages, vision), "followUp", origin))
+        .then(async () => kernel.surface.root.submit(await kernel.surface.input(merged), "followUp", origin))
         .catch(log);
     }
     return submitted;
@@ -162,27 +164,71 @@ export async function startMessaging(
         return;
       }
     }
-    if ((m.text === undefined && m.images === undefined) || buffer.some((b) => b.id === m.id)) return;
+    const empty = m.text === undefined && m.images === undefined && m.files === undefined;
+    if (empty || buffer.some((b) => b.id === m.id)) return;
     buffer.push(m);
     clearTimeout(timer);
     timer = setTimeout(flush, MERGE_MS);
   };
 
-  /** Sends `r` in parts to its chat, if it has one here; its cursor is saved unless the daemon is stopping. */
+  /** Sends `text` in parts to `chat`; false when the daemon is stopping (so it's sent again after the restart). */
+  const sendText = async (chat: string, text: string): Promise<boolean> => {
+    for (const part of splitMessage(text, adapter.maxMessageChars)) {
+      if (stopped) return false;
+      try {
+        await adapter.send(chat, { markdown: part });
+      } catch (error) {
+        if (stopped) return false;
+        console.error(`${adapter.name}: couldn't send a reply: ${message(error)}`);
+        break;
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Sends `f`, read from disk now, to `chat`: with `sendFile` when the adapter has it and the file fits, else as a line
+   * naming its path (and why), then its caption; false when the daemon is stopping.
+   */
+  const sendOutgoing = async (chat: string, f: OutgoingFile): Promise<boolean> => {
+    let size: number;
+    try {
+      const info = await stat(f.path);
+      if (!info.isFile()) throw new Error("not a file");
+      size = info.size;
+    } catch {
+      return sendText(chat, `Couldn't send ${f.name}: it no longer exists at ${f.path}.`);
+    }
+    const file = { ...f, size };
+    let reason = "";
+    if (adapter.sendFile === undefined) {
+      // No reason to give: the adapter doesn't send files.
+    } else if (adapter.maxFileBytes !== undefined && size > adapter.maxFileBytes) {
+      reason = ` (${adapter.name} can send files up to ${humanSize(adapter.maxFileBytes)})`;
+    } else {
+      if (stopped) return false;
+      try {
+        await adapter.sendFile(chat, file);
+        return true;
+      } catch (error) {
+        if (stopped) return false; // sent again after the restart
+        console.error(`${adapter.name}: couldn't send ${f.path}: ${message(error)}`);
+        reason = ` (couldn't send it: ${message(error)})`;
+      }
+    }
+    const line = `📎 ${f.name} (${humanSize(size)}) is at ${f.path} on japa's host${reason}`;
+    return sendText(chat, f.caption ? `${line}\n\n${f.caption}` : line);
+  };
+
+  /**
+   * Sends `r` (in parts, or its file) to its chat, if it has one here; its cursor is saved unless the daemon is stopping.
+   */
   const deliver = async (r: Reply) => {
     const owner = kernel.settings().owner as string | undefined;
     const chat = r.origin === "proactive" ? owner : r.origin.surface === adapter.name ? r.origin.chat : undefined;
     if (chat !== undefined) {
-      for (const part of splitMessage(r.text, adapter.maxMessageChars)) {
-        if (stopped) return;
-        try {
-          await adapter.send(chat, { markdown: part });
-        } catch (error) {
-          if (stopped) return; // sent again after the restart
-          console.error(`${adapter.name}: couldn't send a reply: ${message(error)}`);
-          break;
-        }
-      }
+      const done = r.file !== undefined ? await sendOutgoing(chat, r.file) : await sendText(chat, r.text);
+      if (!done) return;
     }
     if (!stopped) await messaging.saveCursor(adapter.name, r.cursor);
   };
