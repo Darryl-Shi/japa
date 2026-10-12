@@ -219,3 +219,37 @@ test("text carried on message_start shows in the stream", () => {
   hub.events([ev("message_start", { message: { role: "user", content: "q" } })]);
   expect(hub.snapshot().streaming).toBe("# Title");
 });
+
+test("a file the CoS sent shows as a 📎 line with its path; a failed send_file shows none", () => {
+  const result = (isError: boolean, path: string) => ({
+    kind: "pi.message",
+    model: [
+      {
+        role: "toolResult",
+        toolName: "send_file",
+        toolCallId: "send_file",
+        isError,
+        content: [{ type: "text", text: "Sending todo.md (1 KB)." }],
+        details: isError ? undefined : { file: { path, name: "todo.md", mimeType: "text/markdown", size: 1024 } },
+      },
+    ],
+  });
+  const { hub, seen } = subscribed();
+  hub.events([
+    snapshot([
+      user("send it"),
+      assistant("Here it is.", ["send_file"]),
+      result(false, "/home/u/notes/todo.md"),
+      result(true, "/home/u/missing.md"),
+    ]),
+  ]);
+  expect(seen.at(-1)).toMatchObject({
+    lines: [
+      { kind: "user", text: "send it" },
+      { kind: "assistant", text: "Here it is." },
+      { kind: "tool", text: "⚙ send_file" },
+      { kind: "tool", text: "📎 /home/u/notes/todo.md" },
+    ],
+  });
+  expect(JSON.stringify(seen)).not.toMatch(/missing\.md/);
+});
