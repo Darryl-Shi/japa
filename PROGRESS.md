@@ -32,3 +32,19 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 - Page header always `[PDF text, N pages]` as the spec writes it.
 - A file of e.g. 50 MB + 1 B reports its exact byte count in "Too large" so it doesn't read "50 MB (max 50 MB)".
 - No CI workflow: the spec doesn't ask for one, and sandbox tests need bubblewrap.
+
+---
+
+# Progress: installer menu (docs/specs/run-mv4qu21g-84sb.md)
+
+## Done
+- install.sh: menu (Install/Update/Uninstall/Quit) on fd 3 from `JAPA_INSTALL_TTY` (default /dev/tty); foreign app/
+  refused before the menu; prerequisites only for Install/Update; Uninstall: removal + data prompts, probe
+  (launcher → marked node/ ≥24 → system node ≥24, then `--version`), delegated `uninstall [--purge]` or shell fallback
+  mirroring uninstall.ts (best-effort, non-zero on failed steps).
+- mini-japa fixture: `mini-dep` file: dependency (so removing node_modules breaks the probe) + `uninstall` stand-in.
+- 19 new tests in test/install-sh.test.ts; README, docs/spec.md (incl. implementation notes), AGENTS.md.
+
+## Decisions
+- See docs/spec.md "installer menu" → Implementation notes. EOF at any prompt = no; Ctrl-C at menu = 130.
+- No CI workflow: the spec doesn't ask for one.

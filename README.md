@@ -18,7 +18,28 @@ when the job finishes; it rolls them back when they break.
 curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh
 ```
 
-This clones japa into `~/.local/share/japa/app`, downloads a private Node.js if your system doesn't have Node 24 or
+In a terminal, the installer first shows a menu naming the install directory (marked `installed` when japa is
+already there):
+
+```
+==> japa installer (~/.local/share/japa)
+  1) Install
+  2) Update
+  3) Uninstall
+  4) Quit
+Choose [1]:
+```
+
+- **Install** installs japa fresh, as described below. It's the default (Enter) when japa isn't installed there.
+- **Update** runs `japa update` (see Updating). It's the default when japa is already installed.
+- **Uninstall** removes japa, after asking (see Uninstall).
+- **Quit**, or closing input, exits without changing anything.
+
+A choice that doesn't fit — Install when japa is already installed, Update when it isn't, Uninstall when nothing of japa's is there — says so and
+shows the menu again; so does any other input. Without a terminal (e.g. in CI), or with `--non-interactive`, there's
+no menu: the installer installs fresh, or updates an existing install, and never uninstalls.
+
+Install clones japa into `~/.local/share/japa/app`, downloads a private Node.js if your system doesn't have Node 24 or
 newer (with npm), puts a `japa` launcher in `~/.local/bin`, and runs `japa setup` (see First run below). If
 `~/.local/bin` isn't on your PATH yet, it adds it in your shell's rc file (`~/.bashrc`, `~/.zshrc` or
 `~/.config/fish/config.fish`, from `$SHELL`) and prints "open a new shell or run: export PATH=...". Setup needs a
@@ -38,7 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 | `--dir <path>` | `JAPA_INSTALL_DIR` | `~/.local/share/japa` | Where to install japa |
 | `--branch <name>` | `JAPA_BRANCH` | `main` | git branch to install |
 | `--repo <url>` | `JAPA_REPO` | `https://github.com/Darryl-Shi/japa.git` | git repo to clone |
-| `--non-interactive` | | off | Install but don't run `japa setup`; for scripted installs, see Non-interactive setup |
+| `--non-interactive` | | off | No menu, and don't run `japa setup`; for scripted installs, see Non-interactive setup |
 | `--no-service` | | off | Passed to `japa setup`: don't install or start the background service |
 | `--skip-setup` | | off | Install but don't run `japa setup` |
 
@@ -46,8 +67,8 @@ If a step fails, or you press Ctrl-C, the installer names the step and removes t
 It never touches `~/.japa`, refuses a `--dir` whose `app/` isn't a japa checkout (changing nothing), and never
 replaces or removes a `node/` it didn't install itself.
 
-Running the same command again later upgrades an existing install (writing the launcher first if it's missing or
-points at another install) — see Updating.
+Running the same command again later and choosing Update (the default then) upgrades an existing install (writing
+the launcher first if it's missing or points at another install) — see Updating.
 
 ### Install from a checkout
 
@@ -268,8 +289,9 @@ it restarts the service if it's running (a service you stopped stays stopped), o
 | `--to <sha>` | Move to a specific commit instead of the branch tip — forward or back, e.g. to undo a bad update |
 | `--no-restart` | Update the files but leave the running service alone |
 
-Re-running `install.sh` does the same thing: it detects an existing install and runs `japa update` instead of
-cloning again (writing the launcher first if it's missing or points at another install). Your `~/.japa` data —
+Re-running `install.sh` and choosing Update (the default when japa is installed) does the same thing: it runs
+`japa update` instead of cloning again (writing the launcher first if it's missing or points at another install).
+Without a terminal, or with `--non-interactive`, it updates without asking. Your `~/.japa` data —
 settings, secrets, extensions, skills — is never touched by an update, except to record which extensions
 it has told you about.
 
@@ -286,6 +308,13 @@ directory's `app/` and the private Node.js japa installed, then the directory it
 cloned and linked yourself is left in place). Your data stays in `~/.japa`; the command prints where. Add `--purge`
 to delete that too, once you type `delete` to confirm. The PATH line `install.sh` added to your shell's rc file is
 left as it is; the command names the file.
+
+Or re-run `install.sh` and choose Uninstall. It asks before removing anything, then whether to delete your data
+too. This works even when japa itself can't run (a half-finished install, a missing or wrong Node, broken
+dependencies, no launcher): when japa can run it hands over to `japa uninstall` (with `--purge` if you chose to
+delete data); otherwise it removes the service unit, the `japa` launcher if it points at this install, `app/`, the
+private Node.js japa installed, and the directory once it's empty. Either way `~/.japa` is kept unless you chose to
+delete data and typed `delete`, and the PATH line in your rc file is only named, never edited.
 
 ## Telegram
 

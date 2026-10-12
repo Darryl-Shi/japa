@@ -1,7 +1,9 @@
 #!/bin/sh
 # japa bootstrap: curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh
-# See docs/superpowers/specs/2026-10-08-japa-install-design.md §3. Re-running this script upgrades an existing
-# install (§3.1 step 3); it never touches $JAPA_HOME (~/.japa by default).
+# See docs/superpowers/specs/2026-10-08-japa-install-design.md §3 and docs/spec.md (installer menu).
+# With a terminal (and without --non-interactive) it first shows a menu: Install, Update, Uninstall, Quit. Without
+# one it installs fresh, or upgrades an existing install (§3.1 step 3), and never uninstalls. Install and Update
+# never touch $JAPA_HOME (~/.japa by default); Uninstall deletes it only when asked and confirmed with "delete".
 set -eu
 
 # Wrapped in main(), invoked by the last line: under `curl | sh` a stream truncated mid-download then parses to
@@ -224,21 +226,6 @@ case "$(uname -m)" in
     ;;
 esac
 
-# --- Step 2: prerequisites ---
-say "Checking prerequisites"
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    say_err "$1 is required. Install it with: apt install $2 | dnf install $3"
-    exit 1
-  fi
-}
-require_cmd git git git
-require_cmd tar tar tar
-if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-  say_err "curl or wget is required. Install one with: apt install curl | dnf install curl"
-  exit 1
-fi
-
 APP_DIR="$DIR/app"
 NODE_DIR="$DIR/node"
 LAUNCHER="$HOME/.local/bin/japa"
@@ -292,12 +279,270 @@ is_japa_checkout() {
   [ -f "$APP_DIR/package.json" ] && grep -q '^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"japa"' "$APP_DIR/package.json"
 }
 
-# --- Step 3: existing install -> upgrade path ---
+# A controlling terminal (or, in tests only, JAPA_INSTALL_TTY's stand-in) for the menu, prompts and setup.
+TTY="${JAPA_INSTALL_TTY:-/dev/tty}"
+# `[ -r /dev/tty ]` only checks the device node's permissions (always 0666), not whether this process has a
+# controlling terminal to open -- under `curl | sh` in CI/Docker/cloud-init there is none, so probe the open.
+has_tty() {
+  (exec 3<"$TTY") 2>/dev/null
+}
+
+# A foreign app/ is refused before anything else (the menu included) and nothing is touched.
+if { [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; } && ! { [ -e "$APP_DIR/.git" ] && is_japa_checkout; }; then
+  say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
+  exit 1
+fi
+INSTALLED=0
 if [ -e "$APP_DIR/.git" ]; then
-  if ! is_japa_checkout; then
-    say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
+  INSTALLED=1
+fi
+
+# --- The menu (docs/spec.md "installer menu"): only with a terminal and without --non-interactive. ---
+if [ "$NON_INTERACTIVE" -eq 0 ] && has_tty; then
+  exec 3<"$TTY"
+  HAVE_MENU=1
+else
+  HAVE_MENU=0
+fi
+
+# Reads one line from the terminal into $answer; fails on EOF.
+ask() {
+  printf '%s' "$1"
+  answer=""
+  IFS= read -r answer <&3 || { [ -n "$answer" ]; } || { echo; return 1; }
+}
+
+is_yes() {
+  case "$1" in
+    y | Y | yes | Yes | YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Whether japa's own private Node is there (marked as src/cli/node.ts marks it).
+has_japa_node() {
+  [ -e "$NODE_DIR/$NODE_MARKER" ]
+}
+
+JAPA_HOME_DIR="${JAPA_HOME:-$HOME/.japa}"
+UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/japa.service"
+
+# The probe (can this checkout run?): sets RUNNER_KIND to "launcher" or "node" (with RUNNER_NODE), or fails.
+RUNNER_KIND=""
+RUNNER_NODE=""
+run_japa() {
+  if [ "$RUNNER_KIND" = launcher ]; then
+    "$LAUNCHER" "$@"
+  else
+    "$RUNNER_NODE" --disable-warning=ExperimentalWarning "$APP_DIR/src/cli/main.ts" "$@"
+  fi
+}
+probe_japa() {
+  [ -e "$APP_DIR/.git" ] && is_japa_checkout || return 1
+  if launcher_points_here; then
+    RUNNER_KIND=launcher
+  elif has_japa_node && node_ok "$NODE_DIR/bin/node"; then
+    RUNNER_KIND=node
+    RUNNER_NODE="$NODE_DIR/bin/node"
+  else
+    system_node=$(command -v node 2>/dev/null || true)
+    if [ -n "$system_node" ] && node_ok "$system_node"; then
+      RUNNER_KIND=node
+      RUNNER_NODE=$system_node
+    else
+      return 1
+    fi
+  fi
+  run_japa --version >/dev/null 2>&1
+}
+
+# Fallback: mirrors src/cli/uninstall.ts in shell, for an install japa itself can't run from. Best-effort after
+# the purge confirmation: a failed step is reported, the rest still run, and the exit status says so.
+uninstall_directly() {
+  purge=$1
+  failed=0
+  if [ "$purge" -eq 1 ]; then
+    if ! ask "Type \"delete\" to permanently remove $JAPA_HOME_DIR: " || [ "$answer" != delete ]; then
+      echo "purge cancelled; nothing was removed"
+      exit 0
+    fi
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now japa >/dev/null 2>&1 || true
+  fi
+  if [ -e "$UNIT_FILE" ] || [ -L "$UNIT_FILE" ]; then
+    if rm -f "$UNIT_FILE"; then
+      echo "removed $UNIT_FILE"
+    else
+      say_err "could not remove $UNIT_FILE"
+      failed=1
+    fi
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  if launcher_points_here; then
+    if rm -f "$LAUNCHER"; then
+      echo "removed $LAUNCHER"
+    else
+      say_err "could not remove $LAUNCHER"
+      failed=1
+    fi
+  fi
+
+  if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; then
+    if rm -rf "$APP_DIR"; then
+      echo "removed $APP_DIR"
+    else
+      say_err "could not remove $APP_DIR"
+      failed=1
+    fi
+  fi
+  if has_japa_node; then
+    if rm -rf "$NODE_DIR"; then
+      echo "removed $NODE_DIR"
+    else
+      say_err "could not remove $NODE_DIR"
+      failed=1
+    fi
+  fi
+  if [ -d "$DIR" ] && [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
+    rmdir "$DIR" 2>/dev/null || { say_err "could not remove $DIR"; failed=1; }
+  fi
+
+  if [ "$purge" -eq 1 ]; then
+    if rm -rf "$JAPA_HOME_DIR"; then
+      echo "removed $JAPA_HOME_DIR"
+    else
+      say_err "could not remove $JAPA_HOME_DIR"
+      failed=1
+    fi
+  else
+    echo "kept $JAPA_HOME_DIR"
+  fi
+
+  rc_files=""
+  add_rc_if_holds "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"'
+  add_rc_if_holds "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"'
+  add_rc_if_holds "$HOME/.config/fish/config.fish" 'fish_add_path $HOME/.local/bin'
+  if [ -n "$rc_files" ]; then
+    echo "the PATH line install.sh added is still in $rc_files"
+  fi
+
+  exit "$failed"
+}
+
+# Appends $1 to $rc_files when that rc file still holds install.sh's PATH line $2 (src/cli/uninstall.ts's PATH_LINES).
+add_rc_if_holds() {
+  if [ -f "$1" ] && grep -qF "$2" "$1"; then
+    rc_files="${rc_files:+$rc_files, }$1"
+  fi
+}
+
+# The menu's Uninstall: returns (to the menu) when the user declines, otherwise exits.
+uninstall_flow() {
+  echo "This will remove:"
+  echo "  the japa service (systemd user unit), if installed"
+  if launcher_points_here; then echo "  the launcher $LAUNCHER"; fi
+  if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; then echo "  $APP_DIR"; fi
+  if has_japa_node; then echo "  $NODE_DIR (japa's Node.js)"; fi
+  if ! ask "Uninstall japa from $DIR? [y/N] " || ! is_yes "$answer"; then
+    return 0
+  fi
+  purge=0
+  if ask "Also delete your data in $JAPA_HOME_DIR (settings, secrets, memory)? [y/N] " && is_yes "$answer"; then
+    purge=1
+  fi
+
+  if probe_japa; then
+    say "Uninstalling with japa uninstall"
+    set -- uninstall
+    if [ "$purge" -eq 1 ]; then
+      set -- "$@" --purge
+    fi
+    status=0
+    run_japa "$@" <&3 3<&- || status=$?
+    exit "$status"
+  fi
+  say "japa can't run from $DIR; removing it directly"
+  uninstall_directly "$purge"
+}
+
+if [ "$HAVE_MENU" -eq 1 ]; then
+  ACTION=""
+  while [ -z "$ACTION" ]; do
+    if [ "$INSTALLED" -eq 1 ]; then
+      say "japa installer ($DIR, installed)"
+      default=2
+    else
+      say "japa installer ($DIR)"
+      default=1
+    fi
+    echo "  1) Install"
+    echo "  2) Update"
+    echo "  3) Uninstall"
+    echo "  4) Quit"
+    if ! ask "Choose [$default]: "; then
+      exit 0
+    fi
+    choice=$answer
+    # Trim surrounding blanks.
+    choice=${choice#"${choice%%[![:space:]]*}"}
+    choice=${choice%"${choice##*[![:space:]]}"}
+    if [ -z "$choice" ]; then
+      choice=$default
+    fi
+    case "$choice" in
+      1)
+        if [ "$INSTALLED" -eq 1 ]; then
+          echo "japa is already installed at $DIR; choose Update"
+        else
+          ACTION=install
+        fi
+        ;;
+      2)
+        if [ "$INSTALLED" -eq 1 ]; then
+          ACTION=update
+        else
+          echo "no japa install at $DIR; choose Install"
+        fi
+        ;;
+      3)
+        if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ] || has_japa_node || launcher_points_here; then
+          uninstall_flow
+        else
+          echo "no japa install at $DIR"
+        fi
+        ;;
+      4) exit 0 ;;
+      *) ;;
+    esac
+  done
+elif [ "$INSTALLED" -eq 1 ]; then
+  ACTION=update
+else
+  ACTION=install
+fi
+
+# --- Step 2: prerequisites ---
+say "Checking prerequisites"
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    say_err "$1 is required. Install it with: apt install $2 | dnf install $3"
     exit 1
   fi
+}
+require_cmd git git git
+require_cmd tar tar tar
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+  say_err "curl or wget is required. Install one with: apt install curl | dnf install curl"
+  exit 1
+fi
+
+# --- Step 3: existing install -> upgrade path ---
+if [ "$ACTION" = update ]; then
   # An install interrupted before its launcher step, or a launcher since taken over by another install: (re)write
   # it, so the update below -- and every later `japa` -- runs this checkout.
   if ! launcher_points_here; then
@@ -312,11 +557,6 @@ if [ -e "$APP_DIR/.git" ]; then
   fi
   "$LAUNCHER" "$@" || status=$?
   exit "$status"
-fi
-
-if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; then
-  say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
-  exit 1
 fi
 
 # --- Steps 4-7: fresh install. On failure, remove the app/ and node/ this run created. ---
@@ -358,20 +598,15 @@ install_launcher
 trap - EXIT
 
 # --- Step 8: setup ---
-# `[ -r /dev/tty ]` only checks the device node's permissions (always 0666), not whether this process has a
-# controlling terminal to open -- under `curl | sh` in CI/Docker/cloud-init there is none, so probe the open.
-has_tty() {
-  (exec 3</dev/tty) 2>/dev/null
-}
-if [ "$SKIP_SETUP" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || ! has_tty; then
+if [ "$SKIP_SETUP" -eq 1 ] || [ "$HAVE_MENU" -eq 0 ]; then
   say "Skipping setup"
   echo "run \`japa setup\` to finish"
 else
   say "Running setup"
   if [ "$NO_SERVICE" -eq 1 ]; then
-    "$LAUNCHER" setup --no-service </dev/tty
+    "$LAUNCHER" setup --no-service <&3
   else
-    "$LAUNCHER" setup </dev/tty
+    "$LAUNCHER" setup <&3
   fi
 fi
 

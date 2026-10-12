@@ -56,7 +56,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   - `extensions/webui/auth.ts` — token + HMAC session cookies; `live.ts` + `transcript.ts` — live hub / projection
   - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract
 - `skills/` — packaged skills (e.g. `writing-job-briefs`).
-- `install.sh` — bootstrap installer (steps: clone, node, dependencies, build, launcher)
+- `install.sh` — bootstrap installer: with a terminal, a menu (Install / Update / Uninstall / Quit); install steps clone,
+  node, dependencies, build, launcher; Uninstall delegates to `japa uninstall` or removes directly (tests: `JAPA_INSTALL_TTY`)
 - `test/` — vitest suites (`test/webui*.test.ts` for the web UI; `*-helpers.ts` hold fakes: fake messaging adapter,
   fake Telegram Bot API); `test/fixtures/mini-japa` for install.sh tests
 - Vitest sets `JAPA_WEBUI_AUTOSTART=0` (and `JAPA_DESKTOP_AUTOSTART=0`) so test daemons don't bind 7337.
