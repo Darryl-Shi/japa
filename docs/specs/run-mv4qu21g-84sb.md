@@ -1,89 +1,112 @@
-# japa: `install.sh --uninstall`
+# japa: installer menu with Install / Update / Uninstall
 
-Status: approved for build. This is an incremental change to japa's bootstrap installer. The builder folds it into `docs/spec.md` and the README.
+Status: approved for build. This is an incremental change to japa's bootstrap installer (`install.sh`). The builder folds it into `docs/spec.md` and the README.
 
 ## 1. Purpose
 
-You install japa with `curl -fsSL …/install.sh | sh`, but the only way to remove it today is `japa uninstall [--purge]`, which needs a working `japa` on your PATH. This change lets the same installer script uninstall:
+Today `curl -fsSL …/install.sh | sh` installs japa, or upgrades an install that's already there. The only way to remove japa is `japa uninstall [--purge]`, which needs a working `japa` on the PATH.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh -s -- --uninstall [--purge] [--dir <path>]
-```
+With this change, running the installer in a terminal first shows a menu: **Install**, **Update**, **Uninstall** (plus Quit). You choose the action there, not with a command-line flag. Uninstall works whether the install is healthy or broken: half-finished, a missing or wrong Node, broken `node_modules`, or no launcher.
 
-`install.sh --uninstall` removes the install at `--dir` (or `JAPA_INSTALL_DIR`, default `~/.local/share/japa`). It works whether that install is healthy or broken: a half-finished install, a missing or wrong Node, broken `node_modules`, or a missing launcher.
-
-`japa uninstall` itself does not change.
+`japa uninstall` itself is unchanged.
 
 ## 2. Key technical decisions
 
-### 2.1 Delegate first, shell fallback second
-There is one source of truth for the removal rules: `src/cli/uninstall.ts` (`japa uninstall`). `install.sh` hands off to it whenever the installed checkout can run. It does the removal in POSIX sh only when the checkout can't run.
+### 2.1 The first menu
+The menu is plain POSIX sh. Node may not exist yet, so it can't use clack. It is drawn on the terminal and read from `/dev/tty`, so it works under `curl | sh`. It appears after the platform check and before anything else happens. Install-specific steps (the prerequisites check, cloning, Node) run only after **Install** or **Update** is chosen.
 
-**Can the checkout run? (the probe)** This is decided once, before anything is removed:
-1. `<dir>/app` must be a japa checkout. The existing `is_japa_checkout` check applies: `<dir>/app/.git` exists and `package.json` is named `japa`.
+```
+==> japa installer (<dir>)
+  1) Install
+  2) Update
+  3) Uninstall
+  4) Quit
+Choose [N]:
+```
+
+- **Header.** It names the install dir: `--dir` / `JAPA_INSTALL_DIR`, default `~/.local/share/japa`, canonicalised as today. When japa is already installed there (`<dir>/app` is a japa checkout), the header also says `installed`.
+- **Default.** Enter picks the default: **Update** when installed, **Install** otherwise.
+- **Input.**
+  - Any input other than 1–4 or Enter re-asks.
+  - EOF or Ctrl-C quits with nothing done and exit status 0. Ctrl-C at the menu exits 130.
+  - **Quit** exits 0 with nothing done.
+- **Actions that don't fit the install's state.** These print a line and show the menu again:
+  - **Install** when already installed: `japa is already installed at <dir>; choose Update`.
+  - **Update** when not installed: `no japa install at <dir>; choose Install`.
+  - **Uninstall** when nothing at all is there (no `app/`, no japa `node/`, no launcher pointing at `<dir>/app`): `no japa install at <dir>`.
+- **A foreign `app/`.** If `<dir>/app` exists but isn't a japa checkout, the existing refusal (`… isn't a japa checkout; remove it or choose another --dir`, exit 1) happens before the menu, and nothing is touched.
+
+**When there's no menu.** The menu appears only when a controlling terminal can be opened (the existing `has_tty` probe) and `--non-interactive` isn't given. Otherwise the script behaves exactly as today: a fresh install, or the upgrade path when already installed. Scripted and CI installs keep working, and uninstall is never chosen without a person at the terminal.
+
+**Flags.** No action flag is added. The existing flags keep their meanings:
+- `--dir` chooses the install the menu acts on;
+- `--branch` and `--repo` apply to Install and Update;
+- `--no-service` and `--skip-setup` apply to Install;
+- `--non-interactive` now also means "no menu".
+
+### 2.2 Install and Update
+- **Install** runs today's fresh-install path unchanged: prerequisites, clone, node, dependencies, build, launcher, then setup, with the same cleanup-on-failure trap and messages.
+- **Update** runs today's upgrade path unchanged: write the launcher first if it's missing or points elsewhere, then `japa update`, forwarding `--branch` only when it was given, and exit with its status.
+
+### 2.3 Uninstall
+After **Uninstall** is chosen:
+
+1. **Removal prompt.** The script prints what will be removed (the service, the launcher if it points here, `<dir>/app`, japa's `node/`) and asks `Uninstall japa from <dir>? [y/N]`. Anything but `y`/`yes` returns to the menu.
+2. **Data prompt.** It asks `Also delete your data in <home> (settings, secrets, memory)? [y/N]`, where `<home>` is `$JAPA_HOME`, or `~/.japa` when that's unset. A yes means purge. The typed `delete` confirmation that follows comes from whichever mode runs in step 3 (`japa uninstall --purge`'s own prompt, or install.sh's equivalent). Any other answer there keeps everything: `purge cancelled; nothing was removed`, exit 0.
+3. **Mode.** The script then delegates to the installed japa when it can, and falls back to removing things in shell when it can't (see below). There is one source of truth for the removal rules, `src/cli/uninstall.ts`. install.sh only re-implements them for the fallback.
+
+**The probe: can the checkout run?** This is decided once, before anything is removed:
+1. `<dir>/app` must be a japa checkout (the existing `is_japa_checkout` check).
 2. A runner must be found, tried in this order:
-   - the launcher `~/.local/bin/japa`, when it points at `<dir>/app` (the existing `launcher_points_here` test);
-   - otherwise `<dir>/node/bin/node`, when `node/` carries the `.japa-node` marker and is Node ≥ 24;
-   - otherwise a system `node` ≥ 24 on PATH.
+   - the launcher, when it points at `<dir>/app` (`launcher_points_here`);
+   - otherwise `<dir>/node/bin/node`, when it carries `.japa-node` and is Node ≥ 24;
+   - otherwise a system `node` ≥ 24.
 
-   With a Node runner, the command is `<node> --disable-warning=ExperimentalWarning <dir>/app/src/cli/main.ts`, exactly what the launcher would exec.
-3. Running that runner with `--version` must exit 0. This loads `main.ts`'s full import graph, so it also catches broken dependencies.
+   A Node runner is used as `<node> --disable-warning=ExperimentalWarning <dir>/app/src/cli/main.ts`, exactly what the launcher execs.
+3. `<runner> --version` must exit 0. This loads `main.ts`'s whole import graph, so it also catches broken dependencies.
 
-**Delegated mode.** When the probe passes, install.sh prints `==> Uninstalling with japa uninstall` and runs `<runner> uninstall`, adding `--purge` when it was given.
-- stdin comes from `/dev/tty` so the purge confirmation works under `curl | sh`.
-- The environment (`JAPA_HOME`, `XDG_CONFIG_HOME`, `PATH`) is passed through unchanged.
-- install.sh exits with that command's exit status. It does **not** run the shell fallback after a delegated run, even one that failed, so nothing is acted on twice.
+**Delegated mode.** When the probe passes, the script prints `==> Uninstalling with japa uninstall` and runs `<runner> uninstall`, adding `--purge` if you chose to delete data.
+- stdin comes from `/dev/tty`, and the environment is passed through unchanged.
+- The script exits with that command's status. It never runs the fallback after a delegated run, so nothing is acted on twice.
 
-**Fallback mode.** When the probe fails, install.sh prints `==> japa can't run from <dir>; removing it directly`, then applies the same rules as `uninstall.ts`, in the same order:
-1. **Purge confirmation first** (only with `--purge`). It prompts on `/dev/tty`: `Type "delete" to permanently remove <home>`. Any other answer prints `purge cancelled; nothing was removed` and exits 0 without touching anything.
-2. **Service.** If `systemctl` exists, it runs `systemctl --user disable --now japa` and ignores failure. It removes `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/japa.service`, then runs `systemctl --user daemon-reload` and ignores failure. Without `systemctl`, it only removes the unit file if present.
-3. **Launcher.** `~/.local/bin/japa` is removed only if it points at `<dir>/app`, using the same quoted-path test as today. A launcher for another install, or an `npm link` symlink, is left alone.
-4. **Install dir.** It removes `<dir>/app` and `<dir>/node`, but `node/` only if it carries `.japa-node`. It removes `<dir>` only if it is then empty. Nothing else under `<dir>` is touched.
-5. **Data.** With a confirmed purge, it removes `<home>` and prints `removed <home>`. Otherwise it prints `kept <home>`. Here `<home>` is `$JAPA_HOME`, or `~/.japa` when that's unset.
-6. **PATH line.** If install.sh's PATH line is still in `~/.bashrc`, `~/.zshrc` or `~/.config/fish/config.fish`, it names those files and leaves them unedited. The lines checked are the same ones `uninstall.ts` checks.
+**Fallback mode.** When the probe fails, the script prints `==> japa can't run from <dir>; removing it directly`, then mirrors `uninstall.ts`, in order:
+1. **Purge confirmation.** Only if you chose to delete data: `Type "delete" to permanently remove <home>`. Any other answer prints `purge cancelled; nothing was removed` and exits 0.
+2. **Service.** If `systemctl` exists, it runs `systemctl --user disable --now japa` and ignores failure. It removes `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/japa.service`, then runs `systemctl --user daemon-reload` and ignores failure.
+3. **Launcher.** `~/.local/bin/japa` is removed only if it points at `<dir>/app`.
+4. **Install dir.** It removes `<dir>/app` and `<dir>/node`, but `node/` only if it carries `.japa-node`. It removes `<dir>` only if it is then empty.
+5. **Data.** If purging, it removes `<home>` and prints `removed <home>`. Otherwise it prints `kept <home>`.
+6. **PATH line.** It names any of `~/.bashrc`, `~/.zshrc` or `~/.config/fish/config.fish` that still holds install.sh's PATH line, and never edits them.
 
-In fallback mode, the steps after the purge confirmation are best-effort. A step that fails is reported, the remaining steps still run, and the exit status is non-zero if any step failed.
+In fallback mode, the steps after the confirmation are best-effort. A failed step is reported, the remaining steps still run, and the exit status is non-zero if any step failed.
 
-### 2.2 Safety guards (both modes)
-- **Not a japa checkout.** If `<dir>/app` exists but isn't one, the uninstall is refused with `<dir>/app exists and isn't a japa checkout; remove it or choose another --dir`, exit 1, and nothing is touched. This is the same guard the install path uses.
-- **Nothing installed.** If `<dir>` has no `app/` and no japa `node/`, and the launcher doesn't point at `<dir>/app`, install.sh prints `no japa install at <dir>` and exits 0 without touching anything. Fallback mode still runs for leftovers: a launcher pointing here, a marked `node/`, or an empty `<dir>`. In that case it also removes the service unit, as `japa uninstall` does.
-- **Purge needs a terminal.** `--purge` without a usable controlling terminal is refused before anything is removed: `--purge needs a terminal to confirm`, exit 1. Terminal detection reuses the existing `has_tty` open probe. Plain `--uninstall` needs no terminal.
-- **Unsupported platform.** The existing platform check (step 1) still runs, so a non-Linux system is refused.
-- **Steps skipped.** The prerequisites check (git, tar, curl/wget) is skipped for `--uninstall`, since none of them are needed.
-- **No install cleanup.** The install's `cleanup` EXIT trap is not armed in uninstall mode.
-- **Script structure.** The script remains wrapped in `main()` (truncated-download safety), and `sh -n` must still accept it.
-
-### 2.3 Flags
-- **`--uninstall`** (new): uninstall instead of install or upgrade.
-- **`--purge`** (new): also delete japa's data (`$JAPA_HOME` or `~/.japa`) after the typed confirmation. It is only valid with `--uninstall`. Alone, it fails with `--purge only works with --uninstall`, exit 1.
-- **`--dir` and `JAPA_INSTALL_DIR`**: choose the install to remove. The directory is canonicalised the same way as for install: made absolute, with trailing slashes stripped.
-- **Ignored flags.** `--branch`, `--repo`, `--non-interactive`, `--no-service` and `--skip-setup` are accepted and ignored when combined with `--uninstall`.
-- **Unknown options** still fail as today.
+**Safety in uninstall.**
+- The prerequisites check (git, tar, curl/wget) is skipped, since uninstalling needs none of them.
+- The install `cleanup` trap is not armed.
+- The script stays wrapped in `main()` (truncated-download safety), and `sh -n` must accept it.
 
 ### 2.4 Tests
-- `test/install-sh.test.ts` covers both modes against the mini-japa fixture, using a temporary `HOME`/`XDG_CONFIG_HOME`/`JAPA_HOME` and a fake `systemctl` on PATH that records its calls.
-- For delegated mode, the fixture's `main.ts` gets (or already has) a stand-in `uninstall` that the test can observe. The real `uninstall.ts` behaviour stays covered by `test/uninstall.test.ts`.
-- Fallback mode is exercised by breaking the probe, for example by removing `node_modules` or making `--version` fail.
+- **Where.** `test/install-sh.test.ts` drives the menu against the mini-japa fixture. It gives the script a pseudo-terminal, or an overridable tty path used only by tests (in the same spirit as `JAPA_NODE_DIST`), so answers can be scripted. It uses a temporary `HOME`/`XDG_CONFIG_HOME`/`JAPA_HOME` and a fake `systemctl` on PATH that records its calls.
+- **Delegated mode.** It's observed through the fixture's `main.ts` `uninstall` stand-in. The real `uninstall.ts` stays covered by `test/uninstall.test.ts`.
+- **Fallback mode.** It's exercised by breaking the probe, for example by removing `node_modules`.
+- **No-terminal path.** The existing tests keep passing unchanged.
 
 ## 3. Docs
-- **README, Install section.** The flags table gains `--uninstall` and `--purge`.
-- **README, Uninstall subsection.** It shows the `curl … | sh -s -- --uninstall` form alongside `japa uninstall` and explains that it works even when japa can't run. It also notes that `--purge` asks for `delete` on the terminal.
-- **install.sh.** The header comment mentions `--uninstall`.
-- **`docs/spec.md`.** Updated to describe the installer's uninstall mode. `PROGRESS.md` gets a line.
+- **README Install section.** It describes the menu: what each choice does, the default, and that there's no menu without a terminal or with `--non-interactive`.
+- **README Updating and Uninstall sections.** They mention re-running the installer and choosing Update or Uninstall, next to `japa update` / `japa uninstall`. They also note that the installer's Uninstall works even when japa itself can't run.
+- **Script and specs.** The install.sh header comment, `docs/spec.md` and `PROGRESS.md` are updated.
 
 ## Acceptance behaviours
 
-1. **Healthy install, delegated.** After a normal install (with the service installed), `sh install.sh --uninstall` prints `Uninstalling with japa uninstall` and exits 0. The service is disabled and its unit file is gone, as are `~/.local/bin/japa` and `<dir>/app`. `<dir>/node` and `<dir>` are gone too when japa created them. `~/.japa` still exists, and the output says `kept ~/.japa` (with the real path).
-2. **Same with `curl | sh`.** Piping the script (`… | sh -s -- --uninstall`) gives the same result.
-3. **Purge through delegation.** `--uninstall --purge` from a terminal asks you to type `delete`. Typing `delete` also removes `~/.japa` (or `$JAPA_HOME`). Typing anything else prints `purge cancelled; nothing was removed`, and the install, service, launcher and data are all still there.
-4. **Purge without a terminal.** `--uninstall --purge` with no controlling terminal (for example in CI) prints `--purge needs a terminal to confirm`, exits non-zero and removes nothing.
-5. **Broken install, fallback.** With `<dir>/app/node_modules` deleted, or the private Node removed and no system Node 24, `--uninstall` prints `japa can't run from <dir>; removing it directly`. It still removes the service unit (calling `systemctl --user disable --now japa` and `daemon-reload` when systemctl exists), the launcher pointing at this install, `app/` and the marked `node/`, then `<dir>` once empty. It keeps `~/.japa` and exits 0.
-6. **Purge in fallback.** In fallback mode, `--purge` asks for `delete` on the terminal before removing anything, and deletes the data only on `delete`.
-7. **Other launchers survive.** If `~/.local/bin/japa` points at another install, or is an `npm link` symlink, it is left untouched in both modes.
-8. **Foreign files survive.** A `node/` without the `.japa-node` marker, or any extra file under `<dir>`, is left in place, and `<dir>` is then kept because it isn't empty.
-9. **Not a japa checkout.** If `<dir>/app` exists but isn't a japa checkout, `--uninstall` refuses with the "isn't a japa checkout" message, exits 1 and touches nothing.
-10. **Nothing installed.** `--uninstall --dir /some/empty/place` prints `no japa install at …` and exits 0.
-11. **`--purge` alone.** `--purge` without `--uninstall` fails with `--purge only works with --uninstall` and installs nothing.
-12. **PATH line named.** If install.sh had added a PATH line to `~/.bashrc`, the uninstall output names `~/.bashrc` and the file is unchanged.
-13. **Install behaviour unchanged.** Running install.sh without `--uninstall` behaves exactly as before: a fresh install, the upgrade path on a re-run, and cleanup on failure.
-14. **Checks pass.** `sh -n install.sh`, `npm test` and `npm run typecheck` pass.
+1. **Menu on a fresh machine.** Running `curl -fsSL …/install.sh | sh` in a terminal shows a menu with Install, Update, Uninstall and Quit, naming the install dir, with Install as the default. Pressing Enter installs japa exactly as before, including setup.
+2. **Menu on an installed machine.** Running it again on that machine shows the menu marked `installed`, with Update as the default. Enter runs `japa update`.
+3. **Mismatched choices.** On a fresh machine, choosing Update says `no japa install at <dir>; choose Install` and shows the menu again. On an installed one, choosing Install says it's already installed and shows the menu again.
+4. **Quit.** Choosing Quit, or closing input, exits without changing anything.
+5. **Uninstall on a healthy install.** Choose Uninstall, answer `y`, then `N` to deleting data. It prints `Uninstalling with japa uninstall`. The service is disabled and its unit file removed, and `~/.local/bin/japa`, `<dir>/app` and japa's `<dir>/node` are gone, along with `<dir>` once it's empty. `~/.japa` remains, and the output says it was kept.
+6. **Declined removal.** Choose Uninstall and answer `N` to the removal prompt: the menu returns and nothing is removed.
+7. **Uninstall with data.** Choose Uninstall, answer `y` to both prompts, then type `delete`: `~/.japa` (or `$JAPA_HOME`) is also removed. Typing anything other than `delete` prints `purge cancelled; nothing was removed`, and everything is still there.
+8. **Broken install.** With `<dir>/app/node_modules` deleted, or no usable Node 24, Uninstall prints `japa can't run from <dir>; removing it directly` and still removes the service unit, the launcher pointing here, `app/` and the marked `node/`. It keeps `~/.japa` and exits 0.
+9. **Other people's files survive.** A launcher pointing at another install, an `npm link` symlink, a `node/` without `.japa-node`, and extra files under `<dir>` are all left untouched, and `<dir>` is then kept.
+10. **Foreign `app/`.** If `<dir>/app` isn't a japa checkout, the script refuses before the menu, exits 1 and touches nothing.
+11. **PATH line named.** If install.sh had added a PATH line to `~/.bashrc`, the uninstall output names that file and leaves it unchanged.
+12. **No terminal.** Without a terminal (CI, `curl | sh` with no tty), or with `--non-interactive`, no menu appears. The script installs fresh, or updates an existing install, exactly as before, and never uninstalls.
+13. **Checks pass.** `sh -n install.sh`, `npm test` and `npm run typecheck` pass.
