@@ -36,6 +36,59 @@ export default defineJapaExtension({
 });
 `;
 
+/** An extension registering a provider over three of pi-ai's APIs, one wrapped (as a retrying provider would). */
+const providerExtension = `import {
+  type Api,
+  type AssistantMessage,
+  anthropicMessagesApi,
+  createAssistantMessageEventStream,
+  createProvider,
+  defineJapaExtension,
+  envApiKeyAuth,
+  isContextOverflow,
+  isRetryableAssistantError,
+  type Model,
+  openAICompletionsApi,
+  openAIResponsesApi,
+  type ProviderStreams,
+} from "japa/sdk";
+
+const responses = openAIResponsesApi();
+const wrapped: ProviderStreams = {
+  stream: (model, context, options) => {
+    const out = createAssistantMessageEventStream();
+    void (async () => {
+      for await (const event of responses.stream(model, context, options)) out.push(event);
+      out.end();
+    })();
+    return out;
+  },
+  streamSimple: (model, context, options) => responses.streamSimple(model, context, options),
+};
+
+export const retryable = (m: AssistantMessage) => isRetryableAssistantError(m) && !isContextOverflow(m);
+
+const model: Model<Api> = {
+  id: "acme-1", name: "Acme 1", api: "openai-responses", provider: "acme", baseUrl: "https://acme.example/v1",
+  reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192,
+};
+
+export default defineJapaExtension({
+  name: "acme",
+  summary: "Acme models",
+  provides: {
+    provider: [
+      createProvider({
+        id: "acme",
+        auth: { apiKey: envApiKeyAuth("Acme API key", ["ACME_API_KEY"]) },
+        models: [model],
+        api: { "openai-responses": wrapped, "anthropic-messages": anthropicMessagesApi(), "openai-completions": openAICompletionsApi() },
+      }),
+    ],
+  },
+});
+`;
+
 test("a skill whose name does not match its directory fails", async () => {
   const home = homeWith({ "skills/notes/SKILL.md": "---\nname: other\ndescription: Takes notes\n---\nBody" });
   expect(await check("skill", "notes", home, home)).toEqual([`name must be "notes"`]);
@@ -100,6 +153,11 @@ describe("extensions", { timeout: 60_000 }, () => {
     });
     const home = homeWith({ "extensions/sandbox/index.ts": extension("sandbox", "hello") });
     expect(await check("extension", "sandbox", home, home)).toEqual([]);
+  });
+
+  test("a model provider built from japa/sdk's pi-ai exports passes", async () => {
+    const home = homeWith({ "extensions/acme/index.ts": providerExtension });
+    expect(await check("extension", "acme", home, home)).toEqual([]);
   });
 
   test("a good extension with one tool, importing japa/sdk, passes", async () => {

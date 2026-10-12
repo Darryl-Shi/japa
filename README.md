@@ -575,7 +575,10 @@ Ask the CoS: "when I say standup, draft my standup from my notes", or "add a too
 passes (see Jobs), and the CoS tries it and tells you how to use it; "undo that" reverts it. The procedures it
 follows are in `skills/`: `choosing-a-mechanism`, `writing-job-briefs`, `building-skills`, `building-extensions` and
 `reporting-changes`.
-Extensions import only from `japa/sdk` (`src/sdk.ts`); the packaged ones in `extensions/` are examples.
+Extensions import only from `japa/sdk` (`src/sdk.ts`); the packaged ones in `extensions/` are examples. For a model
+provider it also exports pi-ai's `createProvider`, `envApiKeyAuth`, the Anthropic Messages, OpenAI Responses and Chat
+Completions APIs, and what wrapping their streams takes (`createAssistantMessageEventStream`,
+`isRetryableAssistantError`, `isContextOverflow`, and the types).
 
 ## Development
 

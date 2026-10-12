@@ -75,7 +75,10 @@ export default defineJapaExtension({
 - **messaging**: a chat platform adapter, transport only (see Messaging adapters below).
 - **environment**: `{ name, create({ conversationId, cwd }) }` returning a Pi Durable `ExecutionEnv`.
   The chief of staff's read-only tools run in the one named `local`; jobs always run in japa's sandbox.
-- **provider**: a pi-ai model provider object with an `id`; its models become selectable.
+- **provider**: a pi-ai model provider object with an `id`; its models become selectable. Build it with
+  `createProvider({ id, name, auth: { apiKey: envApiKeyAuth("<Name> API key", ["<NAME>_API_KEY"]) }, models,
+  api: { "openai-completions": openAICompletionsApi() } })` (also `anthropicMessagesApi`, `openAIResponsesApi`),
+  all from `japa/sdk`; its key is the secret `<id>.apiKey`.
 - **storage**: `{ name, open(config, { home }) }` resolving to a Pi Durable `Storage`; chosen by
   settings `storage.adapter`.
 - **secrets**: `{ name, open(config, { home }) }` resolving to `{ get, set, delete, list }`; chosen by

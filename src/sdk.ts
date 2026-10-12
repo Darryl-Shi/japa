@@ -12,6 +12,31 @@ export {
 } from "@earendil-works/pi-durable";
 export { Type } from "@earendil-works/pi-ai";
 export type { AuthEvent, AuthInteraction, AuthPrompt } from "@earendil-works/pi-ai";
+// For a `provider` contribution: pi-ai's provider builder, API key auth, the API implementations (each loaded on first
+// use), and what wrapping their streams takes (to retry, say).
+export {
+  createAssistantMessageEventStream,
+  createProvider,
+  envApiKeyAuth,
+  isContextOverflow,
+  isRetryableAssistantError,
+} from "@earendil-works/pi-ai";
+export { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+export { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+export { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+export type {
+  Api,
+  AssistantMessage,
+  AssistantMessageEvent,
+  AssistantMessageEventStream,
+  Model,
+  Provider,
+  ProviderStreams,
+  RefreshModelsContext,
+  SimpleStreamOptions,
+  StreamOptions,
+  TranscriptContext,
+} from "@earendil-works/pi-ai";
 export { logChange } from "./kernel/changes.ts";
 export type {
   BootContext,

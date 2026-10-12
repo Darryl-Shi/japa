@@ -51,3 +51,9 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 - docker/Dockerfile builds locally (verified with legacy builder; Sysbox not available here, so e2e not run).
 - README + docs/spec.md Outcome written; AGENTS.md, scripts/setup.sh, scripts/run.sh added.
 - --non-interactive in Docker mode skips setup (as §4.3 step 5); --no-service is passed to the inner setup.
+
+---
+
+# Progress: provider building blocks in japa/sdk
+
+- `japa/sdk` exports pi-ai's `createProvider`, `envApiKeyAuth`, the lazy Anthropic Messages / OpenAI Responses / Chat Completions APIs, `createAssistantMessageEventStream`, `isRetryableAssistantError`, `isContextOverflow` and their types, so a workspace extension can register a model provider (and wrap its streams, e.g. to retry); test/check.test.ts checks one.
