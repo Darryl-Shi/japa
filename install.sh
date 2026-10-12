@@ -1,9 +1,11 @@
 #!/bin/sh
 # japa bootstrap: curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | sh
-# See docs/superpowers/specs/2026-10-08-japa-install-design.md §3. Re-running this script upgrades an existing
-# install (§3.1 step 3); it never touches $JAPA_HOME (~/.japa by default).
-# Two modes (docs/spec.md, "Docker hosting"): --mode native is the install above; --mode docker (the default) runs
-# each japa in its own Sysbox system container, where this same script's native mode installs it.
+# See docs/superpowers/specs/2026-10-08-japa-install-design.md §3 and docs/spec.md (installer menu, Docker hosting).
+# With a terminal (and without --non-interactive) it first shows a menu: Install, Update, Uninstall, Quit. Without
+# one it installs fresh, or upgrades an existing install (§3.1 step 3), and never uninstalls. Install and Update
+# never touch $JAPA_HOME (~/.japa by default); Uninstall deletes it only when asked and confirmed with "delete".
+# Two modes (docs/spec.md, "Docker hosting"): --mode native is the install above; --mode docker (the default for a
+# fresh install) runs each japa in its own Sysbox system container, where this same script's native mode installs it.
 set -eu
 
 # Wrapped in main(), invoked by the last line: under `curl | sh` a stream truncated mid-download then parses to
@@ -22,17 +24,26 @@ say_err() {
   printf '==> %s\n' "$1" >&2
 }
 
+# A controlling terminal (or, in tests only, JAPA_INSTALL_TTY's stand-in) for the menu, prompts and setup.
+TTY="${JAPA_INSTALL_TTY:-/dev/tty}"
+# 1 once the menu has opened $TTY on fd 3; every terminal read then goes through fd 3.
+HAVE_MENU=0
 # `[ -r /dev/tty ]` only checks the device node's permissions (always 0666), not whether this process has a
 # controlling terminal to open -- under `curl | sh` in CI/Docker/cloud-init there is none, so probe the open.
 has_tty() {
-  (exec 3</dev/tty) 2>/dev/null
+  (exec 3<"$TTY") 2>/dev/null
 }
 
 # Asks $1 on the terminal and reads the answer into ANSWER. Only call it when has_tty.
 ask() {
-  printf '%s ' "$1" >/dev/tty
   ANSWER=""
-  IFS= read -r ANSWER </dev/tty || ANSWER=""
+  if [ "$HAVE_MENU" -eq 1 ]; then
+    printf '%s ' "$1" >&4
+    IFS= read -r ANSWER <&3 || ANSWER=""
+  else
+    printf '%s ' "$1" >/dev/tty
+    IFS= read -r ANSWER </dev/tty || ANSWER=""
+  fi
 }
 
 # Asks a yes/no question $1 on the terminal; $2 (y or n) is what Enter means. Succeeds for yes.
@@ -538,15 +549,15 @@ docker_install() {
 
   launcher_name=$(basename "$HOST_LAUNCHER")
   say "japa instance $INSTANCE is installed; its desktop: http://127.0.0.1:$PORT/vnc.html"
-  if [ "$SKIP_SETUP" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || ! has_tty; then
+  if [ "$SKIP_SETUP" -eq 1 ] || [ "$HAVE_MENU" -eq 0 ]; then
     say "Skipping setup"
     echo "run \`$launcher_name --instance $INSTANCE setup\` to finish"
   else
     say "Running setup"
     if [ "$NO_SERVICE" -eq 1 ]; then
-      "$HOST_LAUNCHER" --instance "$INSTANCE" setup --no-service </dev/tty
+      "$HOST_LAUNCHER" --instance "$INSTANCE" setup --no-service <&3
     else
-      "$HOST_LAUNCHER" --instance "$INSTANCE" setup </dev/tty
+      "$HOST_LAUNCHER" --instance "$INSTANCE" setup <&3
     fi
   fi
 }
@@ -911,68 +922,34 @@ case "$(uname -m)" in
     ;;
 esac
 
-# --- Mode (docs/spec.md §4.1): an existing install decides it; else ask in a terminal (Enter: Docker), else Docker.
+# Docker mode's instance name (docs/spec.md §3): default $USER, sanitised.
 if [ -z "$INSTANCE" ] && [ "$MODE" != native ]; then
   INSTANCE=$(sanitize_name "${USER:-$(id -un 2>/dev/null || echo japa)}")
-fi
-if [ -z "$MODE" ]; then
-  if [ -e "$DIR/app/.git" ]; then
-    MODE=native
-  elif docker_instance_exists; then
-    MODE=docker
-  elif has_tty; then
-    MODE=""
-    while [ -z "$MODE" ]; do
-      ask "Install japa via Docker (recommended) or natively? [Docker/native]"
-      case "$ANSWER" in
-        "" | d | D | docker | Docker) MODE=docker ;;
-        n | N | native | Native) MODE=native ;;
-      esac
-    done
-  else
-    MODE=docker
-  fi
-fi
-
-if [ "$MODE" = docker ]; then
-  docker_prereqs # may switch to native, when Sysbox is missing and the user picks that instead
-fi
-if [ "$MODE" = docker ]; then
-  docker_install
-  exit 0
-fi
-
-# --- Step 2: prerequisites ---
-say "Checking prerequisites"
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    say_err "$1 is required. Install it with: apt install $2 | dnf install $3"
-    exit 1
-  fi
-}
-require_cmd git git git
-require_cmd tar tar tar
-if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-  say_err "curl or wget is required. Install one with: apt install curl | dnf install curl"
-  exit 1
 fi
 
 APP_DIR="$DIR/app"
 NODE_DIR="$DIR/node"
 LAUNCHER="$HOME/.local/bin/japa"
-# ~/.local/bin/japa belongs to a Docker install (docs/spec.md §5.4): replace it only if the user says so, else this
-# native install's launcher is ~/.local/bin/japa-native.
+# ~/.local/bin/japa belongs to a Docker install (docs/spec.md §5.4): then this native install's launcher is
+# ~/.local/bin/japa-native, unless the user lets it replace the Docker one (asked by choose_native_launcher, only
+# once Install or Update is under way -- never before the menu).
+DOCKER_OWNS_LAUNCHER=0
 if is_docker_launcher "$LAUNCHER"; then
+  DOCKER_OWNS_LAUNCHER=1
+  LAUNCHER="$HOME/.local/bin/japa-native"
+fi
+choose_native_launcher() {
+  [ "$DOCKER_OWNS_LAUNCHER" -eq 1 ] || return 0
   native_alt="$HOME/.local/bin/japa-native"
   if [ -x "$native_alt" ] && ! is_docker_launcher "$native_alt"; then
     LAUNCHER=$native_alt
-  elif has_tty && confirm "$LAUNCHER runs japa's Docker instances. Replace it with this native install's launcher? [y/N]" n; then
-    :
+  elif has_tty && confirm "$HOME/.local/bin/japa runs japa's Docker instances. Replace it with this native install's launcher? [y/N]" n; then
+    LAUNCHER="$HOME/.local/bin/japa"
   else
     LAUNCHER=$native_alt
     say "keeping the Docker launcher at $HOME/.local/bin/japa; this install's launcher is $LAUNCHER"
   fi
-fi
+}
 # What this run created, so a failure removes exactly that (design doc §3.3) and nothing that was already there.
 APP_CREATED=0
 NODE_CREATED=0
@@ -993,17 +970,328 @@ launcher_points_here() {
   [ -x "$LAUNCHER" ] && grep -qF "$(shell_quote "$APP_DIR/src/cli/main.ts")" "$LAUNCHER"
 }
 
+# Whether $APP_DIR is japa's own checkout, so Uninstall may remove it. (Without --mode docker a foreign app/ was
+# already refused; with it, the menu's Uninstall must still never touch someone else's app/.)
+app_is_ours() {
+  [ -e "$APP_DIR/.git" ] && is_japa_checkout
+}
+
 # Whether $APP_DIR's package.json names it japa.
 is_japa_checkout() {
   [ -f "$APP_DIR/package.json" ] && grep -q '^[[:space:]]*"name"[[:space:]]*:[[:space:]]*"japa"' "$APP_DIR/package.json"
 }
 
-# --- Step 3: existing install -> upgrade path ---
-if [ -e "$APP_DIR/.git" ]; then
-  if ! is_japa_checkout; then
-    say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
+# A foreign app/ is refused before anything else (the menu included) and nothing is touched. (--mode docker
+# ignores --dir, so there it doesn't matter.)
+if [ "$MODE" != docker ] && { [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; } && ! { [ -e "$APP_DIR/.git" ] && is_japa_checkout; }; then
+  say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
+  exit 1
+fi
+# What's installed: a native install at $DIR (unless --mode docker), else a Docker instance $INSTANCE (unless
+# --mode native). A native one wins, as an existing install decides the mode (docs/spec.md §4.1).
+NATIVE_INSTALLED=0
+DOCKER_INSTALLED=0
+if [ "$MODE" != docker ] && [ -e "$APP_DIR/.git" ]; then
+  NATIVE_INSTALLED=1
+elif [ "$MODE" != native ] && docker_instance_exists; then
+  DOCKER_INSTALLED=1
+fi
+INSTALLED=$((NATIVE_INSTALLED + DOCKER_INSTALLED))
+
+# --- The menu (docs/spec.md "installer menu"): only with a terminal and without --non-interactive. ---
+if [ "$NON_INTERACTIVE" -eq 0 ] && has_tty; then
+  exec 3<"$TTY"
+  # The menu and its prompts are drawn on the terminal (fd 4), so they stay visible with stdout redirected; with the
+  # tests' JAPA_INSTALL_TTY stand-in (a file of answers) they go to stdout.
+  if [ "$TTY" = /dev/tty ] && (exec 4>/dev/tty) 2>/dev/null; then
+    exec 4>/dev/tty
+  else
+    exec 4>&1
+  fi
+  HAVE_MENU=1
+else
+  HAVE_MENU=0
+fi
+
+# Reads one line from the terminal (fd 3) into $answer; fails on EOF.
+menu_ask() {
+  printf '%s' "$1" >&4
+  answer=""
+  IFS= read -r answer <&3 || { [ -n "$answer" ]; } || { echo >&4; return 1; }
+}
+
+is_yes() {
+  case "$1" in
+    y | Y | yes | Yes | YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Whether japa's own private Node is there (marked as src/cli/node.ts marks it).
+has_japa_node() {
+  [ -e "$NODE_DIR/$NODE_MARKER" ]
+}
+
+JAPA_HOME_DIR="${JAPA_HOME:-$HOME/.japa}"
+UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/japa.service"
+
+# The probe (can this checkout run?): sets RUNNER_KIND to "launcher" or "node" (with RUNNER_NODE), or fails.
+RUNNER_KIND=""
+RUNNER_NODE=""
+run_japa() {
+  if [ "$RUNNER_KIND" = launcher ]; then
+    "$LAUNCHER" "$@"
+  else
+    "$RUNNER_NODE" --disable-warning=ExperimentalWarning "$APP_DIR/src/cli/main.ts" "$@"
+  fi
+}
+probe_japa() {
+  [ -e "$APP_DIR/.git" ] && is_japa_checkout || return 1
+  if launcher_points_here; then
+    RUNNER_KIND=launcher
+  elif has_japa_node && node_ok "$NODE_DIR/bin/node"; then
+    RUNNER_KIND=node
+    RUNNER_NODE="$NODE_DIR/bin/node"
+  else
+    system_node=$(command -v node 2>/dev/null || true)
+    if [ -n "$system_node" ] && node_ok "$system_node"; then
+      RUNNER_KIND=node
+      RUNNER_NODE=$system_node
+    else
+      return 1
+    fi
+  fi
+  run_japa --version >/dev/null 2>&1
+}
+
+# Fallback: mirrors src/cli/uninstall.ts in shell, for an install japa itself can't run from. Best-effort after
+# the purge confirmation: a failed step is reported, the rest still run, and the exit status says so.
+uninstall_directly() {
+  purge=$1
+  failed=0
+  if [ "$purge" -eq 1 ]; then
+    if ! menu_ask "Type \"delete\" to permanently remove $JAPA_HOME_DIR: " || [ "$answer" != delete ]; then
+      echo "purge cancelled; nothing was removed"
+      exit 0
+    fi
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now japa >/dev/null 2>&1 || true
+  fi
+  if [ -e "$UNIT_FILE" ] || [ -L "$UNIT_FILE" ]; then
+    if rm -f "$UNIT_FILE"; then
+      echo "removed $UNIT_FILE"
+    else
+      say_err "could not remove $UNIT_FILE"
+      failed=1
+    fi
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  # As uninstall.ts: only ~/.local/bin/japa (a japa-native launcher, next to a Docker one, is left in place).
+  if [ "$LAUNCHER" = "$HOME/.local/bin/japa" ] && launcher_points_here; then
+    if rm -f "$LAUNCHER"; then
+      echo "removed $LAUNCHER"
+    else
+      say_err "could not remove $LAUNCHER"
+      failed=1
+    fi
+  fi
+
+  if app_is_ours; then
+    if rm -rf "$APP_DIR"; then
+      echo "removed $APP_DIR"
+    else
+      say_err "could not remove $APP_DIR"
+      failed=1
+    fi
+  fi
+  if has_japa_node; then
+    if rm -rf "$NODE_DIR"; then
+      echo "removed $NODE_DIR"
+    else
+      say_err "could not remove $NODE_DIR"
+      failed=1
+    fi
+  fi
+  if [ -d "$DIR" ] && [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
+    rmdir "$DIR" 2>/dev/null || { say_err "could not remove $DIR"; failed=1; }
+  fi
+
+  if [ "$purge" -eq 1 ]; then
+    if rm -rf "$JAPA_HOME_DIR"; then
+      echo "removed $JAPA_HOME_DIR"
+    else
+      say_err "could not remove $JAPA_HOME_DIR"
+      failed=1
+    fi
+  else
+    echo "kept $JAPA_HOME_DIR"
+  fi
+
+  rc_files=""
+  add_rc_if_holds "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"'
+  add_rc_if_holds "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"'
+  add_rc_if_holds "$HOME/.config/fish/config.fish" 'fish_add_path $HOME/.local/bin'
+  if [ -n "$rc_files" ]; then
+    echo "the PATH line install.sh added is still in $rc_files"
+  fi
+
+  exit "$failed"
+}
+
+# Appends $1 to $rc_files when that rc file still holds install.sh's PATH line $2 (src/cli/uninstall.ts's PATH_LINES).
+add_rc_if_holds() {
+  if [ -f "$1" ] && grep -qF "$2" "$1"; then
+    rc_files="${rc_files:+$rc_files, }$1"
+  fi
+}
+
+# The menu's Uninstall: returns (to the menu) when the user declines, otherwise exits.
+uninstall_flow() {
+  echo "This will remove:"
+  echo "  the japa service (systemd user unit), if installed"
+  if [ "$LAUNCHER" = "$HOME/.local/bin/japa" ] && launcher_points_here; then echo "  the launcher $LAUNCHER"; fi
+  if app_is_ours; then echo "  $APP_DIR"; fi
+  if [ "$LAUNCHER" != "$HOME/.local/bin/japa" ] && [ -e "$LAUNCHER" ]; then
+    echo "(not removed: the launcher $LAUNCHER -- remove it by hand)"
+  fi
+  if has_japa_node; then echo "  $NODE_DIR (japa's Node.js)"; fi
+  if ! menu_ask "Uninstall japa from $DIR? [y/N] " || ! is_yes "$answer"; then
+    return 0
+  fi
+  purge=0
+  if menu_ask "Also delete your data in $JAPA_HOME_DIR (settings, secrets, memory)? [y/N] " && is_yes "$answer"; then
+    purge=1
+  fi
+
+  if probe_japa; then
+    say "Uninstalling with japa uninstall"
+    set -- uninstall
+    if [ "$purge" -eq 1 ]; then
+      set -- "$@" --purge
+    fi
+    status=0
+    run_japa "$@" <&3 3<&- || status=$?
+    exit "$status"
+  fi
+  say "japa can't run from $DIR; removing it directly"
+  uninstall_directly "$purge"
+}
+
+if [ "$HAVE_MENU" -eq 1 ]; then
+  ACTION=""
+  while [ -z "$ACTION" ]; do
+    if [ "$NATIVE_INSTALLED" -eq 1 ]; then
+      say "japa installer ($DIR, installed)" >&4
+      default=2
+    elif [ "$DOCKER_INSTALLED" -eq 1 ]; then
+      say "japa installer ($DIR; Docker instance $INSTANCE installed)" >&4
+      default=2
+    else
+      say "japa installer ($DIR)" >&4
+      default=1
+    fi
+    printf '  1) Install\n  2) Update\n  3) Uninstall\n  4) Quit\n' >&4
+    if ! menu_ask "Choose [$default]: "; then
+      exit 0
+    fi
+    choice=$answer
+    # Trim surrounding blanks.
+    choice=${choice#"${choice%%[![:space:]]*}"}
+    choice=${choice%"${choice##*[![:space:]]}"}
+    if [ -z "$choice" ]; then
+      choice=$default
+    fi
+    case "$choice" in
+      1)
+        if [ "$NATIVE_INSTALLED" -eq 1 ]; then
+          echo "japa is already installed at $DIR; choose Update"
+        elif [ "$DOCKER_INSTALLED" -eq 1 ]; then
+          echo "japa is already installed as Docker instance $INSTANCE; choose Update"
+        else
+          ACTION=install
+        fi
+        ;;
+      2)
+        if [ "$INSTALLED" -eq 1 ]; then
+          ACTION=update
+        else
+          echo "no japa install at $DIR; choose Install"
+        fi
+        ;;
+      3)
+        if app_is_ours || has_japa_node || launcher_points_here; then
+          uninstall_flow
+        else
+          echo "no japa install at $DIR"
+          if [ "$DOCKER_INSTALLED" -eq 1 ]; then
+            echo "(Docker instance $INSTANCE is removed with: japa --instance $INSTANCE uninstall)"
+          fi
+        fi
+        ;;
+      4) exit 0 ;;
+      *) ;;
+    esac
+  done
+elif [ "$INSTALLED" -ge 1 ]; then
+  ACTION=update
+else
+  ACTION=install
+fi
+
+# --- Mode (docs/spec.md §4.1): an existing install decides it; else ask in a terminal (Enter: Docker), else Docker.
+if [ -z "$MODE" ]; then
+  if [ "$NATIVE_INSTALLED" -eq 1 ]; then
+    MODE=native
+  elif [ "$DOCKER_INSTALLED" -eq 1 ]; then
+    MODE=docker
+  elif has_tty; then
+    while [ -z "$MODE" ]; do
+      ask "Install japa via Docker (recommended) or natively? [Docker/native]"
+      case "$ANSWER" in
+        "" | d | D | docker | Docker) MODE=docker ;;
+        n | N | native | Native) MODE=native ;;
+      esac
+    done
+  else
+    MODE=docker
+  fi
+fi
+
+if [ "$MODE" = docker ]; then
+  docker_prereqs # may switch to native, when Sysbox is missing and the user picks that instead
+fi
+if [ "$MODE" = docker ]; then
+  docker_install
+  exit 0
+fi
+# Native from here on; Docker mode may have handed over to it (no Sysbox) for an instance that isn't native.
+if [ "$NATIVE_INSTALLED" -eq 0 ]; then
+  ACTION=install
+fi
+choose_native_launcher
+
+# --- Step 2: prerequisites ---
+say "Checking prerequisites"
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    say_err "$1 is required. Install it with: apt install $2 | dnf install $3"
     exit 1
   fi
+}
+require_cmd git git git
+require_cmd tar tar tar
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+  say_err "curl or wget is required. Install one with: apt install curl | dnf install curl"
+  exit 1
+fi
+
+# --- Step 3: existing install -> upgrade path ---
+if [ "$ACTION" = update ]; then
   # An install interrupted before its launcher step, or a launcher since taken over by another install: (re)write
   # it, so the update below -- and every later `japa` -- runs this checkout.
   if ! launcher_points_here; then
@@ -1018,11 +1306,6 @@ if [ -e "$APP_DIR/.git" ]; then
   fi
   "$LAUNCHER" "$@" || status=$?
   exit "$status"
-fi
-
-if [ -e "$APP_DIR" ] || [ -L "$APP_DIR" ]; then
-  say_err "$APP_DIR exists and isn't a japa checkout; remove it or choose another --dir"
-  exit 1
 fi
 
 # --- Steps 4-7: fresh install. On failure, remove the app/ and node/ this run created. ---
@@ -1064,15 +1347,15 @@ install_launcher
 trap - EXIT
 
 # --- Step 8: setup ---
-if [ "$SKIP_SETUP" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ] || ! has_tty; then
+if [ "$SKIP_SETUP" -eq 1 ] || [ "$HAVE_MENU" -eq 0 ]; then
   say "Skipping setup"
   echo "run \`japa setup\` to finish"
 else
   say "Running setup"
   if [ "$NO_SERVICE" -eq 1 ]; then
-    "$LAUNCHER" setup --no-service </dev/tty
+    "$LAUNCHER" setup --no-service <&3
   else
-    "$LAUNCHER" setup </dev/tty
+    "$LAUNCHER" setup <&3
   fi
 fi
 

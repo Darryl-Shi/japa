@@ -8,5 +8,8 @@
   },
   "scripts": {
     "build": "node -e \"require('fs').writeFileSync('built.txt', 'built\\\\n')\""
+  },
+  "dependencies": {
+    "mini-dep": "file:./mini-dep"
   }
 }
