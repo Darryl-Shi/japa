@@ -52,8 +52,12 @@ function fixtureRepo(edit?: (work: string) => void): string {
   return bare;
 }
 
+/** Native mode unless a test says otherwise: these tests cover the native install (Docker mode, the default for a fresh
+ * install, is test/install-docker.test.ts's). */
+const native = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ JAPA_INSTALL_MODE: "native", ...env });
+
 function runInstall(args: string[], env: NodeJS.ProcessEnv) {
-  const result = spawnSync("sh", [INSTALL_SH, ...args], { encoding: "utf8", env });
+  const result = spawnSync("sh", [INSTALL_SH, ...args], { encoding: "utf8", env: native(env) });
   return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
@@ -64,7 +68,7 @@ function runInstall(args: string[], env: NodeJS.ProcessEnv) {
  */
 function runInstallAsync(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve) => {
-    const child = spawn("sh", [INSTALL_SH, ...args], { env });
+    const child = spawn("sh", [INSTALL_SH, ...args], { env: native(env) });
     let output = "";
     child.stdout.on("data", (d: Buffer) => (output += d));
     child.stderr.on("data", (d: Buffer) => (output += d));
@@ -496,7 +500,7 @@ test("Ctrl-C during npm ci removes what the install created", async () => {
   const env = { HOME: home, PATH: `${fakeBin}:${basePath()}`, SHELL: "/bin/sh" };
 
   // Its own process group, signalled as a whole, as a terminal's Ctrl-C is.
-  const child = spawn("sh", [INSTALL_SH, "--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], { env, detached: true });
+  const child = spawn("sh", [INSTALL_SH, "--dir", dir, "--repo", bare, "--non-interactive", "--skip-setup"], { env: native(env), detached: true });
   let output = "";
   child.stdout.on("data", (d: Buffer) => (output += d));
   child.stderr.on("data", (d: Buffer) => (output += d));
@@ -521,7 +525,7 @@ test("install.sh without a controlling terminal skips setup with the finish mess
   // setsid detaches from any controlling terminal, so install.sh can't open /dev/tty -- the same situation as
   // `curl | sh` in CI/Docker/cloud-init. Neither --skip-setup nor --non-interactive is given: only the tty probe
   // decides this.
-  const result = spawnSync("setsid", ["-w", "sh", INSTALL_SH, "--dir", dir, "--repo", bare, "--branch", "main"], { encoding: "utf8", env });
+  const result = spawnSync("setsid", ["-w", "sh", INSTALL_SH, "--dir", dir, "--repo", bare, "--branch", "main"], { encoding: "utf8", env: native(env) });
   const output = `${result.stdout}${result.stderr}`;
   expect(result.status, output).toBe(0);
   expect(existsSync(join(dir, "app", ".git"))).toBe(true);

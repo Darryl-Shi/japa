@@ -15,7 +15,8 @@
 ## Project
 
 japa: a personal chief-of-staff agent daemon (Node 24, TypeScript run directly with type stripping, ESM).
-The contract is **docs/spec.md** (this bundle: the `webui` browser chat surface, and files in and out); README.md
+The contract is **docs/spec.md** (the `webui` browser chat surface, files in and out, and Docker hosting: Sysbox
+system containers, named instances); README.md
 documents the whole product; older design docs live in `docs/superpowers/`. Keep a short progress log in PROGRESS.md.
 
 ## Commands
@@ -28,7 +29,10 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   SvelteKit need its JS API; scripts and `japa check` call `node_modules/@typescript/native/bin/tsc` explicitly)
 - Build the web UI: `npm run build` (extensions/webui/app → extensions/webui/build, git-ignored)
 - Run: `scripts/run.sh` (foreground daemon; set `JAPA_HOME` to a scratch dir; needs a model in its settings.json);
-  chat with `node src/cli/main.ts chat`.
+  `scripts/run.sh <command>` runs any other CLI command (e.g. `chat`, `status`, `--version`).
+- Gated e2e: `JAPA_DOCKER_TESTS=1 npx vitest --run test/desktop-docker.test.ts` (desktop on Docker),
+  `JAPA_SYSBOX_TESTS=1 npx vitest --run test/sysbox.test.ts` (real Sysbox instances; needs Sysbox, a pushed branch:
+  `JAPA_SYSBOX_TEST_REPO`, `JAPA_SYSBOX_TEST_BRANCH`)
 - Check one extension: `node src/cli/main.ts check extension <name>`
 
 ## Running product
@@ -37,6 +41,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   (or `$JAPA_HOME/secrets/webui.token`). Sign in with `/?token=<token>`.
 - `japa chat` talks to the daemon over `<home>/japa.sock`; `japa status` prints extension status lines.
   Telegram is the default messaging adapter.
+- Desktop noVNC: http://127.0.0.1:6080/vnc.html (natively), or http://127.0.0.1:<desktop port>/vnc.html for a Docker
+  instance (`japa instances` lists them).
 
 ## Map
 
@@ -56,7 +62,11 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   - `extensions/webui/auth.ts` — token + HMAC session cookies; `live.ts` + `transcript.ts` — live hub / projection
   - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract
 - `skills/` — packaged skills (e.g. `writing-job-briefs`).
-- `install.sh` — bootstrap installer (steps: clone, node, dependencies, build, launcher)
+- `install.sh` — the installer: native mode (steps: clone, node, dependencies, build, launcher), Docker mode (Sysbox
+  instances) and the embedded host launcher (`docker_launcher_text`). POSIX sh, runs under `curl | sh`.
+- `docker/` — the `japa-host` system container image (systemd, dockerd, Node 24, bwrap, noVNC forward on 16080).
 - `test/` — vitest suites (`test/webui*.test.ts` for the web UI; `*-helpers.ts` hold fakes: fake messaging adapter,
-  fake Telegram Bot API); `test/fixtures/mini-japa` for install.sh tests
+  fake Telegram Bot API); `test/fake-docker.ts` is the fake `docker` for the installer/launcher tests;
+  `test/fixtures/mini-japa` for install.sh tests
 - Vitest sets `JAPA_WEBUI_AUTOSTART=0` (and `JAPA_DESKTOP_AUTOSTART=0`) so test daemons don't bind 7337.
+- No container-specific code paths in `src/` or `extensions/` (Docker hosting spec §6): keep it that way.
