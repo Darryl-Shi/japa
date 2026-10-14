@@ -295,8 +295,8 @@ another machine, `ssh -L <port>:localhost:<port> <server>` first. Google sign-in
 back to japa by itself from your browser, so use the paste-the-redirect fallback: copy the address of the page that
 fails to load and paste it where japa asks, as over SSH (see Google).
 
-Its web UI is at `http://127.0.0.1:<web UI port>` (`japa instances` shows it; see Web UI); the token is in the
-instance: `japa --instance <name> shell -c 'cat ~/.japa/secrets/webui.token'`.
+Its web UI is at `http://127.0.0.1:<web UI port>` (`japa instances` shows it; see Web UI); create a user to sign in
+with: `japa --instance <name> webui users add <user>` (it asks for the password in your terminal).
 
 ### Service
 
@@ -330,6 +330,10 @@ Other commands:
 | `japa check <skill\|extension> <name>` | Checks a skill or extension in the current directory (a job runs this in its copy of `~/.japa`, and japa runs it before the job's changes go live) |
 | `japa rollback <skill\|extension> <name> [to]` | Rolls it back to its last known good version, or to the git ref `to`; restart the daemon to apply |
 | `japa safe-mode [--default-adapters]` | Restores the last working extensions and skills, and optionally the default storage and secrets adapters |
+| `japa webui users add <name> [--password-stdin]` | Creates a web UI user (asks for the password twice; `--password-stdin` reads it from stdin's first line, for scripts) |
+| `japa webui users passwd <name> [--password-stdin]` | Sets a web UI user's password, signing that user out everywhere |
+| `japa webui users remove <name>` | Deletes a web UI user, signing them out everywhere |
+| `japa webui users list` | Lists the web UI users and when each was created |
 | `japa --version` | Print the installed version and git commit |
 
 japa enters safe mode by itself after three crashes within five minutes. A setup that has run for
@@ -343,25 +347,34 @@ job reports — plus a live Jobs panel, a Status sheet and a card for pending se
 the CoS is replying, it steers the reply), Shift+Enter adds a line, Stop or Esc stops the reply. Any number of
 tabs and devices can be open; they all stay in sync, and reconnect on their own after a restart.
 
-- **Signing in**: the access token is in `~/.japa/secrets/webui.token`, generated on first start. Paste it into the
-  sign-in page, or open `http://127.0.0.1:7337/?token=<token>` (the token is dropped from the address). The
-  session lasts 30 days; changing the token (delete the file and restart, or set a new value) signs everyone out.
+- **Signing in**: with a web UI user's name and password. Create one on the machine running japa with
+  `japa webui users add <name>` (it asks for the password twice; 8 to 1024 characters; names are 1–32 lower-case
+  letters, digits, `.`, `_` or `-`), then sign in. `japa webui users list` lists them, `passwd <name>` changes a
+  password and `remove <name>` deletes a user; both sign that user out everywhere at once. No daemon restart is
+  needed, and none of it needs the daemon running. Every user sees the same conversation, jobs and status: users
+  are separate logins, not separate workspaces. A session lasts 30 days and survives restarts; Sign out (top bar)
+  signs out that browser. Ten failed sign-ins within a minute from one address block further tries for the rest
+  of that minute. Deleting `~/.japa/secrets/webui.session-key` and restarting signs everyone out. Scripts can pipe
+  the password: `echo '<password>' | japa webui users add <name> --password-stdin`. (The old access token,
+  `~/.japa/secrets/webui.token`, is no longer used: you can delete it.)
 - **From another machine**: tunnel it over SSH, `ssh -L 7337:localhost:7337 <server>`, then open
   `http://localhost:7337`; or, to reach it from your phone, set `extensions.webui.bind` to the server's Tailscale
   address and open `http://<tailscale address>:7337`.
 - **Docker instances**: the installer publishes each instance's web UI on the host at `127.0.0.1:<web UI port>`
   (first free from 7337; `--webui-port` picks it, `japa instances` shows it); inside the container it stays on
   loopback. To reach it from other machines, re-run the installer with `--webui-bind <host address>` (a LAN or VPN
-  address, or `0.0.0.0` for all) and open `http://<that address>:<web UI port>`.
+  address, or `0.0.0.0` for all) and open `http://<that address>:<web UI port>`. Create a user for it with
+  `japa --instance <name> webui users add <user>`.
 - **Host names**: it answers to `localhost`, `127.0.0.1`, its `bind` address and any IP address (e.g.
   `http://10.1.2.3:7337`), on any port, so tunnels and published ports work. A DNS name (say `japa.example.corp`)
   must be listed in `hosts`; anything else is refused, which stops DNS-rebinding attacks.
-- **Plain HTTP**: there's no TLS. The token keeps strangers out, but on a shared network anyone who can watch the
-  traffic sees it and the conversation: expose it only on networks you trust (a VPN, Tailscale), or tunnel it.
+- **Plain HTTP**: there's no TLS. Passwords keep strangers out, but on a shared network anyone who can watch the
+  traffic sees them, the session cookies and the conversation: expose it only on networks you trust (a VPN, Tailscale), or tunnel it.
 - **Settings** (`extensions.webui`), all optional: `bind` (default `"127.0.0.1"`), `port` (`7337`), `hosts` (extra
   DNS names it answers to, e.g. `["japa.example.corp"]`; default none) and `enabled` (`false` turns it off). A
   change takes effect when japa restarts.
-- `japa status` shows its address under `webui`, or why it isn't running: `not built` (run `npm run build` in the
+- `japa status` shows its address under `webui` and how many users there are (or `no users yet`, or that it can't
+  read `~/.japa/webui/users.json`), or why it isn't running: `not built` (run `npm run build` in the
   checkout) or `can't listen on …` (e.g. the port is taken). Either way the rest of japa keeps running.
 
 It's served by the daemon itself (a SvelteKit app in `extensions/webui/app`, built by `install.sh`, `japa update`
@@ -588,7 +601,9 @@ settings.json        your settings
 extensions/          extensions jobs built             (git-tracked)
 skills/              skills jobs built                 (git-tracked)
 .jobs/               each job's clone of ~/.japa and its private /tmp; failed ones kept 7 days (ignored by git)
-secrets/             secrets, one file per secret      (ignored by git); webui.token is the web UI's access token
+secrets/             secrets, one file per secret      (ignored by git); webui.session-key signs web UI sessions
+                     (a leftover webui.token is obsolete and can be deleted)
+webui/users.json     the web UI's users: names, scrypt password hashes (mode 600; ignored by git, so jobs never see it)
 attachments/         every file you sent (plus a `.txt` beside each PDF with its text), files from Google (ignored by git)
 outbox/              files jobs made for you, for the CoS to send; not pruned automatically (ignored by git)
 desktop/shared/      files shared with japa's desktop  (ignored by git)

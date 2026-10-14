@@ -99,3 +99,29 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 
 - [x] `docker_upgrade` always rewrites the Docker launcher (was: only when missing), so launcher changes (e.g. the WEB UI column) reach upgraded hosts. Tests in install-docker.test.ts; spec §4.4, README.
 - [x] README: one-off `ssh <server> 'japa …'` needs `~/.local/bin/japa` (non-interactive shells stop reading ~/.bashrc before the PATH line).
+
+---
+
+# Progress: web UI password users (run-mv82cc59-8jx1)
+
+- [x] `extensions/webui/users.ts` (file, scrypt N=2^15 r=8 p=1, stamps, atomic writes, mtime-cached store),
+      `auth.ts` (per-user session cookie `<name>.<expiry>.<mac>`, throttle, dummy hash), `server.ts` (POST /login
+      username/password, 429, POST /logout, username to the app), `index.ts` (`webui.session-key`, status lines).
+- [x] CLI `japa webui users add|passwd|remove|list` (`src/cli/webui-users.ts`), usage text; `/webui/` in IGNORED.
+- [x] App: login page (username/password, no-users page, unreadable note), top bar user + Sign out, locals.user via
+      `event.platform.req[Symbol.for("japa.webui.request")]`, chat page's `+page.server.ts` returns `{ user }`.
+- [x] Tests: test/webui-users.test.ts (real CLI, --password-stdin), webui-server/webui tests rewritten, install-docker
+      message asserts, job-sandboxes test that a job can't read webui/users.json (skips here: no userns for bwrap).
+- [x] Docs: README, AGENTS.md, docs/spec.md, install.sh messages, scripts/run.sh comment.
+- [x] Manual e2e: real daemon + curl + headless Chromium (sign in, wrong password, reload, sign out → 401, passwd → 401,
+      throttle 429, ?token= ignored).
+
+Decisions:
+- `.gitignore` line is `/webui/` (anchored), not `webui/`: unanchored would also ignore a component's `extensions/webui/`.
+- The CLI runs `ensureWorkspace(home)` before writing, so the ignore line exists even before the daemon restarts.
+- The status line is read synchronously (`loadSync`, cached by stat), so `japa status` follows the file with no restart.
+- Malformed-file reason is "not valid JSON" without the parser's message (it would quote hashes).
+- Login page with an unreadable users file still shows the form plus a note pointing at `japa status`.
+- The Docker upgrade message also mentions `webui users add` (instances upgraded from the token era need a user).
+- `--password-stdin` reads only the first line; interactive input validates the first entry before asking again.
+- No CI workflow: the spec doesn't ask for one (as before).

@@ -141,7 +141,10 @@ describe("fresh Docker install", () => {
     expect(r.output).not.toMatch(/not found/);
     expect(r.stdout).toContain("run `japa --instance alice setup` to finish");
     expect(r.stdout).toContain("its desktop: http://127.0.0.1:6080/vnc.html");
-    expect(r.stdout).toContain("its web UI: http://127.0.0.1:7337");
+    expect(r.stdout).toContain(
+      "its web UI: http://127.0.0.1:7337 (create a user to sign in with: `japa --instance alice webui users add <name>`)",
+    );
+    expect(r.stdout).not.toContain("webui.token");
     // Nothing else on the host: no native install dir.
     expect(existsSync(join(c.home, ".local", "share", "japa"))).toBe(false);
   });
@@ -622,6 +625,7 @@ describe("re-running on an existing Docker instance upgrades it", () => {
     expect(valuesOf(runArgv, "-p")).toEqual(["127.0.0.1:6085:16080", "127.0.0.1:7338:17337"]);
     expect(valuesOf(runArgv, "--label")).toEqual(expect.arrayContaining(["japa.webuiPort=7338", "japa.webuiBind=127.0.0.1"]));
     expect(r.stdout).toContain("its web UI: http://127.0.0.1:7338");
+    expect(r.stdout).toContain("web UI users: `japa --instance alice webui users add <name>` creates one");
   });
 });
 

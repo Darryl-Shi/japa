@@ -635,7 +635,7 @@ docker_install() {
 
   launcher_name=$(basename "$HOST_LAUNCHER")
   say "japa instance $INSTANCE is installed; its desktop: http://127.0.0.1:$PORT/vnc.html"
-  say "its web UI: $(webui_url) (sign in with the token from \`$launcher_name --instance $INSTANCE shell -c 'cat ~/.japa/secrets/webui.token'\`)"
+  say "its web UI: $(webui_url) (create a user to sign in with: \`$launcher_name --instance $INSTANCE webui users add <name>\`)"
   if [ "$SKIP_SETUP" -eq 1 ] || [ "$HAVE_MENU" -eq 0 ]; then
     say "Skipping setup"
     echo "run \`$launcher_name --instance $INSTANCE setup\` to finish"
@@ -710,6 +710,7 @@ docker_upgrade() {
     return "$status"
   fi
   say "japa instance $INSTANCE is up to date; its desktop: http://127.0.0.1:$PORT/vnc.html, its web UI: $(webui_url)"
+  echo "web UI users: \`$(basename "$HOST_LAUNCHER") --instance $INSTANCE webui users add <name>\` creates one"
 }
 
 # The host launcher (§5): a POSIX sh script forwarding japa commands into an instance, plus the host-only
