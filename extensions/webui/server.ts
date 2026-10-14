@@ -1,5 +1,6 @@
 // The request pipeline in front of the SvelteKit app: host and origin checks, security headers, sign-in.
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import { sessionCookie, tokenMatches, validSession } from "./auth.ts";
 
 /** adapter-node's `handler`. */
@@ -8,8 +9,8 @@ export type Handler = (req: IncomingMessage, res: ServerResponse, next?: () => v
 export type PipelineDeps = {
   /** The address the server listens on. */
   bind: string;
-  /** The port it actually listens on. */
-  port(): number;
+  /** Extra DNS names accepted as the Host (setting `hosts`), on any port. */
+  hosts?: readonly string[];
   /** The current access token, read per request. */
   token(): Promise<string | undefined>;
   handler: Handler;
@@ -24,6 +25,27 @@ export const DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri
 
 /** `host:port` as a URL or `Host` header writes it (IPv6 in brackets). */
 export const hostPort = (host: string, port: number) => `${host.includes(":") ? `[${host}]` : host}:${port}`;
+
+/** The name in a `Host` header (`name`, `name:port`, `[v6]`, `[v6]:port`), lower-cased; undefined if malformed. */
+function hostName(host: string): string | undefined {
+  const bracketed = /^\[([^\]]*)\](?::\d{1,5})?$/.exec(host);
+  if (bracketed) return isIP(bracketed[1]!) === 6 ? bracketed[1]!.toLowerCase() : undefined;
+  return /^([^:[\]]+)(?::\d{1,5})?$/.exec(host)?.[1]!.toLowerCase();
+}
+
+/**
+ * Whether `host` (a `Host` header) names this server. DNS rebinding always arrives with the attacker's domain
+ * name in Host, never a bare IP, so any IP literal is safe to accept -- the address of a published port, a VPN
+ * address. Names must be ours: localhost, the bind address, the `hosts` setting. Any port: a tunnel or a
+ * published port needn't match the one we listen on.
+ */
+export function acceptedHost(host: string, bind: string, extra: readonly string[] = []): boolean {
+  const name = hostName(host);
+  if (name === undefined) return false;
+  if (isIP(name) !== 0) return true;
+  const names = ["localhost", "127.0.0.1", bind, ...extra].map((n) => n.toLowerCase());
+  return names.includes(name);
+}
 
 /** The request listener. */
 export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: ServerResponse) => void {
@@ -42,11 +64,9 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
     res.setHeader("Referrer-Policy", "same-origin");
     res.setHeader("X-Frame-Options", "DENY");
 
-    // DNS rebinding: only our own names for this server.
+    // DNS rebinding: only our own names (or IP literals) for this server.
     const host = req.headers.host?.toLowerCase();
-    const port = deps.port();
-    const hosts = [hostPort(deps.bind.toLowerCase(), port), `localhost:${port}`, `127.0.0.1:${port}`];
-    if (host === undefined || !hosts.includes(host)) return send(res, 403, "Refused");
+    if (host === undefined || !acceptedHost(host, deps.bind, deps.hosts)) return send(res, 403, "Refused");
     const method = req.method ?? "GET";
     if (method !== "GET" && method !== "HEAD" && req.headers.origin?.toLowerCase() !== `http://${host}`) {
       return send(res, 403, "Refused");

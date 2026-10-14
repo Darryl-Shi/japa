@@ -182,6 +182,7 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
 - **Settings:** `extensions.webui` holds:
   - `bind`: the address the server listens on. Default `"127.0.0.1"`; set it to a Tailscale address to reach it from a phone.
   - `port`: default `7337`.
+  - `hosts`: extra DNS names (no port) the server answers to, compared case-insensitively, e.g. `["japa.example.corp"]` for a name on a VPN. Default none.
   - `enabled`: the kernel's standard key. `false` turns the extension off.
 
   A change takes effect when the surface next starts (a daemon restart or extension reload). The extension needs nothing to be set up, so it is **available by default**, and `japa setup` doesn't ask about it.
@@ -191,8 +192,8 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
   - A wrong token gets a generic error.
   - Changing the token (deleting the file and restarting, or setting a new value) invalidates existing sessions.
 - **Request checks:**
-  - Requests whose `Host` header isn't the bound address, `localhost` or `127.0.0.1` (with the port) are refused, which defends against DNS rebinding.
-  - State-changing requests must carry a matching `Origin`.
+  - Requests are refused unless their `Host` header names this server, which defends against DNS rebinding: `localhost`, `127.0.0.1`, the bound address or a name in `hosts`, or any IP literal (IPv4, or IPv6 in brackets). The port isn't checked (any port, or none), so an SSH tunnel to another local port and a port published by Docker work. IP literals are safe to accept because DNS rebinding always arrives with the attacker's domain name in `Host`, never a bare address; that also lets a LAN or VPN address reach a server that doesn't know it (a Docker instance's published port). A missing `Host`, a foreign name, and a name that merely starts with an address (`10.1.2.3.evil.example`) are refused.
+  - State-changing requests must carry a matching `Origin`: `http://` followed by the `Host` header as sent.
   - Responses send a strict Content-Security-Policy: self only, no inline script beyond what SvelteKit's own CSP support hashes, and no third-party origins.
   - The page makes **no external network requests**: no CDNs and no web fonts fetched from the internet.
 - **Status line:** the extension's `status()` line, shown under `webui` in `japa status` and Telegram's `/status`, is one of:
@@ -237,7 +238,7 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
 
 1. With a fresh `npm ci` and a running daemon, `japa status` lists `webui` with `http://127.0.0.1:7337 — sign in with the token in ~/.japa/secrets/webui.token`, and that file exists with mode 600.
 2. Opening `http://127.0.0.1:7337/` without a session shows only a minimal sign-in page. A wrong token is refused. Opening `/?token=<token>` lands on the chat at `/` with the token gone from the address bar, and reloading keeps you signed in.
-3. Requests to the API or live stream without a session cookie get 401. A request with a foreign `Host` header is refused, and a POST with a foreign `Origin` is refused.
+3. Requests to the API or live stream without a session cookie get 401. A request with a foreign `Host` header (a DNS name not in `hosts`) is refused, one addressed to an IP literal on any port is served, and a POST with a foreign `Origin` is refused.
 4. Typing a message and pressing Enter shows it as a right-aligned grey bubble. The CoS's reply streams in token by token as rendered markdown, and the busy indicator shows "thinking…" until it finishes.
 5. While a reply streams, the send button reads Stop. Clicking it, or pressing Esc, stops the reply. Sending another message mid-reply steers it.
 6. A message sent from `japa chat` or Telegram, and its reply, appear live in an open web tab, and vice versa. A reply to a web message is not sent to Telegram.
@@ -261,7 +262,8 @@ Decisions made while building, within the spec above:
 - **TypeScript**: svelte-check and SvelteKit need the TypeScript 5/6 JS API, which TypeScript 7 doesn't ship. Following
   svelte-check's own guidance, the root `typescript` dev dependency is 6 and TypeScript 7 is installed as
   `@typescript/native` (`npm:typescript@^7`); the root typecheck and `japa check` call its `tsc` explicitly.
-- **Request pipeline** (`extensions/webui/server.ts`), in front of the SvelteKit handler: the Host check, the Origin
+- **Request pipeline** (`extensions/webui/server.ts`), in front of the SvelteKit handler: the Host check
+  (`acceptedHost`: the name from `name[:port]` or `[v6][:port]`, then `node:net`'s `isIP`, else the name list), the Origin
   check on every non-GET/HEAD request, default security headers (a `default-src 'none'` CSP that SvelteKit's pages
   replace with their own hashed one, `nosniff`, `no-referrer`, `DENY` framing), sign-in (`POST /login`,
   `?token=`), and the session gate (401 JSON for `/api/*`, a redirect to `/login` for pages).
@@ -474,16 +476,18 @@ For an instance named `<name>`:
 
 | Thing | Name / value |
 |---|---|
-| Container | `japa-<name>`, labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>` |
+| Container | `japa-<name>`, labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>`, `japa.webuiPort=<port>`, `japa.webuiBind=<address>` |
 | Volumes | `japa-<name>-home` → `/home/japa` (app checkout, `~/.japa`, the rest of the home); `japa-<name>-docker` → `/var/lib/docker` (inner images and containers, including the desktop and its home volume) |
 | Network | `japa-<name>-net`, a user-defined bridge used by that instance only, so instances can't reach each other's ports |
 | Image | `japa-host:<branch>`, built from `docker/` in the repo |
-| Ports | One host port, `127.0.0.1:<desktop port>`, forwarded to the instance's noVNC. Nothing else is published. |
+| Ports | Two host ports: `127.0.0.1:<desktop port>`, forwarded to the instance's noVNC, and `<web UI address>:<web UI port>` (`127.0.0.1` by default), forwarded to its web UI. Nothing else is published. |
 
 - **Instance names** match `[a-z0-9][a-z0-9-]*`. The default is the host `$USER`, lower-cased and sanitised. The installer refuses to create an instance whose name is already used by a container that is not a japa instance.
 - **Desktop port.** The default is the first free port from 6080 upward that no other japa instance has claimed (`--desktop-port <n>` overrides it). It is recorded in the container label.
   - Inside the container, the image forwards that published port to the desktop's noVNC on the container's loopback. japa's own `extensions.desktop` settings and defaults are not changed.
   - To reach it from another machine: `ssh -L <port>:localhost:<port> <server>`.
+- **Web UI port and address.** The default port is the first free one from 7337 upward that no other japa instance has claimed (desktop or web UI) and that isn't this instance's desktop port (`--webui-port <n>` overrides it). The default address is `127.0.0.1`; `--webui-bind <IPv4>` publishes it on a LAN or VPN address instead, or on every address with `0.0.0.0`. Both are recorded in container labels.
+  - Inside the container the web UI keeps its defaults (`127.0.0.1:7337`); the image forwards the published port to it. It accepts the host's address because it accepts any IP-literal `Host` (webui §2.3); a DNS name for it goes in the instance's `extensions.webui.hosts`.
 - **Persistence across recreation.** Recreating the container from a newer image keeps both volumes. Software installed with apt in the container's root filesystem is lost, everything under `/home/japa` and the inner Docker state are kept. This mirrors the desktop's existing contract.
 
 ## 4. The installer (`install.sh`)
@@ -516,10 +520,10 @@ Checked in order. Each failure names the problem and how to fix it.
 ### 4.3 Docker mode fresh install
 
 1. **Build the host image** `japa-host:<branch>` from the repo's `docker/` directory at `--branch`, using a git build context (`--repo` and `--branch` are honoured).
-2. **Create the instance resources:** the network and the two volumes, then start `japa-<name>` with `--runtime=sysbox-runc`, `--restart unless-stopped`, the hostname `japa-<name>` and the desktop port. The installer waits for the container's systemd to reach a running state.
+2. **Create the instance resources:** the network and the two volumes, then start `japa-<name>` with `--runtime=sysbox-runc`, `--restart unless-stopped`, the hostname `japa-<name>`, the desktop port and the web UI's port and address. The installer waits for the container's systemd to reach a running state.
 3. **Install japa inside.** Run the native install inside the container as user `japa` with `--mode native --skip-setup` (same `--repo` and `--branch`). This clones, runs `npm ci` and writes the inner launcher.
 4. **Write the host launcher** to `~/.local/bin/japa` (§5). Add the PATH line exactly as today. A native launcher already there is not overwritten without asking (§5.3).
-5. **Setup.** With a terminal, run `japa --instance <name> setup` through the host launcher, so the wizard runs inside the container and installs the service there. Without a terminal, or with `--skip-setup` or `--non-interactive`, it prints `run \`japa --instance <name> setup\` to finish`.
+5. **Setup.** The installer prints the desktop's and the web UI's URLs. With a terminal, run `japa --instance <name> setup` through the host launcher, so the wizard runs inside the container and installs the service there. Without a terminal, or with `--skip-setup` or `--non-interactive`, it prints `run \`japa --instance <name> setup\` to finish`.
 
 If any step fails or is interrupted, the installer names the step. It removes the container, volumes, network and launcher entry that this run created, and nothing that existed before.
 
@@ -527,7 +531,8 @@ If any step fails or is interrupted, the installer names the step. It removes th
 
 Re-running `install.sh --mode docker [--instance <name>]` on an existing instance upgrades it:
 
-- **Base image.** It rebuilds `japa-host:<branch>`. If the image changed, it recreates the container with the same name, volumes, network, labels and port. The volumes are kept.
+- **Base image.** It rebuilds `japa-host:<branch>`. If the image changed, it recreates the container with the same name, volumes, network, labels and ports. The volumes are kept.
+- **Ports.** The recorded desktop port and web UI port and address are kept unless their flags are given. A `--desktop-port`, `--webui-port` or `--webui-bind` that differs from the recorded value recreates the container, as does an instance created before the web UI was published (no `japa.webuiPort` label), which gets the defaults.
 - **japa itself.** It then runs `japa update` inside, exactly as a native re-run does.
 
 ### 4.5 New flags
@@ -537,6 +542,8 @@ Re-running `install.sh --mode docker [--instance <name>]` on an existing instanc
 | `--mode <docker\|native>` | `JAPA_INSTALL_MODE` | `docker` (asked in a terminal) | How to install |
 | `--instance <name>` | `JAPA_INSTANCE` | `$USER` (sanitised) | Docker instance to create or upgrade |
 | `--desktop-port <n>` | | first free from 6080 | Host port for the instance's noVNC |
+| `--webui-port <n>` | | first free from 7337 | Host port for the instance's web UI |
+| `--webui-bind <IPv4>` | | `127.0.0.1` | Host address the web UI is published on (`0.0.0.0`: all) |
 | `--install-sysbox` | | off | Allow installing Sysbox without asking (needs sudo) |
 
 The existing flags (`--dir`, `--branch`, `--repo`, `--non-interactive`, `--no-service`, `--skip-setup`) keep their meaning. In Docker mode, `--dir` is ignored (a note is printed), and `--no-service` and `--non-interactive` are passed through to the setup inside the container.
@@ -570,7 +577,7 @@ These are handled by the launcher and never forwarded:
 
 | Command | What it does |
 |---|---|
-| `japa instances` | Lists each instance: name, state (running or stopped), branch, inner japa version (`japa --version` when running) and its noVNC URL `http://127.0.0.1:<port>/vnc.html` |
+| `japa instances` | Lists each instance: name, state (running or stopped), branch, inner japa version (`japa --version` when running), its noVNC URL `http://127.0.0.1:<port>/vnc.html` and its web UI URL `http://<web UI address>:<web UI port>` (`127.0.0.1` for `0.0.0.0`; `-` for an instance created before the web UI was published) |
 | `japa [--instance n] shell` | An interactive login shell as `japa` inside the container. This is how an admin hands a tenant a shell, or inspects `~/.japa` |
 | `japa [--instance n] uninstall [--purge]` | Stops and removes the container and network. Prints that the data is kept in the two named volumes. With `--purge`, it deletes the volumes once the admin types the instance name to confirm. The launcher is removed when no instances remain. |
 
@@ -590,7 +597,7 @@ Native and Docker installs can coexist on one host, but only one owns `~/.local/
   - the `japa` user with lingering;
   - Node 24 on PATH, so the native installer uses it rather than downloading a private Node;
   - bubblewrap, git, tar and curl;
-  - the noVNC port forward (§3).
+  - the noVNC and web UI port forwards (§3).
 - **Google sign-in** uses the existing paste-the-redirect-URL fallback, because the OAuth loopback isn't reachable from the host browser. This is the same as over SSH today.
 - **Inner Docker state stays in the instance.** The desktop's image builds and its home volume live in the inner Docker, so they are per instance and survive container recreation through `japa-<name>-docker`.
 
@@ -611,7 +618,7 @@ Native and Docker installs can coexist on one host, but only one owns `~/.local/
 ## Acceptance behaviours
 
 1. On a Linux host with Docker and Sysbox, `curl -fsSL …/install.sh | sh` in a terminal asks native or Docker. Pressing Enter installs via Docker, runs the setup wizard, and leaves `japa chat` answering. `docker ps` shows `japa-$USER` running with runtime `sysbox-runc`, and no japa-related file or directory was created on the host other than `~/.local/bin/japa` (and the PATH line in the shell rc, if needed).
-2. `docker inspect japa-$USER` shows no bind mounts and no host docker.sock: only the volumes `japa-$USER-home` and `japa-$USER-docker`, the network `japa-$USER-net`, and one published port on `127.0.0.1`.
+2. `docker inspect japa-$USER` shows no bind mounts and no host docker.sock: only the volumes `japa-$USER-home` and `japa-$USER-docker`, the network `japa-$USER-net`, and two published ports on `127.0.0.1` (the desktop and the web UI).
 3. Inside a Docker instance, `japa status` shows the model and extensions. `japa service status` reports the systemd user service as active. A job started by the CoS runs under bubblewrap, and `japa status` reports no "Jobs can't run" error.
 4. Asking the CoS to use the desktop works in a Docker instance: the desktop image builds in the instance's own dockerd, and `http://127.0.0.1:<desktop port>/vnc.html` on the host shows it. On the host, `docker ps` does not list a desktop container.
 5. `install.sh --mode docker --instance alice` followed by `--instance bob` creates two instances. Each has its own setup, secrets, Telegram bot and desktop port. `japa instances` lists both. `japa --instance alice chat` talks only to alice's japa, and a secret set in bob is absent from alice's `japa --instance alice shell` view of `~/.japa/secrets`.
@@ -635,12 +642,13 @@ Built as specified, with no container-aware code in `src/` or `extensions/`. Wha
 | Topic | Decision |
 |---|---|
 | Desktop port forward | The container publishes `127.0.0.1:<port>` → container port **16080**, where `japa-novnc-forward.service` (`socat TCP-LISTEN:16080,fork,reuseaddr TCP:127.0.0.1:6080`) forwards to the desktop noVNC the inner dockerd publishes on the container's loopback at japa's default 6080. `extensions.desktop` is unchanged. |
-| Default desktop port | First port from 6080 up that no other instance claims (`japa.desktopPort` labels) and nothing listens on (read from `/proc/net/tcp{,6}`). An explicit `--desktop-port` claimed by another instance is refused. A re-run keeps the recorded port unless `--desktop-port` is given. |
+| Default desktop port | First port from 6080 up that no other instance claims (`japa.desktopPort` and `japa.webuiPort` labels), nothing listens on (read from `/proc/net/tcp{,6}`) and isn't `--webui-port`. An explicit `--desktop-port` claimed by another instance is refused. A re-run keeps the recorded port unless `--desktop-port` is given. |
+| Web UI publish | The container publishes `<bind>:<port>` → container port **17337**, where `japa-webui-forward.service` (`socat TCP-LISTEN:17337,fork,reuseaddr TCP:127.0.0.1:7337`) forwards to the web UI on the container's loopback; `extensions.webui` is unchanged. The port defaults to the first from 7337 up that no other instance claims, nothing listens on and isn't the desktop's; the bind to `127.0.0.1`. `--webui-port` (1-65535) and `--webui-bind` (an IPv4 dotted quad) are validated before anything is built; a `--webui-port` claimed by another instance, or equal to the desktop port, is refused. Labels `japa.webuiPort`, `japa.webuiBind`. |
 | Booted check | `systemctl is-system-running` inside the container may report `running` **or `degraded`** (some unit failed, e.g. one that can't work in a container); both count as booted. Timeout 180 s in the installer, 120 s when the launcher starts a stopped instance. |
 | `--repo` in Docker mode | Must be a URL (`http(s)://`, `git://`, `ssh://`, `git@`): the image is built from a git build context `<repo>#<branch>:docker` and the container clones the repo itself, so neither can use a host path. Anything else is refused before changes are made. |
 | Install inside | `docker exec -u japa` into the container clones `install.sh`'s repo at `--branch` into a temp dir and runs `install.sh --mode native --skip-setup --repo <repo> [--branch <b>]`; `--branch` is forwarded on a fresh install or when given explicitly. On a re-run the same command takes the native upgrade path (`japa update`). |
 | Instance detection | An instance "exists" if its container carries `japa.instance=<name>` or its `japa-<name>-home` volume exists (so an instance removed by `japa uninstall` is re-created with its data by a re-run). Without `--mode`, an existing native `<dir>/app` wins, then an existing instance, then the question (tty) or Docker (no tty). |
-| Upgrade | Rebuild the image; recreate the container only if the image id, the branch label or the requested port changed (or the container is gone); else just start it if stopped. The branch defaults to the container's `japa.branch` label, not `main`. An upgrade failure names the step but removes nothing. |
+| Upgrade | Rebuild the image; recreate the container only if the image id, the branch label or a requested port or web UI address changed, the container has no `japa.webuiPort` label (it predates the web UI publish), or the container is gone; else just start it if stopped. Recorded ports and address carry over to the recreated container. The branch defaults to the container's `japa.branch` label, not `main`. An upgrade failure names the step but removes nothing. |
 | Fresh-install cleanup | An EXIT trap (with INT/TERM/HUP turned into exits) removes only the container, `-home`/`-docker` volumes, network and launcher file this run created, then reports `install failed at: <step>` (steps: image, instance, install japa inside, launcher). Setup failing afterwards doesn't undo the install. |
 | Image tag | `japa-host:<branch>` with every character outside `A-Za-z0-9_.-` replaced by `-` (e.g. `feat/x` → `japa-host:feat-x`). The image is shared by instances on that branch and isn't removed by uninstall. |
 | Instance name | `[a-z0-9][a-z0-9-]*`; the default is `$USER` lower-cased, other characters → `-`, leading `-` stripped (`japa` if empty). The same sanitisation picks the `$USER` instance in the launcher. |

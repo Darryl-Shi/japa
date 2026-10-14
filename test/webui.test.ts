@@ -1,6 +1,7 @@
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -119,6 +120,27 @@ test("a port in use is named in the line, and the daemon still boots", async () 
   expect(bootErrors(daemon)).toEqual([]);
   await daemon.close();
   blocker.close();
+});
+
+test("the hosts setting adds DNS names the server answers to", async () => {
+  const { daemon } = await bootTest({ extensions: { webui: { port: 0, hosts: ["japa.example.corp"] } } }, [
+    webuiExtension({ buildDir: fakeBuild() }),
+  ]);
+  expect(bootErrors(daemon)).toEqual([]);
+  const port = Number(LINE.exec(webuiStatus(daemon)?.status ?? "")?.[1]);
+  const statusFor = (host: string) =>
+    new Promise<number>((resolve, reject) =>
+      httpRequest({ port, host: "127.0.0.1", path: "/login", headers: { host } }, (res) => {
+        res.resume();
+        resolve(res.statusCode!);
+      })
+        .on("error", reject)
+        .end(),
+    );
+  expect(await statusFor("japa.example.corp:7337")).toBe(200);
+  expect(await statusFor("10.234.31.61:7337")).toBe(200);
+  expect(await statusFor("other.example.corp:7337")).toBe(403);
+  await daemon.close();
 });
 
 test("a web submission reaches the CoS from webui/web, once per id, and its reply streams live", async () => {

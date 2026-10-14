@@ -1,0 +1,11 @@
+[Unit]
+Description=Forward the published web UI port (17337) to japa's web UI on 127.0.0.1:7337
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:17337,fork,reuseaddr TCP:127.0.0.1:7337
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

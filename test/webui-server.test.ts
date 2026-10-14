@@ -1,5 +1,5 @@
 import { createServer, request, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect } from "node:net";
 import { afterEach, expect, test } from "vitest";
 import { COOKIE, SESSION_SECONDS, sessionCookie, tokenMatches, validSession } from "../extensions/webui/auth.ts";
 import { DEFAULT_CSP, type Handler, pipeline } from "../extensions/webui/server.ts";
@@ -14,42 +14,87 @@ afterEach(async () => {
 });
 
 /** Serves the pipeline over a fake app on an ephemeral port; returns its base URL and the token holder. */
-async function serve(handler: Handler = (req, res) => res.end(`app ${req.method} ${req.url}`)) {
+async function serve(handler: Handler = (req, res) => res.end(`app ${req.method} ${req.url}`), hosts?: string[]) {
   const state = { token: TOKEN as string | undefined, now: Date.now() };
-  let port = 0;
-  server = createServer(
-    pipeline({ bind: "127.0.0.1", port: () => port, token: async () => state.token, handler, now: () => state.now }),
-  );
+  server = createServer(pipeline({ bind: "127.0.0.1", hosts, token: async () => state.token, handler, now: () => state.now }));
   await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
-  port = (server.address() as AddressInfo).port;
+  const port = (server.address() as AddressInfo).port;
   return { base: `http://127.0.0.1:${port}`, port, state };
 }
 
 const cookieOf = (res: Response) => res.headers.get("set-cookie")?.split(";")[0];
 
-test("a foreign Host is refused", async () => {
-  const { port } = await serve();
+/** The status of a request to the server on `port` with the given Host (and Origin) header. */
+function statusFor(port: number, host: string, options: { method?: string; origin?: string; body?: string } = {}) {
+  const headers: Record<string, string> = { host };
+  if (options.origin !== undefined) headers.origin = options.origin;
   // fetch won't send a custom Host; use node:http directly.
-  const status = await new Promise<number>((resolve) =>
-    request({ port, host: "127.0.0.1", path: "/login", headers: { host: `evil.example:${port}` } }, (res) => {
+  return new Promise<number>((resolve, reject) => {
+    const req = request({ port, host: "127.0.0.1", path: "/login", method: options.method ?? "GET", headers }, (res) => {
       res.resume();
       resolve(res.statusCode!);
-    }).end(),
-  );
-  expect(status).toBe(403);
+    });
+    req.on("error", reject);
+    req.end(options.body);
+  });
+}
+
+test("a foreign Host is refused", async () => {
+  const { port } = await serve();
+  for (const host of [`evil.example:${port}`, "evil.example", `10.234.31.61.evil.example:${port}`, `127.0.0.1.nip.io:${port}`, "[evil.example]:80"]) {
+    expect(await statusFor(port, host), host).toBe(403);
+  }
 });
 
-test("localhost and 127.0.0.1 with the port are accepted as hosts", async () => {
+test("localhost, 127.0.0.1 and the bind address are accepted on any port", async () => {
   const { port } = await serve();
-  for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `127.0.0.1:${port + 1}`]) {
-    const status = await new Promise<number>((resolve) =>
-      request({ port, host: "127.0.0.1", path: "/login", headers: { host } }, (res) => {
-        res.resume();
-        resolve(res.statusCode!);
-      }).end(),
-    );
-    expect(status).toBe(host.endsWith(`:${port}`) ? 200 : 403);
+  for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `127.0.0.1:${port + 1}`, "localhost:8000", "LOCALHOST", "127.0.0.1"]) {
+    expect(await statusFor(port, host), host).toBe(200);
   }
+});
+
+test("IP-literal hosts are accepted, on any port", async () => {
+  const { port } = await serve();
+  for (const host of ["10.234.31.61:7337", "10.234.31.61", "192.168.1.5:8080", "[::1]:8000", "[::1]", "[fe80::1]:7337"]) {
+    expect(await statusFor(port, host), host).toBe(200);
+  }
+  for (const host of ["10.234.31:7337", "::1", "[::1:8000", "999.1.1.1:7337"]) {
+    expect(await statusFor(port, host), host).toBe(403);
+  }
+});
+
+test("names listed in hosts are accepted on any port, with a matching Origin for a POST", async () => {
+  const { port } = await serve(undefined, ["Japa.Example.Corp"]);
+  for (const host of ["japa.example.corp:7337", "JAPA.example.corp", "japa.example.corp:9999"]) {
+    expect(await statusFor(port, host), host).toBe(200);
+  }
+  expect(await statusFor(port, "other.example.corp:7337")).toBe(403);
+  const body = new URLSearchParams({ token: TOKEN }).toString();
+  const post = (origin: string) =>
+    statusFor(port, "japa.example.corp:7337", { method: "POST", origin, body });
+  expect(await post("http://japa.example.corp:7337")).toBe(303);
+  expect(await post("http://japa.example.corp:7338")).toBe(403);
+  expect(await post("http://evil.example")).toBe(403);
+});
+
+test("a POST from an IP-literal host needs the matching Origin", async () => {
+  const { port } = await serve();
+  const body = new URLSearchParams({ token: TOKEN }).toString();
+  const post = (origin: string) => statusFor(port, "10.234.31.61:7337", { method: "POST", origin, body });
+  expect(await post("http://10.234.31.61:7337")).toBe(303);
+  expect(await post(`http://127.0.0.1:${port}`)).toBe(403);
+});
+
+test("a missing Host is refused", async () => {
+  const { port } = await serve();
+  const status = await new Promise<number>((resolve) => {
+    // HTTP/1.0 without a Host header.
+    const socket = connect(port, "127.0.0.1", () => socket.write("GET /login HTTP/1.0\r\n\r\n"));
+    let data = "";
+    socket.on("data", (chunk: Buffer) => (data += chunk.toString()));
+    socket.on("close", () => resolve(Number(data.split(" ")[1])));
+  });
+  expect(status).toBe(403);
 });
 
 test("a POST with a foreign or missing Origin is refused", async () => {

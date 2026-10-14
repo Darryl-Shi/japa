@@ -78,3 +78,17 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 # Progress: provider building blocks in japa/sdk
 
 - `japa/sdk` exports pi-ai's `createProvider`, `envApiKeyAuth`, the lazy Anthropic Messages / OpenAI Responses / Chat Completions APIs, `createAssistantMessageEventStream`, `isRetryableAssistantError`, `isContextOverflow` and their types, so a workspace extension can register a model provider (and wrap its streams, e.g. to retry); test/check.test.ts checks one.
+
+---
+
+# Progress: Docker instances publish the web UI
+
+- webui: the Host check (`acceptedHost` in extensions/webui/server.ts) accepts any IP literal (IPv4, bracketed IPv6)
+  and `localhost` / `127.0.0.1` / `bind` / the new `extensions.webui.hosts` names, all on any port; foreign DNS names
+  and a missing Host are still refused, and the Origin check is unchanged. `PipelineDeps.port` is gone (unused now).
+- docker/: `japa-webui-forward.service` (socat 17337 → 127.0.0.1:7337), enabled in the Dockerfile, `EXPOSE 17337`.
+- install.sh: `--webui-port` (default first free from 7337, skipping other instances' desktop/web UI ports, listening
+  ports and this instance's desktop port) and `--webui-bind` (IPv4, default 127.0.0.1), validated before the build;
+  publish `<bind>:<port>:17337`, labels `japa.webuiPort` / `japa.webuiBind`; an upgrade keeps them, recreating when
+  they change or the label is missing (older instances); install and upgrade print the web UI URL; `japa instances`
+  has a WEB UI column. README, docs/spec.md (webui §2.3, Docker hosting §3-§5 and Outcome) updated.

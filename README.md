@@ -99,7 +99,8 @@ A fresh install of instance `<name>` (default: your `$USER`, lower-cased, anythi
    so `--repo` must be a URL: `https://`, `git://`, `ssh://` or `git@`);
 2. creates the network `japa-<name>-net` and the volumes `japa-<name>-home` and `japa-<name>-docker`, and starts the
    container `japa-<name>` with `--runtime=sysbox-runc` and `--restart unless-stopped` (so it comes back after a
-   reboot), publishing only the desktop on `127.0.0.1:<port>`; then waits for its systemd to boot;
+   reboot), publishing only the desktop on `127.0.0.1:<port>` and the web UI on `127.0.0.1:<web UI port>` (or
+   `--webui-bind`'s address); then waits for its systemd to boot;
 3. installs japa inside as user `japa` with this same installer's native mode (`--mode native --skip-setup`, same
    `--repo` and `--branch`): the checkout, `npm ci` and the inner launcher;
 4. writes the host launcher `~/.local/bin/japa` (and the PATH line, as for a native install; see Running → Docker instances);
@@ -112,13 +113,14 @@ press Ctrl-C, it names the step and removes the container, volumes, network and 
 nothing that existed before.
 
 Re-running the installer for an existing instance (`--instance <name>`, or the default) upgrades it: it rebuilds
-`japa-host:<branch>` and, if the image, branch or `--desktop-port` changed, recreates `japa-<name>` with the same
-name, volumes, network, labels and port — the volumes and everything in them are kept — then runs `japa update`
+`japa-host:<branch>` and, if the image, branch, `--desktop-port`, `--webui-port` or `--webui-bind` changed (or the
+instance predates the web UI's publish), recreates `japa-<name>` with the same name, volumes, network, labels and
+ports — the volumes and everything in them are kept — then runs `japa update`
 inside, as a native re-run does. It stays on the instance's branch unless you pass `--branch`. It also brings back an
 instance removed with `japa uninstall` (its volumes were kept).
 
 Run it again with `--mode docker --instance <another name>` for each further instance (one per tenant, say): each
-has its own container, volumes, network, settings, secrets, models, Telegram bot and desktop port, and can't reach
+has its own container, volumes, network, settings, secrets, models, Telegram bot, desktop and web UI ports, and can't reach
 the others' ports. The one host launcher serves them all.
 
 Native and Docker installs can share a machine, but only one owns `~/.local/bin/japa`. A Docker install over a
@@ -139,6 +141,8 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 | `--mode <docker\|native>` | `JAPA_INSTALL_MODE` | `docker` (asked in a terminal) | How to install; an existing install keeps its mode |
 | `--instance <name>` | `JAPA_INSTANCE` | `$USER` (sanitised) | Docker: instance to create or upgrade (`[a-z0-9][a-z0-9-]*`) |
 | `--desktop-port <n>` | | first free from 6080 | Docker: host port (on `127.0.0.1`) for the instance's desktop; skips ports other instances claimed or something listens on |
+| `--webui-port <n>` | | first free from 7337 | Docker: host port for the instance's web UI; skips ports other instances claimed (desktop or web UI) or something listens on |
+| `--webui-bind <ipv4>` | | `127.0.0.1` | Docker: host address the web UI is published on, e.g. a LAN or VPN address, or `0.0.0.0` for all (plain HTTP: see Web UI) |
 | `--install-sysbox` | | off | Docker: install Sysbox if missing without asking (needs sudo, restarts Docker) |
 | `--dir <path>` | `JAPA_INSTALL_DIR` | `~/.local/share/japa` | Native: where to install japa (ignored in Docker mode, with a note) |
 | `--branch <name>` | `JAPA_BRANCH` | `main` | git branch to install |
@@ -280,7 +284,7 @@ A few commands are the launcher's own and run on the host:
 
 | Command | What it does |
 | --- | --- |
-| `japa instances` | Lists every instance: name, state (running or stopped), branch, japa version, desktop URL |
+| `japa instances` | Lists every instance: name, state (running or stopped), branch, japa version, desktop URL, web UI URL (`-` for an instance from before it was published: re-run the installer) |
 | `japa [--instance n] shell [args]` | A login shell as `japa` inside the container (args go to `bash -l`, e.g. `-c '<command>'`): to inspect `~/.japa`, or to hand a tenant a shell |
 | `japa [--instance n] uninstall [--purge]` | Removes the instance, see Uninstall |
 
@@ -288,6 +292,9 @@ The instance's desktop is at `http://127.0.0.1:<port>/vnc.html` on the host (`ja
 another machine, `ssh -L <port>:localhost:<port> <server>` first. Google sign-in (and any other sign-in) can't come
 back to japa by itself from your browser, so use the paste-the-redirect fallback: copy the address of the page that
 fails to load and paste it where japa asks, as over SSH (see Google).
+
+Its web UI is at `http://127.0.0.1:<web UI port>` (`japa instances` shows it; see Web UI); the token is in the
+instance: `japa --instance <name> shell -c 'cat ~/.japa/secrets/webui.token'`.
 
 ### Service
 
@@ -340,13 +347,24 @@ tabs and devices can be open; they all stay in sync, and reconnect on their own 
 - **From another machine**: tunnel it over SSH, `ssh -L 7337:localhost:7337 <server>`, then open
   `http://localhost:7337`; or, to reach it from your phone, set `extensions.webui.bind` to the server's Tailscale
   address and open `http://<tailscale address>:7337`.
-- **Settings** (`extensions.webui`), all optional: `bind` (default `"127.0.0.1"`), `port` (`7337`) and `enabled`
-  (`false` turns it off). A change takes effect when japa restarts.
+- **Docker instances**: the installer publishes each instance's web UI on the host at `127.0.0.1:<web UI port>`
+  (first free from 7337; `--webui-port` picks it, `japa instances` shows it); inside the container it stays on
+  loopback. To reach it from other machines, re-run the installer with `--webui-bind <host address>` (a LAN or VPN
+  address, or `0.0.0.0` for all) and open `http://<that address>:<web UI port>`.
+- **Host names**: it answers to `localhost`, `127.0.0.1`, its `bind` address and any IP address (e.g.
+  `http://10.1.2.3:7337`), on any port, so tunnels and published ports work. A DNS name (say `japa.example.corp`)
+  must be listed in `hosts`; anything else is refused, which stops DNS-rebinding attacks.
+- **Plain HTTP**: there's no TLS. The token keeps strangers out, but on a shared network anyone who can watch the
+  traffic sees it and the conversation: expose it only on networks you trust (a VPN, Tailscale), or tunnel it.
+- **Settings** (`extensions.webui`), all optional: `bind` (default `"127.0.0.1"`), `port` (`7337`), `hosts` (extra
+  DNS names it answers to, e.g. `["japa.example.corp"]`; default none) and `enabled` (`false` turns it off). A
+  change takes effect when japa restarts.
 - `japa status` shows its address under `webui`, or why it isn't running: `not built` (run `npm run build` in the
   checkout) or `can't listen on …` (e.g. the port is taken). Either way the rest of japa keeps running.
 
 It's served by the daemon itself (a SvelteKit app in `extensions/webui/app`, built by `install.sh`, `japa update`
-and `npm install`), accepts only requests addressed to its own host names, and loads nothing from other sites.
+and `npm install`), accepts only requests addressed to its own host names or an IP address, and loads nothing from
+other sites.
 
 ## Jobs
 
@@ -592,7 +610,7 @@ in Docker:
 | volume `japa-<name>-home` → `/home/japa` | the whole home: the checkout `~/.local/share/japa/app`, the inner launcher `~/.local/bin/japa`, `~/.japa` (settings, secrets, history, jobs' work), the service unit |
 | volume `japa-<name>-docker` → `/var/lib/docker` | the instance's own Docker: the desktop's image, container and home (browser logins) |
 | network `japa-<name>-net` | a bridge used by this instance only |
-| container `japa-<name>` | labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>`; publishes only `127.0.0.1:<port>` |
+| container `japa-<name>` | labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>`, `japa.webuiPort=<web UI port>`, `japa.webuiBind=<address>`; publishes only `127.0.0.1:<port>` (the desktop) and `<address>:<web UI port>` (the web UI, `127.0.0.1` by default) |
 | image `japa-host:<branch>` | built from `docker/` (branch names with characters other than `A-Za-z0-9_.-` get `-` in the tag); shared by instances on that branch |
 
 No host paths are mounted. On the host, only `~/.local/bin/japa` (and the PATH line in your shell's rc file, if it
