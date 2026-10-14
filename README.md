@@ -195,11 +195,12 @@ The first run walks through, in order:
    out — no question asked; pass `--no-service` to skip it. Setup then waits for japa to answer and prints
    `japa status`; without a service manager it tells you to run `japa daemon`.
 
-A rerun shows a menu (Model and sign-in, Integrations, Background service, Done) instead, with every current
+A rerun shows a menu (Model and sign-in, Integrations, Web UI, Background service, Done) instead, with every current
 value preselected; Enter keeps it. When you're done, if anything was saved and the service is running, it restarts
 it.
 
-The wizard covers models, sign-in, integrations and the service. Other settings — `jobs.*`,
+The wizard covers models, sign-in, integrations, the web UI (a rerun's Web UI section: on/off, listen address,
+port and host names, each picked from guided choices) and the service. Other settings — `jobs.*`,
 `context.toolResultTokens`, `memory.*`, `safety.*`, `storage.adapter`, `secrets.adapter` — aren't in it; edit
 `~/.japa/settings.json` directly, use Telegram's `/settings`, or ask the CoS. `jobs.keepFinishedDays` (default `7`)
 is how many days finished jobs stay listed before they're cleared; `jobs.thinking` (default `medium`) is how hard
@@ -359,8 +360,10 @@ tabs and devices can be open; they all stay in sync, and reconnect on their own 
 - **Plain HTTP**: there's no TLS. The token keeps strangers out, but on a shared network anyone who can watch the
   traffic sees it and the conversation: expose it only on networks you trust (a VPN, Tailscale), or tunnel it.
 - **Settings** (`extensions.webui`), all optional: `bind` (default `"127.0.0.1"`), `port` (`7337`), `hosts` (extra
-  DNS names it answers to, e.g. `["japa.example.corp"]`; default none) and `enabled` (`false` turns it off). A
-  change takes effect when japa restarts.
+  DNS names it answers to, e.g. `["japa.example.corp"]`; default none) and `enabled` (`false` turns it off). Change
+  them with `japa setup` → Web UI (which shows the addresses to open and offers this machine, each LAN/Tailscale
+  address, all addresses or another IP), in `~/.japa/settings.json`, with Telegram's `/settings` or by asking the CoS.
+  A change takes effect when japa restarts (`japa setup` restarts a running service for you).
 - `japa status` shows its address under `webui`, or why it isn't running: `not built` (run `npm run build` in the
   checkout) or `can't listen on …` (e.g. the port is taken). Either way the rest of japa keeps running.
 

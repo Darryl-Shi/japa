@@ -15,7 +15,7 @@
 ## Project
 
 japa: a personal chief-of-staff agent daemon (Node 24, TypeScript run directly with type stripping, ESM).
-The contract is **docs/spec.md** (the `webui` browser chat surface, files in and out, and Docker hosting: Sysbox
+The contract is **docs/spec.md** (the Web UI section in `japa setup`, the `webui` browser chat surface, files in and out, and Docker hosting: Sysbox
 system containers, named instances); README.md
 documents the whole product; older design docs live in `docs/superpowers/`. Keep a short progress log in PROGRESS.md.
 
@@ -46,7 +46,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
 
 ## Map
 
-- `src/cli/` — the `japa` CLI: daemon, chat, setup, service, update (rollback on failed steps: node, dependencies,
+- `src/cli/` — the `japa` CLI: daemon, chat, setup (`setup.ts`; rerun sections `models-step.ts`, `configure.ts`,
+  `webui-step.ts` = the Web UI section), service, update (rollback on failed steps: node, dependencies,
   build, validation)
 - `src/kernel/` — the daemon: `boot.ts` (wires everything), `contracts.ts` (the extension contracts, exported via
   `src/sdk.ts` as `japa/sdk`), `cos.ts` + `identity.md` (the CoS agent), `replies.ts` (reply stream),
