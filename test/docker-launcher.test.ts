@@ -215,19 +215,30 @@ describe("forwarding", () => {
 });
 
 describe("instances", () => {
-  test("lists name, state, branch, version (only when running) and the noVNC URL", () => {
+  test("lists name, state, branch, version (only when running), the noVNC URL and the web UI URL", () => {
     const s = setup({
-      containers: Object.fromEntries([instance("alice", { branch: "main", port: 6080 }), instance("bob", { branch: "dev", port: 6081, running: false })]),
+      containers: Object.fromEntries([
+        instance("alice", { branch: "main", port: 6080, webuiPort: 7337 }),
+        instance("bob", { branch: "dev", port: 6081, webuiPort: 7338, webuiBind: "10.234.31.61", running: false }),
+        instance("carol", { branch: "main", port: 6082, webuiPort: 7339, webuiBind: "0.0.0.0", running: false }),
+        instance("dave", { branch: "main", port: 6083, webuiPort: null, running: false }),
+      ]),
       execRules: [{ match: [INNER, "--version"], stdout: "japa 0.1.0 (abc1234)\n" }],
     });
     const r = s.run(["instances"]);
     expect(r.status, r.output).toBe(0);
     const lines = r.stdout.trim().split("\n");
-    expect(lines[0]).toMatch(/NAME\s+STATE\s+BRANCH\s+VERSION\s+DESKTOP/);
-    const alice = lines.find((l) => l.startsWith("alice"));
-    const bob = lines.find((l) => l.startsWith("bob"));
-    expect(alice).toMatch(/^alice\s+running\s+main\s+japa 0\.1\.0 \(abc1234\)\s+http:\/\/127\.0\.0\.1:6080\/vnc\.html$/);
-    expect(bob).toMatch(/^bob\s+stopped\s+dev\s+-\s+http:\/\/127\.0\.0\.1:6081\/vnc\.html$/);
+    expect(lines[0]).toMatch(/NAME\s+STATE\s+BRANCH\s+VERSION\s+DESKTOP\s+WEB UI$/);
+    const row = (name: string) => lines.find((l) => l.startsWith(`${name} `));
+    expect(row("alice")).toMatch(
+      /^alice\s+running\s+main\s+japa 0\.1\.0 \(abc1234\)\s+http:\/\/127\.0\.0\.1:6080\/vnc\.html\s+http:\/\/127\.0\.0\.1:7337$/,
+    );
+    expect(row("bob")).toMatch(/^bob\s+stopped\s+dev\s+-\s+http:\/\/127\.0\.0\.1:6081\/vnc\.html\s+http:\/\/10\.234\.31\.61:7338$/);
+    expect(row("carol")).toMatch(/\s+http:\/\/127\.0\.0\.1:6082\/vnc\.html\s+http:\/\/127\.0\.0\.1:7339$/);
+    expect(row("dave")).toMatch(/\s+http:\/\/127\.0\.0\.1:6083\/vnc\.html\s+-$/);
+    // The columns line up.
+    const webCol = lines[0].indexOf("WEB UI");
+    for (const l of lines.slice(1)) expect(l.slice(webCol - 1, webCol + 1)).toMatch(/^ \S$/);
     // The version is asked only of the running instance, and nothing is started.
     const versionExecs = execsOf(s.fake).filter((c) => c.includes("--version"));
     expect(versionExecs.length).toBe(1);

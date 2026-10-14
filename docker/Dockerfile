@@ -36,11 +36,12 @@ RUN useradd -m -u 1000 -s /bin/bash -G docker japa \
  && install -d -o japa -g japa /home/japa/.local /home/japa/.local/bin /home/japa/.config
 
 # The desktop's noVNC is published by the inner dockerd on this container's loopback (127.0.0.1:6080, japa's
-# default); this forwards the port the host publishes (16080) to it.
-COPY japa-novnc-forward.service /etc/systemd/system/japa-novnc-forward.service
-RUN systemctl enable japa-novnc-forward.service
+# default), and japa's web UI listens there too (127.0.0.1:7337); these forward the ports the host publishes
+# (16080 and 17337) to them, so neither has to listen on the container's network.
+COPY japa-novnc-forward.service japa-webui-forward.service /etc/systemd/system/
+RUN systemctl enable japa-novnc-forward.service japa-webui-forward.service
 
 ENV PATH=/home/japa/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-EXPOSE 16080
+EXPOSE 16080 17337
 STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT ["/sbin/init"]

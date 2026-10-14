@@ -357,12 +357,22 @@ export function launcherFromInstallSh(installSh: string): string {
   return body.slice(0, end + 1);
 }
 
-/** A labelled japa instance container, for seeding state. */
-export function instance(name: string, opts: { branch?: string; port?: number; running?: boolean; image?: string } = {}): [string, FakeContainer] {
+/**
+ * A labelled japa instance container, for seeding state. Its web UI is published on `webuiBind:webuiPort`
+ * (default 127.0.0.1:7337); `webuiPort: null` leaves out the web UI labels (an instance from before they existed).
+ */
+export function instance(
+  name: string,
+  opts: { branch?: string; port?: number; webuiPort?: number | null; webuiBind?: string; running?: boolean; image?: string } = {},
+): [string, FakeContainer] {
+  const webui: Record<string, string> =
+    opts.webuiPort === null
+      ? {}
+      : { "japa.webuiPort": String(opts.webuiPort ?? 7337), "japa.webuiBind": opts.webuiBind ?? "127.0.0.1" };
   return [
     `japa-${name}`,
     {
-      labels: { "japa.instance": name, "japa.branch": opts.branch ?? "main", "japa.desktopPort": String(opts.port ?? 6080) },
+      labels: { "japa.instance": name, "japa.branch": opts.branch ?? "main", "japa.desktopPort": String(opts.port ?? 6080), ...webui },
       image: opts.image ?? "sha256:image1",
       running: opts.running ?? true,
     },

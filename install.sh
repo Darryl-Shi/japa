@@ -223,6 +223,8 @@ SYSBOX_SHA256_ARM64=04ca894ae0b53f0fa54eaacc173ce40363c9a95ea5450f773716a84ef650
 SYSBOX_DOCS="https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-package.md"
 # The port the image forwards to the desktop's noVNC on its loopback (docker/japa-novnc-forward.service).
 NOVNC_FORWARD_PORT=16080
+# The port the image forwards to japa's web UI on its loopback, 127.0.0.1:7337 (docker/japa-webui-forward.service).
+WEBUI_FORWARD_PORT=17337
 DOCKER_LAUNCHER_MARKER="# japa-docker-launcher"
 
 # A host $USER as an instance name: lower-cased, anything outside [a-z0-9-] as "-", starting with [a-z0-9].
@@ -340,13 +342,53 @@ listening_ports() {
     $4 == "0A" { p = $2; sub(/.*:/, "", p); p = toupper(p); n = 0; for (i = 1; i <= length(p); i++) n = n * 16 + hex[substr(p, i, 1)]; print n }'
 }
 
-# Desktop ports claimed by japa instances other than $INSTANCE, one per line.
+# Host ports published by japa instances other than $INSTANCE (desktop and web UI), one per line.
 claimed_ports() {
-  docker ps -a --filter label=japa.instance --format '{{.Label "japa.instance"}} {{.Label "japa.desktopPort"}}' 2>/dev/null |
-    awk -v me="$INSTANCE" '$1 != me && $2 != "" { print $2 }'
+  docker ps -a --filter label=japa.instance --format '{{.Label "japa.instance"}} {{.Label "japa.desktopPort"}} {{.Label "japa.webuiPort"}}' 2>/dev/null |
+    awk -v me="$INSTANCE" '$1 != me { if ($2 != "") print $2; if ($3 != "") print $3 }'
 }
 
-# Sets PORT: --desktop-port, else $1 (the instance's recorded port, on a recreate), else the first free from 6080.
+# Whether $1 is a TCP port number, 1-65535.
+valid_port() {
+  case "$1" in
+    "" | *[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+# Whether $1 is an IPv4 address in dotted-quad form (0.0.0.0 included).
+valid_ipv4() {
+  case "$1" in
+    "" | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+  esac
+  saved_ifs=$IFS
+  IFS=.
+  # shellcheck disable=SC2086 # split on the dots; only digits and dots, so no globbing
+  set -- $1
+  IFS=$saved_ifs
+  [ "$#" -eq 4 ] || return 1
+  for octet in "$@"; do
+    case "$octet" in
+      0?*) return 1 ;;
+    esac
+    [ "${#octet}" -le 3 ] && [ "$octet" -le 255 ] || return 1
+  done
+}
+
+# --webui-port and --webui-bind, checked before anything is built.
+check_webui_flags() {
+  if [ "$WEBUI_PORT_GIVEN" -eq 1 ] && ! valid_port "$WEBUI_PORT_OPT"; then
+    say_err "invalid --webui-port: $WEBUI_PORT_OPT"
+    exit 1
+  fi
+  if [ "$WEBUI_BIND_GIVEN" -eq 1 ] && ! valid_ipv4 "$WEBUI_BIND_OPT"; then
+    say_err "invalid --webui-bind: $WEBUI_BIND_OPT (use an IPv4 address, e.g. 127.0.0.1, a VPN or LAN address, or 0.0.0.0 for all)"
+    exit 1
+  fi
+}
+
+# Sets PORT: --desktop-port, else $1 (the instance's recorded port, on a recreate), else the first free from 6080
+# (not --webui-port).
 choose_port() {
   claimed=$(claimed_ports)
   if [ -n "$DESKTOP_PORT" ]; then
@@ -361,7 +403,7 @@ choose_port() {
       exit 1
     fi
     if printf '%s\n' "$claimed" | grep -qx "$DESKTOP_PORT"; then
-      say_err "port $DESKTOP_PORT is already the desktop port of another japa instance; choose another with --desktop-port"
+      say_err "port $DESKTOP_PORT is already published by another japa instance; choose another with --desktop-port"
       exit 1
     fi
     PORT=$DESKTOP_PORT
@@ -370,9 +412,50 @@ choose_port() {
   else
     busy=$(listening_ports)
     PORT=6080
-    while printf '%s\n%s\n' "$claimed" "$busy" | grep -qx "$PORT"; do
+    while printf '%s\n%s\n%s\n' "$claimed" "$busy" "$WEBUI_PORT_OPT" | grep -qx "$PORT"; do
       PORT=$((PORT + 1))
     done
+  fi
+}
+
+# Sets WEBUI_PORT and WEBUI_BIND, after choose_port: --webui-port, else $1 (the recorded port, on a recreate), else
+# the first free from 7337 (not the desktop's $PORT); --webui-bind, else $2 (the recorded one), else 127.0.0.1.
+choose_webui() {
+  claimed=$(claimed_ports)
+  if [ "$WEBUI_PORT_GIVEN" -eq 1 ]; then
+    if printf '%s\n' "$claimed" | grep -qx "$WEBUI_PORT_OPT"; then
+      say_err "port $WEBUI_PORT_OPT is already published by another japa instance; choose another with --webui-port"
+      exit 1
+    fi
+    WEBUI_PORT=$WEBUI_PORT_OPT
+  elif [ -n "${1:-}" ]; then
+    WEBUI_PORT=$1
+  else
+    busy=$(listening_ports)
+    WEBUI_PORT=7337
+    while printf '%s\n%s\n%s\n' "$claimed" "$busy" "$PORT" | grep -qx "$WEBUI_PORT"; do
+      WEBUI_PORT=$((WEBUI_PORT + 1))
+    done
+  fi
+  if [ "$WEBUI_PORT" = "$PORT" ]; then
+    say_err "the desktop and the web UI can't share port $PORT; choose another with --webui-port or --desktop-port"
+    exit 1
+  fi
+  if [ "$WEBUI_BIND_GIVEN" -eq 1 ]; then
+    WEBUI_BIND=$WEBUI_BIND_OPT
+  elif [ -n "${2:-}" ]; then
+    WEBUI_BIND=$2
+  else
+    WEBUI_BIND=127.0.0.1
+  fi
+}
+
+# The web UI's URL on the host: its bind address, or loopback when it's published on every address.
+webui_url() {
+  if [ "$WEBUI_BIND" = 0.0.0.0 ]; then
+    printf 'http://127.0.0.1:%s' "$WEBUI_PORT"
+  else
+    printf 'http://%s:%s' "$WEBUI_BIND" "$WEBUI_PORT"
   fi
 }
 
@@ -403,8 +486,9 @@ run_container() {
   say "Starting $CONTAINER"
   docker run -d --name "$CONTAINER" --hostname "$CONTAINER" --runtime=sysbox-runc --restart unless-stopped \
     --network "$NETWORK" -v "$VOL_HOME:/home/japa" -v "$VOL_DOCKER:/var/lib/docker" \
-    -p "127.0.0.1:$PORT:$NOVNC_FORWARD_PORT" \
+    -p "127.0.0.1:$PORT:$NOVNC_FORWARD_PORT" -p "$WEBUI_BIND:$WEBUI_PORT:$WEBUI_FORWARD_PORT" \
     --label "japa.instance=$INSTANCE" --label "japa.branch=$BRANCH" --label "japa.desktopPort=$PORT" \
+    --label "japa.webuiPort=$WEBUI_PORT" --label "japa.webuiBind=$WEBUI_BIND" \
     "$IMAGE" >/dev/null
 }
 
@@ -457,6 +541,7 @@ docker_install() {
     say_err "invalid instance name: $INSTANCE (use lower-case letters, digits and -, starting with a letter or digit)"
     exit 1
   fi
+  check_webui_flags
   case "$REPO" in
     http://* | https://* | git://* | ssh://* | git@*) ;;
     *)
@@ -522,6 +607,7 @@ docker_install() {
 
   STEP="instance"
   choose_port ""
+  choose_webui "" ""
   if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
     NET_CREATED=1
     docker network create --label "japa.instance=$INSTANCE" "$NETWORK" >/dev/null
@@ -549,6 +635,7 @@ docker_install() {
 
   launcher_name=$(basename "$HOST_LAUNCHER")
   say "japa instance $INSTANCE is installed; its desktop: http://127.0.0.1:$PORT/vnc.html"
+  say "its web UI: $(webui_url) (sign in with the token from \`$launcher_name --instance $INSTANCE shell -c 'cat ~/.japa/secrets/webui.token'\`)"
   if [ "$SKIP_SETUP" -eq 1 ] || [ "$HAVE_MENU" -eq 0 ]; then
     say "Skipping setup"
     echo "run \`$launcher_name --instance $INSTANCE setup\` to finish"
@@ -562,26 +649,35 @@ docker_install() {
   fi
 }
 
-# §4.4: rebuild the image, recreate the container (same name, volumes, network, labels, port) when it changed or is
-# gone (`japa uninstall` keeps the volumes), then upgrade japa inside as a native re-run does.
+# §4.4: rebuild the image, recreate the container (same name, volumes, network, labels, ports) when it changed, its
+# ports or web UI address changed, it predates the web UI's publish, or it's gone (`japa uninstall` keeps the
+# volumes), then upgrade japa inside as a native re-run does.
 docker_upgrade() {
   had_container=$1
   STEP="image"
   build_image || { say_err "upgrade failed at: $STEP"; return 1; }
   new_image=$(docker image inspect -f '{{.Id}}' "$IMAGE") || { say_err "upgrade failed at: $STEP"; return 1; }
   recorded_port=""
+  recorded_webui_port=""
+  recorded_webui_bind=""
   recreate=1
   STEP="instance"
   if [ "$had_container" -eq 1 ]; then
     recorded_port=$(docker container inspect -f '{{index .Config.Labels "japa.desktopPort"}}' "$CONTAINER")
+    recorded_webui_port=$(docker container inspect -f '{{index .Config.Labels "japa.webuiPort"}}' "$CONTAINER")
+    recorded_webui_bind=$(docker container inspect -f '{{index .Config.Labels "japa.webuiBind"}}' "$CONTAINER")
     old_image=$(docker container inspect -f '{{.Image}}' "$CONTAINER")
     old_branch=$(docker container inspect -f '{{index .Config.Labels "japa.branch"}}' "$CONTAINER")
     if [ "$old_image" = "$new_image" ] && [ "$old_branch" = "$BRANCH" ] &&
-      { [ -z "$DESKTOP_PORT" ] || [ "$DESKTOP_PORT" = "$recorded_port" ]; }; then
+      { [ -z "$DESKTOP_PORT" ] || [ "$DESKTOP_PORT" = "$recorded_port" ]; } &&
+      [ -n "$recorded_webui_port" ] && [ -n "$recorded_webui_bind" ] &&
+      { [ "$WEBUI_PORT_GIVEN" -eq 0 ] || [ "$WEBUI_PORT_OPT" = "$recorded_webui_port" ]; } &&
+      { [ "$WEBUI_BIND_GIVEN" -eq 0 ] || [ "$WEBUI_BIND_OPT" = "$recorded_webui_bind" ]; }; then
       recreate=0
     fi
   fi
   choose_port "$recorded_port"
+  choose_webui "$recorded_webui_port" "$recorded_webui_bind"
   if [ "$recreate" -eq 1 ]; then
     if [ "$had_container" -eq 1 ]; then
       say "Recreating $CONTAINER from the new image (its volumes are kept)"
@@ -612,8 +708,9 @@ docker_upgrade() {
   install_inside || status=$?
   if [ "$status" -ne 0 ]; then
     say_err "upgrade failed at: $STEP"
+    return "$status"
   fi
-  return "$status"
+  say "japa instance $INSTANCE is up to date; its desktop: http://127.0.0.1:$PORT/vnc.html, its web UI: $(webui_url)"
 }
 
 # The host launcher (§5): a POSIX sh script forwarding japa commands into an instance, plus the host-only
@@ -668,13 +765,13 @@ wait_for_systemd() {
 }
 
 list_instances() {
-  rows=$(docker ps -a --filter label=japa.instance --format '{{.Label "japa.instance"}}	{{.State}}	{{.Label "japa.branch"}}	{{.Label "japa.desktopPort"}}' | sort)
+  rows=$(docker ps -a --filter label=japa.instance --format '{{.Label "japa.instance"}}	{{.State}}	{{.Label "japa.branch"}}	{{.Label "japa.desktopPort"}}	{{.Label "japa.webuiPort"}}	{{.Label "japa.webuiBind"}}' | sort)
   if [ -z "$rows" ]; then
     echo "no japa instances on this host"
     return 0
   fi
-  printf '%-16s %-8s %-12s %-32s %s\n' NAME STATE BRANCH VERSION DESKTOP
-  printf '%s\n' "$rows" | while IFS='	' read -r name state branch port; do
+  printf '%-16s %-8s %-12s %-32s %-31s %s\n' NAME STATE BRANCH VERSION DESKTOP "WEB UI"
+  printf '%s\n' "$rows" | while IFS='	' read -r name state branch port webui_port webui_bind; do
     version=-
     if [ "$state" = running ]; then
       version=$(docker exec -u japa "japa-$name" /home/japa/.local/bin/japa --version 2>/dev/null </dev/null | head -n 1)
@@ -682,7 +779,15 @@ list_instances() {
     else
       state=stopped
     fi
-    printf '%-16s %-8s %-12s %-32s %s\n' "$name" "$state" "${branch:--}" "$version" "http://127.0.0.1:$port/vnc.html"
+    # An instance from before the web UI was published has no japa.webuiPort; 0.0.0.0 is reachable on loopback.
+    webui=-
+    if [ -n "$webui_port" ]; then
+      case "${webui_bind:-127.0.0.1}" in
+        0.0.0.0) webui="http://127.0.0.1:$webui_port" ;;
+        *) webui="http://${webui_bind:-127.0.0.1}:$webui_port" ;;
+      esac
+    fi
+    printf '%-16s %-8s %-12s %-32s %-31s %s\n' "$name" "$state" "${branch:--}" "$version" "http://127.0.0.1:$port/vnc.html" "$webui"
   done
 }
 
@@ -821,6 +926,10 @@ SKIP_SETUP=0
 MODE="${JAPA_INSTALL_MODE:-}"
 INSTANCE="${JAPA_INSTANCE:-}"
 DESKTOP_PORT=""
+WEBUI_PORT_OPT=""
+WEBUI_PORT_GIVEN=0
+WEBUI_BIND_OPT=""
+WEBUI_BIND_GIVEN=0
 INSTALL_SYSBOX=0
 DIR_GIVEN=0
 # Whether --branch was given explicitly (flag or env): only then is it forwarded to the update path (step 3), so
@@ -848,6 +957,16 @@ while [ $# -gt 0 ]; do
       ;;
     --desktop-port)
       DESKTOP_PORT=$2
+      shift 2
+      ;;
+    --webui-port)
+      WEBUI_PORT_OPT=$2
+      WEBUI_PORT_GIVEN=1
+      shift 2
+      ;;
+    --webui-bind)
+      WEBUI_BIND_OPT=$2
+      WEBUI_BIND_GIVEN=1
       shift 2
       ;;
     --install-sysbox)

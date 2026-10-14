@@ -105,9 +105,15 @@ describe("fresh Docker install", () => {
     expect(valuesOf(run, "--hostname")).toEqual(["japa-alice"]);
     expect(valuesOf(run, "--name")).toEqual(["japa-alice"]);
     expect(valuesOf(run, "--network")).toEqual(["japa-alice-net"]);
-    expect(valuesOf(run, "-p")).toEqual(["127.0.0.1:6080:16080"]);
+    expect(valuesOf(run, "-p")).toEqual(["127.0.0.1:6080:16080", "127.0.0.1:7337:17337"]);
     expect(valuesOf(run, "-v").sort()).toEqual(["japa-alice-docker:/var/lib/docker", "japa-alice-home:/home/japa"]);
-    expect(valuesOf(run, "--label").sort()).toEqual(["japa.branch=main", "japa.desktopPort=6080", "japa.instance=alice"]);
+    expect(valuesOf(run, "--label").sort()).toEqual([
+      "japa.branch=main",
+      "japa.desktopPort=6080",
+      "japa.instance=alice",
+      "japa.webuiBind=127.0.0.1",
+      "japa.webuiPort=7337",
+    ]);
     expect(run[run.length - 1]).toBe("japa-host:main");
     expectSafeRun(run);
 
@@ -134,6 +140,8 @@ describe("fresh Docker install", () => {
     expect(readFileSync(join(c.home, ".bashrc"), "utf8")).toBe('export PATH="$HOME/.local/bin:$PATH"\n');
     expect(r.output).not.toMatch(/not found/);
     expect(r.stdout).toContain("run `japa --instance alice setup` to finish");
+    expect(r.stdout).toContain("its desktop: http://127.0.0.1:6080/vnc.html");
+    expect(r.stdout).toContain("its web UI: http://127.0.0.1:7337");
     // Nothing else on the host: no native install dir.
     expect(existsSync(join(c.home, ".local", "share", "japa"))).toBe(false);
   });
@@ -160,8 +168,89 @@ describe("fresh Docker install", () => {
     const r = c.run(["--mode", "docker", "--repo", REPO, "--desktop-port", "7123"]);
     expect(r.status, r.output).toBe(0);
     const [run] = c.fake.callsOf("run");
-    expect(valuesOf(run, "-p")).toEqual(["127.0.0.1:7123:16080"]);
+    expect(valuesOf(run, "-p")).toEqual(["127.0.0.1:7123:16080", "127.0.0.1:7337:17337"]);
     expect(valuesOf(run, "--label")).toContain("japa.desktopPort=7123");
+  });
+
+  test("--webui-port and --webui-bind are honoured", () => {
+    const c = setup();
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "8443", "--webui-bind", "10.234.31.61"]);
+    expect(r.status, r.output).toBe(0);
+    const [run] = c.fake.callsOf("run");
+    expect(valuesOf(run, "-p")).toEqual(["127.0.0.1:6080:16080", "10.234.31.61:8443:17337"]);
+    expect(valuesOf(run, "--label")).toEqual(expect.arrayContaining(["japa.webuiPort=8443", "japa.webuiBind=10.234.31.61"]));
+    expect(r.stdout).toContain("its web UI: http://10.234.31.61:8443");
+  });
+
+  test("--webui-bind 0.0.0.0 publishes on every address and shows the loopback URL", () => {
+    const c = setup();
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--webui-bind", "0.0.0.0"]);
+    expect(r.status, r.output).toBe(0);
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toContain("0.0.0.0:7337:17337");
+    expect(r.stdout).toContain("its web UI: http://127.0.0.1:7337");
+  });
+
+  test("invalid --webui-port and --webui-bind values are refused before anything is built", () => {
+    for (const [flag, value] of [
+      ["--webui-port", "abc"],
+      ["--webui-port", "0"],
+      ["--webui-port", "65536"],
+      ["--webui-port", ""],
+      ["--webui-bind", "localhost"],
+      ["--webui-bind", "10.0.0"],
+      ["--webui-bind", "10.0.0.256"],
+      ["--webui-bind", "10.0.0.1.2"],
+      ["--webui-bind", "::1"],
+      ["--webui-bind", ""],
+    ]) {
+      const c = setup();
+      const r = c.run(["--mode", "docker", "--repo", REPO, flag, value]);
+      expect(r.status, `${flag} ${value}`).not.toBe(0);
+      expect(r.stderr).toContain(`invalid ${flag}: ${value}`);
+      expect(c.fake.callsOf("build")).toEqual([]);
+      expect(c.fake.callsOf("run")).toEqual([]);
+    }
+  });
+
+  test("--webui-port already claimed by another instance, or the desktop's port, is refused", () => {
+    const c = setup({ containers: Object.fromEntries([instance("bob", { port: 6080, webuiPort: 7400 })]) });
+    const claimed = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "7400"]);
+    expect(claimed.status).not.toBe(0);
+    expect(claimed.stderr).toContain("port 7400 is already published by another japa instance; choose another with --webui-port");
+    const desktop = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "6080"]);
+    expect(desktop.status).not.toBe(0);
+    expect(desktop.stderr).toContain("6080");
+    const same = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "7123", "--desktop-port", "7123"]);
+    expect(same.status).not.toBe(0);
+    expect(same.stderr).toContain("7123");
+    expect(c.fake.callsOf("run")).toEqual([]);
+    expect(c.fake.state().volumes).toEqual([]);
+  });
+
+  test("--desktop-port already claimed as another instance's web UI port is refused", () => {
+    const c = setup({ containers: Object.fromEntries([instance("bob", { port: 6080, webuiPort: 7400 })]) });
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--desktop-port", "7400"]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("port 7400 is already published by another japa instance; choose another with --desktop-port");
+    expect(c.fake.callsOf("run")).toEqual([]);
+  });
+
+  test("the default web UI port skips ports other instances claimed and ports something listens on", () => {
+    const c = setup(
+      { containers: Object.fromEntries([instance("bob", { port: 6081, webuiPort: 7337 }), instance("carol", { port: 7339, webuiPort: null })]) },
+      { listening: [7338, 7341] },
+    );
+    const r = c.run(["--mode", "docker", "--repo", REPO]);
+    expect(r.status, r.output).toBe(0);
+    // 7337 bob's web UI, 7338 listening, 7339 carol's desktop: 7340.
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6080:16080", "127.0.0.1:7340:17337"]);
+  });
+
+  test("the default desktop port skips the given --webui-port", () => {
+    const c = setup();
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "6080"]);
+    expect(r.status, r.output).toBe(0);
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6081:16080", "127.0.0.1:6080:17337"]);
   });
 
   test("--desktop-port already claimed by another instance is refused", () => {
@@ -176,7 +265,7 @@ describe("fresh Docker install", () => {
     const c = setup({ containers: Object.fromEntries([instance("bob", { port: 6080 }), instance("carol", { port: 6081, running: false })]) });
     const r = c.run(["--mode", "docker", "--repo", REPO]);
     expect(r.status, r.output).toBe(0);
-    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6082:16080"]);
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")[0]).toBe("127.0.0.1:6082:16080");
   });
 
   test("the default port skips ports something on the host listens on", () => {
@@ -184,7 +273,7 @@ describe("fresh Docker install", () => {
     const r = c.run(["--mode", "docker", "--repo", REPO]);
     expect(r.status, r.output).toBe(0);
     // 6080 listening, 6081 claimed, 6082 only has an established connection: free.
-    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6082:16080"]);
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")[0]).toBe("127.0.0.1:6082:16080");
   });
 
   test("--dir in Docker mode prints a note and is otherwise ignored", () => {
@@ -362,7 +451,7 @@ describe("a failed step removes what the run created, and only that", () => {
 
 describe("re-running on an existing Docker instance upgrades it", () => {
   const existing = (image = "sha256:image1", extra: Partial<FakeState> = {}): Partial<FakeState> => ({
-    containers: Object.fromEntries([instance("alice", { port: 6085, image, branch: "main" })]),
+    containers: Object.fromEntries([instance("alice", { port: 6085, webuiPort: 7345, webuiBind: "10.0.0.5", image, branch: "main" })]),
     volumes: ["japa-alice-home", "japa-alice-docker"],
     networks: ["japa-alice-net"],
     images: { "japa-host:main": image },
@@ -400,8 +489,14 @@ describe("re-running on an existing Docker instance upgrades it", () => {
     expect(valuesOf(runArgv, "--name")).toEqual(["japa-alice"]);
     expect(valuesOf(runArgv, "--network")).toEqual(["japa-alice-net"]);
     expect(valuesOf(runArgv, "-v").sort()).toEqual(["japa-alice-docker:/var/lib/docker", "japa-alice-home:/home/japa"]);
-    expect(valuesOf(runArgv, "-p")).toEqual(["127.0.0.1:6085:16080"]);
-    expect(valuesOf(runArgv, "--label").sort()).toEqual(["japa.branch=main", "japa.desktopPort=6085", "japa.instance=alice"]);
+    expect(valuesOf(runArgv, "-p")).toEqual(["127.0.0.1:6085:16080", "10.0.0.5:7345:17337"]);
+    expect(valuesOf(runArgv, "--label").sort()).toEqual([
+      "japa.branch=main",
+      "japa.desktopPort=6085",
+      "japa.instance=alice",
+      "japa.webuiBind=10.0.0.5",
+      "japa.webuiPort=7345",
+    ]);
     expect(runArgv).toContain("--runtime=sysbox-runc");
     expectSafeRun(runArgv);
     const st = c.fake.state();
@@ -462,7 +557,47 @@ describe("re-running on an existing Docker instance upgrades it", () => {
     const c = setup({ volumes: ["japa-alice-home", "japa-alice-docker"], containers: Object.fromEntries([instance("bob", { port: 6080 })]) });
     const r = c.run(["--mode", "docker", "--repo", REPO]);
     expect(r.status, r.output).toBe(0);
-    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6081:16080"]);
+    // bob's web UI has 7337.
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6081:16080", "127.0.0.1:7338:17337"]);
+  });
+
+  test("the same --webui-port and --webui-bind as recorded: no recreate", () => {
+    const c = setup(existing("sha256:image1"));
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "7345", "--webui-bind", "10.0.0.5"]);
+    expect(r.status, r.output).toBe(0);
+    expect(c.fake.callsOf("rm")).toEqual([]);
+    expect(c.fake.callsOf("run")).toEqual([]);
+  });
+
+  test("a different --webui-bind recreates the instance, keeping its recorded web UI port", () => {
+    const c = setup(existing("sha256:image1"));
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--webui-bind", "0.0.0.0"]);
+    expect(r.status, r.output).toBe(0);
+    expect(c.fake.calls().map((x) => x.join(" "))).toContain("rm -f japa-alice");
+    const [runArgv] = c.fake.callsOf("run");
+    expect(valuesOf(runArgv, "-p")).toEqual(["127.0.0.1:6085:16080", "0.0.0.0:7345:17337"]);
+    expect(valuesOf(runArgv, "--label")).toEqual(expect.arrayContaining(["japa.webuiPort=7345", "japa.webuiBind=0.0.0.0"]));
+  });
+
+  test("a different --webui-port recreates the instance, keeping its recorded bind", () => {
+    const c = setup(existing("sha256:image1"));
+    const r = c.run(["--mode", "docker", "--repo", REPO, "--webui-port", "7500"]);
+    expect(r.status, r.output).toBe(0);
+    expect(valuesOf(c.fake.callsOf("run")[0], "-p")).toEqual(["127.0.0.1:6085:16080", "10.0.0.5:7500:17337"]);
+  });
+
+  test("an instance from before the web UI was published is recreated with the defaults", () => {
+    const c = setup({
+      ...existing("sha256:image1"),
+      containers: Object.fromEntries([instance("alice", { port: 6085, webuiPort: null }), instance("bob", { port: 6080, webuiPort: 7337 })]),
+    });
+    const r = c.run(["--mode", "docker", "--repo", REPO]);
+    expect(r.status, r.output).toBe(0);
+    expect(c.fake.calls().map((x) => x.join(" "))).toContain("rm -f japa-alice");
+    const [runArgv] = c.fake.callsOf("run");
+    expect(valuesOf(runArgv, "-p")).toEqual(["127.0.0.1:6085:16080", "127.0.0.1:7338:17337"]);
+    expect(valuesOf(runArgv, "--label")).toEqual(expect.arrayContaining(["japa.webuiPort=7338", "japa.webuiBind=127.0.0.1"]));
+    expect(r.stdout).toContain("its web UI: http://127.0.0.1:7338");
   });
 });
 

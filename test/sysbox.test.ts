@@ -54,7 +54,7 @@ describe.skipIf(process.env.JAPA_SYSBOX_TESTS !== "1")("Docker mode with Sysbox 
     docker("volume", "rm", "-f", VOL_HOME, VOL_DOCKER);
   }, 300_000);
 
-  test("the container runs under sysbox-runc with only its two volumes and one loopback port", () => {
+  test("the container runs under sysbox-runc with only its two volumes and two loopback ports", () => {
     const [info] = JSON.parse(dockerOut("container", "inspect", CONTAINER)) as Array<{
       HostConfig: { Runtime: string; Privileged: boolean; Binds: string[] | null; RestartPolicy: { Name: string } };
       Mounts: Array<{ Type: string; Name?: string; Destination: string }>;
@@ -71,10 +71,11 @@ describe.skipIf(process.env.JAPA_SYSBOX_TESTS !== "1")("Docker mode with Sysbox 
       `volume:${VOL_HOME}:/home/japa`,
     ]);
     expect(JSON.stringify(info)).not.toContain("docker.sock");
-    const published = Object.values(info.NetworkSettings.Ports).flatMap((b) => b ?? []);
-    expect(published.length).toBe(1);
-    expect(published[0].HostIp).toBe("127.0.0.1");
-    expect(published[0].HostPort).toBe(info.Config.Labels["japa.desktopPort"]);
+    const published = (port: string) => info.NetworkSettings.Ports[port] ?? [];
+    expect(Object.values(info.NetworkSettings.Ports).flatMap((b) => b ?? []).length).toBe(2);
+    expect(published("16080/tcp")).toEqual([{ HostIp: "127.0.0.1", HostPort: info.Config.Labels["japa.desktopPort"] }]);
+    expect(published("17337/tcp")).toEqual([{ HostIp: "127.0.0.1", HostPort: info.Config.Labels["japa.webuiPort"] }]);
+    expect(info.Config.Labels["japa.webuiBind"]).toBe("127.0.0.1");
     expect(Object.keys(info.NetworkSettings.Networks)).toEqual([NETWORK]);
     expect(info.Config.Labels["japa.instance"]).toBe(NAME);
     expect(info.Config.Labels["japa.branch"]).toBe(BRANCH);
