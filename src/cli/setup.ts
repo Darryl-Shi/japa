@@ -10,6 +10,7 @@ import { openSetupContext, type SetupContext } from "./context.ts";
 import { waitForDaemon } from "./daemon.ts";
 import { APP, layoutOf } from "./layout.ts";
 import { chooseModels } from "./models-step.ts";
+import { type Interfaces, webuiStep } from "./webui-step.ts";
 import { Cancelled, clackPrompter, type Prompter } from "./prompt.ts";
 import {
   installAction,
@@ -37,6 +38,8 @@ export type SetupOptions = {
   waitMs?: number;
   /** Opens a sign-in link in a browser; default: the desktop's opener, when there is one. */
   openUrl?: (url: string) => void;
+  /** The network interfaces the Web UI section offers; default `os.networkInterfaces()` (tests fake it). */
+  interfaces?: () => Interfaces;
 };
 
 /** Installs and starts the background service, unless `--no-service` or there is no service manager. Returns
@@ -103,17 +106,23 @@ async function serviceMenu(ctx: SetupContext, p: Prompter, o: SetupOptions): Pro
 async function rerun(ctx: SetupContext, p: Prompter, o: SetupOptions): Promise<void> {
   let saved = false;
   for (;;) {
-    const choice = await p.select<"Models" | "Extensions" | "Service" | "Done">("What would you like to change?", [
-      { label: "Model and sign-in", value: "Models", hint: "the AI provider and model japa runs on" },
-      { label: "Integrations", value: "Extensions", hint: "Telegram, web search, the desktop, ..." },
-      { label: "Background service", value: "Service" },
-      { label: "Done", value: "Done" },
-    ]);
+    const choice = await p.select<"Models" | "Extensions" | "WebUI" | "Service" | "Done">(
+      "What would you like to change?",
+      [
+        { label: "Model and sign-in", value: "Models", hint: "the AI provider and model japa runs on" },
+        { label: "Integrations", value: "Extensions", hint: "Telegram, web search, the desktop, ..." },
+        { label: "Web UI", value: "WebUI", hint: "the browser chat: on/off, address, port, host names" },
+        { label: "Background service", value: "Service" },
+        { label: "Done", value: "Done" },
+      ],
+    );
     if (choice === "Done") break;
     if (choice === "Models") {
       if (await chooseModels(ctx, p, { env: o.env, openUrl: o.openUrl })) saved = true;
     } else if (choice === "Extensions") {
       if (await configureStep(ctx, p, undefined, { openUrl: o.openUrl })) saved = true;
+    } else if (choice === "WebUI") {
+      if (await webuiStep(ctx, p, { interfaces: o.interfaces })) saved = true;
     } else {
       await serviceMenu(ctx, p, o);
     }
