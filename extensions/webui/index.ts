@@ -72,6 +72,7 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     if (settings.enabled === false || process.env.JAPA_WEBUI_AUTOSTART === "0") return () => {};
     const bind = typeof settings.bind === "string" && settings.bind !== "" ? settings.bind : DEFAULT_BIND;
     const port = typeof settings.port === "number" ? settings.port : DEFAULT_PORT;
+    const hosts = Array.isArray(settings.hosts) ? settings.hosts.filter((h): h is string => typeof h === "string") : [];
     const k = kernel;
     if ((await k.secret(TOKEN_SECRET)) === undefined) await k.setSecret(TOKEN_SECRET, generateToken());
 
@@ -95,7 +96,7 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
 
     let bound = port;
     const server: Server = createServer(
-      pipeline({ bind, port: () => bound, token: async () => (await k.secret(TOKEN_SECRET))?.trim(), handler }),
+      pipeline({ bind, hosts, token: async () => (await k.secret(TOKEN_SECRET))?.trim(), handler }),
     );
     const stop = async () => {
       live.close(); // ends every open stream
@@ -141,6 +142,13 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
         Type.String({ description: 'Address the web UI listens on, e.g. a Tailscale address (default "127.0.0.1")' }),
       ),
       port: Type.Optional(Type.Integer({ description: "Port the web UI listens on (default 7337)", minimum: 0, maximum: 65535 })),
+      hosts: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Extra DNS names (no port) the web UI answers to, e.g. a VPN or LAN host name; localhost, the bind " +
+            "address and any IP address are always accepted",
+        }),
+      ),
     }),
     setup: (ctx) => {
       kernel = ctx;
