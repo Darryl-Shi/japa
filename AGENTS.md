@@ -66,7 +66,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   (steps: clone, node, dependencies, build, launcher; Uninstall delegates to `japa uninstall` or removes directly),
   Docker mode (Sysbox instances) and the embedded host launcher (`docker_launcher_text`). POSIX sh, runs under
   `curl | sh` (tests: `JAPA_INSTALL_TTY`).
-- `docker/` — the `japa-host` system container image (systemd, dockerd, Node 24, bwrap, noVNC forward on 16080).
+- `docker/` — the `japa-host` system container image (systemd, dockerd, Node 24, bwrap, noVNC forward on 16080,
+  web UI forward on 17337).
 - `test/` — vitest suites (`test/webui*.test.ts` for the web UI; `*-helpers.ts` hold fakes: fake messaging adapter,
   fake Telegram Bot API); `test/fake-docker.ts` is the fake `docker` for the installer/launcher tests;
   `test/fixtures/mini-japa` for install.sh tests
