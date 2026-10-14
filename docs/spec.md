@@ -105,8 +105,9 @@ This is a pure function of the settings and the network interfaces, computed by 
 - Host names: each comma-separated entry must be dot-separated DNS labels (`[a-z0-9]`, inner `-`, up to 63
   characters, 253 in all), after trimming and lower-casing; empty entries are ignored. Reset's confirmation
   defaults to No, as does the 0.0.0.0 warning.
-- The listen-address select labels each detected address by itself, with the interface (or
-  `Tailscale (<interface>)`) as its hint.
+- The listen-address select labels each detected address with its interface in the label itself, e.g.
+  `192.168.1.20 (eth0)` or `100.101.102.103 (Tailscale, tailscale0)` (clack only shows hints under the cursor).
+- Typing `0.0.0.0` or `::` under "Other…" asks the same plain-HTTP confirmation as "All addresses".
 
 # japa: installer menu with Install / Update / Uninstall
 

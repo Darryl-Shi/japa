@@ -61,6 +61,8 @@ const hostsOf = (s: WebuiSettings) =>
   Array.isArray(s.hosts) ? s.hosts.filter((h): h is string => typeof h === "string") : [];
 const isOn = (s: WebuiSettings) => s.enabled !== false;
 
+const isAllAddresses = (bind: string) => bind === ALL || bind === "::";
+
 const url = (host: string, port: number) => `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
 
 /** The address(es) to open the web UI at, from its settings and the network interfaces (a pure function); a
@@ -70,7 +72,7 @@ export function webuiAddresses(s: WebuiSettings, interfaces: Interfaces): string
   const bind = bindOf(s);
   const port = portOf(s);
   const urls =
-    bind === ALL || bind === "::"
+    isAllAddresses(bind)
       ? [url(DEFAULT_BIND, port), ...localAddresses(interfaces).map((a) => url(a.address, port))]
       : [url(bind, port)];
   for (const name of hostsOf(s)) urls.push(url(name, port));
@@ -84,7 +86,7 @@ export function overview(s: WebuiSettings, interfaces: Interfaces): string {
   return [
     `State: ${isOn(s) ? "on" : "off"}`,
     addresses.length === 1 ? `Open: ${addresses[0]}` : `Open:\n${addresses.map((a) => `  ${a}`).join("\n")}`,
-    `bind: ${s.bind === undefined ? `${DEFAULT_BIND} (default)` : String(s.bind)}`,
+    `bind: ${s.bind === undefined || s.bind === "" ? `${DEFAULT_BIND} (default)` : String(s.bind)}`,
     `port: ${s.port === undefined ? `${DEFAULT_PORT} (default)` : String(s.port)}`,
     `hosts: ${s.hosts === undefined ? "none (default)" : hosts.length > 0 ? hosts.join(", ") : "none"}`,
     "",
@@ -145,10 +147,7 @@ export async function webuiStep(ctx: SetupContext, p: Prompter, opts: WebuiStepO
   const interfaces = opts.interfaces ?? networkInterfaces;
   let saved = false;
 
-  const current = (): JsonObject => {
-    const extensions = readUserSettings(ctx.home).extensions as Record<string, JsonObject | undefined> | undefined;
-    return { ...(extensions?.[WEBUI] ?? {}) };
-  };
+  const current = (): JsonObject => webuiOf(readUserSettings(ctx.home));
 
   /** Applies `change` to `extensions.webui` (undefined removes a key), validates and saves it; false if it
    * changed nothing or didn't validate. */
@@ -234,7 +233,10 @@ async function chooseBind(p: Prompter, s: WebuiSettings, interfaces: Interfaces)
     { label: "This machine only", value: DEFAULT_BIND, hint: `${DEFAULT_BIND}, the default` },
   ];
   for (const a of localAddresses(interfaces)) {
-    choices.push({ label: a.address, value: a.address, hint: a.tailscale ? `Tailscale (${a.iface})` : a.iface });
+    choices.push({
+      label: a.tailscale ? `${a.address} (Tailscale, ${a.iface})` : `${a.address} (${a.iface})`,
+      value: a.address,
+    });
   }
   choices.push({ label: `All addresses (${ALL})`, value: ALL, hint: "every network this machine is on" });
   if (!choices.some((c) => c.value === currentBind)) {
@@ -243,28 +245,37 @@ async function chooseBind(p: Prompter, s: WebuiSettings, interfaces: Interfaces)
   choices.push({ label: "Other…", value: OTHER, hint: "type an IP address" });
 
   const picked = await p.select<string | typeof OTHER>("Which address should the web UI listen on?", choices, currentBind);
-  if (picked === ALL) {
-    const ok = await p.confirm(
-      "The web UI is plain HTTP (not encrypted): listening on all addresses exposes it to every network this " +
-        "machine is on. Only do this on networks you trust. Listen on all addresses?",
-      false,
-    );
-    return ok ? ALL : null;
-  }
-  if (picked !== OTHER) return picked;
+  if (picked !== OTHER) return confirmAll(p, picked);
   for (;;) {
     const answer = (await p.text("IP address to listen on", { initial: currentBind })).trim();
-    if (isIP(answer) !== 0) return answer;
+    if (isIP(answer) !== 0) return confirmAll(p, answer);
     p.warn(`Not an IP address: "${answer}"`);
   }
+}
+
+/** `bind`, after the plain-HTTP warning and confirmation when it's an all-addresses bind (0.0.0.0 or ::); null
+ * if declined. */
+async function confirmAll(p: Prompter, bind: string): Promise<string | null> {
+  if (!isAllAddresses(bind)) return bind;
+  const ok = await p.confirm(
+    "The web UI is plain HTTP (not encrypted): listening on all addresses exposes it to every network this " +
+      "machine is on. Only do this on networks you trust. Listen on all addresses?",
+    false,
+  );
+  return ok ? bind : null;
+}
+
+/** A copy of `extensions.webui` in the user's settings `user` ({} when unset). */
+function webuiOf(user: JsonObject): JsonObject {
+  const extensions = user.extensions as Record<string, JsonObject | undefined> | undefined;
+  return { ...(extensions?.[WEBUI] ?? {}) };
 }
 
 /** Writes `change` into `extensions.webui` of the user's settings (keeping its other keys), validated against the
  * extension's schema; true if the file changed. */
 function write(ctx: SetupContext, e: JapaExtension, change: Record<string, unknown>, p: Prompter): boolean {
   const user = readUserSettings(ctx.home);
-  const extensions = user.extensions as Record<string, JsonObject | undefined> | undefined;
-  const before = { ...(extensions?.[WEBUI] ?? {}) };
+  const before = webuiOf(user);
   const next: JsonObject = { ...before };
   for (const [key, value] of Object.entries(change)) {
     if (value === undefined) delete next[key];

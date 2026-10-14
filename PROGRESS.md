@@ -4,8 +4,9 @@
 - [x] `test/setup-webui.test.ts` (fake prompter, injected `SetupOptions.interfaces`)
 - [x] README (setup paragraph, rerun menu, Web UI Settings bullet), docs/spec.md (new spec + webui §2.3 note), AGENTS.md map
 
-Decisions: unchanged values write nothing; Reset and the 0.0.0.0 warning default to No; addresses labelled by IP
-with the interface (or "Tailscale (<iface>)") as hint; empty `{}` left after removing the last key. No CI workflow
+Decisions: unchanged values write nothing; Reset and the 0.0.0.0 warning default to No; addresses labelled
+"<ip> (<iface>)" / "<ip> (Tailscale, <iface>)" in the label (round 2: clack hides hints off-cursor); Other… with
+0.0.0.0/:: asks the plain-HTTP confirm too; empty `{}` left after removing the last key. No CI workflow
 (none in the repo; not asked for).
 
 ---

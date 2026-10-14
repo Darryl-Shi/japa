@@ -198,15 +198,14 @@ test("Listen address offers this machine, each LAN/Tailscale address with its in
       },
     ],
   ]);
+  // The interface and "Tailscale" are in the labels themselves: clack shows a hint only under the cursor.
   expect(choices.map((c) => c.label)).toEqual([
     "This machine only",
-    "192.168.1.20",
-    "100.101.102.103",
+    "192.168.1.20 (eth0)",
+    "100.101.102.103 (Tailscale, tailscale0)",
     "All addresses (0.0.0.0)",
     "Other…",
   ]);
-  expect(choices[1]!.hint).toBe("eth0");
-  expect(choices[2]!.hint).toContain("Tailscale");
   expect(webui(home)).toEqual({ bind: "192.168.1.20" });
 });
 
@@ -225,8 +224,8 @@ test("Tailscale is recognised by the 100.64.0.0/10 range on any interface name",
     ],
     { interfaces: () => ifaces },
   );
-  expect(choices.find((c) => c.label === "100.64.0.5")!.hint).toContain("Tailscale");
-  expect(choices.find((c) => c.label === "100.128.0.5")!.hint).toBe("eth1");
+  expect(choices.map((c) => c.label)).toContain("100.64.0.5 (Tailscale, wg0)");
+  expect(choices.map((c) => c.label)).toContain("100.128.0.5 (eth1)");
   expect(webui(home) ?? {}).toEqual({});
 });
 
@@ -283,6 +282,24 @@ test("Other… refuses a non-IP and takes an IP; the current value is preselecte
   expect(labels).toContain("10.9.8.7");
   expect(preselected).toBe("10.9.8.7");
   expect(webui(home)).toEqual({ bind: "10.9.8.7" });
+});
+
+test("Other… with 0.0.0.0 or :: asks the plain-HTTP confirmation too", async () => {
+  const home = configuredHome();
+  await run(home, [
+    [SECTION, pick("Listen address")],
+    ["Which address", pick("Other")],
+    ["IP address to listen on", "::"],
+    ["plain HTTP", false],
+  ]);
+  expect(webui(home) ?? {}).toEqual({});
+  await run(home, [
+    [SECTION, pick("Listen address")],
+    ["Which address", pick("Other")],
+    ["IP address to listen on", "0.0.0.0"],
+    ["plain HTTP", true],
+  ]);
+  expect(webui(home)).toEqual({ bind: "0.0.0.0" });
 });
 
 test("This machine only removes bind", async () => {
