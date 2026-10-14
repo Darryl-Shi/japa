@@ -74,6 +74,16 @@ export class Throttle {
     return this.recent(address, now).length >= THROTTLE_FAILURES;
   }
 
+  /**
+   * Takes one of `address`'s failures up front, before the password is checked, so attempts still being checked
+   * count too: false (nothing taken) when they're used up. A success then `clear`s them.
+   */
+  reserve(address: string, now: number): boolean {
+    if (this.blocked(address, now)) return false;
+    this.fail(address, now);
+    return true;
+  }
+
   fail(address: string, now: number): void {
     // Now and then, forget addresses whose window has passed.
     if (this.failures.size > 1000) for (const a of [...this.failures.keys()]) this.recent(a, now);

@@ -55,6 +55,8 @@ export function acceptedHost(host: string, bind: string, extra: readonly string[
 export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: ServerResponse) => void {
   const now = deps.now ?? Date.now;
   const throttle = new Throttle();
+  // Made now, so the first unknown-name sign-in costs one scrypt like any other.
+  void dummyHash();
   return (req, res) => {
     handle(req, res).catch(() => {
       if (!res.headersSent) send(res, 500, "Internal error");
@@ -85,7 +87,8 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
 
     if (path === "/login" && method === "POST") {
       const address = req.socket.remoteAddress ?? "";
-      if (throttle.blocked(address, now())) {
+      // Reserved before the (slow) check, so parallel guesses can't get past the limit.
+      if (!throttle.reserve(address, now())) {
         res.setHeader("Retry-After", "60");
         return send(res, 429, "Too many failed sign-ins: try again in a minute");
       }
@@ -98,7 +101,6 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
       // An unknown name is checked against a dummy hash, so the time taken doesn't tell which names exist.
       const matches = await verifyPassword(password, user?.password ?? (await dummyHash()));
       if (!matches || user === undefined || key === undefined || key === "") {
-        throttle.fail(address, now());
         return redirect(res, "/login?error=1");
       }
       throttle.clear(address);

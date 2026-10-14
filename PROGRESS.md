@@ -125,3 +125,4 @@ Decisions:
 - The Docker upgrade message also mentions `webui users add` (instances upgraded from the token era need a user).
 - `--password-stdin` reads only the first line; interactive input validates the first entry before asking again.
 - No CI workflow: the spec doesn't ask for one (as before).
+- [x] Round 2: F1 throttle reserves a slot before scrypt (parallel guesses capped at 10; test); F2 dummy hash made at pipeline creation.

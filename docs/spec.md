@@ -281,6 +281,7 @@ Decisions made while building, within the spec above:
   The CLI is `src/cli/webui-users.ts` (`webuiCommand`, with an injectable I/O for tests); before writing it runs
   `ensureWorkspace` so the home's `.gitignore` has `/webui/` (anchored, so a component's `extensions/webui/` isn't
   ignored).
+- **Throttle**: a failure slot is reserved before the password check (`Throttle.reserve`), so parallel guesses still-being-hashed count; a success clears the address. The dummy hash is made when the pipeline is created.
 - **Sessions** (`extensions/webui/auth.ts`) are stateless: the cookie `japa_webui_session` is
   `<name>.<expiry>.<HMAC-SHA256(sessionKey, "webui-session:<name>:<expiry>:<stamp>")>`, valid 30 days. The throttle
   (`Throttle`) keeps failure timestamps per `req.socket.remoteAddress` (behind Docker's port publishing that is the

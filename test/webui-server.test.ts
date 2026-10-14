@@ -288,6 +288,16 @@ test("10 failed sign-ins a minute from one address, then 429 even with the right
   expect((await signIn(base, "alice", "wrong-password")).status).toBe(303);
 });
 
+test("parallel bad sign-ins from one address get at most 10 password checks", async () => {
+  const { base } = await serve();
+  const replies = await Promise.all(
+    Array.from({ length: 40 }, (_, i) => signIn(base, "alice", `guess-${i}-password`).then((r) => r.status)),
+  );
+  expect(replies.filter((s) => s !== 429)).toHaveLength(THROTTLE_FAILURES);
+  expect(replies.filter((s) => s === 429)).toHaveLength(40 - THROTTLE_FAILURES);
+  expect((await signIn(base, "alice", ALICE_PW)).status).toBe(429);
+});
+
 test("the throttle counts failures per address in a rolling window", () => {
   const t = new Throttle();
   for (let i = 0; i < THROTTLE_FAILURES; i++) t.fail("a", 1000 + i * 1000);
@@ -297,6 +307,9 @@ test("the throttle counts failures per address in a rolling window", () => {
   expect(t.blocked("a", 61_000)).toBe(false);
   t.clear("a");
   expect(t.blocked("a", 11_000)).toBe(false);
+  for (let i = 0; i < THROTTLE_FAILURES; i++) expect(t.reserve("c", 0)).toBe(true);
+  expect(t.reserve("c", 0)).toBe(false);
+  expect(t.blocked("c", 0)).toBe(true);
 });
 
 test("POST /logout clears the cookie and goes to sign-in; it needs a session", async () => {
