@@ -7,7 +7,7 @@ import type {
   UserInput,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { MutableModels, Provider, TSchema } from "@earendil-works/pi-ai";
+import type { AuthInteraction, MutableModels, Provider, TSchema } from "@earendil-works/pi-ai";
 import type { ExtensionState } from "./availability.ts";
 import type { Change } from "./changes.ts";
 import type { Job } from "./jobs/state.ts";
@@ -98,6 +98,11 @@ export type SurfaceContext = {
   };
   status(): Status;
   /**
+   * Changing japa's settings, providers and extensions (see `AdminContext`): set only for the surfaces of packaged
+   * extensions (shipped in japa's checkout); undefined for workspace ones.
+   */
+  admin?: AdminContext;
+  /**
    * The CoS input for `messages`, merged (the messaging surface's conversion): their texts, then a note per file,
    * each saved under `<home>/attachments/<date>/`; PDFs' text extracted, images inline when the CoS model has vision.
    */
@@ -166,6 +171,60 @@ export type ExtensionInfo = {
   secrets: { name: string; description?: string; set: boolean }[];
   schema?: TSchema;
   values: JsonObject;
+};
+
+/** A model provider as Settings shows it, in setup's order (featured first, then by name). */
+export type ProviderInfo = {
+  id: string;
+  name: string;
+  /** The kind of credential stored for it, if any. */
+  credential?: "oauth" | "api_key";
+  /** Whether japa can authenticate to it now (a stored credential, or an environment API key). */
+  connected: boolean;
+  /** Its sign-in, when it offers one: the button's label, and whether it uses the user's subscription. */
+  signIn?: { label: string; subscription: boolean };
+  /** Whether it takes an API key, and what it calls it (e.g. "Anthropic API key"). */
+  apiKey?: { label: string };
+};
+
+/** A model a provider can use. */
+export type ModelInfo = { id: string; name: string };
+
+/**
+ * The settings operations of `MessagingContext` and the CoS's tools, plus provider and extension sign-in, given to
+ * packaged surfaces as `SurfaceContext.admin` (the web UI's Settings). Same code paths, so validation, the change log,
+ * availability and live reload behave as from Telegram's menu.
+ */
+export type AdminContext = {
+  /** The live merged settings (read-only: a copy). */
+  settings(): JsonObject;
+  /** As `settings_set`; its reply, `Not changed: …` when the value is invalid. */
+  setSetting(path: string, value: unknown): Promise<string>;
+  extensions(): Promise<ExtensionInfo[]>;
+  /** As `MessagingContext.setSecret`. */
+  setSecret(extension: string, name: string, value: string): Promise<string>;
+  rollback(extension: string): Promise<string>;
+  /** The logged changes, newest first. */
+  changes(): Promise<Change[]>;
+  undoChange(id: string): Promise<string>;
+  clearFinishedJobs(): Promise<number>;
+  /** Runs a schedule tool (`schedule_*`); undefined for any other name or without one. */
+  tool(name: string, args: JsonObject): Promise<ToolExecutionResult | undefined>;
+  update: Pick<MessagingContext["update"], "check" | "current" | "start" | "state">;
+  /** Every provider with models. */
+  providers(): Promise<ProviderInfo[]>;
+  /** The models `provider` can use, refreshed first when it supports that (as setup's model step). */
+  models(provider: string): Promise<ModelInfo[]>;
+  /**
+   * Runs pi-ai's login of `type` for `provider` through `interaction`, storing the credential as `japa setup` does.
+   * Throws with a user-facing message when it fails, and when a sign-in to `provider` is already running.
+   */
+  login(provider: string, type: "oauth" | "api_key", interaction: AuthInteraction): Promise<void>;
+  /**
+   * Runs `extension`'s `authorize` hook through `interaction`, then recomputes availability; its outcome line. Throws
+   * when it fails, when the extension has no sign-in, and when a sign-in to it is already running.
+   */
+  authorize(extension: string, interaction: AuthInteraction): Promise<string>;
 };
 
 /**

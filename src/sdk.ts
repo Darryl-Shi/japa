@@ -39,17 +39,21 @@ export type {
 } from "@earendil-works/pi-ai";
 export { logChange } from "./kernel/changes.ts";
 export type {
+  AdminContext,
   BootContext,
   Dispose,
   EnvironmentAdapter,
+  ExtensionInfo,
   Incoming,
   IncomingFile,
   KernelContext,
   MessagingAdapter,
   MessagingAdapterContext,
+  ModelInfo,
   Origin,
   OutgoingFile,
   OutgoingMessage,
+  ProviderInfo,
   Reply,
   SecretsAdapter,
   SecretsStore,
@@ -64,5 +68,8 @@ export { defineJapaExtension } from "./kernel/extension.ts";
 export { board, JobDoc, JobsDoc } from "./kernel/jobs/state.ts";
 export { splitMessage } from "./kernel/messaging/split.ts";
 export type { Job } from "./kernel/jobs/state.ts";
+export type { Change } from "./kernel/changes.ts";
+export type { UpdateCheck, UpdateState } from "./kernel/update-state.ts";
+export type { ExtensionState } from "./kernel/availability.ts";
 export type { SecretRequest } from "./kernel/secret-requests.ts";
 export type { Authorize, AuthorizeContext, JapaExtension } from "./kernel/extension.ts";

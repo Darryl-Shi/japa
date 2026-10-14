@@ -99,3 +99,18 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 
 - [x] `docker_upgrade` always rewrites the Docker launcher (was: only when missing), so launcher changes (e.g. the WEB UI column) reach upgraded hosts. Tests in install-docker.test.ts; spec §4.4, README.
 - [x] README: one-off `ssh <server> 'japa …'` needs `~/.local/bin/japa` (non-interactive shells stop reading ~/.bashrc before the PATH line).
+
+---
+
+# Progress: web UI Settings, Desktop panel, no Status (run-mv82kuec-kxa9)
+
+- [x] Contracts: `AdminContext`/`ProviderInfo`/`ModelInfo` in contracts.ts (+ sdk), protocol.ts (Settings/Desktop/flows API)
+- [ ] Kernel: admin context in boot.ts (packaged surfaces only) + tests
+- [ ] webui server: settings bridge, flows, endpoints, ws proxy; desktop view handle
+- [ ] UI: Settings area, Desktop panel (noVNC), top bar, Status removed
+- [ ] Docs: README, docs/spec.md, AGENTS.md
+
+Decisions:
+- "Packaged" = not loaded from the workspace (`<home>/extensions`): extensions handed to `boot` in code (tests) count as packaged.
+- `admin.tool` only runs `schedule_*` tools.
+- Sign-in flows are polled by the starting tab (GET /api/signin/<id>, ~1 s).
