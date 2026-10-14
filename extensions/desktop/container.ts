@@ -1,6 +1,6 @@
 // The desktop container: the docker runner, the image build, create/start/health/recreate, exec, and the status line.
 import { spawn } from "node:child_process";
-import { createHash, randomInt } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -24,6 +24,8 @@ export const STARTING = "The desktop is starting (building its image) — try ag
 export const BUILDING = "Building the desktop's image (first use or an upgrade; a few minutes).";
 export const UPGRADED =
   "The desktop was recreated with a new image or settings: software installed with apt is gone; everything under /home/japa is kept.";
+export const RECREATED =
+  "The desktop's container was broken and has been recreated: software installed with apt is gone; everything under /home/japa is kept.";
 const NOT_STARTED = "The desktop did not start within 60 s.";
 const needsDocker = (reason: string) =>
   `The desktop needs Docker: ${reason}` +
@@ -67,6 +69,9 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   let building: Promise<void> | undefined;
   let failed: string | undefined; // a failed build, not yet reported by `ready`
   let problem: string | undefined;
+  // The recovery tried since the desktop last came up: a broken container removed, or its image too (and rebuilt).
+  let recovery: "container" | "image" | undefined;
+  let replaced = false; // a container was lost to a recovery: tell the chief of staff once its replacement runs
   let queue: Promise<unknown> = Promise.resolve();
 
   const settings = () => kernel().settings() as { cpus?: number; memory?: string; shm?: string; bind?: string };
@@ -76,9 +81,14 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
     problem = message;
     throw new Error(message);
   };
-  const run = async (args: string[]) => {
+  /** Runs a docker command; answers its failure as a status line. */
+  const attempt = async (args: string[]) => {
     const result = await docker(args);
-    if (result.code !== 0) fail(couldNotStart(firstLine(result.stderr) || `exit code ${result.code}`));
+    return result.code === 0 ? undefined : couldNotStart(firstLine(result.stderr) || `exit code ${result.code}`);
+  };
+  const run = async (args: string[]) => {
+    const error = await attempt(args);
+    if (error) fail(error);
   };
   const exec = (argv: string[], input?: string) =>
     docker(["exec", ...(input === undefined ? [] : ["-i"]), "-u", "japa", name, ...argv], { input });
@@ -111,7 +121,12 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   async function build() {
     try {
       const args = ["build", "-t", image, "--label", `japa.desktop.hash=${IMAGE_HASH}`, DESKTOP_DIR];
-      const result = await docker(args, { signal: abort.signal });
+      let result = await docker(args, { signal: abort.signal });
+      if (result.code !== 0 && !abort.signal.aborted) {
+        // A build cache whose layers are gone from the image store fails every build: prune it and try once more.
+        await docker(["builder", "prune", "-af"], { signal: abort.signal });
+        result = await docker(args, { signal: abort.signal });
+      }
       if (result.code !== 0) failed = buildFailed(result.stderr.trim().split("\n").at(-1)!.trim());
     } catch (error) {
       failed = needsDocker((error as Error).message);
@@ -140,14 +155,21 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
       fail(needsDocker(firstLine(inspected.stderr)));
     }
     problem = undefined;
-    const found = inspected.code === 0;
+    let found = inspected.code === 0;
     const [running, label] = inspected.stdout.toString().trim().split(" ");
     if (found && label === hash) {
-      if (running !== "true") {
-        await run(["start", name]);
-        await healthy();
+      const error = running === "true" ? undefined : await attempt(["start", name]);
+      if (!error) {
+        if (running !== "true") await healthy();
+        recovery = undefined;
+        return;
       }
-      return;
+      if (recovery) fail(error);
+      // Its layers may be gone (say, the image store was lost): create it afresh, on the same home volume.
+      recovery = "container";
+      replaced = true;
+      await docker(["rm", "-f", name]);
+      found = false;
     }
     if ((await docker(["image", "inspect", image])).code !== 0) {
       building = build();
@@ -161,9 +183,22 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
     chmodSync(join(home, "desktop/shared"), 0o777);
     mkdirSync(join(home, "attachments"), { recursive: true });
     await docker(["network", "create", `${name}-net`]); // fails harmlessly when it exists
-    await run(["run", "-d", "--label", `japa.desktop.hash=${hash}`, ...args]);
+    const error = await attempt(["run", "-d", "--label", `japa.desktop.hash=${hash}`, ...args]);
+    if (error) {
+      if (recovery === "image") fail(error);
+      // The image may be unusable (its metadata present, its layers gone): remove it and rebuild it, once.
+      recovery = "image";
+      replaced ||= found;
+      await docker(["rm", "-f", name]);
+      await docker(["image", "rm", "-f", image]);
+      building = build();
+      return "build";
+    }
     if (found) await kernel().trigger.emit({ key: `upgrade:${hash}`, text: UPGRADED });
+    else if (replaced) await kernel().trigger.emit({ key: `recreate:${randomUUID()}`, text: RECREATED });
+    replaced = false;
     await healthy();
+    recovery = undefined;
   }
 
   /** Runs `bringUp` after any earlier one finishes. */

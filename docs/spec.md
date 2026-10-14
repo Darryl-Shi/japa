@@ -573,7 +573,7 @@ japa currently installs only "natively": a git checkout under `~/.local/share/ja
 | Service | The existing `japa service` systemd **user** unit, running under the container's own systemd. The container uses `--restart unless-stopped`, so japa comes back after a host reboot. |
 | Updates | Unchanged: `japa update` and Telegram `/update` (git fast-forward, validate, roll back, restart through `systemd-run --user`) run inside the container. |
 | Jobs sandbox | Unchanged bubblewrap, which works inside a Sysbox container. The inner `/var/run/docker.sock` is masked from jobs by the existing rules. |
-| Desktop | Unchanged desktop extension, using the **inner** dockerd. Its image and container live in the instance's docker volume. |
+| Desktop | Unchanged desktop extension, using the **inner** dockerd. Its image, build cache, container and home volume live in the instance's docker volume. |
 | Tenancy model | **Operator-managed named instances.** One admin with host Docker access creates and manages instances. Tenants reach their japa through Telegram, or through a shell the admin opens for them in their own container. |
 | Image source | Built locally on the host from the repo's `docker/` directory at the installed branch, using a git build context. No registry dependency. |
 
@@ -584,7 +584,7 @@ For an instance named `<name>`:
 | Thing | Name / value |
 |---|---|
 | Container | `japa-<name>`, labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>`, `japa.webuiPort=<port>`, `japa.webuiBind=<address>` |
-| Volumes | `japa-<name>-home` → `/home/japa` (app checkout, `~/.japa`, the rest of the home); `japa-<name>-docker` → `/var/lib/docker` (inner images and containers, including the desktop and its home volume) |
+| Volumes | `japa-<name>-home` → `/home/japa` (app checkout, `~/.japa`, the rest of the home); `japa-<name>-docker` → `/var/lib/docker` (inner images, build cache and containers, including the desktop and its home volume; the image keeps the inner Docker off the containerd image store so they all live here) |
 | Network | `japa-<name>-net`, a user-defined bridge used by that instance only, so instances can't reach each other's ports |
 | Image | `japa-host:<branch>`, built from `docker/` in the repo |
 | Ports | Two host ports: `127.0.0.1:<desktop port>`, forwarded to the instance's noVNC, and `<web UI address>:<web UI port>` (`127.0.0.1` by default), forwarded to its web UI. Nothing else is published. |
@@ -701,13 +701,14 @@ Native and Docker installs can coexist on one host, but only one owns `~/.local/
 - **No source changes for container awareness.** `src/kernel`, `extensions/*` and the CLI commands have none. Existing behaviour that depends on the environment (the bwrap probe, the desktop's Docker checks, the systemd availability check in setup, update launch via `systemd-run`, and service detection) simply finds a normal Linux machine.
 - **The image** (`docker/Dockerfile` plus its support files) provides:
   - systemd as init;
-  - dockerd enabled as a system service;
+  - dockerd enabled as a system service, with `/etc/docker/daemon.json` turning off the containerd image store (`{"features":{"containerd-snapshotter":false}}`), so the inner Docker uses the classic overlay2 store and keeps its images, layers and build cache under `/var/lib/docker` (the docker volume) rather than `/var/lib/containerd`, in the container's writable layer, which a recreate loses;
   - the `japa` user with lingering;
   - Node 24 on PATH, so the native installer uses it rather than downloading a private Node;
   - bubblewrap, git, tar and curl;
   - the noVNC and web UI port forwards (§3).
 - **Google sign-in** uses the existing paste-the-redirect-URL fallback, because the OAuth loopback isn't reachable from the host browser. This is the same as over SSH today.
 - **Inner Docker state stays in the instance.** The desktop's image builds and its home volume live in the inner Docker, so they are per instance and survive container recreation through `japa-<name>-docker`.
+- **The desktop recovers from lost Docker state.** This is generic desktop behaviour, not a container code path: a current desktop container that fails to start is removed (`docker rm -f`) and created afresh, rebuilding its image first if it's gone; a fresh container that fails to run has its image removed and rebuilt; a failed image build prunes the build cache (`docker builder prune -af`) and is retried. Each recovery happens at most once until the desktop next comes up, so a lasting failure is reported as before. The desktop's home volume is never removed, and when a container is lost this way the chief of staff is told that software installed with apt is gone.
 
 ## 7. Out of scope
 

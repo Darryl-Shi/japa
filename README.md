@@ -530,6 +530,11 @@ installed and usable by the user running japa (on Linux: `sudo usermod -aG docke
   `bind` (`"127.0.0.1"`) and `autostart` (`true`; `false` builds and starts it on first use instead). A change recreates the container on the next use and keeps its home (`/home/japa`, with the
   browser's logins; those from the last ~30 s before a stop, recreate or reboot may be lost, as Chromium commits
   cookies every ~30 s).
+- **Recovery.** If the desktop's container won't start (say, Docker lost its layers), japa removes it and creates it
+  again, rebuilding the image if it's gone; if a new container won't run, japa rebuilds the image; if a build fails,
+  japa clears Docker's build cache and tries once more. Each happens once until the desktop comes up again, so a
+  lasting problem shows in `japa status` as before. The home volume is always kept; the chief of staff is told when
+  software installed with apt was lost.
 
 ## Google
 
@@ -613,7 +618,7 @@ in Docker:
 | Thing | What it holds |
 | --- | --- |
 | volume `japa-<name>-home` → `/home/japa` | the whole home: the checkout `~/.local/share/japa/app`, the inner launcher `~/.local/bin/japa`, `~/.japa` (settings, secrets, history, jobs' work), the service unit |
-| volume `japa-<name>-docker` → `/var/lib/docker` | the instance's own Docker: the desktop's image, container and home (browser logins) |
+| volume `japa-<name>-docker` → `/var/lib/docker` | the instance's own Docker: the desktop's image, build cache, container and home (browser logins); the image configures the inner Docker (classic overlay2 store, not the containerd one) so all of it lives here |
 | network `japa-<name>-net` | a bridge used by this instance only |
 | container `japa-<name>` | labels `japa.instance=<name>`, `japa.branch=<branch>`, `japa.desktopPort=<port>`, `japa.webuiPort=<web UI port>`, `japa.webuiBind=<address>`; publishes only `127.0.0.1:<port>` (the desktop) and `<address>:<web UI port>` (the web UI, `127.0.0.1` by default) |
 | image `japa-host:<branch>` | built from `docker/` (branch names with characters other than `A-Za-z0-9_.-` get `-` in the tag); shared by instances on that branch |

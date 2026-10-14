@@ -20,6 +20,13 @@ RUN userdel -r ubuntu \
     nodejs docker-ce docker-ce-cli containerd.io docker-buildx-plugin \
  && rm -rf /var/lib/apt/lists/*
 
+# The inner dockerd keeps all its state under /var/lib/docker: the japa-<name>-docker volume there is the only inner
+# Docker state that survives a recreate. Docker 29's default containerd image store would put images, layers and
+# snapshots in /var/lib/containerd, in this container's writable layer, lost on every upgrade; the classic overlay2
+# store (which Sysbox supports for Docker-in-Docker) doesn't.
+RUN mkdir -p /etc/docker \
+ && printf '{"features":{"containerd-snapshotter":false}}\n' > /etc/docker/daemon.json
+
 # systemd inside a Sysbox container: no udev, no consoles, no kernel log; journald mustn't read /dev/kmsg.
 RUN systemctl mask systemd-udevd.service systemd-udevd-kernel.socket systemd-udevd-control.socket \
     systemd-modules-load.service sys-kernel-debug.mount sys-kernel-tracing.mount sys-kernel-config.mount \
