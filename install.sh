@@ -696,11 +696,10 @@ docker_upgrade() {
   fi
   wait_for_systemd || { say_err "upgrade failed at: $STEP"; return 1; }
 
+  # Always rewritten (it's this installer's own file), so launcher changes reach hosts that only ever upgrade.
   STEP="launcher"
   choose_host_launcher
-  if ! is_docker_launcher "$HOST_LAUNCHER"; then
-    write_host_launcher
-  fi
+  write_host_launcher || { say_err "upgrade failed at: $STEP"; return 1; }
 
   STEP="update japa inside"
   say "Updating japa inside $CONTAINER"

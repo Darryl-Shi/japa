@@ -476,6 +476,30 @@ describe("re-running on an existing Docker instance upgrades it", () => {
     expect(r.output).not.toMatch(/not found/);
   });
 
+  test("an existing Docker launcher is rewritten with the current one, so launcher changes reach upgraded hosts", () => {
+    const c = setup(existing("sha256:image1"));
+    mkdirSync(join(c.home, ".local", "bin"), { recursive: true });
+    writeFileSync(hostLauncher(c.home), "#!/bin/sh\n# japa-docker-launcher: an older version\n");
+    const r = c.run(["--repo", REPO]);
+    expect(r.status, r.output).toBe(0);
+    const text = readFileSync(hostLauncher(c.home), "utf8");
+    expect(text).toContain("# japa-docker-launcher");
+    expect(text).not.toContain("an older version");
+    expect(text).toContain("japa.webuiPort");
+  });
+
+  test("a kept japa-docker launcher (beside a native japa) is the one rewritten", () => {
+    const c = setup(existing("sha256:image1"));
+    const bin = join(c.home, ".local", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "japa"), "#!/bin/sh\nexec node main.ts \"$@\"\n");
+    writeFileSync(join(bin, "japa-docker"), "#!/bin/sh\n# japa-docker-launcher: an older version\n");
+    const r = c.run(["--repo", REPO]);
+    expect(r.status, r.output).toBe(0);
+    expect(readFileSync(join(bin, "japa"), "utf8")).toBe("#!/bin/sh\nexec node main.ts \"$@\"\n");
+    expect(readFileSync(join(bin, "japa-docker"), "utf8")).not.toContain("an older version");
+  });
+
   test("the image changed: rm -f then run again with the same name, volumes, network, labels and port", () => {
     const c = setup(existing("sha256:old"));
     const r = c.run(["--mode", "docker", "--repo", REPO]);

@@ -92,3 +92,10 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
   publish `<bind>:<port>:17337`, labels `japa.webuiPort` / `japa.webuiBind`; an upgrade keeps them, recreating when
   they change or the label is missing (older instances); install and upgrade print the web UI URL; `japa instances`
   has a WEB UI column. README, docs/spec.md (webui §2.3, Docker hosting §3-§5 and Outcome) updated.
+
+---
+
+# Progress: Docker upgrade rewrites the host launcher
+
+- [x] `docker_upgrade` always rewrites the Docker launcher (was: only when missing), so launcher changes (e.g. the WEB UI column) reach upgraded hosts. Tests in install-docker.test.ts; spec §4.4, README.
+- [x] README: one-off `ssh <server> 'japa …'` needs `~/.local/bin/japa` (non-interactive shells stop reading ~/.bashrc before the PATH line).

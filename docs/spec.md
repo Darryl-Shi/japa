@@ -533,6 +533,7 @@ Re-running `install.sh --mode docker [--instance <name>]` on an existing instanc
 
 - **Base image.** It rebuilds `japa-host:<branch>`. If the image changed, it recreates the container with the same name, volumes, network, labels and ports. The volumes are kept.
 - **Ports.** The recorded desktop port and web UI port and address are kept unless their flags are given. A `--desktop-port`, `--webui-port` or `--webui-bind` that differs from the recorded value recreates the container, as does an instance created before the web UI was published (no `japa.webuiPort` label), which gets the defaults.
+- **Host launcher.** It always rewrites the Docker launcher (§5) with this installer's version — `~/.local/bin/japa`, or `japa-docker` when that's the one kept beside a native launcher — so launcher changes reach hosts that only ever upgrade.
 - **japa itself.** It then runs `japa update` inside, exactly as a native re-run does.
 
 ### 4.5 New flags
