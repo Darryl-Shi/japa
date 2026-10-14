@@ -105,6 +105,8 @@ describe.skipIf(process.env.JAPA_SYSBOX_TESTS !== "1")("Docker mode with Sysbox 
   test("the inner Docker works for japa", () => {
     const r = asJapa("docker", "info");
     expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+    // The classic store keeps images and layers in /var/lib/docker, the volume that survives a recreate.
+    expect(asJapa("docker", "info", "--format", "{{.Driver}}").stdout.trim()).toBe("overlay2");
   });
 
   test(

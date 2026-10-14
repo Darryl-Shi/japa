@@ -112,3 +112,19 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 
 - [x] `docker_upgrade` always rewrites the Docker launcher (was: only when missing), so launcher changes (e.g. the WEB UI column) reach upgraded hosts. Tests in install-docker.test.ts; spec §4.4, README.
 - [x] README: one-off `ssh <server> 'japa …'` needs `~/.local/bin/japa` (non-interactive shells stop reading ~/.bashrc before the PATH line).
+
+---
+
+# Progress: inner Docker state survives a recreate; the desktop recovers from lost layers
+
+- Bug: Docker 29 in japa-host defaulted to the containerd image store, so the inner images/layers lived in
+  /var/lib/containerd (the container's writable layer) and were lost on every upgrade recreate, while
+  /var/lib/docker (container records, BuildKit cache) survived: `RWLayer … is unexpectedly nil`, then builds failing on
+  a stale cache.
+- docker/Dockerfile: `/etc/docker/daemon.json` = `{"features":{"containerd-snapshotter":false}}` (classic overlay2,
+  all under the japa-<name>-docker volume). The first upgrade to it rebuilds the desktop image once.
+- extensions/desktop/container.ts: a current container whose `start` fails → `rm -f` and recreate (rebuilding the image
+  if it's gone), telling the CoS (`RECREATED`); a fresh `run` that fails → `rm -f` + `image rm -f` + rebuild; each at
+  most once until the desktop next comes up, then the error is reported as before. A failed build →
+  `builder prune -af` → one retry. The home volume is never touched. Tests in test/desktop-container.test.ts; the gated
+  sysbox e2e checks the inner Driver is overlay2. README (Desktop, Where state lives), docs/spec.md (Docker hosting).

@@ -40,7 +40,8 @@ export function fakeDocker() {
       if (!state.container) return { code: 1, stderr: `Error: No such container: ${args.at(-1)}\n` };
       return { stdout: Buffer.from(`${state.container.running} ${state.container.hash}\n`) };
     }
-    if (command === "image") return { code: state.image ? 0 : 1 };
+    if (command === "image" && sub === "rm") state.image = false;
+    if (command === "image") return { code: state.image || sub === "rm" ? 0 : 1 };
     if (command === "build") {
       await held;
       state.image = true;
@@ -79,6 +80,10 @@ export function fakeDocker() {
     },
     reply(match: (args: string[]) => boolean, result: Partial<ExecResult> | Error) {
       replies.unshift({ match, result });
+    },
+    /** Like `reply`, for the first `times` matching calls only. */
+    replyTimes(times: number, match: (args: string[]) => boolean, result: Partial<ExecResult> | Error) {
+      replies.unshift({ match: (args) => match(args) && times-- > 0, result });
     },
   };
 }

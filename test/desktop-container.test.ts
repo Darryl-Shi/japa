@@ -8,6 +8,7 @@ import {
   desktopContainer,
   dockerCli,
   IMAGE_HASH,
+  RECREATED,
   STARTING,
   UPGRADED,
 } from "../extensions/desktop/container.ts";
@@ -117,16 +118,110 @@ test("without Docker every call says so, and so does the status line", async () 
   expect(denied.desktop.status()).toMatch(/sudo usermod -aG docker \$USER, then restart japa from a new login\)$/);
 });
 
-test("a failed build is reported once, then built again", async () => {
+test("a failed build is retried once on a pruned build cache, then reported once, then built again", async () => {
   const { fake, desktop } = setup();
   fake.state.image = false;
   fake.reply((a) => a[0] === "build", { code: 1, stderr: "#5 ERROR\nE: Unable to locate package nope\n" });
   await expect(desktop.ready(false)).rejects.toThrow(STARTING);
   await vi.waitFor(() =>
     expect(desktop.status()).toBe("The desktop image failed to build: E: Unable to locate package nope"));
+  expect(fake.calls.filter((c) => c[0] === "build" || c[0] === "builder").map((c) => c.slice(0, 3))).toEqual([
+    ["build", "-t", `japa-desktop:${IMAGE_HASH}`], ["builder", "prune", "-af"], ["build", "-t", `japa-desktop:${IMAGE_HASH}`],
+  ]);
   await expect(desktop.ready(false)).rejects.toThrow("The desktop image failed to build: E: Unable to locate package nope");
   await expect(desktop.ready(false)).rejects.toThrow(STARTING);
-  expect(fake.calls.filter((c) => c[0] === "build")).toHaveLength(2);
+  await vi.waitFor(() => expect(fake.calls.filter((c) => c[0] === "build")).toHaveLength(4));
+});
+
+test("a build that fails on a stale build cache succeeds after pruning it", async () => {
+  const { fake, desktop } = setup();
+  fake.state.image = false;
+  fake.replyTimes(1, (a) => a[0] === "build", {
+    code: 1,
+    stderr: "ERROR: failed to extract layer: failed to get reader from content store: content digest sha256:ab not found\n",
+  });
+  await desktop.ready(true);
+  expect(fake.calls.filter((c) => c[0] === "build" || c[0] === "builder").map((c) => c[0])).toEqual(["build", "builder", "build"]);
+  expect(fake.state.container).toMatchObject({ running: true });
+  expect(desktop.status()).toMatch(/^noVNC: /);
+});
+
+/** No call touches the desktop's home volume, other than mounting it in `run`. */
+const keptHome = (calls: string[][]) =>
+  expect(calls.filter((c) => c[0] === "volume" || (c[0] !== "run" && c.join(" ").includes("japa-desktop-home")))).toEqual([]);
+const LAYER_GONE = { code: 1, stderr: "Error response from daemon: RWLayer of container 4f2 is unexpectedly nil\n" };
+
+test("a current container that won't start is removed and recreated on the same volume, and the chief of staff is told", async () => {
+  const { fake, stub, desktop } = setup();
+  await desktop.ready(false);
+  fake.state.container!.running = false;
+  fake.replyTimes(1, (a) => a[0] === "start", LAYER_GONE);
+  fake.calls.length = 0;
+  await desktop.ready(false);
+  expect(fake.calls.map((c) => c[0])).toEqual(["container", "start", "rm", "image", "network", "run", "exec", "exec"]);
+  expect(fake.calls[2]).toEqual(["rm", "-f", "japa-desktop"]);
+  expect(fake.calls.find((c) => c[0] === "run")).toContain("japa-desktop-home:/home/japa");
+  expect(stub.emitted).toEqual([{ key: expect.stringMatching(/^recreate:/), text: RECREATED }]);
+  expect(desktop.status()).toMatch(/^noVNC: /);
+  keptHome(fake.calls);
+
+  // Recovered, so a later breakage is recovered from again.
+  fake.state.container!.running = false;
+  fake.replyTimes(1, (a) => a[0] === "start", LAYER_GONE);
+  await desktop.ready(false);
+  expect(fake.calls.filter((c) => c[0] === "rm")).toHaveLength(2);
+  expect(stub.emitted).toHaveLength(2);
+  expect(stub.emitted[0]!.key).not.toBe(stub.emitted[1]!.key);
+});
+
+test("a container that won't start, whose image is gone too, is removed and recreated from a rebuilt image", async () => {
+  const { fake, desktop } = setup();
+  await desktop.ready(false);
+  fake.state.container!.running = false;
+  fake.state.image = false;
+  fake.replyTimes(1, (a) => a[0] === "start", LAYER_GONE);
+  fake.calls.length = 0;
+  await desktop.ready(true);
+  expect(fake.calls.map((c) => c[0])).toEqual([
+    "container", "start", "rm", "image", "build", "container", "image", "network", "run", "exec", "exec",
+  ]);
+  expect(fake.state.container).toMatchObject({ running: true });
+  keptHome(fake.calls);
+});
+
+test("a new container that won't run has its image removed and rebuilt once", async () => {
+  const { fake, stub, desktop } = setup();
+  fake.replyTimes(1, (a) => a[0] === "run", {
+    code: 1,
+    stderr: "docker: Error response from daemon: failed to get reader from content store: content digest sha256:ab not found\n",
+  });
+  await expect(desktop.ready(false)).rejects.toThrow(STARTING);
+  await desktop.ready(true);
+  expect(fake.calls.map((c) => c.slice(0, 2))).toEqual([
+    ["container", "inspect"], ["image", "inspect"], ["network", "create"], ["run", "-d"],
+    ["rm", "-f"], ["image", "rm"], ["build", "-t"],
+    ["container", "inspect"], ["image", "inspect"], ["network", "create"], ["run", "-d"], ["exec", "-u"], ["exec", "-u"],
+  ]);
+  expect(fake.calls.find((c) => c[0] === "image" && c[1] === "rm")).toEqual(["image", "rm", "-f", `japa-desktop:${IMAGE_HASH}`]);
+  expect(fake.state.container).toMatchObject({ running: true });
+  expect(stub.emitted).toEqual([]); // nothing was lost: there was no container before
+  keptHome(fake.calls);
+});
+
+test("a desktop still failing after its recovery reports the error as before, without rebuilding again", async () => {
+  const { fake, desktop } = setup();
+  await desktop.ready(false);
+  fake.state.container!.running = false;
+  fake.reply((a) => a[0] === "start", LAYER_GONE);
+  fake.reply((a) => a[0] === "run", { code: 125, stderr: "docker: Error response from daemon: port is already allocated\n" });
+  await expect(desktop.ready(true)).rejects.toThrow(
+    "The desktop could not start: docker: Error response from daemon: port is already allocated",
+  );
+  expect(desktop.status()).toBe("The desktop could not start: docker: Error response from daemon: port is already allocated");
+  await expect(desktop.ready(true)).rejects.toThrow("The desktop could not start: docker: Error response from daemon: port is already allocated");
+  expect(fake.calls.filter((c) => c[0] === "build")).toHaveLength(1);
+  expect(fake.calls.filter((c) => c[0] === "image" && c[1] === "rm")).toHaveLength(1);
+  keptHome(fake.calls);
 });
 
 test("a build that can't run is reported, not thrown", async () => {
