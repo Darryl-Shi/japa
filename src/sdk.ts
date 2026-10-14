@@ -70,6 +70,7 @@ export { splitMessage } from "./kernel/messaging/split.ts";
 export type { Job } from "./kernel/jobs/state.ts";
 export type { Change } from "./kernel/changes.ts";
 export type { UpdateCheck, UpdateState } from "./kernel/update-state.ts";
+export { liveness } from "./kernel/update-state.ts";
 export type { ExtensionState } from "./kernel/availability.ts";
 export type { SecretRequest } from "./kernel/secret-requests.ts";
 export type { Authorize, AuthorizeContext, JapaExtension } from "./kernel/extension.ts";

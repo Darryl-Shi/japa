@@ -10,15 +10,15 @@ import {
   type Dispose,
   type JapaExtension,
   type KernelContext,
-  type Status,
   type Surface,
   type SurfaceContext,
   Type,
 } from "japa/sdk";
-import { BRIDGE_KEY, type StatusView, type WebuiBridge } from "./app/src/lib/protocol.ts";
+import { BRIDGE_KEY, type DesktopView, type WebuiBridge } from "./app/src/lib/protocol.ts";
 import { generateToken } from "./auth.ts";
 import { startLive } from "./live.ts";
-import { type Handler, hostPort, pipeline } from "./server.ts";
+import { desktopHandle, desktopProxy, type Handler, hostPort, pipeline } from "./server.ts";
+import { settingsBridge } from "./settings.ts";
 
 export const TOKEN_SECRET = "webui.token";
 const DEFAULT_BIND = "127.0.0.1";
@@ -44,19 +44,15 @@ function reason(error: NodeJS.ErrnoException): string {
   return error.message;
 }
 
-function statusView(s: Status): StatusView {
-  return {
-    ...(s.model && { model: { provider: s.model.provider, modelId: s.model.modelId } }),
-    extensions: s.extensions.map((e) => ({
-      name: e.name,
-      summary: e.summary,
-      provides: e.provides,
-      ...(e.status !== undefined && { status: e.status }),
-      ...(e.state !== undefined && { state: e.state }),
-    })),
-    errors: s.errors.map((e) => ({ name: e.name, error: e.error })),
-  };
+/** The Desktop panel's view: the desktop's state and its VNC password, when the desktop extension is loaded. */
+async function desktopView(): Promise<DesktopView> {
+  const handle = desktopHandle();
+  if (handle === undefined) return { available: false };
+  const { state, text } = handle.status();
+  return { available: true, state, text, password: await handle.password() };
 }
+
+const ACTIVE = new Set(["queued", "running", "needs_input"]);
 
 /** The extension, serving the build in `buildDir` (default ./build; tests point it elsewhere). */
 export function webuiExtension(options: { buildDir?: string } = {}): JapaExtension {
@@ -84,22 +80,35 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     const { handler } = (await import(pathToFileURL(handlerPath).href)) as { handler: Handler };
 
     const live = await startLive(ctx);
+    const settingsApi =
+      ctx.admin === undefined
+        ? undefined
+        : settingsBridge(ctx.admin, ctx, { activeJobs: () => live.snapshot().jobs.filter((j) => ACTIVE.has(j.status)).length });
     const bridge: WebuiBridge = {
       subscribe: (send, close) => live.subscribe(send, close),
       submit: (text, mode, id) => ctx.root.submit(text, mode, { surface: "webui", chat: "web", id }),
       abort: () => ctx.root.abort(),
       fulfil: (requestId, value) => ctx.secrets.fulfil(requestId, value),
       decline: (requestId) => ctx.secrets.decline(requestId),
-      status: () => statusView(ctx.status()),
+      ...(settingsApi && { settings: settingsApi }),
+      desktop: desktopView,
+      startDesktop: () => {
+        const handle = desktopHandle();
+        handle?.start();
+        return handle !== undefined;
+      },
     };
     bridgeSlot[BRIDGE] = bridge;
 
     let bound = port;
-    const server: Server = createServer(
-      pipeline({ bind, hosts, token: async () => (await k.secret(TOKEN_SECRET))?.trim(), handler }),
-    );
+    const token = async () => (await k.secret(TOKEN_SECRET))?.trim();
+    const server: Server = createServer(pipeline({ bind, hosts, token, handler }));
+    const proxy = desktopProxy({ bind, hosts, token });
+    server.on("upgrade", proxy.upgrade);
     const stop = async () => {
       live.close(); // ends every open stream
+      proxy.close(); // and every proxied desktop connection
+      settingsApi?.stop(); // and cancels the sign-ins
       const closed = new Promise((resolve) => server.close(resolve));
       server.closeAllConnections();
       await Promise.all([closed, live.stop()]);

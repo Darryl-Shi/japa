@@ -43,6 +43,8 @@
   --pill: 999px;
 
   --column: 720px;
+  /* The sticky top bar's height (components/TopBar.svelte): the docked Desktop panel sits below it. */
+  --bar-height: calc(3.35rem + 1px);
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
@@ -221,6 +223,180 @@ a:hover {
 .field:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+/* Settings and the Desktop panel: shared pieces (components/settings/*). */
+.set-group {
+  margin: 1.25rem 0 0.5rem;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.set-group:first-child {
+  margin-top: 0.25rem;
+}
+
+.set-card {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.set-row {
+  padding: 0.7rem 0.9rem;
+  min-width: 0;
+}
+
+.set-row + .set-row {
+  border-top: 1px solid var(--border);
+}
+
+.set-row-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  text-align: left;
+}
+
+.set-row-button:hover:not(:disabled) {
+  background: var(--gray-50);
+}
+
+.set-row + .set-row-item,
+.set-row-item + .set-row-item {
+  border-top: 1px solid var(--border);
+}
+
+.set-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.set-name {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.set-muted {
+  margin: 0.15rem 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.set-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.set-pill {
+  flex: none;
+  padding: 0 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--pill);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.set-pill[data-state="on"],
+.set-pill[data-state="connected"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.set-pill[data-state="error"] {
+  border: 1.5px solid var(--text);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.set-pill[data-state="not set up"],
+.set-pill[data-state="paused"] {
+  border-style: dashed;
+}
+
+.set-actions {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.set-form {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.set-form .field {
+  flex: 1 1 12rem;
+  min-width: 0;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.8rem;
+  font-size: var(--text-sm);
+}
+
+.set-form textarea.field {
+  flex-basis: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  resize: vertical;
+}
+
+.set-label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.set-reply {
+  margin: 0.5rem 0 0;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.set-reply[data-error] {
+  border-color: var(--text);
+  font-weight: 500;
+}
+
+.set-empty {
+  margin: 0.25rem 0 1rem;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.set-back {
+  margin: 0 0 0.75rem -0.5rem;
 }
 
 /* Rendered assistant markdown (from lib/markdown.ts). */

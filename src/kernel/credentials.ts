@@ -1,5 +1,38 @@
 import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SecretsStore } from "./contracts.ts";
+import { message } from "./loader.ts";
+
+/** Providers listed first, in this order (setup, Settings); the others follow by name. */
+export const FEATURED = ["anthropic", "openai", "google", "openrouter", "github-copilot", "xai", "zai", "deepseek", "mistral"];
+
+/** Sorts providers as setup lists them: `FEATURED` first, in order, then by name. */
+export function byFeatured<P extends { id: string; name: string }>(providers: readonly P[]): P[] {
+  const rank = (id: string) => (FEATURED.includes(id) ? FEATURED.indexOf(id) : FEATURED.length);
+  return providers.toSorted((a, b) => rank(a.id) - rank(b.id) || a.name.localeCompare(b.name));
+}
+
+/** This install's stable id, for sign-in flows that register the device (`<home>/device-id`). */
+export function deviceId(home: string): string {
+  const file = join(home, "device-id");
+  if (existsSync(file)) return readFileSync(file, "utf8").trim();
+  const id = randomUUID();
+  writeFileSync(file, `${id}\n`);
+  return id;
+}
+
+/** An error's message followed by its causes': pi-ai wraps the provider's own error. */
+export function describe(error: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = error; e !== undefined && parts.length < 4; e = (e as { cause?: unknown }).cause) {
+    const text = message(e);
+    if (text && !parts.includes(text)) parts.push(text);
+    if (!(e instanceof Error)) break;
+  }
+  return parts.join(": ");
+}
 
 const API_KEY = ".apiKey";
 const CREDENTIAL = ".credential";

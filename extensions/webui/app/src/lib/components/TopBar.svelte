@@ -6,15 +6,24 @@
     attached,
     busy,
     activeJobs,
+    desktopOpen,
+    settingsOpen,
+    wide,
     onjobs,
-    onstatus,
+    ondesktop,
+    onsettings,
   }: {
     connection: Connection;
     attached: boolean;
     busy: boolean;
     activeJobs: number;
+    desktopOpen: boolean;
+    settingsOpen: boolean;
+    /** Full width (a docked panel or the Settings page is open), not the chat column. */
+    wide: boolean;
     onjobs: (e: MouseEvent) => void;
-    onstatus: (e: MouseEvent) => void;
+    ondesktop: (e: MouseEvent) => void;
+    onsettings: (e: MouseEvent) => void;
   } = $props();
 
   const indicator = $derived(
@@ -32,7 +41,7 @@
 </script>
 
 <header class="bar">
-  <div class="inner">
+  <div class="inner" class:wide>
     <span class="wordmark">japa</span>
     <p class="status" data-state={indicator} aria-live="polite">
       <span class="dot" aria-hidden="true"></span>
@@ -45,7 +54,24 @@
           <span class="badge"><span class="visually-hidden">(</span>{activeJobs}<span class="visually-hidden"> active)</span></span>
         {/if}
       </button>
-      <button class="btn ghost" type="button" onclick={onstatus} aria-haspopup="dialog">Status</button>
+      <button class="btn ghost" type="button" onclick={ondesktop} aria-expanded={desktopOpen}>Desktop</button>
+      <button class="btn ghost icon" type="button" onclick={onsettings} aria-label="Settings" aria-expanded={settingsOpen}>
+        <svg class="gear" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+          <path
+            d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+          />
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
     </nav>
   </div>
 </header>
@@ -64,10 +90,19 @@
   .inner {
     max-width: calc(var(--column) + 2rem);
     margin: 0 auto;
+    min-height: calc(var(--bar-height) - 1px);
     padding: 0.55rem 1rem;
     display: flex;
     align-items: center;
     gap: 0.75rem;
+  }
+
+  .inner.wide {
+    max-width: none;
+  }
+
+  .gear {
+    display: block;
   }
 
   .wordmark {

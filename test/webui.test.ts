@@ -21,7 +21,7 @@ afterAll(() => void (process.env.JAPA_WEBUI_AUTOSTART = autostart));
 const REAL_BUILD = fileURLToPath(new URL("../extensions/webui/build", import.meta.url));
 const LINE = /^http:\/\/127\.0\.0\.1:(\d+) — sign in with the token in (.+)$/;
 
-/** A stand-in for the app's build: a handler that serves submit, events and status through the bridge. */
+/** A stand-in for the app's build: a handler that serves submit, events and the desktop's view through the bridge. */
 function fakeBuild(): string {
   const dir = mkdtempSync(join(tmpdir(), "japa-webui-build-"));
   writeFileSync(
@@ -41,7 +41,7 @@ function fakeBuild(): string {
     req.on("close", unsubscribe);
     return;
   }
-  if (req.url === "/api/status") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(bridge.status()));
+  if (req.url === "/api/desktop") return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await bridge.desktop()));
   res.end("fake app");
 }
 `,
@@ -77,8 +77,8 @@ test("starts on the configured port, generates a private token, and shows where 
   expect(statSync(join(home, "secrets", "webui.token")).mode & 0o777).toBe(0o600);
   expect(webuiStatus(daemon)).toMatchObject({ summary: "Chat with japa in your browser", state: "on" });
   expect(bootErrors(daemon)).toEqual([]);
-  const status = await fetch(`${base}/api/status`, { headers: { cookie } });
-  expect((await status.json()).extensions.map((e: { name: string }) => e.name)).toContain("webui");
+  const desktop = await fetch(`${base}/api/desktop`, { headers: { cookie } });
+  expect(await desktop.json()).toMatchObject({ available: true, state: "stopped" }); // the packaged desktop, not started
   await daemon.close();
   await expect(fetch(base)).rejects.toThrow();
   expect((globalThis as Record<symbol, unknown>)[Symbol.for(BRIDGE_KEY)]).toBeUndefined();
@@ -202,7 +202,7 @@ test("the bridge subscription sees the CoS's reply", async () => {
 });
 
 test.skipIf(!existsSync(join(REAL_BUILD, "handler.js")))("the real build serves pages with SvelteKit's CSP", async () => {
-  const { daemon, base, cookie } = await bootWebui(REAL_BUILD);
+  const { daemon, base, cookie, port } = await bootWebui(REAL_BUILD);
   const login = await fetch(`${base}/login`);
   expect(login.status).toBe(200);
   expect(login.headers.get("content-type")).toContain("text/html");
@@ -211,5 +211,36 @@ test.skipIf(!existsSync(join(REAL_BUILD, "handler.js")))("the real build serves 
   expect(page.status).toBe(200);
   expect(page.headers.get("content-security-policy")).toMatch(/script-src 'self' 'sha256-/);
   expect(page.headers.get("x-content-type-options")).toBe("nosniff");
+  // The Desktop panel's same-origin websocket, beside 'self'.
+  expect(page.headers.get("content-security-policy")).toMatch(new RegExp(`connect-src 'self' ws://127\\.0\\.0\\.1:${port}(;|$)`));
+  // The Status sheet's endpoint is gone; the desktop's view carries a password, so it's never cached.
+  expect((await fetch(`${base}/api/status`, { headers: { cookie } })).status).toBe(404);
+  const desktop = await fetch(`${base}/api/desktop`, { headers: { cookie } });
+  expect(desktop.status).toBe(200);
+  expect(desktop.headers.get("cache-control")).toBe("no-store");
+  expect((await fetch(`${base}/api/desktop`)).status).toBe(401);
+  await daemon.close();
+});
+
+test.skipIf(!existsSync(join(REAL_BUILD, "handler.js")))("the real build's Settings endpoints: kernel replies, 400s, no-store", async () => {
+  const { daemon, base, cookie, port, home } = await bootWebui(REAL_BUILD);
+  const origin = `http://127.0.0.1:${port}`;
+  const post = (path: string, body: unknown) =>
+    fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin, "content-type": "application/json" }, body: JSON.stringify(body) });
+  const overview = await fetch(`${base}/api/settings/overview`, { headers: { cookie } });
+  expect(overview.headers.get("cache-control")).toBe("no-store");
+  expect((await overview.json()).model).toEqual({ provider: "faux", modelId: "faux-1" });
+  const invalid = await post("/api/settings/set", { path: "jobs.maxConcurrent", value: "lots" });
+  expect(invalid.status).toBe(200);
+  expect((await invalid.json()).reply).toMatch(/^Not changed: /);
+  expect(readFileSync(join(home, "settings.json"), "utf8")).not.toContain("lots");
+  expect((await post("/api/settings/set", { path: "jobs.maxConcurrent", value: 3 })).status).toBe(200);
+  expect((await (await fetch(`${base}/api/settings/values`, { headers: { cookie } })).json()).jobs.maxConcurrent).toBe(3);
+  const bad = await post("/api/settings/set", {});
+  expect(bad.status).toBe(400);
+  expect(await bad.json()).toEqual({ error: "Invalid settings path" });
+  expect((await post("/api/update/start", { to: "not a sha" })).status).toBe(400);
+  expect((await post("/api/signin/nope/answer", { promptId: "p", value: "v" })).status).toBe(404);
+  expect((await fetch(`${base}/api/settings/overview`)).status).toBe(401);
   await daemon.close();
 });

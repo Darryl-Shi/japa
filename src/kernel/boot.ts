@@ -32,6 +32,7 @@ import {
   type Status,
   type StorageAdapter,
 } from "./contracts.ts";
+import { createAdmin } from "./admin.ts";
 import { AUTHORIZE_SUFFIX, connectTool } from "./authorize.ts";
 import { cosExtension, ensureRoot } from "./cos.ts";
 import { secretsCredentialStore } from "./credentials.ts";
@@ -167,7 +168,8 @@ export async function boot(options: BootOptions): Promise<Daemon> {
     const store = storage;
     // Spec §4.4: everything that changes the real repo takes it, one at a time.
     const lock = createWorkspaceLock();
-    const models = createModels({ credentials: secretsCredentialStore(secrets) });
+    const credentials = secretsCredentialStore(secrets);
+    const models = createModels({ credentials });
     const environments = new Map<string, EnvironmentAdapter>();
     const status = (): Status => ({
       model: settings.models.cos!,
@@ -312,6 +314,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               ...(line !== undefined && { status: line }),
               workspace: inWorkspace.has(e.name),
               loaded: true,
+              signIn: e.authorize !== undefined,
               secrets: await Promise.all(asked),
               schema: settingsSchema(e),
               values: structuredClone(settings.extensions[e.name] ?? {}),
@@ -326,6 +329,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
             ...errorOf(name),
             workspace: true,
             loaded: false,
+            signIn: false,
             secrets: [],
             values: {},
           }));
@@ -388,6 +392,24 @@ export async function boot(options: BootOptions): Promise<Daemon> {
       new Promise<string>((resolve, reject) =>
         waiters.set(name, [...(waiters.get(name) ?? []), { resolve, ...(rejectable && { reject }) }]),
       );
+    // The extensions with a sign-in running: Settings' and the `connect` tool's, one at a time each.
+    const signingIn = new Set<string>();
+    const admin = createAdmin({
+      home,
+      settings: () => settings as unknown as JsonObject,
+      models,
+      credentials,
+      messaging,
+      extensions: () => rt.extensions,
+      context: (extension) => kernel(extension),
+      refreshAvailability,
+      signingIn,
+    });
+    /** Whether `extension` is a packaged one: not loaded from the workspace (one given in code counts as packaged). */
+    const packaged = (extension: string) => {
+      const source = sources.get(extension);
+      return source === undefined || dirname(source) !== workspace;
+    };
     const kernel = (extension: string): KernelContext => ({
       home,
       extension,
@@ -467,6 +489,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
           decline,
         },
         status,
+        ...(packaged(extension) && { admin }),
         input: (messages) => {
           const m = status().model!;
           const vision = models.getModel(m.provider, m.modelId)?.input.includes("image") ?? false;
@@ -520,6 +543,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
         report: async (content, requestId) => {
           await root.submit({ type: "input", content, requestId }, ctx);
         },
+        signingIn,
         signal: closing.signal,
       }),
     ];

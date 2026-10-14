@@ -130,7 +130,7 @@ export type ScheduleView = {
 /** A logged change. `detail`: its how-to-use text. */
 export type ChangeView = { id: string; title: string; at: number; detail: string };
 
-/** The last recorded update; `running` as the kernel's liveness says (an interrupted one reads `failed`). */
+/** The last recorded update; `running` as the kernel's liveness says (an interrupted one reads `interrupted`, its summary pointing to the update log). */
 export type UpdateView = {
   last?: {
     state: "running" | "updated" | "up to date" | "failed" | "interrupted";

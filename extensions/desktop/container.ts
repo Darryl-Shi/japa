@@ -17,6 +17,13 @@ export type Desktop = {
   /** Runs `argv` as japa in the container, with `input` on stdin. */
   exec(argv: string[], input?: string): Promise<ExecResult>;
   status(): string;
+  /**
+   * Its state for the web UI's Desktop panel: its image building, a failure (last start or build), up (the last
+   * start succeeded), being started, or not started.
+   */
+  state(): "ready" | "starting" | "building" | "failed" | "stopped";
+  /** The VNC password (the `desktop.vncPassword` secret), generated and stored if unset. */
+  password(): Promise<string>;
   dispose(): void;
 };
 
@@ -68,6 +75,8 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   let failed: string | undefined; // a failed build, not yet reported by `ready`
   let problem: string | undefined;
   let queue: Promise<unknown> = Promise.resolve();
+  let starting = 0; // ready() calls in flight
+  let up = false; // the last bringUp brought the container up
 
   const settings = () => kernel().settings() as { cpus?: number; memory?: string; shm?: string; bind?: string };
   const bind = () => settings().bind ?? "127.0.0.1";
@@ -168,26 +177,27 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
 
   /** Runs `bringUp` after any earlier one finishes. */
   const serialized = () => {
-    const result = queue.then(bringUp);
+    const result = queue.then(bringUp).then(
+      (outcome) => {
+        up = outcome === undefined;
+        return outcome;
+      },
+      (error: unknown) => {
+        up = false;
+        throw error;
+      },
+    );
     queue = result.catch(() => {});
     return result;
   };
 
   return {
     async ready(wait) {
-      for (;;) {
-        if (failed !== undefined) {
-          problem = failed; // a failed build is reported once
-          failed = undefined;
-          throw new Error(problem);
-        }
-        if (building) {
-          if (!wait) throw new Error(STARTING);
-          await building;
-          continue;
-        }
-        if ((await serialized()) !== "build") return;
-        if (!wait) throw new Error(STARTING); // even when the build already ended: the next call reports it
+      starting++;
+      try {
+        await bringUpOrWait(wait);
+      } finally {
+        starting--;
       }
     },
     exec,
@@ -195,6 +205,32 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
       building
         ? BUILDING
         : (failed ?? problem ?? `noVNC: http://${bind()}:${config.vncPort}/vnc.html (password: secret desktop.vncPassword)`),
+    // Up wins over a check in flight: every tool call checks the desktop with ready() first.
+    state: () => {
+      if (building) return "building";
+      if (failed !== undefined || problem !== undefined) return "failed";
+      if (up) return "ready";
+      return starting > 0 ? "starting" : "stopped";
+    },
+    password,
     dispose: () => abort.abort(),
   };
+
+  /** `ready`: brings the container up, waiting for a build when `wait`. */
+  async function bringUpOrWait(wait: boolean): Promise<void> {
+    for (;;) {
+      if (failed !== undefined) {
+        problem = failed; // a failed build is reported once
+        failed = undefined;
+        throw new Error(problem);
+      }
+      if (building) {
+        if (!wait) throw new Error(STARTING);
+        await building;
+        continue;
+      }
+      if ((await serialized()) !== "build") return;
+      if (!wait) throw new Error(STARTING); // even when the build already ended: the next call reports it
+    }
+  }
 }

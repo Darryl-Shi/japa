@@ -17,6 +17,8 @@ export type ConnectDeps = {
   forget: (name: string) => Promise<void>;
   /** Submits `text` to the root as input `requestId`. */
   report: (text: string, requestId: string) => Promise<void>;
+  /** The extensions with a sign-in running, from here or elsewhere (Settings): a flow starts only when absent. */
+  signingIn?: Set<string>;
   /** Aborts when the daemon closes: every pending flow is cancelled, without touching the root again. */
   signal: AbortSignal;
 };
@@ -78,9 +80,11 @@ export function connectTool(deps: ConnectDeps): ToolRegistration {
       if (authorize === undefined) return reply(`${extension} has no sign-in.`);
       const running = flows.get(extension);
       if (running !== undefined) return reply([...running.lines, "Already signing in."].join("\n"));
+      if (deps.signingIn?.has(extension)) return reply("Already signing in.");
 
       const flow = { lines: [] as string[] };
       flows.set(extension, flow);
+      deps.signingIn?.add(extension);
       const controller = new AbortController();
       const cancel = () => controller.abort();
       if (deps.signal.aborted) cancel();
@@ -109,6 +113,7 @@ export function connectTool(deps: ConnectDeps): ToolRegistration {
         deps.signal.removeEventListener("abort", cancel);
         controller.abort(); // withdraws a prompt the flow left open
         flows.delete(extension);
+        deps.signingIn?.delete(extension);
         // Once the tool has replied, the outcome reaches the CoS only this way; not once the daemon has closed.
         if (returned && !deps.signal.aborted) {
           void deps.report(`[${extension}: ${outcome}]`, `authorize:${extension}:${nextId()}`).catch(() => {});

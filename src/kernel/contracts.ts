@@ -99,7 +99,7 @@ export type SurfaceContext = {
   status(): Status;
   /**
    * Changing japa's settings, providers and extensions (see `AdminContext`): set only for the surfaces of packaged
-   * extensions (shipped in japa's checkout); undefined for workspace ones.
+   * extensions (shipped in japa's checkout, or given to `boot` in code); undefined for workspace ones.
    */
   admin?: AdminContext;
   /**
@@ -168,6 +168,8 @@ export type ExtensionInfo = {
   status?: string;
   workspace: boolean;
   loaded: boolean;
+  /** Whether it has an `authorize` hook (a sign-in to the user's account). */
+  signIn: boolean;
   secrets: { name: string; description?: string; set: boolean }[];
   schema?: TSchema;
   values: JsonObject;
