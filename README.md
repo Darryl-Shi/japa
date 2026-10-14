@@ -67,7 +67,9 @@ curl -fsSL https://raw.githubusercontent.com/Darryl-Shi/japa/main/install.sh | s
 Install clones japa into `~/.local/share/japa/app`, downloads a private Node.js if your system doesn't have Node 24 or
 newer (with npm), puts a `japa` launcher in `~/.local/bin`, and runs `japa setup` (see First run below). If
 `~/.local/bin` isn't on your PATH yet, it adds it in your shell's rc file (`~/.bashrc`, `~/.zshrc` or
-`~/.config/fish/config.fish`, from `$SHELL`) and prints "open a new shell or run: export PATH=...". Setup needs a
+`~/.config/fish/config.fish`, from `$SHELL`) and prints "open a new shell or run: export PATH=...". That covers
+interactive shells only: a one-off `ssh <server> 'japa …'` runs a non-interactive shell, which (on Debian and Ubuntu)
+stops reading `~/.bashrc` before that line, so use the full path there: `ssh <server> '~/.local/bin/japa …'`. Setup needs a
 terminal: without one (e.g. in CI) the installer skips it and tells you to run `japa setup` to finish.
 Runs on Linux only, x64 or arm64 (WSL works); needs `git`, `tar`, and `curl` or `wget` — a missing
 one is named, along with how to install it. Jobs also need bubblewrap (`sudo apt install bubblewrap`): `japa setup`
@@ -115,8 +117,8 @@ nothing that existed before.
 Re-running the installer for an existing instance (`--instance <name>`, or the default) upgrades it: it rebuilds
 `japa-host:<branch>` and, if the image, branch, `--desktop-port`, `--webui-port` or `--webui-bind` changed (or the
 instance predates the web UI's publish), recreates `japa-<name>` with the same name, volumes, network, labels and
-ports — the volumes and everything in them are kept — then runs `japa update`
-inside, as a native re-run does. It stays on the instance's branch unless you pass `--branch`. It also brings back an
+ports — the volumes and everything in them are kept — rewrites the host launcher with the current one, then runs
+`japa update` inside, as a native re-run does. It stays on the instance's branch unless you pass `--branch`. It also brings back an
 instance removed with `japa uninstall` (its volumes were kept).
 
 Run it again with `--mode docker --instance <another name>` for each further instance (one per tenant, say): each
