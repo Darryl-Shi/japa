@@ -241,6 +241,16 @@ test("a job's spec has the daemon's Node dir and its lib/node read-only, by real
 
 describe.skipIf(NO_BWRAP)("a job's sandbox", () => {
   // The daemon's PATH starts with it; outside the app dir (nvm, a dev checkout), it would be writable otherwise.
+  test("a job can't read the web UI's users file", async () => {
+    const { home, user, sandboxes } = setup();
+    mkdirSync(join(home, "webui"), { mode: 0o700 });
+    writeFileSync(join(home, "webui", "users.json"), '{"users":["hash-1"]}', { mode: 0o600 });
+    const out = join(user, "out");
+    const script = `{ cat "${home}/webui/users.json"; ls -A "${home}/webui"; echo end; } > "${out}" 2>/dev/null`;
+    expect((await sandboxes.env("c", "1").exec(script, undefined, ctx)).ok).toBe(true);
+    expect(readFileSync(out, "utf8")).toBe("end\n");
+  });
+
   test("a job can't create files in the daemon's Node dir", async () => {
     const { outside, node, sandboxes } = setup({ node: true });
     expect(sandboxes.spec("1").readOnly).toContainEqual({ path: node, dir: true });

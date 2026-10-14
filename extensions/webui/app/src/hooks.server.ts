@@ -1,5 +1,5 @@
 import type { Handle } from "@sveltejs/kit";
-import { BRIDGE_KEY, type WebuiBridge } from "$lib/protocol";
+import { BRIDGE_KEY, REQUEST_KEY, type WebuiBridge, type WebuiRequest } from "$lib/protocol";
 
 // The surface sets the bridge on every start(), so a reload rebinds it; read it per request.
 export const handle: Handle = async ({ event, resolve }) => {
@@ -11,5 +11,11 @@ export const handle: Handle = async ({ event, resolve }) => {
     });
   }
   event.locals.webui = bridge;
+  // What the surface's session gate found for this request (adapter-node's platform carries the Node request).
+  const info = (event.platform?.req as unknown as Record<symbol, WebuiRequest | undefined> | undefined)?.[
+    Symbol.for(REQUEST_KEY)
+  ];
+  event.locals.user = info?.user;
+  event.locals.users = info?.users ?? "some";
   return resolve(event);
 };

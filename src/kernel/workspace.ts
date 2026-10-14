@@ -35,6 +35,7 @@ const IGNORED = [
   "setup.json",
   "update.json*",
   "/.jobs/",
+  "/webui/",
 ];
 
 /**

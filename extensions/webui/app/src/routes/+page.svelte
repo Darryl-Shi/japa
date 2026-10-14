@@ -8,6 +8,9 @@
   import SecretCard from "$lib/components/SecretCard.svelte";
   import JobsPanel from "$lib/components/JobsPanel.svelte";
   import StatusSheet from "$lib/components/StatusSheet.svelte";
+  import type { PageProps } from "./$types";
+
+  let { data }: PageProps = $props();
 
   const live = new Live();
   $effect(() => live.start());
@@ -37,6 +40,7 @@
   attached={live.attached}
   busy={live.busy}
   {activeJobs}
+  user={data.user}
   onjobs={() => (sheet = "jobs")}
   onstatus={() => (sheet = "status")}
 />

@@ -447,7 +447,7 @@ test("an older workspace's .gitignore gets the anchored lines appended, its own 
   ensureWorkspace(home);
   const text = readFileSync(join(home, ".gitignore"), "utf8");
   expect(text.startsWith(old)).toBe(true);
-  for (const line of ["/secrets", "/attachments/", "/logs/", "/outbox/", "/.jobs/", "/.cache/"]) {
+  for (const line of ["/secrets", "/attachments/", "/logs/", "/outbox/", "/.jobs/", "/.cache/", "/webui/"]) {
     expect(text.split("\n").filter((l) => l === line)).toHaveLength(1);
   }
   expect(text.split("\n").filter((l) => l === "/desktop/")).toHaveLength(1);

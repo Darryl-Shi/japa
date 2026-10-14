@@ -6,6 +6,7 @@
     attached,
     busy,
     activeJobs,
+    user,
     onjobs,
     onstatus,
   }: {
@@ -13,6 +14,8 @@
     attached: boolean;
     busy: boolean;
     activeJobs: number;
+    /** The signed-in user's name. */
+    user: string;
     onjobs: (e: MouseEvent) => void;
     onstatus: (e: MouseEvent) => void;
   } = $props();
@@ -47,6 +50,12 @@
       </button>
       <button class="btn ghost" type="button" onclick={onstatus} aria-haspopup="dialog">Status</button>
     </nav>
+    <form class="account" method="POST" action="/logout">
+      {#if user}
+        <span class="user" title="Signed in as {user}"><span class="visually-hidden">Signed in as </span>{user}</span>
+      {/if}
+      <button class="btn ghost" type="submit">Sign out</button>
+    </form>
   </div>
 </header>
 
@@ -123,6 +132,30 @@
     margin-left: auto;
     display: flex;
     gap: 0.25rem;
+  }
+
+  .account {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--border);
+  }
+
+  .user {
+    max-width: 8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 480px) {
+    .user {
+      display: none;
+    }
   }
 
   .badge {
