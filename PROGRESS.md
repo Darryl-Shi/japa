@@ -1,3 +1,15 @@
+# Progress — Web UI section in `japa setup` (run-mv82d2v6-spil)
+
+- [x] `src/cli/webui-step.ts` (overview, select loop, bind/port/hosts/on-off/reset, validated writes) + rerun menu item
+- [x] `test/setup-webui.test.ts` (fake prompter, injected `SetupOptions.interfaces`)
+- [x] README (setup paragraph, rerun menu, Web UI Settings bullet), docs/spec.md (new spec + webui §2.3 note), AGENTS.md map
+
+Decisions: unchanged values write nothing; Reset and the 0.0.0.0 warning default to No; addresses labelled by IP
+with the interface (or "Tailscale (<iface>)") as hint; empty `{}` left after removing the last key. No CI workflow
+(none in the repo; not asked for).
+
+---
+
 # Progress — webui (run-mv45hubi-rq4k)
 
 - [x] Deps: kit 2.70 + adapter-node 5 + svelte 5 + vite 8 + svelte-check; typescript 6 + @typescript/native (7). cookie override ^0.7.2 (audit clean).
