@@ -1,19 +1,12 @@
 <script lang="ts">
   import type { JobStatus, JobView } from "$lib/protocol";
   import Sheet from "./Sheet.svelte";
+  import StatusPill from "./StatusPill.svelte";
 
   let { jobs, onclose }: { jobs: JobView[]; onclose: () => void } = $props();
 
   const ACTIVE: ReadonlySet<JobStatus> = new Set(["queued", "running", "needs_input"]);
   const ORDER: Record<JobStatus, number> = { needs_input: 0, running: 1, queued: 2, done: 3, failed: 3, cancelled: 3 };
-  const LABEL: Record<JobStatus, string> = {
-    queued: "queued",
-    running: "running",
-    needs_input: "needs input",
-    done: "done",
-    failed: "failed",
-    cancelled: "cancelled",
-  };
   const RECENT = 20;
 
   const active = $derived(
@@ -51,7 +44,7 @@
     >
       <span class="top">
         <span class="id">{job.id}</span>
-        <span class="pill" data-status={job.status}>{LABEL[job.status]}</span>
+        <span class="status"><StatusPill status={job.status} /></span>
       </span>
       <span class="title">{job.title}</span>
       {#if line}
@@ -177,49 +170,10 @@
     white-space: nowrap;
   }
 
-  .pill {
+  .status {
     margin-left: auto;
     flex: none;
-    padding: 0.05rem 0.55rem;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--pill);
-    font-size: var(--text-xs);
-    font-weight: 500;
-    line-height: 1.5;
-    color: var(--text-muted);
-  }
-
-  .pill[data-status="running"] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-text);
-  }
-
-  .pill[data-status="needs_input"] {
-    border: 1.5px solid var(--text);
-    color: var(--text);
-    font-weight: 600;
-  }
-
-  .pill[data-status="queued"] {
-    border-style: dashed;
-  }
-
-  .pill[data-status="done"] {
-    background: var(--gray-100);
-    border-color: transparent;
-  }
-
-  .pill[data-status="failed"] {
-    color: var(--text);
-    font-weight: 700;
-    text-decoration: line-through;
-  }
-
-  .pill[data-status="cancelled"] {
-    border-color: transparent;
-    color: var(--text-faint);
-    text-decoration: line-through;
+    display: flex;
   }
 
   .job[data-status="needs_input"] {

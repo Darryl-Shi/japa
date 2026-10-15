@@ -14,7 +14,11 @@ async function start(ctx: SurfaceContext) {
     const handle = async (m: ClientMessage | undefined) => {
       switch (m?.type) {
         case "attach": {
-          streams.push(await ctx.root.events((events) => writeMessage(socket, { type: "events", events: [...events] })));
+          streams.push(
+            await ctx.root.events((events, sources) =>
+              writeMessage(socket, { type: "events", events: [...events], sources: [...sources] }),
+            ),
+          );
           streams.push(await ctx.jobs((jobs) => writeMessage(socket, { type: "jobs", jobs })));
           streams.push(await ctx.secrets.pending((pending) => writeMessage(socket, { type: "secrets", pending })));
           break;
