@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createServer, request, type Server } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { afterEach, beforeAll, expect, test } from "vitest";
@@ -13,7 +14,8 @@ import {
 import { DEFAULT_CSP, type Handler, pipeline } from "../extensions/webui/server.ts";
 import { hashPassword, newStamp, type UsersResult, type WebuiUser } from "../extensions/webui/users.ts";
 
-const KEY = "session-key-0123456789abcdefghijklmnopqrstuv";
+/** A session key made per run: no key-like literal in the source. */
+const KEY = randomBytes(32).toString("base64url");
 const ALICE_PW = "alice-password";
 const BOB_PW = "bob-password-2";
 let alice: WebuiUser;

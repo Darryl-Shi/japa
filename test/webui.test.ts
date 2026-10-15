@@ -1,5 +1,6 @@
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import type { AgentEvent } from "@earendil-works/pi-durable";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
@@ -194,13 +195,14 @@ test("a leftover webui.token is ignored and left alone", async () => {
 });
 
 test("an existing session key is kept", async () => {
+  const ownKey = randomBytes(24).toString("base64url");
   const { daemon, home } = await bootTest(
     { extensions: { webui: { port: 0 } } },
     [webuiExtension({ buildDir: fakeBuild() })],
     undefined,
-    { "webui.session-key": "my-own-session-key-0123456789abcdef" },
+    { "webui.session-key": ownKey },
   );
-  expect(readFileSync(join(home, "secrets", "webui.session-key"), "utf8")).toBe("my-own-session-key-0123456789abcdef");
+  expect(readFileSync(join(home, "secrets", "webui.session-key"), "utf8")).toBe(ownKey);
   await daemon.close();
 });
 
