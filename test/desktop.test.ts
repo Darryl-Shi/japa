@@ -108,7 +108,7 @@ test("setup publishes the desktop view handle for the web UI, and dispose clears
   const handle = viewHandle()!;
   expect(handle).toBeDefined();
   expect(handle.target()).toEqual({ host: "127.0.0.1", port: 6080 }); // 0.0.0.0 is reached on loopback
-  expect(handle.status()).toEqual({ state: "stopped", text: expect.stringContaining("noVNC: http://0.0.0.0:6080") });
+  expect(handle.status()).toEqual({ state: "stopped", text: "The desktop isn't running." });
   const password = await handle.password();
   expect(password).toMatch(/^[A-Za-z0-9]{16}$/);
   expect(await handle.password()).toBe(password); // generated once, then the stored secret

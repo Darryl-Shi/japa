@@ -66,7 +66,12 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
           return { host, port: config.vncPort };
         },
         password: () => desktop.password(),
-        status: () => ({ state: desktop.state(), text: desktop.status() }),
+        status: () => {
+          const state = desktop.state();
+          const text =
+            state === "stopped" ? "The desktop isn't running." : state === "starting" ? "Starting the desktop…" : desktop.status();
+          return { state, text };
+        },
         start: () => void desktop.ready(true).catch(() => {}),
       };
       viewSlot[DESKTOP_VIEW] = view;
