@@ -52,7 +52,7 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   `webui-step.ts` = the Web UI section), service, update (rollback on failed steps: node, dependencies,
   build, validation)
 - `src/kernel/` — the daemon: `boot.ts` (wires everything), `contracts.ts` (the extension contracts, exported via
-  `src/sdk.ts` as `japa/sdk`), `cos.ts` + `identity.md` (the CoS agent), `replies.ts` (reply stream),
+  `src/sdk.ts` as `japa/sdk`), `cos.ts` + `identity.md` (the CoS agent), `replies.ts` (reply stream), `origin.ts` + `sources.ts` (input origins; `InputSource` of root user entries for `root.events`),
   `send-file.ts` (the CoS's `send_file` tool), `files.ts` (sizes/MIME helpers), `messaging/` (the kernel side of
   chat platforms: routing, merging, menus, secret prompts, `attachments.ts` = inbound file conversion incl. PDF text),
   `jobs/` (background jobs), `sandbox/` (bwrap job sandboxes; mounts `attachments/` read-only, `outbox/` and
