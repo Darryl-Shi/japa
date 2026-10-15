@@ -1,7 +1,10 @@
 // The request pipeline in front of the SvelteKit app: host and origin checks, security headers, sign-in.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { isIP } from "node:net";
-import { sessionCookie, tokenMatches, validSession } from "./auth.ts";
+import { connect, isIP, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
+import { API, DESKTOP_VIEW_KEY, type DesktopViewHandle, REQUEST_KEY, type WebuiRequest } from "./app/src/lib/protocol.ts";
+import { clearedCookie, dummyHash, sessionCookie, sessionUser, Throttle } from "./auth.ts";
+import { type UsersResult, verifyPassword } from "./users.ts";
 
 /** adapter-node's `handler`. */
 export type Handler = (req: IncomingMessage, res: ServerResponse, next?: () => void) => void;
@@ -11,8 +14,10 @@ export type PipelineDeps = {
   bind: string;
   /** Extra DNS names accepted as the Host (setting `hosts`), on any port. */
   hosts?: readonly string[];
-  /** The current access token, read per request. */
-  token(): Promise<string | undefined>;
+  /** The web UI users, read per request (the store caches by mtime). */
+  users(): Promise<UsersResult>;
+  /** The session key, read per request. */
+  sessionKey(): Promise<string | undefined>;
   handler: Handler;
   now?(): number;
 };
@@ -50,6 +55,9 @@ export function acceptedHost(host: string, bind: string, extra: readonly string[
 /** The request listener. */
 export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: ServerResponse) => void {
   const now = deps.now ?? Date.now;
+  const throttle = new Throttle();
+  // Made now, so the first unknown-name sign-in costs one scrypt like any other.
+  void dummyHash();
   return (req, res) => {
     handle(req, res).catch(() => {
       if (!res.headersSent) send(res, 500, "Internal error");
@@ -74,32 +82,51 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
 
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname.replace(/^\/{2,}/, "/");
-    const token = await deps.token();
-
-    const given = url.searchParams.get("token");
-    if (given !== null) {
-      if (!tokenMatches(given, token)) return redirect(res, "/login?error=1");
-      url.searchParams.delete("token");
-      res.setHeader("Set-Cookie", sessionCookie(token!, now()));
-      return redirect(res, path + (url.search === "?" ? "" : url.search));
-    }
+    const key = await deps.sessionKey();
+    const users = await deps.users();
+    const list = users.ok ? users.users : [];
 
     if (path === "/login" && method === "POST") {
+      const address = req.socket.remoteAddress ?? "";
+      // Reserved before the (slow) check, so parallel guesses can't get past the limit.
+      if (!throttle.reserve(address, now())) {
+        res.setHeader("Retry-After", "60");
+        return send(res, 429, "Too many failed sign-ins: try again in a minute");
+      }
       const body = await readBody(req, LOGIN_BODY_LIMIT);
       if (body === undefined) return send(res, 413, "Too large");
-      if (!tokenMatches(new URLSearchParams(body).get("token") ?? "", token)) return redirect(res, "/login?error=1");
-      res.setHeader("Set-Cookie", sessionCookie(token!, now()));
+      const form = new URLSearchParams(body);
+      const name = (form.get("username") ?? "").trim().toLowerCase();
+      const password = form.get("password") ?? "";
+      const user = list.find((u) => u.name === name);
+      // An unknown name is checked against a dummy hash, so the time taken doesn't tell which names exist.
+      const matches = await verifyPassword(password, user?.password ?? (await dummyHash()));
+      if (!matches || user === undefined || key === undefined || key === "") {
+        return redirect(res, "/login?error=1");
+      }
+      throttle.clear(address);
+      res.setHeader("Set-Cookie", sessionCookie(key, user, now()));
       return redirect(res, "/");
     }
 
-    const signedIn = validSession(req.headers.cookie, token, now());
+    const signedIn = sessionUser(req.headers.cookie, key, list, now());
+    const info: WebuiRequest = {
+      ...(signedIn !== undefined && { user: signedIn }),
+      users: !users.ok ? "unreadable" : list.length === 0 ? "none" : "some",
+    };
+    (req as unknown as Record<symbol, WebuiRequest>)[Symbol.for(REQUEST_KEY)] = info;
     if (path === "/login" && (method === "GET" || method === "HEAD")) {
-      return signedIn ? redirect(res, "/") : deps.handler(req, res, () => send(res, 404, "Not found"));
+      return signedIn !== undefined ? redirect(res, "/") : deps.handler(req, res, () => send(res, 404, "Not found"));
     }
     const isPublic = path.startsWith("/_app/") || PUBLIC.includes(path);
-    if (!signedIn && !isPublic) {
+    if (signedIn === undefined && !isPublic) {
       if (path === "/api" || path.startsWith("/api/")) return json(res, 401, { error: "Not signed in" });
       return method === "GET" || method === "HEAD" ? redirect(res, "/login") : send(res, 401, "Not signed in");
+    }
+    if (path === "/logout" && method === "POST") {
+      // Sessions are stateless: this clears this browser's cookie only.
+      res.setHeader("Set-Cookie", clearedCookie());
+      return redirect(res, "/login");
     }
     deps.handler(req, res, () => send(res, 404, "Not found"));
   }
@@ -145,4 +172,123 @@ async function readBody(req: IncomingMessage, limit: number): Promise<string | u
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+/** The desktop extension's view handle, read per use: undefined while the desktop isn't loaded or is turned off. */
+export function desktopHandle(): DesktopViewHandle | undefined {
+  const handle = (globalThis as Record<symbol, DesktopViewHandle | undefined>)[Symbol.for(DESKTOP_VIEW_KEY)];
+  // Turned off, it stays loaded (only hidden from the CoS): the panel, Start and the websocket treat it as absent.
+  return handle !== undefined && handle.enabled() ? handle : undefined;
+}
+
+export type ProxyDeps = Omit<PipelineDeps, "handler"> & {
+  desktop?(): DesktopViewHandle | undefined;
+  /** How often open connections' sessions are rechecked (default 30 s). */
+  recheckMs?: number;
+};
+
+/** Request headers not passed on to websockify: the session cookie and browser context stay here. */
+const DROPPED = new Set(["host", "cookie", "origin", "referer", "authorization"]);
+
+/**
+ * The server's `upgrade` listener: the Desktop panel's websocket (`/api/desktop/ws`), proxied byte for byte to the
+ * desktop's websockify once the Host, the Origin (the same origin: cross-site websocket hijacking) and the session
+ * cookie check out. `close()` ends every proxied connection (the surface stopping).
+ */
+export function desktopProxy(deps: ProxyDeps): {
+  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+  close(): void;
+  /** How many proxied connections are open (tests). */
+  readonly open: number;
+} {
+  const now = deps.now ?? Date.now;
+  const desktop = deps.desktop ?? desktopHandle;
+  /** Each proxied connection's teardown. */
+  const connections = new Set<() => void>();
+  /**
+   * Each open connection's session cookie: rechecked, so an expiry, a new password or a removed user (or a new
+   * session key) ends it.
+   */
+  const sessions = new Map<() => void, string | undefined>();
+  const recheck = setInterval(async () => {
+    if (sessions.size === 0) return;
+    for (const [teardown, cookie] of sessions) if ((await signedIn(cookie)) === undefined) teardown();
+  }, deps.recheckMs ?? 30_000);
+  recheck.unref();
+  let closed = false;
+
+  /** The user `cookies` carries a valid session of, read against the current users and session key. */
+  async function signedIn(cookies: string | undefined): Promise<string | undefined> {
+    try {
+      const [key, users] = await Promise.all([deps.sessionKey(), deps.users()]);
+      return sessionUser(cookies, key, users.ok ? users.users : [], now());
+    } catch {
+      return undefined;
+    }
+  }
+
+  function refuse(socket: Duplex, status: string) {
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    setTimeout(() => socket.destroy(), 1000).unref();
+  }
+
+  async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
+    socket.on("error", () => socket.destroy());
+    const path = new URL(req.url ?? "/", "http://localhost").pathname.replace(/^\/{2,}/, "/");
+    const host = req.headers.host?.toLowerCase();
+    if (host === undefined || !acceptedHost(host, deps.bind, deps.hosts)) return refuse(socket, "403 Forbidden");
+    if (path !== API.desktopWs) return refuse(socket, "404 Not Found");
+    if (req.headers.origin?.toLowerCase() !== `http://${host}`) return refuse(socket, "403 Forbidden");
+    if ((await signedIn(req.headers.cookie)) === undefined) return refuse(socket, "401 Unauthorized");
+    if ((req.headers.upgrade ?? "").toLowerCase() !== "websocket") return refuse(socket, "400 Bad Request");
+    const handle = desktop();
+    if (handle === undefined) return refuse(socket, "503 Service Unavailable");
+    if (closed || socket.destroyed) return socket.destroy();
+
+    const target = handle.target();
+    const lines = [`GET /websockify HTTP/1.1`, `Host: ${hostPort(target.host, target.port)}`];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (!DROPPED.has(req.rawHeaders[i]!.toLowerCase())) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    }
+    const upstream: Socket = connect(target.port, target.host);
+    let connected = false;
+    const teardown = () => {
+      connections.delete(teardown);
+      sessions.delete(teardown);
+      socket.destroy();
+      upstream.destroy();
+    };
+    connections.add(teardown);
+    sessions.set(teardown, req.headers.cookie);
+    upstream.on("error", () => {
+      if (connected || socket.destroyed) return teardown();
+      connections.delete(teardown);
+      refuse(socket, "502 Bad Gateway");
+    });
+    upstream.once("connect", () => {
+      connected = true;
+      upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+      if (head.length > 0) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    socket.on("close", teardown);
+    upstream.on("close", () => {
+      if (connected) teardown();
+    });
+  }
+
+  return {
+    upgrade(req, socket, head) {
+      upgrade(req, socket, head).catch(() => socket.destroy());
+    },
+    close() {
+      closed = true;
+      clearInterval(recheck);
+      for (const teardown of [...connections]) teardown();
+    },
+    get open() {
+      return connections.size;
+    },
+  };
 }

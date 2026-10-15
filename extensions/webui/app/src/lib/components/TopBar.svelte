@@ -6,15 +6,27 @@
     attached,
     busy,
     activeJobs,
+    desktopOpen,
+    settingsOpen,
+    wide,
+    user,
     onjobs,
-    onstatus,
+    ondesktop,
+    onsettings,
   }: {
     connection: Connection;
     attached: boolean;
     busy: boolean;
     activeJobs: number;
+    desktopOpen: boolean;
+    settingsOpen: boolean;
+    /** Full width (a docked panel or the Settings page is open), not the chat column. */
+    wide: boolean;
+    /** The signed-in user's name. */
+    user: string;
     onjobs: (e: MouseEvent) => void;
-    onstatus: (e: MouseEvent) => void;
+    ondesktop: (e: MouseEvent) => void;
+    onsettings: (e: MouseEvent) => void;
   } = $props();
 
   const indicator = $derived(
@@ -32,7 +44,7 @@
 </script>
 
 <header class="bar">
-  <div class="inner">
+  <div class="inner" class:wide>
     <span class="wordmark">japa</span>
     <p class="status" data-state={indicator} aria-live="polite">
       <span class="dot" aria-hidden="true"></span>
@@ -45,8 +57,31 @@
           <span class="badge"><span class="visually-hidden">(</span>{activeJobs}<span class="visually-hidden"> active)</span></span>
         {/if}
       </button>
-      <button class="btn ghost" type="button" onclick={onstatus} aria-haspopup="dialog">Status</button>
+      <button class="btn ghost" type="button" onclick={ondesktop} aria-expanded={desktopOpen}>Desktop</button>
+      <button class="btn ghost icon" type="button" onclick={onsettings} aria-label="Settings" aria-expanded={settingsOpen}>
+        <svg class="gear" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+          <path
+            d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+          />
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
     </nav>
+    <form class="account" method="POST" action="/logout">
+      {#if user}
+        <span class="user" title="Signed in as {user}"><span class="visually-hidden">Signed in as </span>{user}</span>
+      {/if}
+      <button class="btn ghost" type="submit">Sign out</button>
+    </form>
   </div>
 </header>
 
@@ -64,10 +99,19 @@
   .inner {
     max-width: calc(var(--column) + 2rem);
     margin: 0 auto;
+    min-height: calc(var(--bar-height) - 1px);
     padding: 0.55rem 1rem;
     display: flex;
     align-items: center;
     gap: 0.75rem;
+  }
+
+  .inner.wide {
+    max-width: none;
+  }
+
+  .gear {
+    display: block;
   }
 
   .wordmark {
@@ -87,6 +131,9 @@
   }
 
   .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -123,6 +170,52 @@
     margin-left: auto;
     display: flex;
     gap: 0.25rem;
+  }
+
+  .account {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--border);
+  }
+
+  .user {
+    max-width: 8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  /* A phone: the account (who's signed in, Sign out) takes a second row, so the bar never overflows. */
+  @media (max-width: 560px) {
+    .inner {
+      flex-wrap: wrap;
+      gap: 0.35rem 0.5rem;
+      padding-inline: 0.75rem;
+    }
+
+    .actions {
+      gap: 0;
+    }
+
+    .account {
+      flex-basis: 100%;
+      justify-content: space-between;
+      padding-left: 0;
+      padding-top: 0.35rem;
+      border-left: none;
+      border-top: 1px solid var(--border);
+    }
+
+    .user {
+      max-width: none;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
   }
 
   .badge {

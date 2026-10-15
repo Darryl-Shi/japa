@@ -30,6 +30,8 @@
     // Track everything that grows the transcript.
     void [lines.length, streamingHtml, pending.length, busy];
     if (!follow) return;
+    // Hidden behind the Settings page: leave the page's scroll alone.
+    if (document.getElementById("main")?.offsetParent === null) return;
     requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
   });
 

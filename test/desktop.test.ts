@@ -1,11 +1,14 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "vitest";
 import { OMITTED, recentImagesOnly } from "../extensions/desktop/images.ts";
-import { desktopExtension } from "../extensions/desktop/index.ts";
+import { desktopContainer } from "../extensions/desktop/container.ts";
+import { DESKTOP_VIEW, type DesktopViewHandle, desktopExtension } from "../extensions/desktop/index.ts";
 import { LockDoc } from "../extensions/desktop/lock.ts";
-import { fakeDocker, testConfig } from "./desktop-helpers.ts";
+import { fakeDocker, stubKernel, testConfig } from "./desktop-helpers.ts";
 import { bootErrors, bootTest, NO_BWRAP, waitFor } from "./helpers.ts";
 import { ask, call, reported, say, script } from "./jobs-helpers.ts";
 
@@ -93,4 +96,91 @@ test.skipIf(NO_BWRAP)("a job outside the container can act on the desktop", asyn
   expect(fake.calls).toContainEqual(["exec", "-u", "japa", "japa-desktop", "xdotool", "mousemove", "1", "2"]);
   expect(await daemon.harness.snapshot(LockDoc, ROOT_CONVERSATION_ID, ctx)).toEqual({ job: "1" });
   await daemon.close();
+});
+
+const viewHandle = () => (globalThis as Record<symbol, DesktopViewHandle | undefined>)[DESKTOP_VIEW];
+
+test("setup publishes the desktop view handle for the web UI, and dispose clears it", async () => {
+  const fake = fakeDocker();
+  const { daemon, home } = await bootTest({ extensions: { desktop: { bind: "0.0.0.0", autostart: false } } }, [
+    desktopExtension(testConfig(fake.docker)),
+  ]);
+  const handle = viewHandle()!;
+  expect(handle).toBeDefined();
+  expect(handle.target()).toEqual({ host: "127.0.0.1", port: 6080 }); // 0.0.0.0 is reached on loopback
+  expect(handle.status()).toEqual({ state: "stopped", text: "The desktop isn't running." });
+  const password = await handle.password();
+  expect(password).toMatch(/^[A-Za-z0-9]{16}$/);
+  expect(await handle.password()).toBe(password); // generated once, then the stored secret
+  expect(readFileSync(join(home, "secrets", "desktop.vncPassword"), "utf8").trim()).toBe(password);
+  handle.start();
+  await waitFor(() => fake.state.container?.running === true);
+  await waitFor(() => handle.status().state === "ready");
+  await daemon.close();
+  expect(viewHandle()).toBeUndefined();
+});
+
+test("the handle's target is the bind address, 127.0.0.1 when unset; dispose leaves a newer handle alone", async () => {
+  const { daemon } = await bootTest({ extensions: { desktop: { bind: "100.64.0.7", autostart: false } } }, [
+    desktopExtension(testConfig(fakeDocker().docker)),
+  ]);
+  expect(viewHandle()!.target()).toEqual({ host: "100.64.0.7", port: 6080 });
+  const other: DesktopViewHandle = { target: () => ({ host: "x", port: 1 }), password: async () => "", status: () => ({ state: "stopped", text: "" }), start: () => {}, enabled: () => true };
+  (globalThis as Record<symbol, unknown>)[DESKTOP_VIEW] = other;
+  await daemon.close();
+  expect(viewHandle()).toBe(other);
+  delete (globalThis as Record<symbol, unknown>)[DESKTOP_VIEW];
+
+  const { daemon: d2 } = await bootTest({ extensions: { desktop: { autostart: false } } }, [desktopExtension(testConfig(fakeDocker().docker))]);
+  expect(viewHandle()!.target()).toEqual({ host: "127.0.0.1", port: 6080 });
+  await d2.close();
+});
+
+test("turned off, the handle says so and start() starts nothing", async () => {
+  const fake = fakeDocker();
+  const { daemon } = await bootTest({ extensions: { desktop: { enabled: false, autostart: false } } }, [
+    desktopExtension(testConfig(fake.docker)),
+  ]);
+  const handle = viewHandle()!;
+  expect(handle.enabled()).toBe(false);
+  handle.start();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(fake.calls).toEqual([]);
+  expect(handle.status().state).toBe("stopped");
+  await daemon.close();
+});
+
+test("the desktop's state: stopped, building, starting, ready, failed", async () => {
+  const fake = fakeDocker();
+  fake.state.image = false;
+  const release = fake.holdBuild();
+  const { kernel } = stubKernel();
+  const desktop = desktopContainer(testConfig(fake.docker), () => kernel);
+  expect(desktop.state()).toBe("stopped");
+  const ready = desktop.ready(true);
+  await waitFor(() => desktop.state() === "building");
+  release();
+  await ready;
+  expect(desktop.state()).toBe("ready");
+
+  const slow = fakeDocker();
+  let go!: () => void;
+  const gate = new Promise<void>((resolve) => (go = resolve));
+  const docker: typeof slow.docker = async (args, options) => {
+    if (args[0] === "container") await gate;
+    return slow.docker(args, options);
+  };
+  const d2 = desktopContainer(testConfig(docker), () => kernel);
+  const starting = d2.ready(true);
+  await waitFor(() => d2.state() === "starting");
+  go();
+  await starting;
+  expect(d2.state()).toBe("ready");
+
+  const broken = fakeDocker();
+  broken.reply((args) => args[0] === "container", new Error("the docker command was not found"));
+  const d3 = desktopContainer(testConfig(broken.docker), () => kernel);
+  await expect(d3.ready(true)).rejects.toThrow(/needs Docker/);
+  expect(d3.state()).toBe("failed");
+  expect(d3.status()).toMatch(/needs Docker/);
 });

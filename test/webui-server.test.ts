@@ -1,11 +1,32 @@
+import { randomBytes } from "node:crypto";
 import { createServer, request, type Server } from "node:http";
 import { type AddressInfo, connect } from "node:net";
-import { afterEach, expect, test } from "vitest";
-import { COOKIE, SESSION_SECONDS, sessionCookie, tokenMatches, validSession } from "../extensions/webui/auth.ts";
+import { afterEach, beforeAll, expect, test } from "vitest";
+import { REQUEST_KEY, type WebuiRequest } from "../extensions/webui/app/src/lib/protocol.ts";
+import {
+  COOKIE,
+  SESSION_SECONDS,
+  sessionCookie,
+  sessionUser,
+  Throttle,
+  THROTTLE_FAILURES,
+} from "../extensions/webui/auth.ts";
 import { DEFAULT_CSP, type Handler, pipeline } from "../extensions/webui/server.ts";
+import { hashPassword, newStamp, type UsersResult, type WebuiUser } from "../extensions/webui/users.ts";
 
-const TOKEN = "right-token-0123456789abcdefghijklmnopqrstuv";
+/** A session key made per run: no key-like literal in the source. */
+const KEY = randomBytes(32).toString("base64url");
+const ALICE_PW = "alice-password";
+const BOB_PW = "bob-password-2";
+let alice: WebuiUser;
+let bob: WebuiUser;
 let server: Server | undefined;
+
+beforeAll(async () => {
+  const createdAt = new Date().toISOString();
+  alice = { name: "alice", createdAt, password: await hashPassword(ALICE_PW), stamp: newStamp() };
+  bob = { name: "bob", createdAt, password: await hashPassword(BOB_PW), stamp: newStamp() };
+});
 
 afterEach(async () => {
   server?.closeAllConnections();
@@ -13,14 +34,33 @@ afterEach(async () => {
   server = undefined;
 });
 
-/** Serves the pipeline over a fake app on an ephemeral port; returns its base URL and the token holder. */
+/** Serves the pipeline over a fake app on an ephemeral port; returns its base URL and the state it reads. */
 async function serve(handler: Handler = (req, res) => res.end(`app ${req.method} ${req.url}`), hosts?: string[]) {
-  const state = { token: TOKEN as string | undefined, now: Date.now() };
-  server = createServer(pipeline({ bind: "127.0.0.1", hosts, token: async () => state.token, handler, now: () => state.now }));
+  const state = {
+    key: KEY as string | undefined,
+    users: { ok: true, users: [alice, bob] } as UsersResult,
+    now: Date.now(),
+  };
+  server = createServer(
+    pipeline({
+      bind: "127.0.0.1",
+      hosts,
+      users: async () => state.users,
+      sessionKey: async () => state.key,
+      handler,
+      now: () => state.now,
+    }),
+  );
   await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
   return { base: `http://127.0.0.1:${port}`, port, state };
 }
+
+const form = (username: string, password: string) => new URLSearchParams({ username, password });
+
+/** POST /login from the same origin. */
+const signIn = (base: string, username: string, password: string) =>
+  fetch(`${base}/login`, { method: "POST", headers: { origin: base }, body: form(username, password), redirect: "manual" });
 
 const cookieOf = (res: Response) => res.headers.get("set-cookie")?.split(";")[0];
 
@@ -69,7 +109,7 @@ test("names listed in hosts are accepted on any port, with a matching Origin for
     expect(await statusFor(port, host), host).toBe(200);
   }
   expect(await statusFor(port, "other.example.corp:7337")).toBe(403);
-  const body = new URLSearchParams({ token: TOKEN }).toString();
+  const body = form("alice", ALICE_PW).toString();
   const post = (origin: string) =>
     statusFor(port, "japa.example.corp:7337", { method: "POST", origin, body });
   expect(await post("http://japa.example.corp:7337")).toBe(303);
@@ -79,7 +119,7 @@ test("names listed in hosts are accepted on any port, with a matching Origin for
 
 test("a POST from an IP-literal host needs the matching Origin", async () => {
   const { port } = await serve();
-  const body = new URLSearchParams({ token: TOKEN }).toString();
+  const body = form("alice", ALICE_PW).toString();
   const post = (origin: string) => statusFor(port, "10.234.31.61:7337", { method: "POST", origin, body });
   expect(await post("http://10.234.31.61:7337")).toBe(303);
   expect(await post(`http://127.0.0.1:${port}`)).toBe(403);
@@ -97,13 +137,23 @@ test("a missing Host is refused", async () => {
   expect(status).toBe(403);
 });
 
-test("a POST with a foreign or missing Origin is refused", async () => {
+test("a POST to /login or /logout with a foreign or missing Origin is refused", async () => {
   const { base } = await serve();
-  const body = new URLSearchParams({ token: TOKEN });
-  const foreign = await fetch(`${base}/login`, { method: "POST", body, headers: { origin: "http://evil.example" }, redirect: "manual" });
-  expect(foreign.status).toBe(403);
-  const missing = await fetch(`${base}/login`, { method: "POST", body, redirect: "manual" });
-  expect(missing.status).toBe(403);
+  const cookie = cookieOf(await signIn(base, "alice", ALICE_PW))!;
+  const body = form("alice", ALICE_PW);
+  for (const path of ["/login", "/logout"]) {
+    const foreign = await fetch(`${base}${path}`, {
+      method: "POST",
+      body,
+      headers: { origin: "http://evil.example", cookie },
+      redirect: "manual",
+    });
+    expect(foreign.status, path).toBe(403);
+    const missing = await fetch(`${base}${path}`, { method: "POST", body, headers: { cookie }, redirect: "manual" });
+    expect(missing.status, path).toBe(403);
+  }
+  // The session survived the refused sign-out.
+  expect((await fetch(`${base}/api/update`, { headers: { cookie } })).status).toBe(200);
 });
 
 test("without a session the API is 401, pages redirect to sign-in, other methods are 401", async () => {
@@ -127,43 +177,75 @@ test("the sign-in page and static assets are public", async () => {
   }
 });
 
-test("POST /login with a wrong token redirects to the generic error", async () => {
+test("a wrong password and an unknown user get the same generic failure, and no cookie", async () => {
   const { base } = await serve();
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { origin: base },
-    body: new URLSearchParams({ token: "wrong" }),
-    redirect: "manual",
-  });
-  expect(res.status).toBe(303);
-  expect(res.headers.get("location")).toBe("/login?error=1");
-  expect(res.headers.get("set-cookie")).toBeNull();
+  for (const [name, password] of [["alice", "wrong-password"], ["nobody", ALICE_PW], ["alice", ""], ["", ""]]) {
+    const res = await signIn(base, name!, password!);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/login?error=1");
+    expect(res.headers.get("set-cookie")).toBeNull();
+  }
+  // Another user's password isn't alice's.
+  expect((await signIn(base, "alice", BOB_PW)).headers.get("location")).toBe("/login?error=1");
 });
 
-test("POST /login with the token sets the session cookie, which signs in", async () => {
+test("an unknown user costs a scrypt check too", async () => {
   const { base } = await serve();
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { origin: base },
-    body: new URLSearchParams({ token: TOKEN }),
-    redirect: "manual",
+  await signIn(base, "nobody", "x"); // the dummy hash made once
+  const time = async (name: string) => {
+    const start = performance.now();
+    await signIn(base, name, "wrong-password");
+    return performance.now() - start;
+  };
+  const known = await time("alice");
+  const unknown = await time("nobody");
+  // Both run scrypt with the same parameters: within a factor, never an instant reply.
+  expect(unknown).toBeGreaterThan(known / 4);
+});
+
+test("POST /login with a user's password sets the session cookie, which signs in as that user", async () => {
+  const seen: (WebuiRequest | undefined)[] = [];
+  const { base } = await serve((req, res) => {
+    seen.push((req as unknown as Record<symbol, WebuiRequest>)[Symbol.for(REQUEST_KEY)]);
+    res.end(`app ${req.method} ${req.url}`);
   });
+  const res = await signIn(base, "Alice", ALICE_PW); // names are case-insensitive
   expect(res.status).toBe(303);
   expect(res.headers.get("location")).toBe("/");
   const setCookie = res.headers.get("set-cookie")!;
-  expect(setCookie).toMatch(new RegExp(`^${COOKIE}=\\d+\\.[A-Za-z0-9_-]+;`));
+  expect(setCookie).toMatch(new RegExp(`^${COOKIE}=alice\\.\\d+\\.[A-Za-z0-9_-]+;`));
   expect(setCookie).toContain("HttpOnly");
   expect(setCookie).toContain("SameSite=Strict");
   expect(setCookie).toContain("Path=/");
   expect(setCookie).toContain(`Max-Age=${SESSION_SECONDS}`);
   const page = await fetch(`${base}/`, { headers: { cookie: cookieOf(res)! } });
   expect(await page.text()).toBe("app GET /");
-  const api = await fetch(`${base}/api/status`, { headers: { cookie: cookieOf(res)! } });
+  expect(seen.at(-1)).toEqual({ user: "alice", users: "some" });
+  const api = await fetch(`${base}/api/update`, { headers: { cookie: cookieOf(res)! } });
   expect(api.status).toBe(200);
   // Signed in, the sign-in page sends you on.
   const login = await fetch(`${base}/login`, { headers: { cookie: cookieOf(res)! }, redirect: "manual" });
   expect(login.status).toBe(303);
   expect(login.headers.get("location")).toBe("/");
+  // Without a session, the app hears there's no user.
+  await fetch(`${base}/login`);
+  expect(seen.at(-1)).toEqual({ users: "some" });
+});
+
+test("the sign-in page hears whether users exist or the file is unreadable", async () => {
+  const seen: (WebuiRequest | undefined)[] = [];
+  const { base, state } = await serve((req, res) => {
+    seen.push((req as unknown as Record<symbol, WebuiRequest>)[Symbol.for(REQUEST_KEY)]);
+    res.end("login page");
+  });
+  state.users = { ok: true, users: [] };
+  await fetch(`${base}/login`);
+  expect(seen.at(-1)).toEqual({ users: "none" });
+  expect((await signIn(base, "alice", ALICE_PW)).headers.get("location")).toBe("/login?error=1");
+  state.users = { ok: false, error: "not valid JSON" };
+  await fetch(`${base}/login`);
+  expect(seen.at(-1)).toEqual({ users: "unreadable" });
+  expect((await signIn(base, "alice", ALICE_PW)).headers.get("location")).toBe("/login?error=1");
 });
 
 test("an oversized sign-in body is refused", async () => {
@@ -171,42 +253,125 @@ test("an oversized sign-in body is refused", async () => {
   const res = await fetch(`${base}/login`, {
     method: "POST",
     headers: { origin: base },
-    body: `token=${"x".repeat(10_000)}`,
+    body: `username=alice&password=${"x".repeat(10_000)}`,
     redirect: "manual",
   }).catch(() => undefined);
   expect(res === undefined || res.status === 413).toBe(true);
 });
 
-test("?token=<right> sets the cookie and redirects without the token", async () => {
+test("?token= no longer signs in: it's an ordinary query parameter", async () => {
   const { base } = await serve();
-  const res = await fetch(`${base}/?token=${TOKEN}`, { redirect: "manual" });
+  const res = await fetch(`${base}/?token=anything`, { redirect: "manual" });
   expect(res.status).toBe(303);
-  expect(res.headers.get("location")).toBe("/");
-  expect(res.headers.get("set-cookie")).toContain(`${COOKIE}=`);
-  const other = await fetch(`${base}/x?a=1&token=${TOKEN}&b=2`, { redirect: "manual" });
-  expect(other.headers.get("location")).toBe("/x?a=1&b=2");
-  const wrong = await fetch(`${base}/?token=nope`, { redirect: "manual" });
-  expect(wrong.status).toBe(303);
-  expect(wrong.headers.get("location")).toBe("/login?error=1");
-  expect(wrong.headers.get("set-cookie")).toBeNull();
+  expect(res.headers.get("location")).toBe("/login");
+  expect(res.headers.get("set-cookie")).toBeNull();
+  const cookie = cookieOf(await signIn(base, "alice", ALICE_PW))!;
+  const page = await fetch(`${base}/x?token=abc`, { headers: { cookie } });
+  expect(await page.text()).toBe("app GET /x?token=abc");
 });
 
-test("tampered and expired cookies are rejected, and a new token ends sessions", async () => {
+test("10 failed sign-ins a minute from one address, then 429 even with the right password, until it passes", async () => {
   const { base, state } = await serve();
-  const cookie = sessionCookie(TOKEN, state.now).split(";")[0]!;
-  const get = async (c: string) => (await fetch(`${base}/api/status`, { headers: { cookie: c } })).status;
+  for (let i = 0; i < THROTTLE_FAILURES; i++) {
+    expect((await signIn(base, "alice", `wrong-${i}-password`)).status).toBe(303);
+  }
+  const refused = await signIn(base, "alice", ALICE_PW);
+  expect(refused.status).toBe(429);
+  expect(refused.headers.get("set-cookie")).toBeNull();
+  state.now += 30_000;
+  expect((await signIn(base, "alice", ALICE_PW)).status).toBe(429);
+  state.now += 30_001;
+  const ok = await signIn(base, "alice", ALICE_PW);
+  expect(ok.status).toBe(303);
+  expect(ok.headers.get("location")).toBe("/");
+  // A success clears the count.
+  for (let i = 0; i < THROTTLE_FAILURES - 1; i++) await signIn(base, "alice", "wrong-password");
+  expect((await signIn(base, "alice", ALICE_PW)).headers.get("location")).toBe("/");
+  expect((await signIn(base, "alice", "wrong-password")).status).toBe(303);
+});
+
+test("parallel bad sign-ins from one address get at most 10 password checks", async () => {
+  const { base } = await serve();
+  const replies = await Promise.all(
+    Array.from({ length: 40 }, (_, i) => signIn(base, "alice", `guess-${i}-password`).then((r) => r.status)),
+  );
+  expect(replies.filter((s) => s !== 429)).toHaveLength(THROTTLE_FAILURES);
+  expect(replies.filter((s) => s === 429)).toHaveLength(40 - THROTTLE_FAILURES);
+  expect((await signIn(base, "alice", ALICE_PW)).status).toBe(429);
+});
+
+test("the throttle counts failures per address in a rolling window", () => {
+  const t = new Throttle();
+  for (let i = 0; i < THROTTLE_FAILURES; i++) t.fail("a", 1000 + i * 1000);
+  expect(t.blocked("a", 11_000)).toBe(true);
+  expect(t.blocked("b", 11_000)).toBe(false);
+  // The first failure (at 1000) leaves the window at 61000.
+  expect(t.blocked("a", 61_000)).toBe(false);
+  t.clear("a");
+  expect(t.blocked("a", 11_000)).toBe(false);
+  for (let i = 0; i < THROTTLE_FAILURES; i++) expect(t.reserve("c", 0)).toBe(true);
+  expect(t.reserve("c", 0)).toBe(false);
+  expect(t.blocked("c", 0)).toBe(true);
+});
+
+test("POST /logout clears the cookie and goes to sign-in; it needs a session", async () => {
+  const { base } = await serve();
+  const cookie = cookieOf(await signIn(base, "alice", ALICE_PW))!;
+  const out = await fetch(`${base}/logout`, { method: "POST", headers: { origin: base, cookie }, redirect: "manual" });
+  expect(out.status).toBe(303);
+  expect(out.headers.get("location")).toBe("/login");
+  const cleared = out.headers.get("set-cookie")!;
+  expect(cleared).toMatch(new RegExp(`^${COOKIE}=;`));
+  expect(cleared).toContain("Max-Age=0");
+  // The browser drops the cookie, so its next request has none.
+  expect((await fetch(`${base}/api/update`)).status).toBe(401);
+  const anonymous = await fetch(`${base}/logout`, { method: "POST", headers: { origin: base }, redirect: "manual" });
+  expect(anonymous.status).toBe(401);
+});
+
+test("a new password (stamp) or removal ends that user's sessions only; a new key ends all", async () => {
+  const { base, state } = await serve();
+  const a1 = cookieOf(await signIn(base, "alice", ALICE_PW))!;
+  const a2 = cookieOf(await signIn(base, "alice", ALICE_PW))!;
+  const b = cookieOf(await signIn(base, "bob", BOB_PW))!;
+  const get = async (c: string) => (await fetch(`${base}/api/update`, { headers: { cookie: c } })).status;
+  expect([await get(a1), await get(a2), await get(b)]).toEqual([200, 200, 200]);
+  // passwd alice: a new hash and stamp.
+  const newAlice = { ...alice, password: await hashPassword("new-alice-pw"), stamp: newStamp() };
+  state.users = { ok: true, users: [newAlice, bob] };
+  expect([await get(a1), await get(a2), await get(b)]).toEqual([401, 401, 200]);
+  expect((await signIn(base, "alice", ALICE_PW)).headers.get("location")).toBe("/login?error=1");
+  const a3 = cookieOf(await signIn(base, "alice", "new-alice-pw"))!;
+  expect(await get(a3)).toBe(200);
+  // remove bob
+  state.users = { ok: true, users: [newAlice] };
+  expect([await get(b), await get(a3)]).toEqual([401, 200]);
+  expect((await signIn(base, "bob", BOB_PW)).headers.get("location")).toBe("/login?error=1");
+  // An unreadable file: nobody is signed in.
+  state.users = { ok: false, error: "not valid JSON" };
+  expect(await get(a3)).toBe(401);
+  state.users = { ok: true, users: [newAlice] };
+  expect(await get(a3)).toBe(200);
+  state.key = "another-key";
+  expect(await get(a3)).toBe(401);
+  state.key = undefined;
+  expect(await get(a3)).toBe(401);
+});
+
+test("tampered, expired, renamed and old-format cookies are rejected", async () => {
+  const { base, state } = await serve();
+  const cookie = sessionCookie(KEY, alice, state.now).split(";")[0]!;
+  const get = async (c: string) => (await fetch(`${base}/api/update`, { headers: { cookie: c } })).status;
   expect(await get(cookie)).toBe(200);
   expect(await get(`other=1; ${cookie}`)).toBe(200);
-  const [expiry, mac] = cookie.slice(COOKIE.length + 1).split(".");
-  expect(await get(`${COOKIE}=${Number(expiry) + 1}.${mac}`)).toBe(401);
-  expect(await get(`${COOKIE}=${expiry}.${mac!.slice(0, -2)}AA`)).toBe(401);
+  const [name, expiry, mac] = cookie.slice(COOKIE.length + 1).split(".");
+  expect(name).toBe("alice");
+  expect(await get(`${COOKIE}=alice.${Number(expiry) + 1}.${mac}`)).toBe(401);
+  expect(await get(`${COOKIE}=alice.${expiry}.${mac!.slice(0, -2)}AA`)).toBe(401);
+  expect(await get(`${COOKIE}=bob.${expiry}.${mac}`)).toBe(401);
+  expect(await get(`${COOKIE}=${expiry}.${mac}`)).toBe(401); // the old two-part format
   expect(await get(`${COOKIE}=garbage`)).toBe(401);
   state.now += (SESSION_SECONDS + 1) * 1000;
-  expect(await get(cookie)).toBe(401);
-  state.now -= (SESSION_SECONDS + 1) * 1000;
-  state.token = "a-new-token";
-  expect(await get(cookie)).toBe(401);
-  state.token = undefined;
   expect(await get(cookie)).toBe(401);
 });
 
@@ -228,16 +393,15 @@ test("the app's own headers replace the default CSP", async () => {
   expect(res.headers.get("content-security-policy")).toBe("script-src 'self'");
 });
 
-test("token and session checks", () => {
-  expect(tokenMatches(TOKEN, TOKEN)).toBe(true);
-  expect(tokenMatches(TOKEN.slice(1), TOKEN)).toBe(false);
-  expect(tokenMatches("", "")).toBe(false);
-  expect(tokenMatches("x", undefined)).toBe(false);
+test("session checks", () => {
   const now = Date.now();
-  const cookie = sessionCookie(TOKEN, now).split(";")[0];
-  expect(validSession(cookie, TOKEN, now)).toBe(true);
-  expect(validSession(cookie, undefined, now)).toBe(false);
-  expect(validSession(undefined, TOKEN, now)).toBe(false);
+  const cookie = sessionCookie(KEY, alice, now).split(";")[0];
+  expect(sessionUser(cookie, KEY, [alice, bob], now)).toBe("alice");
+  expect(sessionUser(cookie, KEY, [bob], now)).toBeUndefined();
+  expect(sessionUser(cookie, KEY, [{ name: "alice", stamp: "other" }], now)).toBeUndefined();
+  expect(sessionUser(cookie, undefined, [alice], now)).toBeUndefined();
+  expect(sessionUser(cookie, "", [alice], now)).toBeUndefined();
+  expect(sessionUser(undefined, KEY, [alice], now)).toBeUndefined();
 });
 
 test("a 304 carries no CSP, so the cached page keeps its own", async () => {

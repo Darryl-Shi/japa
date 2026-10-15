@@ -19,6 +19,7 @@ import { setupCommand } from "./setup.ts";
 import { uninstall } from "./uninstall.ts";
 import { chatUpdater } from "./update-launch.ts";
 import { updateCommand } from "./update.ts";
+import { webuiCommand } from "./webui-users.ts";
 
 const USAGE = `Usage: japa <command>
 
@@ -38,6 +39,8 @@ Commands:
            Configure models, extensions and the background service
   update [--check] [--branch <b>] [--to <sha>] [--no-restart]
            Update japa to origin's latest commit and restart it
+  webui users <add|passwd|remove|list> [<name>] [--password-stdin]
+           Manage the web UI's users (sign-in names and passwords)
   uninstall [--purge]
            Remove japa; --purge also deletes the japa home once you type "delete"
   --version  Print the version and git commit`;
@@ -120,6 +123,7 @@ const commands: Record<string, (home: string) => Promise<void>> = {
   setup: (home) => setupCommand(home, process.argv.slice(3)),
   update: (home) => updateCommand(home, process.argv.slice(3)),
   uninstall: uninstallCommand,
+  webui: (home) => webuiCommand(home, process.argv.slice(3)),
 };
 // First, before any command: a dependency's optional `require` (`debug`'s `supports-color`, `ws`'s `bufferutil`)
 // mustn't load a module from `~/.node_modules`, `~/.node_libraries` or NODE_PATH, which jobs can write. The imports

@@ -24,6 +24,7 @@
     "@earendil-works/pi-ai": "^1.0.4",
     "@earendil-works/pi-durable": "^1.0.4",
     "@earendil-works/pi-tui": "^1.0.4",
+    "@novnc/novnc": "^1.7.0",
     "marked": "18.0.11",
     "playwright-core": "^1.64.0",
     "unpdf": "1.8.1"

@@ -1,6 +1,6 @@
 # japa: current changes
 
-This file carries five specs, each the contract for its ticket: the Web UI section in `japa setup`, the installer menu (Install / Update / Uninstall, JAPA-4), the `webui` browser chat surface (JAPA-2), files in and out (JAPA-1), and Docker hosting (JAPA-3).
+This file carries six specs, each the contract for its ticket: the Web UI section in `japa setup`, web UI Settings, Desktop view and no Status sheet (run-mv82kuec-kxa9), the installer menu (Install / Update / Uninstall, JAPA-4), the `webui` browser chat surface (JAPA-2, since extended with password users, JAPA-5), files in and out (JAPA-1), and Docker hosting (JAPA-3).
 
 # japa: a "Web UI" section in `japa setup`
 
@@ -108,6 +108,229 @@ This is a pure function of the settings and the network interfaces, computed by 
 - The listen-address select labels each detected address with its interface in the label itself, e.g.
   `192.168.1.20 (eth0)` or `100.101.102.103 (Tailscale, tailscale0)` (clack only shows hints under the cursor).
 - Typing `0.0.0.0` or `::` under "Other…" asks the same plain-HTTP confirmation as "All addresses".
+
+---
+
+# japa: web UI Settings, a live Desktop view, and no Status sheet
+
+Status: built. This is an incremental change to the `webui` surface (see the `webui` spec in `docs/spec.md`), with one small kernel seam and one small addition to the `desktop` extension. The builder folds it into `docs/spec.md` (in the `webui` section) and the README's Web UI section.
+
+## 1. Purpose
+
+The web UI is a chat app with a Jobs panel and a Status sheet. This change makes it the consumer's control panel:
+
+1. **Settings.** A full Settings area in the web UI. It covers what a re-run of `japa setup` covers (model and provider sign-in, integrations) and what Telegram's `/settings` and `/update` cover (models, extensions, schedules, general settings, recent changes, update).
+2. **No Status sheet.** The Status sheet and its top-bar button are removed. Settings now carries that information: the model, each extension's state and status line, and errors.
+3. **Live desktop view.** A Desktop panel shows japa's desktop live. It is view-only by default, with a **Take control** toggle for mouse, keyboard and clipboard.
+
+First-run setup is **out of scope**. The daemon still needs `models.cos` to boot, and `japa setup` in a terminal (or `--non-interactive`) remains the only first-run path. The web UI's Settings acts on a running, already set-up japa. `japa setup`, `japa status`, Telegram's `/status`, `/settings` and `/update`, and `japa chat` are unchanged.
+
+## 2. Key technical decisions
+
+### 2.1 Kernel seam: an admin context for packaged surfaces
+
+A surface gets only `SurfaceContext` today, which can't change settings. The kernel's settings operations already exist as the kernel-internal `MessagingContext` that drives Telegram's menus. This change exposes a subset of them, plus provider and extension sign-in, as a new optional member:
+
+- `SurfaceContext.admin?: AdminContext`, exported from `japa/sdk`. It is set **only for surfaces of packaged extensions** (those shipped in japa's checkout, `extensions/`). Workspace surfaces (written by jobs) get `undefined`.
+- `AdminContext` uses the same code paths as the Telegram menu and the CoS's tools, so validation, change logging, availability recomputation and live reload behave identically:
+  - `settings()`: the live merged settings, read-only.
+  - `setSetting(path, value)`: as `MessagingContext.setSetting`. Returns the reply, `Not changed: …` when the value is invalid.
+  - `extensions()`: the `ExtensionInfo` list (state, status line, error, secrets set or not, schema, values).
+  - `setSecret(extension, name, value)`: as `MessagingContext.setSecret`.
+  - `rollback(extension)`, `changes()`, `undoChange(id)`, `clearFinishedJobs()`.
+  - `tool(name, args)`: for the schedule tools, as `MessagingContext.tool`.
+  - `update`: `check`, `current`, `start`, `state`, as `MessagingContext.update`.
+  - **Providers.**
+    - `providers()`: each provider with models, giving its id, name, whether a credential is stored (`oauth` / `api_key` / none), whether it offers sign-in (label, subscription or not), and whether it takes an API key.
+    - `models(provider)`: the models it can use, refreshed when the provider supports it, as setup's model step does.
+    - `login(provider, "oauth" | "api_key", interaction: AuthInteraction)`: runs pi-ai's login on the daemon's `models` and stores the credential in the secrets store exactly as `japa setup` does.
+  - `authorize(extension, interaction: AuthInteraction)`: runs an extension's `authorize` hook (e.g. Google) with the given interaction, then recomputes availability. It returns the outcome text.
+- **Concurrency.** One sign-in at a time per provider and per extension. Starting a second one is refused with a message.
+- Nothing else in the kernel changes. In particular, boot still requires `models.cos`.
+
+### 2.2 Web UI server: Settings API
+
+- **Bridge and endpoints.** The `WebuiBridge` (`app/src/lib/protocol.ts`, the surface↔app contract) gains the Settings operations. They are backed by `ctx.admin` and exposed as same-origin JSON endpoints under `/api/settings/…`, `/api/update/…` and `/api/signin/…`.
+  - The session gate, Host check and Origin check apply as for every other endpoint.
+  - Invalid input gets a 4xx with `{ error }`. A kernel reply such as `Not changed: …` is returned to the UI and shown inline.
+  - If `ctx.admin` is missing, the Settings endpoints answer 503 and the UI says Settings is unavailable.
+- **Sign-in flows (provider login and extension authorize)** are server-side flow objects. Each is an id, the events so far (`auth_url`, `device_code`, `info`, `progress`), the current prompt if any (`select` with options, `text`, `secret`, `manual_code`, with message and placeholder), and finally the outcome.
+  - The tab that started a flow follows it live. It shows links (opened in a new tab, `rel="noopener noreferrer"`), device codes and notes, and renders each prompt as a form. `secret` prompts use a password field.
+  - **Answers, cancel and timeout.** Answers are POSTed. Cancel aborts the flow's signal, which stops pi-ai's local callback server. A flow with no answer for 10 minutes is cancelled.
+  - **Remote browsers.** When the browser isn't on japa's host, the OAuth loopback callback can't reach japa. The UI then always offers the paste-the-redirect-URL/code field (pi-ai's `manual_code`), as over SSH today.
+  - **Privacy.** Answers to `secret` prompts and typed secret values are sent once in a POST body. They are never echoed, logged, kept in client state after submit, or put in the transcript.
+- **No live sync for Settings.** Settings data is fetched when a screen opens and again after each action. Other tabs see changes the next time they open the screen. The chat, Jobs and secret prompts stay live as today.
+
+### 2.3 Settings area (UI)
+
+The **Settings** area is opened from a gear button in the top bar. On wide screens it is a full-page view with a section list on the left. On narrow screens it is a full-screen sheet with a list that drills into sections, with Back. Its sections:
+
+- **Overview** (the landing section).
+  - The CoS model.
+  - Any errors (what the Status sheet showed under errors), each naming its extension.
+  - A one-line count of extensions on, off and not set up.
+- **Models.**
+  - CoS, Worker and Memory upkeep (`models.cos`, `models.worker`, `models.consolidation`). Worker and Memory read "same as CoS" when unset and offer "Use CoS model".
+  - Each is changed by picking a provider (only connected providers that have models), then a model. The current choice is ticked.
+  - Job thinking (`jobs.thinking`) is picked from the thinking levels.
+- **Providers (sign-in).**
+  - Every provider with models, featured ones first (the same order as setup), each marked connected (sign-in or API key) or not.
+  - Per provider: **Sign in with …** when it offers sign-in (a flow, §2.2), **Enter API key** when it takes one (a masked field), and **Replace** when one is already stored.
+  - A model can only be picked for a provider that is connected. The Models picker links here when the wanted provider isn't connected.
+- **Extensions (integrations).**
+  - Every extension, showing name, summary, a state pill (on / off / not set up / error), its status line and any error. This replaces the Status sheet's extension list.
+  - Each extension's screen offers:
+    - its declared secrets, each "set" / "not set", with a masked field to set one;
+    - **Sign in** for extensions with an `authorize` hook (a flow);
+    - its settings, generated from its schema:
+      - boolean → switch;
+      - enum / `anyOf` consts → select;
+      - integer / number → number field;
+      - string → text field;
+      - arrays and objects → a JSON field;
+      - `owner` shown read-only;
+    - **Turn off / Turn on**;
+    - **Roll back to last known good** for workspace extensions, behind a confirmation.
+  - Each change shows the kernel's reply inline.
+  - Turning **webui** itself off, or changing its `bind`/`port`, first asks for confirmation, warning that this page may stop working.
+- **Schedules.** The list (paused ones marked), each schedule's text, its repeat (cron) or once time, and its next run. Pause / Resume, and Remove with confirmation. "No schedules." when empty.
+- **General.** The same settings as Telegram's General screen, each an editable field showing its current value:
+  - `jobs.maxConcurrent`, `jobs.keepFinishedDays`;
+  - `memory.maxFacts`, `memory.maxTokens`;
+  - `safety.toolErrorThreshold`, `safety.goodAfterMinutes`;
+  - `context.toolResultTokens`.
+
+  There is also **Clear finished jobs**, with confirmation.
+- **Recent changes.** The newest 10 logged changes (title, age), each with its detail and **Undo** behind confirmation.
+- **Update.**
+  - **Check.** **Check for updates** shows "up to date (sha)", or the incoming commits (the newest 20 and a count of the rest) with the number of active jobs.
+  - **Update now.** Starts the update, after a confirmation saying japa will restart. The update is started with chat `{ adapter: "webui", chat: "web" }`.
+  - **Restart.** The page goes to its existing "reconnecting…" state while japa restarts.
+  - **Outcome.** The section always shows the last recorded update: running (since when), updated, up to date, or failed with its summary and output. A finished, non-rollback update offers **Roll back** to its `from` commit, behind a confirmation.
+  - **While running.** While an update runs, starting another is refused with the kernel's message.
+
+Theme, motion, accessibility and responsiveness follow the existing web UI rules (monochrome, hairline borders, rounded, keyboard-accessible, phone width, reduced motion).
+
+### 2.4 Removing Status
+
+- `StatusSheet`, the top bar's Status button, `GET /api/status` and `WebuiBridge.status` are removed.
+- Its information now lives in Settings: the model and errors in Overview, extension states and status lines in Extensions.
+- `japa status` and Telegram `/status` are unchanged.
+- The top bar now has: the `japa` wordmark, the connection/busy indicator, **Jobs**, **Desktop** and **Settings**.
+
+### 2.5 Live desktop view
+
+**Proxy, not a direct link.**
+- The web UI server proxies the desktop's noVNC websocket. The browser connects to a same-origin websocket endpoint (e.g. `/api/desktop/ws`).
+- The server checks the session cookie, the Host header, and that the `Origin` matches (the defence against cross-site websocket hijacking). It then opens a connection to the desktop's websockify (port 6080 on the desktop's bind address, `127.0.0.1` when that is `0.0.0.0` or unset) and pipes bytes both ways.
+- This works wherever the web UI works (SSH tunnel, Tailscale, a Docker instance's published web UI port) without exposing 6080. In a Docker instance the desktop's noVNC is on the container's loopback, so there is no container-specific code.
+- Closing the panel, signing out, or the surface stopping closes the proxied connections.
+
+**Desktop → webui handoff.**
+- The `desktop` extension publishes a small process-global handle at `Symbol.for("japa.desktop.view")`, the same pattern as the webui bridge. It is set in `setup` and cleared on dispose.
+- The handle provides:
+  - the noVNC target (host, port);
+  - the VNC password (the `desktop.vncPassword` secret);
+  - a status (ready, or starting/building/failed with the desktop's status text);
+  - `start()`, which calls `ready(true)` in the background.
+- The webui reads the handle per request and imports nothing from `desktop`. With no handle (desktop off or not loaded), the panel says the desktop isn't available and points to Settings → Extensions.
+
+**Password.** An authenticated, `Cache-Control: no-store` endpoint gives the panel the VNC password and status when it opens. The user never types the password.
+
+**Client.**
+- A bundled noVNC client (`@novnc/novnc`, a root dependency; nothing is loaded from other origins), scaled to fit the panel.
+- It connects only while the Desktop panel is open, and reconnects on its own after a drop or a daemon restart.
+- The CSP's `connect-src` allows the same-origin websocket.
+- x11vnc already runs `-shared`, so several tabs, and the CoS's own tools, can use the desktop at once.
+
+**Interaction.**
+- The panel opens **view-only**: no mouse or keyboard events are sent.
+- A **Take control** toggle enables mouse, keyboard and scrolling. While on, the panel is clearly marked "You're in control", and the toggle reads **Stop controlling**. Toggling is per tab, and resets to view-only whenever the panel is reopened.
+- In control mode, a **Paste** field sends text to the desktop's clipboard, and text copied on the desktop is shown for copying.
+- There is no locking against the CoS: the user and the CoS can act at the same time, as with noVNC today.
+
+**Layout.**
+- On wide screens the Desktop panel docks to the right of the chat, which stays usable (the chat column narrows).
+- On narrow screens it is a full-screen sheet.
+- A **Full screen** button uses the browser's fullscreen API.
+- When the desktop isn't ready, the panel shows its status text (e.g. "Building the desktop's image…", or the Docker error), and a **Start desktop** button when it isn't running.
+
+### 2.6 Unchanged
+
+The following stay as they are:
+- the chat, Jobs panel, secret card, sign-in, sessions, Host/Origin rules and CSP (beyond the websocket allowance);
+- Telegram's menus;
+- `japa setup`;
+- the desktop container and its noVNC on port 6080;
+- the installer and the Docker instance layout.
+
+## 3. Docs
+
+- **README Web UI section.** Covers the Settings area and what it covers (and that first-run setup is still `japa setup`), the Desktop panel (view-only, Take control, works through the web UI's address) and the removal of the Status sheet.
+- **README Desktop section.** Mentions the web UI's Desktop panel next to the noVNC URL.
+- **`docs/spec.md`.** The builder updates the `webui` section, including the new endpoints in `protocol.ts`, the `AdminContext` seam and the desktop view handle.
+
+## Acceptance behaviours
+
+1. The web UI's top bar shows Jobs, Desktop and Settings, and no Status button. `GET /api/status` no longer exists (404). `japa status` and Telegram `/status` still work as before.
+2. Settings → Overview shows the current CoS model. With an extension failing to load, its error appears there, naming the extension.
+3. Settings → Models: changing the CoS model to another connected provider's model takes effect for the next chat message without a restart. The change appears in Settings → Recent changes and in `~/.japa/settings.json`. Undo there restores the previous model.
+4. Settings → Providers: entering an API key for an unconnected provider marks it connected, and its models become pickable in Models. The key never appears in the page, the transcript or the logs.
+5. Settings → Providers → "Sign in with …" for an OAuth provider shows a link (and a code, for device-code providers). Completing sign-in in another tab, or pasting the redirect URL/code into the field shown, marks the provider connected. Cancel stops the flow, and a second concurrent sign-in for the same provider is refused.
+6. Settings → Extensions lists every extension with its state and status line (what the Status sheet used to show). Setting Telegram's bot token there brings Telegram to "on" without a terminal. Turning an extension off hides it from the CoS, and turning it back on restores it.
+7. An invalid setting value (e.g. a string for `jobs.maxConcurrent`) is shown as `Not changed: …` inline, and nothing changes in `settings.json`.
+8. Turning off `webui` from its own Extensions screen first asks for confirmation that warns the page may stop working.
+9. Settings → Schedules shows a schedule created by asking the CoS. Pausing it shows it as paused, and Remove (after confirmation) removes it. Settings → General edits `jobs.maxConcurrent` and the new value shows.
+10. Settings → Update shows "up to date (sha)" on an up-to-date checkout. With incoming commits it lists them. Update now (after confirmation) restarts japa, the page shows "reconnecting…" and recovers, and the section then shows the update's outcome with a Roll back button.
+11. With the desktop running, opening Desktop shows the live desktop within a few seconds without asking for a password. While view-only, clicking and typing in it has no effect on the desktop.
+12. Turning on Take control lets the user click, type and paste text into the desktop. The panel is marked "You're in control". Closing and reopening the panel returns it to view-only.
+13. Asking the CoS to open a website shows the browser moving in the open Desktop panel live.
+14. The Desktop panel works when the web UI is reached through an SSH tunnel to port 7337 only, or through a Docker instance's published web UI port, with port 6080 not reachable from the browser.
+15. Without a session cookie, the desktop websocket endpoint and the password endpoint are refused (401). A websocket upgrade with a foreign `Origin` is refused.
+16. With the desktop extension turned off, the Desktop panel says the desktop isn't available and points to Settings. While the desktop image is building, the panel shows the building status instead of an error.
+17. On a phone-width screen, Settings and Desktop open as full-screen sheets and are usable. The browser's network tab shows no requests to other origins.
+18. `npm test`, `npm run typecheck` (including `svelte-check`) and `japa check extension webui` pass, and `japa check extension desktop` still passes.
+
+## Implementation notes (builder)
+
+- **Kernel**: `AdminContext`, `ProviderInfo`, `ModelInfo` in `src/kernel/contracts.ts` (exported from `japa/sdk`, with
+  `ExtensionInfo`, `Change`, `UpdateCheck`, `UpdateState`, `liveness`); built by `src/kernel/admin.ts` over the same
+  `MessagingContext` the Telegram menu uses. `kernel(extension)` gives it to a surface unless the extension was loaded
+  from the workspace (`<home>/extensions`); extensions handed to `boot` in code (tests) count as packaged.
+  `admin.tool` runs only `schedule_*` tools. `ExtensionInfo` gained `signIn` (has an `authorize` hook). Setup's
+  provider order (`FEATURED`), `deviceId` and error `describe` moved to `src/kernel/credentials.ts`, shared with
+  `japa setup`. Sign-ins to an extension from Settings and from the CoS's `connect` tool share one lock.
+- **`japa check extension <packaged>`** run in japa's checkout loads the extension in place (its relative imports of
+  `src/` resolve only there); others still load from a fresh cached copy.
+- **webui server**: `extensions/webui/settings.ts` (the `SettingsBridge` over `ctx.admin`), `flows.ts` (sign-in flows:
+  the newest open prompt is shown, so pi-ai's `manual_code` paste field is always visible during an OAuth sign-in; a
+  typed API key answers the login's first `secret` prompt and is never in the view; 10 min idle → cancelled; finished
+  flows kept 5 min), endpoints under `app/src/routes/api/{settings,update,signin,desktop}` (all `no-store`).
+  The full endpoint list is in `protocol.ts`. `GET /api/status` and `WebuiBridge.status` are gone.
+- **Desktop proxy** (`server.ts` `desktopProxy`, the HTTP server's `upgrade` listener): `/api/desktop/ws` only; Host
+  (403), same `Origin` (403), session (401), desktop loaded (503); then it forwards the upgrade to
+  `<target>/websockify` without the cookie, Origin or Referer and pipes bytes. Open connections are closed when the
+  surface stops, when the panel's socket closes, and when their session stops being valid (rechecked every 30 s,
+  against the current users and session key, so `passwd`, `remove` or a new session key ends them). The page CSP's `connect-src` gets `ws://<host>` added by
+  `hooks.server.ts`.
+- **Desktop handle** (`extensions/desktop/index.ts`): turning the desktop off (`extensions.desktop.enabled: false`)
+  hides it from the CoS but doesn't unload it, so the handle has `enabled()`; the web UI treats a turned-off desktop as
+  absent (`{ available: false }`, Start 404, the websocket 503), and its `start()` does nothing. `state()` is building / failed / ready (the last start
+  succeeded) / starting (a start in flight) / stopped. `GET /api/desktop` generates the VNC password if it's unset.
+- **UI**: `Settings.svelte` + `components/settings/*` (one per section, `SchemaField`, `SignInFlow`),
+  `DesktopPanel.svelte` (noVNC loaded on open, view-only by default, reconnect with backoff), `ConfirmDialog.svelte`.
+  Settings is a full page from 760 px, a sheet below; the Desktop panel docks from 1000 px. While reconnecting, the
+  page probes `GET /api/update` to tell a lost session (401) from a restarting daemon. Leaving a sign-in screen
+  mid-flow cancels the flow.
+- An update started from Settings is recorded with chat `{ adapter: "webui", chat: "web" }`; no messaging adapter
+  reports it, the Update section shows its outcome.
+- Signing out (the top bar's Sign out) clears that browser's cookie; `japa webui users passwd`/`remove` end a user's
+  sessions, and a new session key ends everyone's.
+- `scripts/run.sh` (the dev run script, not the product) writes a starter `settings.json` (the CoS on
+  `anthropic/claude-sonnet-4-5`, no credentials) when the home has none, so a fresh checkout boots and a provider can be
+  connected from Settings. The kernel still refuses to boot without `models.cos`.
+
+---
 
 # japa: installer menu with Install / Update / Uninstall
 
@@ -293,22 +516,26 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
   - `enabled`: the kernel's standard key. `false` turns the extension off.
 
   A change takes effect when the surface next starts (a daemon restart or extension reload). The extension needs nothing to be set up, so it is **available by default**, and `japa setup`'s first run and Integrations step don't ask about it; a rerun's **Web UI** section (see "japa: a Web UI section in `japa setup`" above) shows and changes these settings.
-- **Access token:** a secret `webui.token`, declared with `generated: true`. On first start, if unset, the extension generates a random value of at least 32 bytes (URL-safe) and stores it in `~/.japa/secrets/webui.token`.
-  - Every request other than the sign-in page and its static assets needs a valid session cookie. The cookie is `HttpOnly`, `SameSite=Strict`, path `/`, and set only after the token has been presented.
-  - There are two ways to present it: pasting it into the sign-in page's single field, or opening `/?token=<token>`. The second sets the cookie and redirects to `/` with the token stripped from the URL.
-  - A wrong token gets a generic error.
-  - Changing the token (deleting the file and restarting, or setting a new value) invalidates existing sessions.
+- **Web UI users** (password users; this replaced the original single access token `webui.token`, which is no longer declared or read — a leftover `secrets/webui.token` is ignored and may be deleted). All users see the same single conversation, jobs, status and secret requests: they are separate logins, not separate workspaces.
+  - **CLI:** `japa webui users add <name> [--password-stdin]` (asks for the password twice, masked, via the clack prompter; refuses an existing name), `passwd <name> [--password-stdin]` (new password; ends all that user's sessions), `remove <name>` (ends all that user's sessions), `list` (one line per user: name and creation time, never hashes; `no web UI users` plus how to add one when empty). `--password-stdin` reads the first line of stdin, without confirmation; with no terminal and no `--password-stdin`, `add` and `passwd` fail with a clear message. Names: 1–32 characters matching `[a-z0-9][a-z0-9._-]*`, lower-cased on input (case-insensitive). Passwords: 8–1024 characters. Mismatched confirmations, invalid names or passwords, and unknown names for `passwd`/`remove` exit 1 with a message. It works on the japa home directly (no daemon needed); the running daemon sees changes on its next request. For a Docker instance: `japa --instance <n> webui users add <name>`.
+  - **Storage:** `<home>/webui/users.json` (dir mode 700, file mode 600), `/webui/` in the home's ignored `.gitignore` lines, so it's never in git, job clones or their sandboxes. Each record: name, creation time, an scrypt hash (Node `crypto.scrypt`, per-user random 16-byte salt, parameters stored per record, N=2^15, r=8, p=1) and a random per-user session stamp that `passwd` regenerates. Writes are atomic (temp file + rename, mode 600); the CLI refuses to modify a file it can't parse. The daemon reads the file on sign-in and session checks (cached by mtime/size), with async scrypt. A missing file is no users; a malformed one means nobody can sign in.
+  - **Sign-in:** `/login` shows username and password fields (`autocomplete="username"` / `"current-password"`), or, with no users, says to run `japa webui users add <name>` on the machine running japa. `POST /login` (form fields `username`, `password`; 4 KB body limit; Origin-checked) sets the session cookie and 303s to `/`, or 303s to `/login?error=1`, which shows one generic "Wrong username or password." An unknown name is checked against a dummy scrypt hash so timing doesn't reveal names. Failed sign-ins are throttled in memory per client address: after 10 failures in a rolling minute, `POST /login` gets 429 until the window passes; a success clears the count. `?token=` is an ordinary query parameter.
+  - **Sessions:** the cookie `japa_webui_session` (`HttpOnly; SameSite=Strict; Path=/`, 30 days, stateless) is `<name>.<expiry>.<mac>`, `mac = HMAC-SHA256(sessionKey, "webui-session:<name>:<expiry>:<stamp>")`. Valid only while the user exists, the expiry is in the future and the MAC matches the user's current stamp: `remove` and `passwd` end that user's sessions at once, others are unaffected, and sessions survive restarts. The session key is a generated secret `webui.session-key` (`generated: true`, 32 random bytes, created on first start if unset); changing or deleting it and restarting signs everyone out. Old two-part cookies are invalid.
+  - **Sign out:** `POST /logout` (Origin-checked, session required) clears the cookie and 303s to `/login`. The top bar shows the signed-in username and a Sign out button; it clears only that browser's cookie.
+  - The session gate hands the signed-in username to the app (`event.locals.user`). Every request other than the sign-in page and its static assets needs a valid session cookie. Submissions keep the origin `{ surface: "webui", chat: "web" }`.
 - **Request checks:**
   - Requests are refused unless their `Host` header names this server, which defends against DNS rebinding: `localhost`, `127.0.0.1`, the bound address or a name in `hosts`, or any IP literal (IPv4, or IPv6 in brackets). The port isn't checked (any port, or none), so an SSH tunnel to another local port and a port published by Docker work. IP literals are safe to accept because DNS rebinding always arrives with the attacker's domain name in `Host`, never a bare address; that also lets a LAN or VPN address reach a server that doesn't know it (a Docker instance's published port). A missing `Host`, a foreign name, and a name that merely starts with an address (`10.1.2.3.evil.example`) are refused.
   - State-changing requests must carry a matching `Origin`: `http://` followed by the `Host` header as sent.
   - Responses send a strict Content-Security-Policy: self only, no inline script beyond what SvelteKit's own CSP support hashes, and no third-party origins.
   - The page makes **no external network requests**: no CDNs and no web fonts fetched from the internet.
 - **Status line:** the extension's `status()` line, shown under `webui` in `japa status` and Telegram's `/status`, is one of:
-  - `http://<bind>:<port> — sign in with the token in ~/.japa/secrets/webui.token`
+  - `http://<bind>:<port> — sign in as a web UI user (N users)`
+  - `http://<bind>:<port> — no users yet: run japa webui users add <name>`
+  - `http://<bind>:<port> — can't read ~/.japa/webui/users.json: <reason>` (the home written with `~`)
   - `not built — run npm run build in <app dir>`
   - `can't listen on <bind>:<port>: <reason>`
 
-  In the last two cases the surface stays down and the daemon and other surfaces keep running. The token itself is never put in status output.
+  In the last two cases the surface stays down and the daemon and other surfaces keep running. The line follows the users file without a restart, and never contains a password, hash, stamp or session key.
 
 ### 2.4 Rendering and safety
 - Assistant text is rendered as markdown with `marked` (already a dependency): headings, lists, task lists, code blocks (monospace, horizontally scrollable, with a copy button), tables, quotes and links.
@@ -337,15 +564,18 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
 - An expired or invalid session sends the page back to the sign-in screen.
 
 ## 3. Docs
-- The README gains a **Web UI** section covering the URL, where the token is, the `bind` / `port` settings, SSH tunnelling (`ssh -L 7337:localhost:7337 <server>`) and Tailscale.
-- The Development section adds `npm run build`, and the "Where state lives" section notes `webui.token`.
+- The README gains a **Web UI** section covering the URL, signing in (web UI users and the `japa webui users` commands), the `bind` / `port` settings, SSH tunnelling (`ssh -L 7337:localhost:7337 <server>`) and Tailscale; the command table lists `japa webui users …`, and the Docker instances paragraph uses `japa --instance <name> webui users add <name>`.
+- The Development section adds `npm run build`, and the "Where state lives" section notes `webui/users.json`, `secrets/webui.session-key`, and that `webui.token` is obsolete.
+- `install.sh`'s Docker install message (and its upgrade message) point at `japa --instance <name> webui users add <name>`.
 - `docs/spec.md` is updated to describe the `webui` surface.
 
 ## Acceptance behaviours
 
-1. With a fresh `npm ci` and a running daemon, `japa status` lists `webui` with `http://127.0.0.1:7337 — sign in with the token in ~/.japa/secrets/webui.token`, and that file exists with mode 600.
-2. Opening `http://127.0.0.1:7337/` without a session shows only a minimal sign-in page. A wrong token is refused. Opening `/?token=<token>` lands on the chat at `/` with the token gone from the address bar, and reloading keeps you signed in.
-3. Requests to the API or live stream without a session cookie get 401. A request with a foreign `Host` header (a DNS name not in `hosts`) is refused, one addressed to an IP literal on any port is served, and a POST with a foreign `Origin` is refused.
+1. With a fresh `npm ci` and a running daemon, `japa status` lists `webui` with `http://127.0.0.1:7337 — no users yet: run japa webui users add <name>`, the sign-in page says the same, and no `secrets/webui.token` is created.
+2. `japa webui users add alice` asks for the password twice (mismatches rejected); `list` then shows `alice` and `japa status` reports 1 user without a restart. `~/.japa/webui/users.json` is mode 600, holds no plaintext password, and is ignored by git. `echo 'secret123' | japa webui users add carol --password-stdin` works without a terminal; without `--password-stdin` and with no terminal, it fails with a clear message.
+2a. Signing in as `alice` lands on the chat with `alice` in the top bar; reloading keeps you signed in. A wrong password or unknown user shows "Wrong username or password.". After 10 failures within a minute from one address, the next attempt gets 429, even with the right password, until the minute passes. `/?token=<anything>` without a session redirects to sign-in. Sign out returns to sign-in, and `/api/status` then gives 401 in that browser.
+2b. `japa webui users passwd alice` sends every alice browser back to sign-in on its next request or reconnect, while bob stays signed in; the new password works, the old one doesn't. `remove bob` ends bob's session the same way. Unknown names exit 1. Restarting the daemon keeps users signed in. Two users signed in at once share the same live conversation and jobs. For a Docker instance, `japa --instance <n> webui users add <name>` creates a user that signs in at the instance's web UI URL.
+3. Requests to the API or live stream without a session cookie get 401. A request with a foreign `Host` header (a DNS name not in `hosts`) is refused, one addressed to an IP literal on any port is served, and a POST (including to `/login` or `/logout`) with a foreign `Origin` is refused.
 4. Typing a message and pressing Enter shows it as a right-aligned grey bubble. The CoS's reply streams in token by token as rendered markdown, and the busy indicator shows "thinking…" until it finishes.
 5. While a reply streams, the send button reads Stop. Clicking it, or pressing Esc, stops the reply. Sending another message mid-reply steers it.
 6. A message sent from `japa chat` or Telegram, and its reply, appear live in an open web tab, and vice versa. A reply to a web message is not sent to Telegram.
@@ -372,13 +602,27 @@ Decisions made while building, within the spec above:
 - **Request pipeline** (`extensions/webui/server.ts`), in front of the SvelteKit handler: the Host check
   (`acceptedHost`: the name from `name[:port]` or `[v6][:port]`, then `node:net`'s `isIP`, else the name list), the Origin
   check on every non-GET/HEAD request, default security headers (a `default-src 'none'` CSP that SvelteKit's pages
-  replace with their own hashed one, `nosniff`, `no-referrer`, `DENY` framing), sign-in (`POST /login`,
-  `?token=`), and the session gate (401 JSON for `/api/*`, a redirect to `/login` for pages).
-- **Sessions** are stateless: the cookie `japa_webui_session` is `<expiry>.<HMAC-SHA256(token, expiry)>`, valid 30
-  days. Sessions survive daemon restarts, and changing the token invalidates them all.
+  replace with their own hashed one, `nosniff`, `same-origin` referrer, `DENY` framing), sign-in (`POST /login`,
+  throttled), the session gate (401 JSON for `/api/*`, a redirect to `/login` for pages), and `POST /logout`.
+- **Users** (`extensions/webui/users.ts`): the file format (`{ version: 1, users: [...] }`), validation, scrypt
+  hashing (`maxmem` raised to fit N=2^15, r=8), atomic writes, and `userStore` (async `load()` for requests,
+  `loadSync()` for the synchronous `status()` line; both re-read only when the file's inode/size/mtime/ctime change).
+  A malformed file is reported as `not valid JSON` without the parser's message, which would quote the hashes.
+  The CLI is `src/cli/webui-users.ts` (`webuiCommand`, with an injectable I/O for tests); before writing it runs
+  `ensureWorkspace` so the home's `.gitignore` has `/webui/` (anchored, so a component's `extensions/webui/` isn't
+  ignored).
+- **Throttle**: a failure slot is reserved before the password check (`Throttle.reserve`), so parallel guesses still-being-hashed count; a success clears the address. The dummy hash is made when the pipeline is created.
+- **Sessions** (`extensions/webui/auth.ts`) are stateless: the cookie `japa_webui_session` is
+  `<name>.<expiry>.<HMAC-SHA256(sessionKey, "webui-session:<name>:<expiry>:<stamp>")>`, valid 30 days. The throttle
+  (`Throttle`) keeps failure timestamps per `req.socket.remoteAddress` (behind Docker's port publishing that is the
+  bridge's address, so an instance's failures are counted together).
+- **Username to the app**: the pipeline sets `req[Symbol.for("japa.webui.request")] = { user?, users }`
+  (`REQUEST_KEY` in protocol.ts); adapter-node passes the Node request as `event.platform.req`, and
+  `hooks.server.ts` copies it to `event.locals.user` / `.users`. The chat page's `+page.server.ts` returns
+  `{ user }` (fetched as `__data.json`, since the page is client-rendered); the sign-in page's returns `{ users }`.
 - **API** (`extensions/webui/app/src/lib/protocol.ts`): `GET /api/events` (SSE: a snapshot, then `lines`, `delta`,
-  `streaming`, `busy`, `transcript`, `jobs`, `secrets`), `POST /api/submit|abort|secrets/fulfil|secrets/decline`,
-  `GET /api/status`.
+  `streaming`, `busy`, `transcript`, `jobs`, `secrets`), `POST /api/submit|abort|secrets/fulfil|secrets/decline`
+  (`GET /api/status` was removed by the Settings change above; Settings, update, sign-in and desktop endpoints added).
 - **CSP**: `style-src 'self'`, plus SvelteKit's route announcer's one inline style attribute, allowed by its hash
   (`style-src-attr 'unsafe-hashes' 'sha256-…'`).
 - **Tests**: vitest sets `JAPA_WEBUI_AUTOSTART=0` so the suite's many daemons don't bind 7337. The webui tests turn it

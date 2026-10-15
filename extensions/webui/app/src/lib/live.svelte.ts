@@ -1,5 +1,6 @@
 // The page's live state: one EventSource on /api/events, applied to runes; plus the actions (POSTs).
-import { API, type JobView, type Line, type LiveEvent, type SecretRequestView, type StatusView, type SubmitMode } from "$lib/protocol";
+import { API, type JobView, type Line, type LiveEvent, type SecretRequestView, type SubmitMode } from "$lib/protocol";
+import { toLogin } from "$lib/api";
 
 export type Connection = "connecting" | "live" | "reconnecting";
 
@@ -83,7 +84,8 @@ export class Live {
 
   async #recover(): Promise<void> {
     try {
-      const res = await fetch(API.status, { cache: "no-store" });
+      // Any session-gated endpoint tells a lost session (401) from a daemon that's down or restarting.
+      const res = await fetch(API.update, { cache: "no-store" });
       if (res.status === 401) return toLogin();
     } catch {
       // daemon down: keep trying
@@ -250,24 +252,4 @@ function postJson(url: string, body: Record<string, unknown>): Promise<Response>
     body: JSON.stringify(body),
     cache: "no-store",
   });
-}
-
-/** The session is gone: back to the sign-in page. */
-export function toLogin(): void {
-  location.href = API.login;
-}
-
-/** GET /api/status, or `{ error }` (after sending the page to sign-in on a 401). */
-export async function fetchStatus(): Promise<StatusView | { error: string }> {
-  try {
-    const res = await fetch(API.status, { cache: "no-store" });
-    if (res.status === 401) {
-      toLogin();
-      return { error: "Signed out" };
-    }
-    if (!res.ok) return { error: `Couldn't load status (${res.status}).` };
-    return (await res.json()) as StatusView;
-  } catch {
-    return { error: "Couldn't reach japa." };
-  }
 }

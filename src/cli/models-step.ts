@@ -3,11 +3,8 @@
 // and memory upkeep use the same model.
 import type { Credential } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { envKeyName } from "../kernel/boot.ts";
-import { message } from "../kernel/loader.ts";
+import { byFeatured, describe, deviceId } from "../kernel/credentials.ts";
 import { checkModel, loadSettings, readUserSettings, saveSettings, setPath } from "../kernel/settings.ts";
 import { interactionFor, openInBrowser, quittable } from "./auth-interaction.ts";
 import type { SetupContext } from "./context.ts";
@@ -19,41 +16,14 @@ export type ModelsStepOptions = {
   openUrl?: (url: string) => void;
 };
 
-/** Listed first, in this order; the other providers follow by name. */
-const FEATURED = ["anthropic", "openai", "google", "openrouter", "github-copilot", "xai", "zai", "deepseek", "mistral"];
-
 type Role = { provider: string; model: string };
 const COS: Role = { provider: "Which AI provider should japa use?", model: "Which model should japa use?" };
 const WORKER: Role = { provider: "Which provider for background jobs?", model: "Which model for background jobs?" };
 const MEMORY: Role = { provider: "Which provider for memory upkeep?", model: "Which model for memory upkeep?" };
 
-/** This install's stable id, for sign-in flows that register the device (`<home>/device-id`). */
-function deviceId(home: string): string {
-  const file = join(home, "device-id");
-  if (existsSync(file)) return readFileSync(file, "utf8").trim();
-  const id = randomUUID();
-  writeFileSync(file, `${id}\n`);
-  return id;
-}
-
-/** An error's message followed by its causes': pi-ai wraps the provider's own error. */
-function describe(error: unknown): string {
-  const parts: string[] = [];
-  for (let e: unknown = error; e !== undefined && parts.length < 4; e = (e as { cause?: unknown }).cause) {
-    const text = message(e);
-    if (text && !parts.includes(text)) parts.push(text);
-    if (!(e instanceof Error)) break;
-  }
-  return parts.join(": ");
-}
-
 async function chooseProvider(ctx: SetupContext, p: Prompter, question: string, initial?: string): Promise<string> {
   const stored = new Set((await ctx.credentials.list().catch(() => [])).map((c) => c.providerId));
-  const rank = (id: string) => (FEATURED.includes(id) ? FEATURED.indexOf(id) : FEATURED.length);
-  const providers = ctx.models
-    .getProviders()
-    .filter((pr) => ctx.models.getModels(pr.id).length > 0)
-    .toSorted((a, b) => rank(a.id) - rank(b.id) || a.name.localeCompare(b.name));
+  const providers = byFeatured(ctx.models.getProviders().filter((pr) => ctx.models.getModels(pr.id).length > 0));
   const choices: Choice<string>[] = providers.map((pr) => ({
     label: pr.name,
     value: pr.id,

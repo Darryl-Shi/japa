@@ -104,6 +104,11 @@ test("the check kinds are skill and extension", () => {
 });
 
 describe("extensions", { timeout: 60_000 }, () => {
+  test("a packaged extension checked in japa's checkout loads in place (its relative imports resolve)", async () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    expect(await check("extension", "schedule", root, tempHome())).toEqual([]);
+  });
+
   test("an extension with a type error fails with the compiler output", async () => {
     const home = homeWith({ "extensions/hello/index.ts": extension("hello", "hello").replace(`"hello " + who`, "who * 2") });
     const problems = await check("extension", "hello", home, home);
