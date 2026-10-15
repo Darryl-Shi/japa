@@ -1,6 +1,8 @@
 // The request pipeline in front of the SvelteKit app: host and origin checks, security headers, sign-in.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { isIP } from "node:net";
+import { connect, isIP, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
+import { API, DESKTOP_VIEW_KEY, type DesktopViewHandle } from "./app/src/lib/protocol.ts";
 import { sessionCookie, tokenMatches, validSession } from "./auth.ts";
 
 /** adapter-node's `handler`. */
@@ -145,4 +147,111 @@ async function readBody(req: IncomingMessage, limit: number): Promise<string | u
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+/** The desktop extension's view handle, read per use: undefined while the desktop isn't loaded or is turned off. */
+export function desktopHandle(): DesktopViewHandle | undefined {
+  const handle = (globalThis as Record<symbol, DesktopViewHandle | undefined>)[Symbol.for(DESKTOP_VIEW_KEY)];
+  // Turned off, it stays loaded (only hidden from the CoS): the panel, Start and the websocket treat it as absent.
+  return handle !== undefined && handle.enabled() ? handle : undefined;
+}
+
+export type ProxyDeps = Omit<PipelineDeps, "handler"> & {
+  desktop?(): DesktopViewHandle | undefined;
+  /** How often open connections' sessions are rechecked (default 30 s). */
+  recheckMs?: number;
+};
+
+/** Request headers not passed on to websockify: the session cookie and browser context stay here. */
+const DROPPED = new Set(["host", "cookie", "origin", "referer", "authorization"]);
+
+/**
+ * The server's `upgrade` listener: the Desktop panel's websocket (`/api/desktop/ws`), proxied byte for byte to the
+ * desktop's websockify once the Host, the Origin (the same origin: cross-site websocket hijacking) and the session
+ * cookie check out. `close()` ends every proxied connection (the surface stopping).
+ */
+export function desktopProxy(deps: ProxyDeps): {
+  upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+  close(): void;
+  /** How many proxied connections are open (tests). */
+  readonly open: number;
+} {
+  const now = deps.now ?? Date.now;
+  const desktop = deps.desktop ?? desktopHandle;
+  /** Each proxied connection's teardown. */
+  const connections = new Set<() => void>();
+  /** Each open connection's session cookie: rechecked, so a sign-out (a new token) or an expiry ends it. */
+  const sessions = new Map<() => void, string | undefined>();
+  const recheck = setInterval(async () => {
+    if (sessions.size === 0) return;
+    const token = await deps.token().catch(() => undefined);
+    for (const [teardown, cookie] of sessions) if (!validSession(cookie, token, now())) teardown();
+  }, deps.recheckMs ?? 30_000);
+  recheck.unref();
+  let closed = false;
+
+  function refuse(socket: Duplex, status: string) {
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    setTimeout(() => socket.destroy(), 1000).unref();
+  }
+
+  async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
+    socket.on("error", () => socket.destroy());
+    const path = new URL(req.url ?? "/", "http://localhost").pathname.replace(/^\/{2,}/, "/");
+    const host = req.headers.host?.toLowerCase();
+    if (host === undefined || !acceptedHost(host, deps.bind, deps.hosts)) return refuse(socket, "403 Forbidden");
+    if (path !== API.desktopWs) return refuse(socket, "404 Not Found");
+    if (req.headers.origin?.toLowerCase() !== `http://${host}`) return refuse(socket, "403 Forbidden");
+    if (!validSession(req.headers.cookie, await deps.token(), now())) return refuse(socket, "401 Unauthorized");
+    if ((req.headers.upgrade ?? "").toLowerCase() !== "websocket") return refuse(socket, "400 Bad Request");
+    const handle = desktop();
+    if (handle === undefined) return refuse(socket, "503 Service Unavailable");
+    if (closed || socket.destroyed) return socket.destroy();
+
+    const target = handle.target();
+    const lines = [`GET /websockify HTTP/1.1`, `Host: ${hostPort(target.host, target.port)}`];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (!DROPPED.has(req.rawHeaders[i]!.toLowerCase())) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    }
+    const upstream: Socket = connect(target.port, target.host);
+    let connected = false;
+    const teardown = () => {
+      connections.delete(teardown);
+      sessions.delete(teardown);
+      socket.destroy();
+      upstream.destroy();
+    };
+    connections.add(teardown);
+    sessions.set(teardown, req.headers.cookie);
+    upstream.on("error", () => {
+      if (connected || socket.destroyed) return teardown();
+      connections.delete(teardown);
+      refuse(socket, "502 Bad Gateway");
+    });
+    upstream.once("connect", () => {
+      connected = true;
+      upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+      if (head.length > 0) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    socket.on("close", teardown);
+    upstream.on("close", () => {
+      if (connected) teardown();
+    });
+  }
+
+  return {
+    upgrade(req, socket, head) {
+      upgrade(req, socket, head).catch(() => socket.destroy());
+    },
+    close() {
+      closed = true;
+      clearInterval(recheck);
+      for (const teardown of [...connections]) teardown();
+    },
+    get open() {
+      return connections.size;
+    },
+  };
 }

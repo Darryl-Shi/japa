@@ -158,7 +158,7 @@ test("POST /login with the token sets the session cookie, which signs in", async
   expect(setCookie).toContain(`Max-Age=${SESSION_SECONDS}`);
   const page = await fetch(`${base}/`, { headers: { cookie: cookieOf(res)! } });
   expect(await page.text()).toBe("app GET /");
-  const api = await fetch(`${base}/api/status`, { headers: { cookie: cookieOf(res)! } });
+  const api = await fetch(`${base}/api/update`, { headers: { cookie: cookieOf(res)! } });
   expect(api.status).toBe(200);
   // Signed in, the sign-in page sends you on.
   const login = await fetch(`${base}/login`, { headers: { cookie: cookieOf(res)! }, redirect: "manual" });
@@ -194,7 +194,7 @@ test("?token=<right> sets the cookie and redirects without the token", async () 
 test("tampered and expired cookies are rejected, and a new token ends sessions", async () => {
   const { base, state } = await serve();
   const cookie = sessionCookie(TOKEN, state.now).split(";")[0]!;
-  const get = async (c: string) => (await fetch(`${base}/api/status`, { headers: { cookie: c } })).status;
+  const get = async (c: string) => (await fetch(`${base}/api/update`, { headers: { cookie: c } })).status;
   expect(await get(cookie)).toBe(200);
   expect(await get(`other=1; ${cookie}`)).toBe(200);
   const [expiry, mac] = cookie.slice(COOKIE.length + 1).split(".");

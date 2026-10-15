@@ -2,7 +2,7 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { execFile } from "node:child_process";
 import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boot } from "./boot.ts";
@@ -47,7 +47,11 @@ function checkSkill(name: string, dir: string): string[] {
 /** Manifest, typecheck, the extension's own tests and a smoke load, stopping at the first that fails. */
 async function checkExtension(name: string, dir: string, home: string): Promise<string[]> {
   const source = join(dir, "extensions", name);
-  const fresh = existsSync(source) ? [{ name, file: join(cachedCopy(home, source), "index.ts") }] : [];
+  // A packaged extension (checked in japa's checkout) loads in place: its relative imports of japa's own `src/` and
+  // `node_modules` resolve only there. Any other is loaded from a fresh copy, so an edited one isn't the cached module.
+  const inPlace = resolve(source) === join(packaged, name);
+  const file = inPlace ? join(source, "index.ts") : join(cachedCopy(home, source), "index.ts");
+  const fresh = existsSync(source) ? [{ name, file }] : [];
   const found = discoverExtensions([packaged, join(dir, "extensions")]).filter((f) => f.name !== name);
   const { extensions, errors } = await loadExtensions([...found, ...fresh]);
   const failed = errors.filter((e) => e.name === name).map((e) => e.error);

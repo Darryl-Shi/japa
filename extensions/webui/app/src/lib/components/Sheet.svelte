@@ -9,9 +9,21 @@
     title,
     id,
     onclose,
+    leading,
     actions,
+    flush = false,
     children,
-  }: { title: string; id: string; onclose: () => void; actions?: Snippet; children: Snippet } = $props();
+  }: {
+    title: string;
+    id: string;
+    onclose: () => void;
+    /** Before the title, e.g. a Back button. */
+    leading?: Snippet;
+    actions?: Snippet;
+    /** No padding and no scrolling in the body: the content fills it (e.g. the desktop view). */
+    flush?: boolean;
+    children: Snippet;
+  } = $props();
 
   let dialog: HTMLDialogElement | undefined = $state();
 
@@ -39,13 +51,14 @@
 <dialog bind:this={dialog} class="sheet" aria-modal="true" aria-labelledby="{id}-title" {oncancel} {onclick}>
   <div class="panel" in:fly|global={{ x: 24, duration: duration(180) }}>
     <header class="head">
+      {#if leading}{@render leading()}{/if}
       <h2 id="{id}-title" class="title">{title}</h2>
       {#if actions}{@render actions()}{/if}
       <button class="btn ghost icon" type="button" aria-label="Close {title}" onclick={onclose}>
         <span aria-hidden="true">×</span>
       </button>
     </header>
-    <div class="body">
+    <div class="body" class:flush>
       {@render children()}
     </div>
   </div>
@@ -102,6 +115,14 @@
     flex: 1;
     overflow-y: auto;
     padding: 1rem 1.25rem 2rem;
+  }
+
+  .body.flush {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   @media (max-width: 640px) {

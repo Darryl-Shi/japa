@@ -28,7 +28,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   `svelte-check` on extensions/webui/app with TypeScript 6 — the root `typescript` dep is 6 because svelte-check and
   SvelteKit need its JS API; scripts and `japa check` call `node_modules/@typescript/native/bin/tsc` explicitly)
 - Build the web UI: `npm run build` (extensions/webui/app → extensions/webui/build, git-ignored)
-- Run: `scripts/run.sh` (foreground daemon; set `JAPA_HOME` to a scratch dir; needs a model in its settings.json);
+- Run: `scripts/run.sh` (foreground daemon; set `JAPA_HOME` to a scratch dir; with no settings.json it writes a starter
+  one, CoS anthropic/claude-sonnet-4-5 without credentials — connect a provider in the web UI's Settings);
   `scripts/run.sh <command>` runs any other CLI command (e.g. `chat`, `status`, `--version`).
 - Gated e2e: `JAPA_DOCKER_TESTS=1 npx vitest --run test/desktop-docker.test.ts` (desktop on Docker),
   `JAPA_SYSBOX_TESTS=1 npx vitest --run test/sysbox.test.ts` (real Sysbox instances; needs Sysbox, a pushed branch:
@@ -41,7 +42,7 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   (or `$JAPA_HOME/secrets/webui.token`). Sign in with `/?token=<token>`.
 - `japa chat` talks to the daemon over `<home>/japa.sock`; `japa status` prints extension status lines.
   Telegram is the default messaging adapter.
-- Desktop noVNC: http://127.0.0.1:6080/vnc.html (natively), or http://127.0.0.1:<desktop port>/vnc.html for a Docker
+- Desktop: the web UI's Desktop panel (proxied, no 6080 needed); noVNC: http://127.0.0.1:6080/vnc.html (natively), or http://127.0.0.1:<desktop port>/vnc.html for a Docker
   instance (`japa instances` lists them).
 
 ## Map
@@ -61,7 +62,11 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   - `extensions/webui/index.ts` — manifest + surface (token, status line, HTTP server, bridge on `Symbol.for("japa.webui.bridge")`)
   - `extensions/webui/server.ts` — Host/Origin checks, security headers, sign-in, session gate in front of SvelteKit
   - `extensions/webui/auth.ts` — token + HMAC session cookies; `live.ts` + `transcript.ts` — live hub / projection
-  - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract
+  - `extensions/webui/settings.ts` (Settings over the kernel's `SurfaceContext.admin`, built in `src/kernel/admin.ts`),
+    `flows.ts` (provider/extension sign-in flows), `server.ts` `desktopProxy` (the Desktop panel's websocket to noVNC;
+    the desktop publishes its handle on `Symbol.for("japa.desktop.view")`)
+  - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract (all
+    endpoints); `components/Settings.svelte` + `components/settings/`, `components/DesktopPanel.svelte` (bundled noVNC)
 - `skills/` — packaged skills (e.g. `writing-job-briefs`).
 - `install.sh` — the installer: with a terminal, a menu first (Install / Update / Uninstall / Quit); native mode
   (steps: clone, node, dependencies, build, launcher; Uninstall delegates to `japa uninstall` or removes directly),

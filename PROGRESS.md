@@ -128,3 +128,21 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
   most once until the desktop next comes up, then the error is reported as before. A failed build →
   `builder prune -af` → one retry. The home volume is never touched. Tests in test/desktop-container.test.ts; the gated
   sysbox e2e checks the inner Driver is overlay2. README (Desktop, Where state lives), docs/spec.md (Docker hosting).
+
+---
+
+# Progress: web UI Settings, Desktop panel, no Status (run-mv82kuec-kxa9)
+
+- [x] Contracts: `AdminContext`/`ProviderInfo`/`ModelInfo` in contracts.ts (+ sdk), protocol.ts (Settings/Desktop/flows API)
+- [x] Kernel: admin context (src/kernel/admin.ts) + tests
+- [x] webui server: settings bridge, flows, endpoints, ws proxy; desktop view handle
+- [x] UI: Settings area, Desktop panel (noVNC), top bar, Status removed
+- [x] Docs: README, docs/spec.md, AGENTS.md
+- [x] japa check extension <packaged> loads in place (was failing at base for desktop)
+- Manual: curl e2e against a real daemon (settings set/Not changed, api_key flow, oauth flow + 409 + cancel, ws 401/403). Real VNC not verifiable here (sandboxed net).
+
+Decisions:
+- "Packaged" = not loaded from the workspace (`<home>/extensions`): extensions handed to `boot` in code (tests) count as packaged.
+- `admin.tool` only runs `schedule_*` tools.
+- Sign-in flows are polled by the starting tab (GET /api/signin/<id>, ~1 s).
+- Round 2: F1 desktop handle `enabled()` → webui treats off as unavailable (view/start/ws) + tests. F3 run.sh writes a starter settings.json when none exists (dev script only; kernel unchanged).

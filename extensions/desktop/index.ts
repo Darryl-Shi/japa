@@ -5,6 +5,23 @@ import { computerTool } from "./computer.ts";
 import { type DesktopConfig, desktopContainer, dockerCli } from "./container.ts";
 import { keepRecentImages } from "./images.ts";
 
+/**
+ * The handle the web UI's Desktop panel reads at `globalThis[Symbol.for("japa.desktop.view")]` (its
+ * `DesktopViewHandle`; the web UI imports nothing from here, nor this from it).
+ */
+export type DesktopViewHandle = {
+  /** Where noVNC's websockify listens: the bind address (127.0.0.1 for 0.0.0.0 or unset) and the noVNC port. */
+  target(): { host: string; port: number };
+  password(): Promise<string>;
+  status(): { state: "ready" | "starting" | "building" | "failed" | "stopped"; text: string };
+  /** Starts the desktop in the background; nothing while it's turned off. */
+  start(): void;
+  /** Whether it's turned on (`enabled` isn't false). */
+  enabled(): boolean;
+};
+export const DESKTOP_VIEW = Symbol.for("japa.desktop.view");
+const viewSlot = globalThis as Record<symbol, DesktopViewHandle | undefined>;
+
 export function desktopExtension(config: DesktopConfig): JapaExtension {
   let kernel: KernelContext | undefined;
   const desktop = desktopContainer(config, () => kernel!);
@@ -44,6 +61,25 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
     status: () => (kernel ? desktop.status() : undefined),
     setup: (ctx) => {
       kernel = ctx;
+      const view: DesktopViewHandle = {
+        target: () => {
+          const bind = ctx.settings().bind;
+          const host = typeof bind === "string" && bind !== "" && bind !== "0.0.0.0" && bind !== "::" ? bind : "127.0.0.1";
+          return { host, port: config.vncPort };
+        },
+        password: () => desktop.password(),
+        status: () => {
+          const state = desktop.state();
+          const text =
+            state === "stopped" ? "The desktop isn't running." : state === "starting" ? "Starting the desktop…" : desktop.status();
+          return { state, text };
+        },
+        start: () => {
+          if (ctx.settings().enabled !== false) void desktop.ready(true).catch(() => {});
+        },
+        enabled: () => ctx.settings().enabled !== false,
+      };
+      viewSlot[DESKTOP_VIEW] = view;
       // Ready before it's first needed: the image builds (minutes, once) and the container starts in the
       // background. A failure -- no Docker, say -- shows in `japa status`, and the next use tries again.
       // JAPA_DESKTOP_AUTOSTART=0 turns it off for a process (the test suite).
@@ -51,6 +87,7 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
         desktop.ready(true).catch(() => {});
       }
       return async () => {
+        if (viewSlot[DESKTOP_VIEW] === view) delete viewSlot[DESKTOP_VIEW];
         desktop.dispose();
         await browser.close();
       };
