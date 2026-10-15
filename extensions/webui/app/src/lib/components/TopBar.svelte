@@ -131,6 +131,9 @@
   }
 
   .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -187,9 +190,31 @@
     color: var(--text-muted);
   }
 
+  /* A phone: the account (who's signed in, Sign out) takes a second row, so the bar never overflows. */
   @media (max-width: 480px) {
+    .inner {
+      flex-wrap: wrap;
+      gap: 0.35rem 0.5rem;
+      padding-inline: 0.75rem;
+    }
+
+    .actions {
+      gap: 0;
+    }
+
+    .account {
+      flex-basis: 100%;
+      justify-content: space-between;
+      padding-left: 0;
+      padding-top: 0.35rem;
+      border-left: none;
+      border-top: 1px solid var(--border);
+    }
+
     .user {
-      display: none;
+      max-width: none;
+      flex: 1 1 auto;
+      min-width: 0;
     }
   }
 

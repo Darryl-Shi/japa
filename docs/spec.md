@@ -327,7 +327,7 @@ The following stay as they are:
 - Signing out (the top bar's Sign out) clears that browser's cookie; `japa webui users passwd`/`remove` end a user's
   sessions, and a new session key ends everyone's.
 - `scripts/run.sh` (the dev run script, not the product) writes a starter `settings.json` (the CoS on
-  `anthropic/claude-sonnet-4-5`, no credentials) when the home has none, so a fresh checkout boots and a provider can be
+  `anthropic/claude-sonnet-4-5`, no credentials) when `JAPA_HOME` is set and that home has none (never into the default `~/.japa`), so a fresh checkout boots and a provider can be
   connected from Settings. The kernel still refuses to boot without `models.cos`.
 
 ---
