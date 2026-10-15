@@ -18,8 +18,16 @@ export type WebuiRequest = {
   users: "none" | "some" | "unreadable";
 };
 
-/** One transcript line, projected from the root conversation as `japa chat` does. */
-export type Line = { kind: "user" | "assistant" | "tool" | "info"; text: string };
+/**
+ * One transcript line, projected from the root conversation as `japa chat` does. `user` is only a person's input; a
+ * background job's report is a `report` (its title and status from the report's header, `text` its body without the
+ * header, with any publish outcome line); any other kernel-posted input (schedule wakes, secret notes, `[japa]` notes,
+ * sign-in reports) is a `note` shown as-is.
+ */
+export type Line =
+  | { kind: "user" | "assistant" | "tool" | "info"; text: string }
+  | { kind: "report"; jobId: string; title: string; status: string; text: string }
+  | { kind: "note"; text: string };
 
 export type JobStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "cancelled";
 

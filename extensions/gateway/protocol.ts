@@ -1,7 +1,7 @@
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent, EntryId } from "@earendil-works/pi-durable";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import type { Job, SecretRequest, Status } from "../../src/sdk.ts";
+import type { InputSource, Job, SecretRequest, Status } from "../../src/sdk.ts";
 
 export type ClientMessage =
   | { type: "attach" }
@@ -12,7 +12,8 @@ export type ClientMessage =
   | { type: "status" };
 
 export type ServerMessage =
-  | { type: "events"; events: AgentEvent[] }
+  /** A batch of root events with the sources of its user entries (`SurfaceContext.root.events`), as pairs. */
+  | { type: "events"; events: AgentEvent[]; sources?: [EntryId, InputSource][] }
   | { type: "jobs"; jobs: Job[] }
   | { type: "secrets"; pending: SecretRequest[] }
   | { type: "status"; status: Status }

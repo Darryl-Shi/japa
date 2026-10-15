@@ -1,8 +1,9 @@
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import type { AgentEvent, EntryId } from "@earendil-works/pi-durable";
 import { expect, test } from "vitest";
 import type { LiveEvent } from "../extensions/webui/app/src/lib/protocol.ts";
 import { createHub, startLive } from "../extensions/webui/live.ts";
 import type { Job } from "../src/kernel/jobs/state.ts";
+import type { InputSource } from "../src/sdk.ts";
 
 const user = (text: string) => ({ kind: "pi.message", model: [{ role: "user", content: text }] });
 const assistant = (text: string, tools: string[] = []) => ({
@@ -252,4 +253,44 @@ test("a file the CoS sent shows as a 📎 line with its path; a failed send_file
     ],
   });
   expect(JSON.stringify(seen)).not.toMatch(/missing\.md/);
+});
+
+test("user entries map by their source: a person's a user line, a job report a report, a kernel input a note", () => {
+  const withId = (id: number, entry: object) => ({ id, ...entry });
+  const report = '[job 7 "Find" done] Found it.';
+  const sources = new Map<EntryId, InputSource>([
+    [1 as EntryId, { type: "person", surface: "webui" }],
+    [2 as EntryId, { type: "job_report", jobId: "7", title: "Find", status: "done", text: "Found it." }],
+    [3 as EntryId, { type: "note", from: "schedule" }],
+  ]);
+  const { hub, seen } = subscribed();
+  hub.events(
+    [snapshot([withId(1, user('[job abc "x" done] typed')), withId(2, user(report)), withId(4, user("no source"))])],
+    sources,
+  );
+  hub.events([end(withId(3, user("[schedule] wake")))], sources);
+  expect(hub.snapshot().lines).toEqual([
+    { kind: "user", text: '[job abc "x" done] typed' },
+    { kind: "report", jobId: "7", title: "Find", status: "done", text: "Found it." },
+    { kind: "user", text: "no source" },
+    { kind: "note", text: "[schedule] wake" },
+  ]);
+  // Live updates carry the new kinds unchanged.
+  expect(seen.at(-1)).toEqual({ type: "lines", lines: [{ kind: "note", text: "[schedule] wake" }] });
+});
+
+test("startLive passes each batch's sources to the projection", async () => {
+  const watch = { stop: async () => {} };
+  const live = await startLive({
+    root: {
+      events: async (l: (e: readonly AgentEvent[], s: ReadonlyMap<EntryId, InputSource>) => void) => {
+        l([snapshot([{ id: 5, ...user("[japa] Rolled back") }])], new Map([[5 as EntryId, { type: "note" }]]));
+        return watch;
+      },
+    } as never,
+    jobs: async (l) => (l([]), watch),
+    secrets: { pending: async (l: (p: never[]) => void) => (l([]), watch) } as never,
+  });
+  expect(live.snapshot().lines).toEqual([{ kind: "note", text: "[japa] Rolled back" }]);
+  await live.stop();
 });

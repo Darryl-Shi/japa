@@ -5,6 +5,7 @@
   import type { PendingMessage } from "$lib/live.svelte";
   import { renderMarkdown } from "$lib/markdown";
   import { duration } from "$lib/motion";
+  import JobReport from "./JobReport.svelte";
 
   let {
     lines,
@@ -96,7 +97,10 @@
             <div class="markdown">{@html renderMarkdown(line.text)}</div>
           {:else if line.kind === "tool"}
             <span class="chip">{line.text}</span>
+          {:else if line.kind === "report"}
+            <JobReport title={line.title} status={line.status} text={line.text} />
           {:else}
+            <!-- info and note: a muted inline note. -->
             <p class="note">{line.text}</p>
           {/if}
         </li>

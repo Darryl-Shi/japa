@@ -1,16 +1,26 @@
 // The root conversation as the web UI shows it: the same rules as the gateway's (extensions/gateway/transcript.ts),
 // copied rather than imported so extensions stay independent; it also shows text carried on `message_start`.
-import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
+import type { AgentEvent, EntryId, EntryRecord } from "@earendil-works/pi-durable";
+import type { InputSource } from "japa/sdk";
 import type { Line } from "./app/src/lib/protocol.ts";
 
 export type Transcript = { lines: Line[]; streaming: string; busy: boolean };
 
-/** Returns the transcript after `events`; a `snapshot` event resets it. */
-export function applyEvents(t: Transcript, events: readonly AgentEvent[]): Transcript {
+/**
+ * Returns the transcript after `events`; a `snapshot` event resets it. `sources` (the batch's, from
+ * `SurfaceContext.root.events`) tells a person's input from a job report or a kernel note; a user entry without one is
+ * a person's.
+ */
+export function applyEvents(
+  t: Transcript,
+  events: readonly AgentEvent[],
+  sources: ReadonlyMap<EntryId, InputSource> = new Map(),
+): Transcript {
+  const lines = (entry: EntryRecord) => linesOf(entry, sources.get(entry.id));
   for (const e of events) {
     switch (e.type) {
       case "snapshot":
-        t = { lines: e.entries.flatMap(linesOf), streaming: "", busy: e.run !== undefined };
+        t = { lines: e.entries.flatMap(lines), streaming: "", busy: e.run !== undefined };
         break;
       case "message_start":
         // A streamed reply's first text may come with its start rather than as a delta.
@@ -22,7 +32,7 @@ export function applyEvents(t: Transcript, events: readonly AgentEvent[]): Trans
         break;
       }
       case "message_end":
-        t = { ...t, lines: [...t.lines, ...linesOf(e.entry)], streaming: "" };
+        t = { ...t, lines: [...t.lines, ...lines(e.entry)], streaming: "" };
         break;
       case "run_start":
       case "run_end":
@@ -36,11 +46,19 @@ export function applyEvents(t: Transcript, events: readonly AgentEvent[]): Trans
   return t;
 }
 
-function linesOf(entry: EntryRecord): Line[] {
+function linesOf(entry: EntryRecord, source: InputSource | undefined): Line[] {
   // Reset handoffs and compaction summaries are for the model, not the user.
   if (entry.kind === "pi.reset" || entry.kind === "pi.compaction") return [];
   return (entry.model ?? []).flatMap((m): Line[] => {
-    if (m.role === "user") return [{ kind: "user", text: typeof m.content === "string" ? m.content : textOf(m.content) }];
+    if (m.role === "user") {
+      // A person's input is a `user` line; a job's report a `report`, any other kernel input a `note`.
+      if (source?.type === "job_report") {
+        const { jobId, title, status, text } = source;
+        return [{ kind: "report", jobId, title, status, text }];
+      }
+      const text = typeof m.content === "string" ? m.content : textOf(m.content);
+      return [{ kind: source?.type === "note" ? "note" : "user", text }];
+    }
     // A file the CoS sent: the web UI can't deliver it, so show its path on the host.
     if (m.role === "toolResult") {
       const sent = m.toolName === "send_file" && !m.isError;

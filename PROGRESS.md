@@ -1,3 +1,16 @@
+# Progress — job reports and kernel notes not shown as user messages (run-mv99v71i-371c)
+
+- [x] Kernel: `InputSource` (japa/sdk), `sourceOf` (origin.ts), `watchSources` (sources.ts), `root.events` 2nd arg
+- [x] Web UI: `Line` report/note, projection, `JobReport.svelte` + shared `StatusPill.svelte`
+- [x] Gateway: `sources` over the socket, projection, `lineText` (◆ / · / ›)
+- [x] Tests: sources, webui-live, transcript (gateway e2e), webui-app-jobs
+- [x] docs/spec.md (new spec + webui §2.2/§2.5), README (Web UI, japa chat)
+
+Decisions: report header parsed to the first `" <status>]` (status from the fixed job statuses); unknown entries are
+person; gateway `sources` optional in the protocol; clip at 12 lines + 1 line slack. No CI workflow (none in repo).
+
+---
+
 # Progress — Web UI section in `japa setup` (run-mv82d2v6-spil)
 
 - [x] `src/cli/webui-step.ts` (overview, select loop, bind/port/hosts/on-off/reset, validated writes) + rerun menu item

@@ -1,7 +1,7 @@
 // The live hub: one watch each on the root conversation, the jobs and the pending secret requests, fanned out to every
 // open stream as a snapshot, then the smallest update per change.
-import type { AgentEvent } from "@earendil-works/pi-durable";
-import type { Job, SecretRequest, SurfaceContext } from "japa/sdk";
+import type { AgentEvent, EntryId } from "@earendil-works/pi-durable";
+import type { InputSource, Job, SecretRequest, SurfaceContext } from "japa/sdk";
 import type { JobView, LiveEvent, SecretRequestView, Snapshot } from "./app/src/lib/protocol.ts";
 import { applyEvents, type Transcript } from "./transcript.ts";
 
@@ -9,8 +9,8 @@ export type Hub = {
   /** Sends a snapshot now, then every update; `close` when the hub closes. Returns unsubscribe. */
   subscribe(send: (e: LiveEvent) => void, close: () => void): () => void;
   snapshot(): Snapshot;
-  /** Feeds a batch of root conversation events. */
-  events(events: readonly AgentEvent[]): void;
+  /** Feeds a batch of root conversation events, with the sources of its user entries. */
+  events(events: readonly AgentEvent[], sources?: ReadonlyMap<EntryId, InputSource>): void;
   jobs(jobs: Job[]): void;
   secrets(pending: SecretRequest[]): void;
   /** Closes every subscriber; later subscribers are closed at once. */
@@ -84,9 +84,9 @@ export function createHub(): Hub {
       return () => void subscribers.delete(send);
     },
     snapshot: () => ({ ...state }),
-    events(events) {
+    events(events, sources) {
       const before: Transcript = state;
-      const after = applyEvents(before, events);
+      const after = applyEvents(before, events, sources);
       state = { ...state, lines: after.lines, streaming: after.streaming, busy: after.busy, connected: true };
       broadcast(transcriptUpdates(before, after, events.some((e) => e.type === "snapshot")));
     },
@@ -126,7 +126,7 @@ export async function startLive(
     await Promise.all(watches.splice(0).map((w) => w.stop()));
   };
   try {
-    watches.push(await ctx.root.events((events) => hub.events(events)));
+    watches.push(await ctx.root.events((events, sources) => hub.events(events, sources)));
     watches.push(await ctx.jobs((jobs) => hub.jobs(jobs)));
     watches.push(await ctx.secrets.pending((pending) => hub.secrets(pending)));
   } catch (error) {
