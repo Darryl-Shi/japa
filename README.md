@@ -263,7 +263,9 @@ japa chat       # terminal 2: chat with the CoS
 In `japa chat`: Enter sends (while the CoS is replying, it steers the reply); Esc stops the current reply;
 Ctrl-C quits the chat (the daemon keeps running). When an extension asks for a secret, a masked prompt replaces
 the editor; Enter submits it, Esc hides it (it comes back when the pending requests change), and Ctrl-X declines
-the request, which tells the CoS you said no.
+the request, which tells the CoS you said no. Your messages (and those from other surfaces) show after `› `; a
+job's report shows under `◆ job "<title>" <status>`, and japa's own notes (schedule wakes, secret notes) are muted
+lines after `· `.
 
 ### Docker instances
 
@@ -344,7 +346,8 @@ japa enters safe mode by itself after three crashes within five minutes. A setup
 
 japa also serves a chat app in your browser, on by default, at **http://127.0.0.1:7337**. It shows the same
 conversation as `japa chat` and Telegram — messages from any of them, the CoS's replies streaming in, tool calls,
-job reports — plus a live Jobs panel, a Desktop panel, Settings and a card for pending secret requests. Enter sends (while
+job reports (each a "Job report" card with the job's title, a status pill and the report, long ones folded behind
+Show more), and japa's own notes such as schedule wakes as muted lines — plus a live Jobs panel, a Desktop panel, Settings and a card for pending secret requests. Enter sends (while
 the CoS is replying, it steers the reply), Shift+Enter adds a line, Stop or Esc stops the reply. Any number of
 tabs and devices can be open; they all stay in sync, and reconnect on their own after a restart.
 
