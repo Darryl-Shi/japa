@@ -1,11 +1,12 @@
 // The Desktop panel's websocket: proxied by the web UI's server to the desktop's websockify.
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
 import { DESKTOP_VIEW_KEY, type DesktopViewHandle } from "../extensions/webui/app/src/lib/protocol.ts";
 import { webuiExtension } from "../extensions/webui/index.ts";
+import { webuiCommand } from "../src/cli/webui-users.ts";
 import { bootTest } from "./helpers.ts";
 
 const autostart = process.env.JAPA_WEBUI_AUTOSTART;
@@ -63,8 +64,21 @@ async function bootWebui() {
   const booted = await bootTest({ extensions: { webui: { port: 0 }, desktop: { autostart: false } } }, [webuiExtension({ buildDir: fakeBuild() })]);
   const line = booted.daemon.status().extensions.find((e) => e.name === "webui")?.status ?? "";
   const port = Number(/127\.0\.0\.1:(\d+)/.exec(line)?.[1]);
-  const token = readFileSync(join(booted.home, "secrets", "webui.token"), "utf8");
-  const signIn = await fetch(`http://127.0.0.1:${port}/?token=${token}`, { redirect: "manual" });
+  await webuiCommand(booted.home, ["users", "add", "alice", "--password-stdin"], {
+    isTTY: false,
+    readStdin: async () => "alice-password\n",
+    askSecret: async () => {
+      throw new Error("no terminal");
+    },
+    log: () => {},
+  });
+  const base = `http://127.0.0.1:${port}`;
+  const signIn = await fetch(`${base}/login`, {
+    method: "POST",
+    headers: { origin: base },
+    body: new URLSearchParams({ username: "alice", password: "alice-password" }),
+    redirect: "manual",
+  });
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0]!;
   return { ...booted, port, cookie };
 }
@@ -183,24 +197,40 @@ test("the bridge's desktop view: unavailable without the handle; state and passw
   await daemon.close();
 });
 
-test("a new token (everyone signed out) closes the open proxied connections", async () => {
+test("a new password or a removed user (signed out) closes their open proxied connections", async () => {
   const { createServer: createHttp } = await import("node:http");
   const { desktopProxy } = await import("../extensions/webui/server.ts");
   const { sessionCookie } = await import("../extensions/webui/auth.ts");
   const websockify = await fakeWebsockify();
-  let token = "first-token";
-  const proxy = desktopProxy({ bind: "127.0.0.1", token: async () => token, desktop: () => handleFor(websockify.port), recheckMs: 50 });
+  const key = "session-key";
+  let users = [
+    { name: "alice", stamp: "stamp-a" },
+    { name: "bob", stamp: "stamp-b" },
+  ];
+  const proxy = desktopProxy({
+    bind: "127.0.0.1",
+    users: async () => ({ ok: true, users: users as never }),
+    sessionKey: async () => key,
+    desktop: () => handleFor(websockify.port),
+    recheckMs: 50,
+  });
   const server = createHttp((_req, res) => res.end());
   server.on("upgrade", proxy.upgrade);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
-  const cookie = sessionCookie(token, Date.now()).split(";")[0]!;
-  const c = await upgrade(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
-  await vi.waitFor(() => expect(websockify.sockets.size).toBe(1));
+  const origin = `http://127.0.0.1:${port}`;
+  const cookieOf = (u: { name: string; stamp: string }) => sessionCookie(key, u, Date.now()).split(";")[0]!;
+  const a = await upgrade(port, { Origin: origin, Cookie: cookieOf(users[0]!) });
+  const b = await upgrade(port, { Origin: origin, Cookie: cookieOf(users[1]!) });
+  await vi.waitFor(() => expect(websockify.sockets.size).toBe(2));
   await new Promise((resolve) => setTimeout(resolve, 150));
-  expect(c.closed()).toBe(false); // still signed in
-  token = "second-token";
-  await vi.waitFor(() => expect(c.closed()).toBe(true));
+  expect([a.closed(), b.closed()]).toEqual([false, false]); // still signed in
+  users = [{ name: "alice", stamp: "new-stamp" }, users[1]!]; // passwd alice
+  await vi.waitFor(() => expect(a.closed()).toBe(true));
+  await vi.waitFor(() => expect(websockify.sockets.size).toBe(1));
+  expect(b.closed()).toBe(false);
+  users = [users[0]!]; // remove bob
+  await vi.waitFor(() => expect(b.closed()).toBe(true));
   await vi.waitFor(() => expect(websockify.sockets.size).toBe(0));
   proxy.close();
   await new Promise((resolve) => server.close(resolve));

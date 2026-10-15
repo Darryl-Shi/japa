@@ -9,6 +9,7 @@
     desktopOpen,
     settingsOpen,
     wide,
+    user,
     onjobs,
     ondesktop,
     onsettings,
@@ -21,6 +22,8 @@
     settingsOpen: boolean;
     /** Full width (a docked panel or the Settings page is open), not the chat column. */
     wide: boolean;
+    /** The signed-in user's name. */
+    user: string;
     onjobs: (e: MouseEvent) => void;
     ondesktop: (e: MouseEvent) => void;
     onsettings: (e: MouseEvent) => void;
@@ -73,6 +76,12 @@
         </svg>
       </button>
     </nav>
+    <form class="account" method="POST" action="/logout">
+      {#if user}
+        <span class="user" title="Signed in as {user}"><span class="visually-hidden">Signed in as </span>{user}</span>
+      {/if}
+      <button class="btn ghost" type="submit">Sign out</button>
+    </form>
   </div>
 </header>
 
@@ -158,6 +167,30 @@
     margin-left: auto;
     display: flex;
     gap: 0.25rem;
+  }
+
+  .account {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--border);
+  }
+
+  .user {
+    max-width: 8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 480px) {
+    .user {
+      display: none;
+    }
   }
 
   .badge {

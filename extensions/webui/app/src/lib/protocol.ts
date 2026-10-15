@@ -4,6 +4,20 @@
 /** `Symbol.for(BRIDGE_KEY)` on `globalThis` holds the live `WebuiBridge`; the surface sets it on every start(). */
 export const BRIDGE_KEY = "japa.webui.bridge";
 
+/**
+ * `Symbol.for(REQUEST_KEY)` on each Node request (`event.platform.req` under adapter-node) holds the `WebuiRequest`
+ * the surface's session gate worked out; `hooks.server.ts` copies it to `event.locals`.
+ */
+export const REQUEST_KEY = "japa.webui.request";
+
+/** What the session gate knows about a request: who is signed in, and whether anyone can be. */
+export type WebuiRequest = {
+  /** The signed-in user's name; absent without a valid session. */
+  user?: string;
+  /** Whether web UI users exist: "none" yet, "some", or the users file is "unreadable" (nobody can sign in). */
+  users: "none" | "some" | "unreadable";
+};
+
 /** One transcript line, projected from the root conversation as `japa chat` does. */
 export type Line = { kind: "user" | "assistant" | "tool" | "info"; text: string };
 
@@ -270,8 +284,14 @@ export interface WebuiBridge {
  * - GET  /api/desktop/ws             websocket upgrade, proxied to the desktop's websockify (handled by the surface's
  *                                    server before the app: session cookie, Host and same Origin required)
  * Invalid input: 4xx with `{ error: string }`.
- * Sign-in (handled by the surface's own server, before the app): GET /login (the app's page), POST /login with a
- * form field `token` (303 to / with the cookie, or to /login?error=1), and /?token=<token> (303 to / without it).
+ * Sign-in and sign-out (handled by the surface's own server, before the app; POSTs need a same-origin `Origin`):
+ * - GET  /login    the app's page; `locals.users` says whether to show the form or "no web UI users yet"
+ * - POST /login    form fields `username`, `password` (body ≤ 4 KB) → 303 to / with the session cookie, or to
+ *                  /login?error=1 (one generic "Wrong username or password."); 429 after 10 failures a minute
+ *                  from one address
+ * - POST /logout   (signed in) → 303 to /login, clearing this browser's session cookie
+ * The signed-in user's name reaches the app as `event.locals.user` (see `REQUEST_KEY`); the chat page's server
+ * load returns it as `data.user`.
  */
 export const API = {
   events: "/api/events",
@@ -302,4 +322,5 @@ export const API = {
   desktopStart: "/api/desktop/start",
   desktopWs: "/api/desktop/ws",
   login: "/login",
+  logout: "/logout",
 } as const;

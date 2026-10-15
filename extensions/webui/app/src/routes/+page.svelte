@@ -13,6 +13,9 @@
   import DesktopPanel from "$lib/components/DesktopPanel.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import type { Section } from "$lib/components/settings/sections";
+  import type { PageProps } from "./$types";
+
+  let { data }: PageProps = $props();
 
   const live = new Live();
   $effect(() => live.start());
@@ -75,6 +78,7 @@
   {desktopOpen}
   {settingsOpen}
   wide={settingsWide || desktopDocked}
+  user={data.user}
   onjobs={() => (jobsOpen = true)}
   ondesktop={() => (desktopOpen = !desktopOpen)}
   onsettings={toggleSettings}

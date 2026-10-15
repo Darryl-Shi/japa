@@ -146,3 +146,33 @@ Decisions:
 - `admin.tool` only runs `schedule_*` tools.
 - Sign-in flows are polled by the starting tab (GET /api/signin/<id>, ~1 s).
 - Round 2: F1 desktop handle `enabled()` → webui treats off as unavailable (view/start/ws) + tests. F3 run.sh writes a starter settings.json when none exists (dev script only; kernel unchanged).
+
+---
+
+# Progress: web UI password users (run-mv82cc59-8jx1)
+
+- [x] `extensions/webui/users.ts` (file, scrypt N=2^15 r=8 p=1, stamps, atomic writes, mtime-cached store),
+      `auth.ts` (per-user session cookie `<name>.<expiry>.<mac>`, throttle, dummy hash), `server.ts` (POST /login
+      username/password, 429, POST /logout, username to the app), `index.ts` (`webui.session-key`, status lines).
+- [x] CLI `japa webui users add|passwd|remove|list` (`src/cli/webui-users.ts`), usage text; `/webui/` in IGNORED.
+- [x] App: login page (username/password, no-users page, unreadable note), top bar user + Sign out, locals.user via
+      `event.platform.req[Symbol.for("japa.webui.request")]`, chat page's `+page.server.ts` returns `{ user }`.
+- [x] Tests: test/webui-users.test.ts (real CLI, --password-stdin), webui-server/webui tests rewritten, install-docker
+      message asserts, job-sandboxes test that a job can't read webui/users.json (skips here: no userns for bwrap).
+- [x] Docs: README, AGENTS.md, docs/spec.md, install.sh messages, scripts/run.sh comment.
+- [x] Manual e2e: real daemon + curl + headless Chromium (sign in, wrong password, reload, sign out → 401, passwd → 401,
+      throttle 429, ?token= ignored).
+
+Decisions:
+- `.gitignore` line is `/webui/` (anchored), not `webui/`: unanchored would also ignore a component's `extensions/webui/`.
+- The CLI runs `ensureWorkspace(home)` before writing, so the ignore line exists even before the daemon restarts.
+- The status line is read synchronously (`loadSync`, cached by stat), so `japa status` follows the file with no restart.
+- Malformed-file reason is "not valid JSON" without the parser's message (it would quote hashes).
+- Login page with an unreadable users file still shows the form plus a note pointing at `japa status`.
+- The Docker upgrade message also mentions `webui users add` (instances upgraded from the token era need a user).
+- `--password-stdin` reads only the first line; interactive input validates the first entry before asking again.
+- No CI workflow: the spec doesn't ask for one (as before).
+- [x] Round 2: F1 throttle reserves a slot before scrypt (parallel guesses capped at 10; test); F2 dummy hash made at pipeline creation.
+- [x] Integration with run-mv82kuec-kxa9 (bundle-21): the Desktop websocket proxy checks the per-user session
+      (users + session key) instead of the token, and its 30 s recheck ends a connection on passwd/remove/new key;
+      the top bar keeps Jobs, Desktop, Settings plus the user and Sign out.

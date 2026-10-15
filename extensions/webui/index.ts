@@ -15,12 +15,13 @@ import {
   Type,
 } from "japa/sdk";
 import { BRIDGE_KEY, type DesktopView, type WebuiBridge } from "./app/src/lib/protocol.ts";
-import { generateToken } from "./auth.ts";
+import { generateSessionKey } from "./auth.ts";
 import { startLive } from "./live.ts";
 import { desktopHandle, desktopProxy, type Handler, hostPort, pipeline } from "./server.ts";
 import { settingsBridge } from "./settings.ts";
+import { usersFile, userStore, type UsersResult } from "./users.ts";
 
-export const TOKEN_SECRET = "webui.token";
+export const SESSION_KEY_SECRET = "webui.session-key";
 const DEFAULT_BIND = "127.0.0.1";
 const DEFAULT_PORT = 7337;
 const BUILD_DIR = fileURLToPath(new URL("./build", import.meta.url));
@@ -59,9 +60,14 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
   const buildDir = options.buildDir ?? BUILD_DIR;
   let kernel: KernelContext | undefined;
   let line: string | undefined;
+  /** While listening: the status line for the users as last read, and the store to read them from. */
+  let lineOf: ((users: UsersResult) => string) | undefined;
+  let statusStore: ReturnType<typeof userStore> | undefined;
 
   async function start(ctx: SurfaceContext): Promise<Dispose> {
     line = undefined;
+    lineOf = undefined;
+    statusStore = undefined;
     if (kernel === undefined) throw new Error("setup did not run");
     const settings = kernel.settings();
     // JAPA_WEBUI_AUTOSTART=0 turns it off for a process (the test suite's many daemons).
@@ -70,7 +76,8 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     const port = typeof settings.port === "number" ? settings.port : DEFAULT_PORT;
     const hosts = Array.isArray(settings.hosts) ? settings.hosts.filter((h): h is string => typeof h === "string") : [];
     const k = kernel;
-    if ((await k.secret(TOKEN_SECRET)) === undefined) await k.setSecret(TOKEN_SECRET, generateToken());
+    const key = await k.secret(SESSION_KEY_SECRET);
+    if (key === undefined || key.trim() === "") await k.setSecret(SESSION_KEY_SECRET, generateSessionKey());
 
     const handlerPath = join(buildDir, "handler.js");
     if (!existsSync(handlerPath)) {
@@ -101,9 +108,11 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     bridgeSlot[BRIDGE] = bridge;
 
     let bound = port;
-    const token = async () => (await k.secret(TOKEN_SECRET))?.trim();
-    const server: Server = createServer(pipeline({ bind, hosts, token, handler }));
-    const proxy = desktopProxy({ bind, hosts, token });
+    const store = userStore(ctx.home);
+    const users = () => store.load();
+    const sessionKey = async () => (await k.secret(SESSION_KEY_SECRET))?.trim();
+    const server: Server = createServer(pipeline({ bind, hosts, users, sessionKey, handler }));
+    const proxy = desktopProxy({ bind, hosts, users, sessionKey });
     server.on("upgrade", proxy.upgrade);
     const stop = async () => {
       live.close(); // ends every open stream
@@ -124,11 +133,20 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     server.on("error", () => {}); // past listening, nothing to report
     const address = server.address();
     if (address !== null && typeof address === "object") bound = address.port;
-    const tokenFile = tilde(join(ctx.home, "secrets", TOKEN_SECRET));
-    line = `http://${hostPort(bind, bound)} — sign in with the token in ${tokenFile}`;
+    const url = `http://${hostPort(bind, bound)}`;
+    const file = tilde(usersFile(ctx.home));
+    lineOf = (users) =>
+      !users.ok
+        ? `${url} — can't read ${file}: ${users.error}`
+        : users.users.length === 0
+          ? `${url} — no users yet: run japa webui users add <name>`
+          : `${url} — sign in as a web UI user (${users.users.length} ${users.users.length === 1 ? "user" : "users"})`;
+    statusStore = store;
 
     return async () => {
       line = undefined;
+      lineOf = undefined;
+      statusStore = undefined;
       await stop();
     };
   }
@@ -141,8 +159,9 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     provides: { surface: [webui] },
     secrets: [
       {
-        name: TOKEN_SECRET,
-        description: "Access token for signing in to the web UI (generated on first start if unset)",
+        name: SESSION_KEY_SECRET,
+        description:
+          "Key that signs web UI session cookies (generated on first start if unset; changing it signs everyone out)",
         generated: true,
       },
     ],
@@ -162,7 +181,7 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     setup: (ctx) => {
       kernel = ctx;
     },
-    status: () => line,
+    status: () => (lineOf !== undefined && statusStore !== undefined ? lineOf(statusStore.loadSync()) : line),
   });
 }
 

@@ -38,8 +38,9 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
 
 ## Running product
 
-- Web UI: http://127.0.0.1:7337 (settings `extensions.webui.bind` / `.port`); token in `~/.japa/secrets/webui.token`
-  (or `$JAPA_HOME/secrets/webui.token`). Sign in with `/?token=<token>`.
+- Web UI: http://127.0.0.1:7337 (settings `extensions.webui.bind` / `.port`). Create a user with
+  `scripts/run.sh webui users add <name>` (or `echo '<password>' | scripts/run.sh webui users add <name> --password-stdin`;
+  same `JAPA_HOME` as the daemon, no restart needed), then sign in with that name and password.
 - `japa chat` talks to the daemon over `<home>/japa.sock`; `japa status` prints extension status lines.
   Telegram is the default messaging adapter.
 - Desktop: the web UI's Desktop panel (proxied, no 6080 needed); noVNC: http://127.0.0.1:6080/vnc.html (natively), or http://127.0.0.1:<desktop port>/vnc.html for a Docker
@@ -59,9 +60,10 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
 - `src/sdk.ts` — the public `japa/sdk` for extensions
 - `extensions/` — packaged extensions: `telegram/` (messaging adapter: `updates.ts` inbound, `api.ts` Bot API incl.
   multipart, `index.ts` send/sendFile), `gateway/` (the `japa chat` surface), providers, schedule, google, `webui`:
-  - `extensions/webui/index.ts` — manifest + surface (token, status line, HTTP server, bridge on `Symbol.for("japa.webui.bridge")`)
-  - `extensions/webui/server.ts` — Host/Origin checks, security headers, sign-in, session gate in front of SvelteKit
-  - `extensions/webui/auth.ts` — token + HMAC session cookies; `live.ts` + `transcript.ts` — live hub / projection
+  - `extensions/webui/index.ts` — manifest + surface (session key, status line, HTTP server, bridge on `Symbol.for("japa.webui.bridge")`)
+  - `extensions/webui/server.ts` — Host/Origin checks, security headers, sign-in/out, throttle, session gate in front of SvelteKit
+  - `extensions/webui/users.ts` — `<home>/webui/users.json` (scrypt hashes, session stamps); `src/cli/webui-users.ts` — `japa webui users`
+  - `extensions/webui/auth.ts` — per-user HMAC session cookies, sign-in throttle; `live.ts` + `transcript.ts` — live hub / projection
   - `extensions/webui/settings.ts` (Settings over the kernel's `SurfaceContext.admin`, built in `src/kernel/admin.ts`),
     `flows.ts` (provider/extension sign-in flows), `server.ts` `desktopProxy` (the Desktop panel's websocket to noVNC;
     the desktop publishes its handle on `Symbol.for("japa.desktop.view")`)

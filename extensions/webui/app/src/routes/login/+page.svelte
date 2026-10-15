@@ -1,6 +1,8 @@
 <script lang="ts">
   import { page } from "$app/state";
+  import type { PageProps } from "./$types";
 
+  let { data }: PageProps = $props();
   const failed = $derived(page.url.searchParams.has("error"));
 </script>
 
@@ -9,25 +11,47 @@
 </svelte:head>
 
 <main class="login">
-  <form class="card" method="POST" action="/login">
-    <h1 class="wordmark">japa</h1>
-    <label class="label" for="token">Access token</label>
-    <input
-      class="field"
-      id="token"
-      name="token"
-      type="password"
-      autocomplete="current-password"
-      required
-      aria-describedby={failed ? "token-hint token-error" : "token-hint"}
-      aria-invalid={failed ? "true" : undefined}
-    />
-    {#if failed}
-      <p class="error" id="token-error" role="alert">That token didn't work.</p>
-    {/if}
-    <button class="btn primary submit" type="submit">Sign in</button>
-    <p class="hint" id="token-hint">The token is in <code>~/.japa/secrets/webui.token</code> on the machine running japa.</p>
-  </form>
+  {#if data.users === "none"}
+    <section class="card">
+      <h1 class="wordmark">japa</h1>
+      <p class="empty">No web UI users yet.</p>
+      <p class="hint">On the machine running japa, run <code>japa webui users add &lt;name&gt;</code>, then reload this page.</p>
+    </section>
+  {:else}
+    <form class="card" method="POST" action="/login">
+      <h1 class="wordmark">japa</h1>
+      <label class="label" for="username">Username</label>
+      <input
+        class="field"
+        id="username"
+        name="username"
+        type="text"
+        autocomplete="username"
+        autocapitalize="none"
+        spellcheck="false"
+        required
+        aria-invalid={failed ? "true" : undefined}
+      />
+      <label class="label second" for="password">Password</label>
+      <input
+        class="field"
+        id="password"
+        name="password"
+        type="password"
+        autocomplete="current-password"
+        required
+        aria-describedby={failed ? "login-error" : undefined}
+        aria-invalid={failed ? "true" : undefined}
+      />
+      {#if failed}
+        <p class="error" id="login-error" role="alert">Wrong username or password.</p>
+      {/if}
+      <button class="btn primary submit" type="submit">Sign in</button>
+      {#if data.users === "unreadable"}
+        <p class="hint">japa can't read its web UI users file, so nobody can sign in: see <code>japa status</code>.</p>
+      {/if}
+    </form>
+  {/if}
 </main>
 
 <style>
@@ -63,6 +87,16 @@
     margin-bottom: 0.4rem;
     font-size: var(--text-sm);
     font-weight: 500;
+  }
+
+  .second {
+    margin-top: 0.9rem;
+  }
+
+  .empty {
+    margin: 0;
+    font-weight: 500;
+    text-align: center;
   }
 
   .error {

@@ -1,5 +1,5 @@
 import type { Handle } from "@sveltejs/kit";
-import { BRIDGE_KEY, type WebuiBridge } from "$lib/protocol";
+import { BRIDGE_KEY, REQUEST_KEY, type WebuiBridge, type WebuiRequest } from "$lib/protocol";
 
 /**
  * `csp` with the same-origin websocket (the Desktop panel's `/api/desktop/ws`, at `ws://<host>`) added to its
@@ -26,6 +26,12 @@ export const handle: Handle = async ({ event, resolve }) => {
     });
   }
   event.locals.webui = bridge;
+  // What the surface's session gate found for this request (adapter-node's platform carries the Node request).
+  const info = (event.platform?.req as unknown as Record<symbol, WebuiRequest | undefined> | undefined)?.[
+    Symbol.for(REQUEST_KEY)
+  ];
+  event.locals.user = info?.user;
+  event.locals.users = info?.users ?? "some";
   const response = await resolve(event);
   const csp = response.headers.get("content-security-policy");
   if (csp !== null && /(^|;)\s*connect-src/i.test(csp)) {

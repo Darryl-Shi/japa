@@ -1,6 +1,6 @@
 # japa: current changes
 
-This file carries six specs, each the contract for its ticket: the Web UI section in `japa setup`, web UI Settings, Desktop view and no Status sheet (run-mv82kuec-kxa9), the installer menu (Install / Update / Uninstall, JAPA-4), the `webui` browser chat surface (JAPA-2), files in and out (JAPA-1), and Docker hosting (JAPA-3).
+This file carries six specs, each the contract for its ticket: the Web UI section in `japa setup`, web UI Settings, Desktop view and no Status sheet (run-mv82kuec-kxa9), the installer menu (Install / Update / Uninstall, JAPA-4), the `webui` browser chat surface (JAPA-2, since extended with password users, JAPA-5), files in and out (JAPA-1), and Docker hosting (JAPA-3).
 
 # japa: a "Web UI" section in `japa setup`
 
@@ -311,7 +311,7 @@ The following stay as they are:
   (403), same `Origin` (403), session (401), desktop loaded (503); then it forwards the upgrade to
   `<target>/websockify` without the cookie, Origin or Referer and pipes bytes. Open connections are closed when the
   surface stops, when the panel's socket closes, and when their session stops being valid (rechecked every 30 s,
-  so a new token — signing everyone out — ends them). The page CSP's `connect-src` gets `ws://<host>` added by
+  against the current users and session key, so `passwd`, `remove` or a new session key ends them). The page CSP's `connect-src` gets `ws://<host>` added by
   `hooks.server.ts`.
 - **Desktop handle** (`extensions/desktop/index.ts`): turning the desktop off (`extensions.desktop.enabled: false`)
   hides it from the CoS but doesn't unload it, so the handle has `enabled()`; the web UI treats a turned-off desktop as
@@ -324,7 +324,8 @@ The following stay as they are:
   mid-flow cancels the flow.
 - An update started from Settings is recorded with chat `{ adapter: "webui", chat: "web" }`; no messaging adapter
   reports it, the Update section shows its outcome.
-- There is no sign-out button; sessions end when the token changes.
+- Signing out (the top bar's Sign out) clears that browser's cookie; `japa webui users passwd`/`remove` end a user's
+  sessions, and a new session key ends everyone's.
 - `scripts/run.sh` (the dev run script, not the product) writes a starter `settings.json` (the CoS on
   `anthropic/claude-sonnet-4-5`, no credentials) when the home has none, so a fresh checkout boots and a provider can be
   connected from Settings. The kernel still refuses to boot without `models.cos`.
@@ -515,22 +516,26 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
   - `enabled`: the kernel's standard key. `false` turns the extension off.
 
   A change takes effect when the surface next starts (a daemon restart or extension reload). The extension needs nothing to be set up, so it is **available by default**, and `japa setup`'s first run and Integrations step don't ask about it; a rerun's **Web UI** section (see "japa: a Web UI section in `japa setup`" above) shows and changes these settings.
-- **Access token:** a secret `webui.token`, declared with `generated: true`. On first start, if unset, the extension generates a random value of at least 32 bytes (URL-safe) and stores it in `~/.japa/secrets/webui.token`.
-  - Every request other than the sign-in page and its static assets needs a valid session cookie. The cookie is `HttpOnly`, `SameSite=Strict`, path `/`, and set only after the token has been presented.
-  - There are two ways to present it: pasting it into the sign-in page's single field, or opening `/?token=<token>`. The second sets the cookie and redirects to `/` with the token stripped from the URL.
-  - A wrong token gets a generic error.
-  - Changing the token (deleting the file and restarting, or setting a new value) invalidates existing sessions.
+- **Web UI users** (password users; this replaced the original single access token `webui.token`, which is no longer declared or read — a leftover `secrets/webui.token` is ignored and may be deleted). All users see the same single conversation, jobs, status and secret requests: they are separate logins, not separate workspaces.
+  - **CLI:** `japa webui users add <name> [--password-stdin]` (asks for the password twice, masked, via the clack prompter; refuses an existing name), `passwd <name> [--password-stdin]` (new password; ends all that user's sessions), `remove <name>` (ends all that user's sessions), `list` (one line per user: name and creation time, never hashes; `no web UI users` plus how to add one when empty). `--password-stdin` reads the first line of stdin, without confirmation; with no terminal and no `--password-stdin`, `add` and `passwd` fail with a clear message. Names: 1–32 characters matching `[a-z0-9][a-z0-9._-]*`, lower-cased on input (case-insensitive). Passwords: 8–1024 characters. Mismatched confirmations, invalid names or passwords, and unknown names for `passwd`/`remove` exit 1 with a message. It works on the japa home directly (no daemon needed); the running daemon sees changes on its next request. For a Docker instance: `japa --instance <n> webui users add <name>`.
+  - **Storage:** `<home>/webui/users.json` (dir mode 700, file mode 600), `/webui/` in the home's ignored `.gitignore` lines, so it's never in git, job clones or their sandboxes. Each record: name, creation time, an scrypt hash (Node `crypto.scrypt`, per-user random 16-byte salt, parameters stored per record, N=2^15, r=8, p=1) and a random per-user session stamp that `passwd` regenerates. Writes are atomic (temp file + rename, mode 600); the CLI refuses to modify a file it can't parse. The daemon reads the file on sign-in and session checks (cached by mtime/size), with async scrypt. A missing file is no users; a malformed one means nobody can sign in.
+  - **Sign-in:** `/login` shows username and password fields (`autocomplete="username"` / `"current-password"`), or, with no users, says to run `japa webui users add <name>` on the machine running japa. `POST /login` (form fields `username`, `password`; 4 KB body limit; Origin-checked) sets the session cookie and 303s to `/`, or 303s to `/login?error=1`, which shows one generic "Wrong username or password." An unknown name is checked against a dummy scrypt hash so timing doesn't reveal names. Failed sign-ins are throttled in memory per client address: after 10 failures in a rolling minute, `POST /login` gets 429 until the window passes; a success clears the count. `?token=` is an ordinary query parameter.
+  - **Sessions:** the cookie `japa_webui_session` (`HttpOnly; SameSite=Strict; Path=/`, 30 days, stateless) is `<name>.<expiry>.<mac>`, `mac = HMAC-SHA256(sessionKey, "webui-session:<name>:<expiry>:<stamp>")`. Valid only while the user exists, the expiry is in the future and the MAC matches the user's current stamp: `remove` and `passwd` end that user's sessions at once, others are unaffected, and sessions survive restarts. The session key is a generated secret `webui.session-key` (`generated: true`, 32 random bytes, created on first start if unset); changing or deleting it and restarting signs everyone out. Old two-part cookies are invalid.
+  - **Sign out:** `POST /logout` (Origin-checked, session required) clears the cookie and 303s to `/login`. The top bar shows the signed-in username and a Sign out button; it clears only that browser's cookie.
+  - The session gate hands the signed-in username to the app (`event.locals.user`). Every request other than the sign-in page and its static assets needs a valid session cookie. Submissions keep the origin `{ surface: "webui", chat: "web" }`.
 - **Request checks:**
   - Requests are refused unless their `Host` header names this server, which defends against DNS rebinding: `localhost`, `127.0.0.1`, the bound address or a name in `hosts`, or any IP literal (IPv4, or IPv6 in brackets). The port isn't checked (any port, or none), so an SSH tunnel to another local port and a port published by Docker work. IP literals are safe to accept because DNS rebinding always arrives with the attacker's domain name in `Host`, never a bare address; that also lets a LAN or VPN address reach a server that doesn't know it (a Docker instance's published port). A missing `Host`, a foreign name, and a name that merely starts with an address (`10.1.2.3.evil.example`) are refused.
   - State-changing requests must carry a matching `Origin`: `http://` followed by the `Host` header as sent.
   - Responses send a strict Content-Security-Policy: self only, no inline script beyond what SvelteKit's own CSP support hashes, and no third-party origins.
   - The page makes **no external network requests**: no CDNs and no web fonts fetched from the internet.
 - **Status line:** the extension's `status()` line, shown under `webui` in `japa status` and Telegram's `/status`, is one of:
-  - `http://<bind>:<port> — sign in with the token in ~/.japa/secrets/webui.token`
+  - `http://<bind>:<port> — sign in as a web UI user (N users)`
+  - `http://<bind>:<port> — no users yet: run japa webui users add <name>`
+  - `http://<bind>:<port> — can't read ~/.japa/webui/users.json: <reason>` (the home written with `~`)
   - `not built — run npm run build in <app dir>`
   - `can't listen on <bind>:<port>: <reason>`
 
-  In the last two cases the surface stays down and the daemon and other surfaces keep running. The token itself is never put in status output.
+  In the last two cases the surface stays down and the daemon and other surfaces keep running. The line follows the users file without a restart, and never contains a password, hash, stamp or session key.
 
 ### 2.4 Rendering and safety
 - Assistant text is rendered as markdown with `marked` (already a dependency): headings, lists, task lists, code blocks (monospace, horizontally scrollable, with a copy button), tables, quotes and links.
@@ -559,15 +564,18 @@ The change is theme only. It uses no generative UI and no OpenUI Lang, and the C
 - An expired or invalid session sends the page back to the sign-in screen.
 
 ## 3. Docs
-- The README gains a **Web UI** section covering the URL, where the token is, the `bind` / `port` settings, SSH tunnelling (`ssh -L 7337:localhost:7337 <server>`) and Tailscale.
-- The Development section adds `npm run build`, and the "Where state lives" section notes `webui.token`.
+- The README gains a **Web UI** section covering the URL, signing in (web UI users and the `japa webui users` commands), the `bind` / `port` settings, SSH tunnelling (`ssh -L 7337:localhost:7337 <server>`) and Tailscale; the command table lists `japa webui users …`, and the Docker instances paragraph uses `japa --instance <name> webui users add <name>`.
+- The Development section adds `npm run build`, and the "Where state lives" section notes `webui/users.json`, `secrets/webui.session-key`, and that `webui.token` is obsolete.
+- `install.sh`'s Docker install message (and its upgrade message) point at `japa --instance <name> webui users add <name>`.
 - `docs/spec.md` is updated to describe the `webui` surface.
 
 ## Acceptance behaviours
 
-1. With a fresh `npm ci` and a running daemon, `japa status` lists `webui` with `http://127.0.0.1:7337 — sign in with the token in ~/.japa/secrets/webui.token`, and that file exists with mode 600.
-2. Opening `http://127.0.0.1:7337/` without a session shows only a minimal sign-in page. A wrong token is refused. Opening `/?token=<token>` lands on the chat at `/` with the token gone from the address bar, and reloading keeps you signed in.
-3. Requests to the API or live stream without a session cookie get 401. A request with a foreign `Host` header (a DNS name not in `hosts`) is refused, one addressed to an IP literal on any port is served, and a POST with a foreign `Origin` is refused.
+1. With a fresh `npm ci` and a running daemon, `japa status` lists `webui` with `http://127.0.0.1:7337 — no users yet: run japa webui users add <name>`, the sign-in page says the same, and no `secrets/webui.token` is created.
+2. `japa webui users add alice` asks for the password twice (mismatches rejected); `list` then shows `alice` and `japa status` reports 1 user without a restart. `~/.japa/webui/users.json` is mode 600, holds no plaintext password, and is ignored by git. `echo 'secret123' | japa webui users add carol --password-stdin` works without a terminal; without `--password-stdin` and with no terminal, it fails with a clear message.
+2a. Signing in as `alice` lands on the chat with `alice` in the top bar; reloading keeps you signed in. A wrong password or unknown user shows "Wrong username or password.". After 10 failures within a minute from one address, the next attempt gets 429, even with the right password, until the minute passes. `/?token=<anything>` without a session redirects to sign-in. Sign out returns to sign-in, and `/api/status` then gives 401 in that browser.
+2b. `japa webui users passwd alice` sends every alice browser back to sign-in on its next request or reconnect, while bob stays signed in; the new password works, the old one doesn't. `remove bob` ends bob's session the same way. Unknown names exit 1. Restarting the daemon keeps users signed in. Two users signed in at once share the same live conversation and jobs. For a Docker instance, `japa --instance <n> webui users add <name>` creates a user that signs in at the instance's web UI URL.
+3. Requests to the API or live stream without a session cookie get 401. A request with a foreign `Host` header (a DNS name not in `hosts`) is refused, one addressed to an IP literal on any port is served, and a POST (including to `/login` or `/logout`) with a foreign `Origin` is refused.
 4. Typing a message and pressing Enter shows it as a right-aligned grey bubble. The CoS's reply streams in token by token as rendered markdown, and the busy indicator shows "thinking…" until it finishes.
 5. While a reply streams, the send button reads Stop. Clicking it, or pressing Esc, stops the reply. Sending another message mid-reply steers it.
 6. A message sent from `japa chat` or Telegram, and its reply, appear live in an open web tab, and vice versa. A reply to a web message is not sent to Telegram.
@@ -594,10 +602,24 @@ Decisions made while building, within the spec above:
 - **Request pipeline** (`extensions/webui/server.ts`), in front of the SvelteKit handler: the Host check
   (`acceptedHost`: the name from `name[:port]` or `[v6][:port]`, then `node:net`'s `isIP`, else the name list), the Origin
   check on every non-GET/HEAD request, default security headers (a `default-src 'none'` CSP that SvelteKit's pages
-  replace with their own hashed one, `nosniff`, `no-referrer`, `DENY` framing), sign-in (`POST /login`,
-  `?token=`), and the session gate (401 JSON for `/api/*`, a redirect to `/login` for pages).
-- **Sessions** are stateless: the cookie `japa_webui_session` is `<expiry>.<HMAC-SHA256(token, expiry)>`, valid 30
-  days. Sessions survive daemon restarts, and changing the token invalidates them all.
+  replace with their own hashed one, `nosniff`, `same-origin` referrer, `DENY` framing), sign-in (`POST /login`,
+  throttled), the session gate (401 JSON for `/api/*`, a redirect to `/login` for pages), and `POST /logout`.
+- **Users** (`extensions/webui/users.ts`): the file format (`{ version: 1, users: [...] }`), validation, scrypt
+  hashing (`maxmem` raised to fit N=2^15, r=8), atomic writes, and `userStore` (async `load()` for requests,
+  `loadSync()` for the synchronous `status()` line; both re-read only when the file's inode/size/mtime/ctime change).
+  A malformed file is reported as `not valid JSON` without the parser's message, which would quote the hashes.
+  The CLI is `src/cli/webui-users.ts` (`webuiCommand`, with an injectable I/O for tests); before writing it runs
+  `ensureWorkspace` so the home's `.gitignore` has `/webui/` (anchored, so a component's `extensions/webui/` isn't
+  ignored).
+- **Throttle**: a failure slot is reserved before the password check (`Throttle.reserve`), so parallel guesses still-being-hashed count; a success clears the address. The dummy hash is made when the pipeline is created.
+- **Sessions** (`extensions/webui/auth.ts`) are stateless: the cookie `japa_webui_session` is
+  `<name>.<expiry>.<HMAC-SHA256(sessionKey, "webui-session:<name>:<expiry>:<stamp>")>`, valid 30 days. The throttle
+  (`Throttle`) keeps failure timestamps per `req.socket.remoteAddress` (behind Docker's port publishing that is the
+  bridge's address, so an instance's failures are counted together).
+- **Username to the app**: the pipeline sets `req[Symbol.for("japa.webui.request")] = { user?, users }`
+  (`REQUEST_KEY` in protocol.ts); adapter-node passes the Node request as `event.platform.req`, and
+  `hooks.server.ts` copies it to `event.locals.user` / `.users`. The chat page's `+page.server.ts` returns
+  `{ user }` (fetched as `__data.json`, since the page is client-rendered); the sign-in page's returns `{ users }`.
 - **API** (`extensions/webui/app/src/lib/protocol.ts`): `GET /api/events` (SSE: a snapshot, then `lines`, `delta`,
   `streaming`, `busy`, `transcript`, `jobs`, `secrets`), `POST /api/submit|abort|secrets/fulfil|secrets/decline`
   (`GET /api/status` was removed by the Settings change above; Settings, update, sign-in and desktop endpoints added).
