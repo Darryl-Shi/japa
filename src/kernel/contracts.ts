@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  EntryId,
   JsonObject,
   ModelRef,
   Storage,
@@ -48,6 +49,17 @@ export type Status = {
 /** Where an input came from: a surface and chat, or the kernel on its own (`"proactive"`). */
 export type Origin = { surface: string; chat?: string } | "proactive";
 
+/**
+ * Where a root user entry came from. `person`: submitted by a surface on a person's behalf (or with no requestId: the
+ * gateway). `job_report`: a background job's report; `title` and `status` from the report's own header, `text` its body
+ * without the header (with the publish outcome line, if any). `note`: any other input the kernel posted (trigger wakes,
+ * with `from` the extension; secret notes; `[japa]` notes; sign-in reports), shown as-is.
+ */
+export type InputSource =
+  | { type: "person"; surface: string; chat?: string }
+  | { type: "job_report"; jobId: string; title: string; status: string; text: string }
+  | { type: "note"; from?: string };
+
 /** A file the CoS sent with `send_file`: its resolved path on japa's host, name, MIME type, size in bytes and caption. */
 export type OutgoingFile = { path: string; name: string; mimeType: string; size: number; caption?: string };
 
@@ -70,8 +82,14 @@ export type SurfaceContext = {
       origin?: { surface: string; chat?: string; id?: string },
     ): Promise<void>;
     abort(): Promise<void>;
-    /** Delivers the current snapshot as the first event, then live events. */
-    events(listener: (events: readonly AgentEvent[]) => void): Promise<{ stop(): Promise<void> }>;
+    /**
+     * Delivers the current snapshot as the first event, then live events. `sources` holds the source of every root
+     * user entry (`UserEntry.kind`) in the batch (a snapshot's, its prepended history included, or a `message_end`'s),
+     * always in the same batch as the entry; an entry with no submission record found is a person's.
+     */
+    events(
+      listener: (events: readonly AgentEvent[], sources: ReadonlyMap<EntryId, InputSource>) => void,
+    ): Promise<{ stop(): Promise<void> }>;
     /**
      * Delivers each finished assistant message with text and each successful `send_file` (a reply with `file` set), in
      * transcript order, one at a time (awaiting a returned promise); after the cursor `after`, or from now when absent.

@@ -46,6 +46,7 @@ export type {
   ExtensionInfo,
   Incoming,
   IncomingFile,
+  InputSource,
   KernelContext,
   MessagingAdapter,
   MessagingAdapterContext,

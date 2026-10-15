@@ -55,6 +55,7 @@ import { inputOf } from "./messaging/attachments.ts";
 import { MessagingDoc } from "./messaging/surface.ts";
 import { alreadyRunning } from "./messaging/update-report.ts";
 import { requestIdFor } from "./origin.ts";
+import { watchSources } from "./sources.ts";
 import { watchReplies } from "./replies.ts";
 import { watchResets } from "./reset.ts";
 import { rollBackAndLog, rollbackTool } from "./rollback.ts";
@@ -453,14 +454,26 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               const page = await root.entries({ maxEntryId }, 200, undefined, ctx);
               return { ...e, entries: [...page.items.toReversed(), ...e.entries] };
             };
-            const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
-            listener([await withHistory(stream.snapshot)]);
-            stream.start(async (events) => listener(await Promise.all(events.map(withHistory))));
-            return {
-              stop: async () => {
-                await stream.stop();
-              },
-            };
+            // Each batch comes with the sources of its user entries (see `SurfaceContext.root.events`).
+            const sources = await watchSources(opened, store);
+            try {
+              const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
+              const snapshot = [await withHistory(stream.snapshot)];
+              listener(snapshot, await sources.of(snapshot));
+              stream.start(async (events) => {
+                const batch = await Promise.all(events.map(withHistory));
+                listener(batch, await sources.of(batch));
+              });
+              return {
+                stop: async () => {
+                  await stream.stop();
+                  sources.stop();
+                },
+              };
+            } catch (error) {
+              sources.stop();
+              throw error;
+            }
           },
           replies: (listener, after) => watchReplies(opened, store, root, listener, after),
         },

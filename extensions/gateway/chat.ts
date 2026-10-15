@@ -2,14 +2,13 @@ import { Container, Editor, Input, matchesKey, ProcessTerminal, Text, TuiMainScr
 import { MaskedInput } from "./masked-input.ts";
 import { board, type Job, type SecretRequest } from "../../src/sdk.ts";
 import { connect } from "./client.ts";
-import { applyEvents, type Line, type Transcript } from "./transcript.ts";
+import { applyEvents, lineText, type Transcript } from "./transcript.ts";
 
 const plain = (s: string) => s;
 const editorTheme = {
   borderColor: plain,
   selectList: { selectedPrefix: plain, selectedText: plain, description: plain, scrollInfo: plain, noMatch: plain },
 };
-const prefix: Record<Line["kind"], string> = { user: "› ", assistant: "", tool: "", info: "! " };
 
 /** Interactive chat with the daemon in `home`; resolves when the user quits with Ctrl+C. */
 export async function runChat(home: string): Promise<void> {
@@ -58,14 +57,14 @@ export async function runChat(home: string): Promise<void> {
   };
   const render = () => {
     history.clear();
-    for (const line of t.lines) history.addChild(new Text(prefix[line.kind] + line.text, 1, 0));
+    for (const line of t.lines) history.addChild(new Text(lineText(line), 1, 0));
     if (t.streaming !== "") history.addChild(new Text(t.streaming, 1, 0));
     jobBoard.setText(board(Object.fromEntries(jobs.map((j) => [j.id, j]))) ?? "");
     status.setText(t.busy ? "thinking…" : "");
     tui.requestRender();
   };
   client.onMessage((m) => {
-    if (m.type === "events") t = applyEvents(t, m.events);
+    if (m.type === "events") t = applyEvents(t, m.events, new Map(m.sources ?? []));
     if (m.type === "jobs") jobs = m.jobs;
     if (m.type === "secrets") {
       secrets = m.pending;
