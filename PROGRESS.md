@@ -105,10 +105,12 @@ No CI workflow: the repo has none and the spec doesn't ask for one.
 # Progress: web UI Settings, Desktop panel, no Status (run-mv82kuec-kxa9)
 
 - [x] Contracts: `AdminContext`/`ProviderInfo`/`ModelInfo` in contracts.ts (+ sdk), protocol.ts (Settings/Desktop/flows API)
-- [ ] Kernel: admin context in boot.ts (packaged surfaces only) + tests
-- [ ] webui server: settings bridge, flows, endpoints, ws proxy; desktop view handle
-- [ ] UI: Settings area, Desktop panel (noVNC), top bar, Status removed
-- [ ] Docs: README, docs/spec.md, AGENTS.md
+- [x] Kernel: admin context (src/kernel/admin.ts) + tests
+- [x] webui server: settings bridge, flows, endpoints, ws proxy; desktop view handle
+- [x] UI: Settings area, Desktop panel (noVNC), top bar, Status removed
+- [x] Docs: README, docs/spec.md, AGENTS.md
+- [x] japa check extension <packaged> loads in place (was failing at base for desktop)
+- Manual: curl e2e against a real daemon (settings set/Not changed, api_key flow, oauth flow + 409 + cancel, ws 401/403). Real VNC not verifiable here (sandboxed net).
 
 Decisions:
 - "Packaged" = not loaded from the workspace (`<home>/extensions`): extensions handed to `boot` in code (tests) count as packaged.

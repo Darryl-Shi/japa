@@ -41,7 +41,7 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   (or `$JAPA_HOME/secrets/webui.token`). Sign in with `/?token=<token>`.
 - `japa chat` talks to the daemon over `<home>/japa.sock`; `japa status` prints extension status lines.
   Telegram is the default messaging adapter.
-- Desktop noVNC: http://127.0.0.1:6080/vnc.html (natively), or http://127.0.0.1:<desktop port>/vnc.html for a Docker
+- Desktop: the web UI's Desktop panel (proxied, no 6080 needed); noVNC: http://127.0.0.1:6080/vnc.html (natively), or http://127.0.0.1:<desktop port>/vnc.html for a Docker
   instance (`japa instances` lists them).
 
 ## Map
@@ -60,7 +60,11 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   - `extensions/webui/index.ts` — manifest + surface (token, status line, HTTP server, bridge on `Symbol.for("japa.webui.bridge")`)
   - `extensions/webui/server.ts` — Host/Origin checks, security headers, sign-in, session gate in front of SvelteKit
   - `extensions/webui/auth.ts` — token + HMAC session cookies; `live.ts` + `transcript.ts` — live hub / projection
-  - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract
+  - `extensions/webui/settings.ts` (Settings over the kernel's `SurfaceContext.admin`, built in `src/kernel/admin.ts`),
+    `flows.ts` (provider/extension sign-in flows), `server.ts` `desktopProxy` (the Desktop panel's websocket to noVNC;
+    the desktop publishes its handle on `Symbol.for("japa.desktop.view")`)
+  - `extensions/webui/app/` — SvelteKit 2 + Svelte 5 app; `src/lib/protocol.ts` is the surface↔app contract (all
+    endpoints); `components/Settings.svelte` + `components/settings/`, `components/DesktopPanel.svelte` (bundled noVNC)
 - `skills/` — packaged skills (e.g. `writing-job-briefs`).
 - `install.sh` — the installer: with a terminal, a menu first (Install / Update / Uninstall / Quit); native mode
   (steps: clone, node, dependencies, build, launcher; Uninstall delegates to `japa uninstall` or removes directly),

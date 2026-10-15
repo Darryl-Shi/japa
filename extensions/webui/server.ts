@@ -154,7 +154,11 @@ export function desktopHandle(): DesktopViewHandle | undefined {
   return (globalThis as Record<symbol, DesktopViewHandle | undefined>)[Symbol.for(DESKTOP_VIEW_KEY)];
 }
 
-export type ProxyDeps = Omit<PipelineDeps, "handler"> & { desktop?(): DesktopViewHandle | undefined };
+export type ProxyDeps = Omit<PipelineDeps, "handler"> & {
+  desktop?(): DesktopViewHandle | undefined;
+  /** How often open connections' sessions are rechecked (default 30 s). */
+  recheckMs?: number;
+};
 
 /** Request headers not passed on to websockify: the session cookie and browser context stay here. */
 const DROPPED = new Set(["host", "cookie", "origin", "referer", "authorization"]);
@@ -174,6 +178,14 @@ export function desktopProxy(deps: ProxyDeps): {
   const desktop = deps.desktop ?? desktopHandle;
   /** Each proxied connection's teardown. */
   const connections = new Set<() => void>();
+  /** Each open connection's session cookie: rechecked, so a sign-out (a new token) or an expiry ends it. */
+  const sessions = new Map<() => void, string | undefined>();
+  const recheck = setInterval(async () => {
+    if (sessions.size === 0) return;
+    const token = await deps.token().catch(() => undefined);
+    for (const [teardown, cookie] of sessions) if (!validSession(cookie, token, now())) teardown();
+  }, deps.recheckMs ?? 30_000);
+  recheck.unref();
   let closed = false;
 
   function refuse(socket: Duplex, status: string) {
@@ -203,10 +215,12 @@ export function desktopProxy(deps: ProxyDeps): {
     let connected = false;
     const teardown = () => {
       connections.delete(teardown);
+      sessions.delete(teardown);
       socket.destroy();
       upstream.destroy();
     };
     connections.add(teardown);
+    sessions.set(teardown, req.headers.cookie);
     upstream.on("error", () => {
       if (connected || socket.destroyed) return teardown();
       connections.delete(teardown);
@@ -231,6 +245,7 @@ export function desktopProxy(deps: ProxyDeps): {
     },
     close() {
       closed = true;
+      clearInterval(recheck);
       for (const teardown of [...connections]) teardown();
     },
     get open() {

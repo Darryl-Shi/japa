@@ -339,7 +339,7 @@ japa enters safe mode by itself after three crashes within five minutes. A setup
 
 japa also serves a chat app in your browser, on by default, at **http://127.0.0.1:7337**. It shows the same
 conversation as `japa chat` and Telegram — messages from any of them, the CoS's replies streaming in, tool calls,
-job reports — plus a live Jobs panel, a Status sheet and a card for pending secret requests. Enter sends (while
+job reports — plus a live Jobs panel, a Desktop panel, Settings and a card for pending secret requests. Enter sends (while
 the CoS is replying, it steers the reply), Shift+Enter adds a line, Stop or Esc stops the reply. Any number of
 tabs and devices can be open; they all stay in sync, and reconnect on their own after a restart.
 
@@ -363,6 +363,34 @@ tabs and devices can be open; they all stay in sync, and reconnect on their own 
   change takes effect when japa restarts.
 - `japa status` shows its address under `webui`, or why it isn't running: `not built` (run `npm run build` in the
   checkout) or `can't listen on …` (e.g. the port is taken). Either way the rest of japa keeps running.
+
+### Settings in the browser
+
+The gear button opens **Settings**, japa's control panel for a running, set-up japa (first-run setup is still
+`japa setup` in a terminal). It covers what a re-run of `japa setup` and Telegram's `/settings` and `/update` cover:
+
+- **Overview**: the CoS model, any errors (each naming its extension) and how many extensions are on, off or not set
+  up. (This replaces the old Status sheet; `japa status` and Telegram's `/status` still work.)
+- **Models**: the CoS, Worker and Memory upkeep models (Worker and Memory default to the CoS's), picked from the
+  connected providers, and the jobs' thinking level. A change applies to the next message, no restart needed.
+- **Providers**: sign in (a link, a device code, or a field to paste the redirect URL/code when your browser isn't on
+  japa's host) or enter an API key. Keys are sent once and never shown again.
+- **Extensions**: each extension's state, status line and errors; set its secrets (e.g. Telegram's bot token), sign
+  in (e.g. Google), edit its settings, turn it off or on, or roll a workspace one back.
+- **Schedules** (pause, resume, remove), **General** (job, memory, safety and context limits; clear finished jobs),
+  **Recent changes** (with Undo) and **Update** (check, update now — japa restarts and the page reconnects — and
+  roll back).
+
+Every change goes through the same checks as Telegram's menu: an invalid value is shown as `Not changed: …`.
+
+### Desktop in the browser
+
+The **Desktop** button shows japa's desktop live, through the web UI's own address — an SSH tunnel to 7337, a
+Tailscale address or a Docker instance's published web UI port is enough; port 6080 needn't be reachable. No
+password to type. It opens **view-only**; **Take control** lets you click, type and paste (a Paste field sends text
+to the desktop's clipboard, and what's copied there is shown for copying) until you **Stop controlling** or close
+the panel. The CoS can keep using the desktop at the same time. On a wide screen it docks beside the chat; **Full
+screen** fills the screen. When the desktop isn't running, it shows why and offers **Start desktop**.
 
 It's served by the daemon itself (a SvelteKit app in `extensions/webui/app`, built by `install.sh`, `japa update`
 and `npm install`), accepts only requests addressed to its own host names or an IP address, and loads nothing from
@@ -518,7 +546,7 @@ get things done on websites and in programs. There's nothing to set up: when jap
 installed and usable by the user running japa (on Linux: `sudo usermod -aG docker $USER`, then log in again);
 `japa status` shows the desktop's line under the `desktop` extension, including what's wrong if it can't start.
 
-- **Watch or take over** in noVNC: `ssh -L 6080:localhost:6080 <server>`, then open
+- **Watch or take over** in the web UI's **Desktop** panel (view-only until you Take control), or in noVNC: `ssh -L 6080:localhost:6080 <server>`, then open
   `http://localhost:6080/vnc.html`; or set `extensions.desktop.bind` to a Tailscale address. The password is in
   `~/.japa/secrets/desktop.vncPassword`.
 - **Files** are exchanged in `~/.japa/desktop/shared` (`/home/japa/shared` on the desktop); a job uploads a file in

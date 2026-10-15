@@ -181,3 +181,27 @@ test("the bridge's desktop view: unavailable without the handle; state and passw
   expect(started).toBe(1);
   await daemon.close();
 });
+
+test("a new token (everyone signed out) closes the open proxied connections", async () => {
+  const { createServer: createHttp } = await import("node:http");
+  const { desktopProxy } = await import("../extensions/webui/server.ts");
+  const { sessionCookie } = await import("../extensions/webui/auth.ts");
+  const websockify = await fakeWebsockify();
+  let token = "first-token";
+  const proxy = desktopProxy({ bind: "127.0.0.1", token: async () => token, desktop: () => handleFor(websockify.port), recheckMs: 50 });
+  const server = createHttp((_req, res) => res.end());
+  server.on("upgrade", proxy.upgrade);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const cookie = sessionCookie(token, Date.now()).split(";")[0]!;
+  const c = await upgrade(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  await vi.waitFor(() => expect(websockify.sockets.size).toBe(1));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(c.closed()).toBe(false); // still signed in
+  token = "second-token";
+  await vi.waitFor(() => expect(c.closed()).toBe(true));
+  await vi.waitFor(() => expect(websockify.sockets.size).toBe(0));
+  proxy.close();
+  await new Promise((resolve) => server.close(resolve));
+  await websockify.close();
+});
