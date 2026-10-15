@@ -149,9 +149,11 @@ async function readBody(req: IncomingMessage, limit: number): Promise<string | u
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** The desktop extension's view handle, read per use: undefined while the desktop isn't loaded. */
+/** The desktop extension's view handle, read per use: undefined while the desktop isn't loaded or is turned off. */
 export function desktopHandle(): DesktopViewHandle | undefined {
-  return (globalThis as Record<symbol, DesktopViewHandle | undefined>)[Symbol.for(DESKTOP_VIEW_KEY)];
+  const handle = (globalThis as Record<symbol, DesktopViewHandle | undefined>)[Symbol.for(DESKTOP_VIEW_KEY)];
+  // Turned off, it stays loaded (only hidden from the CoS): the panel, Start and the websocket treat it as absent.
+  return handle !== undefined && handle.enabled() ? handle : undefined;
 }
 
 export type ProxyDeps = Omit<PipelineDeps, "handler"> & {

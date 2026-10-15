@@ -68,8 +68,10 @@ export interface DesktopViewHandle {
   password(): Promise<string>;
   /** Its state, and the desktop's status text (e.g. "Building the desktop's image…", a Docker error). */
   status(): { state: DesktopState; text: string };
-  /** Starts it (`ready(true)`) in the background. */
+  /** Starts it (`ready(true)`) in the background; does nothing while it's turned off. */
   start(): void;
+  /** Whether it's turned on (`extensions.desktop.enabled` isn't false): off, the web UI treats it as unavailable. */
+  enabled(): boolean;
 }
 
 /** `GET /api/desktop`: `available` false without the desktop extension; the password only when available. */

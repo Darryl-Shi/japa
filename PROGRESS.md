@@ -116,3 +116,4 @@ Decisions:
 - "Packaged" = not loaded from the workspace (`<home>/extensions`): extensions handed to `boot` in code (tests) count as packaged.
 - `admin.tool` only runs `schedule_*` tools.
 - Sign-in flows are polled by the starting tab (GET /api/signin/<id>, ~1 s).
+- Round 2: F1 desktop handle `enabled()` → webui treats off as unavailable (view/start/ws) + tests. F3 run.sh writes a starter settings.json when none exists (dev script only; kernel unchanged).

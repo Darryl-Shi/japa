@@ -125,7 +125,7 @@ test("the handle's target is the bind address, 127.0.0.1 when unset; dispose lea
     desktopExtension(testConfig(fakeDocker().docker)),
   ]);
   expect(viewHandle()!.target()).toEqual({ host: "100.64.0.7", port: 6080 });
-  const other: DesktopViewHandle = { target: () => ({ host: "x", port: 1 }), password: async () => "", status: () => ({ state: "stopped", text: "" }), start: () => {} };
+  const other: DesktopViewHandle = { target: () => ({ host: "x", port: 1 }), password: async () => "", status: () => ({ state: "stopped", text: "" }), start: () => {}, enabled: () => true };
   (globalThis as Record<symbol, unknown>)[DESKTOP_VIEW] = other;
   await daemon.close();
   expect(viewHandle()).toBe(other);
@@ -134,6 +134,20 @@ test("the handle's target is the bind address, 127.0.0.1 when unset; dispose lea
   const { daemon: d2 } = await bootTest({ extensions: { desktop: { autostart: false } } }, [desktopExtension(testConfig(fakeDocker().docker))]);
   expect(viewHandle()!.target()).toEqual({ host: "127.0.0.1", port: 6080 });
   await d2.close();
+});
+
+test("turned off, the handle says so and start() starts nothing", async () => {
+  const fake = fakeDocker();
+  const { daemon } = await bootTest({ extensions: { desktop: { enabled: false, autostart: false } } }, [
+    desktopExtension(testConfig(fake.docker)),
+  ]);
+  const handle = viewHandle()!;
+  expect(handle.enabled()).toBe(false);
+  handle.start();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(fake.calls).toEqual([]);
+  expect(handle.status().state).toBe("stopped");
+  await daemon.close();
 });
 
 test("the desktop's state: stopped, building, starting, ready, failed", async () => {

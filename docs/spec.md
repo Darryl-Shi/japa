@@ -204,7 +204,9 @@ The following stay as they are:
   surface stops, when the panel's socket closes, and when their session stops being valid (rechecked every 30 s,
   so a new token — signing everyone out — ends them). The page CSP's `connect-src` gets `ws://<host>` added by
   `hooks.server.ts`.
-- **Desktop handle** (`extensions/desktop/index.ts`): `state()` is building / failed / ready (the last start
+- **Desktop handle** (`extensions/desktop/index.ts`): turning the desktop off (`extensions.desktop.enabled: false`)
+  hides it from the CoS but doesn't unload it, so the handle has `enabled()`; the web UI treats a turned-off desktop as
+  absent (`{ available: false }`, Start 404, the websocket 503), and its `start()` does nothing. `state()` is building / failed / ready (the last start
   succeeded) / starting (a start in flight) / stopped. `GET /api/desktop` generates the VNC password if it's unset.
 - **UI**: `Settings.svelte` + `components/settings/*` (one per section, `SchemaField`, `SignInFlow`),
   `DesktopPanel.svelte` (noVNC loaded on open, view-only by default, reconnect with backoff), `ConfirmDialog.svelte`.
@@ -214,6 +216,9 @@ The following stay as they are:
 - An update started from Settings is recorded with chat `{ adapter: "webui", chat: "web" }`; no messaging adapter
   reports it, the Update section shows its outcome.
 - There is no sign-out button; sessions end when the token changes.
+- `scripts/run.sh` (the dev run script, not the product) writes a starter `settings.json` (the CoS on
+  `anthropic/claude-sonnet-4-5`, no credentials) when the home has none, so a fresh checkout boots and a provider can be
+  connected from Settings. The kernel still refuses to boot without `models.cos`.
 
 ---
 

@@ -14,8 +14,10 @@ export type DesktopViewHandle = {
   target(): { host: string; port: number };
   password(): Promise<string>;
   status(): { state: "ready" | "starting" | "building" | "failed" | "stopped"; text: string };
-  /** Starts the desktop in the background. */
+  /** Starts the desktop in the background; nothing while it's turned off. */
   start(): void;
+  /** Whether it's turned on (`enabled` isn't false). */
+  enabled(): boolean;
 };
 export const DESKTOP_VIEW = Symbol.for("japa.desktop.view");
 const viewSlot = globalThis as Record<symbol, DesktopViewHandle | undefined>;
@@ -72,7 +74,10 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
             state === "stopped" ? "The desktop isn't running." : state === "starting" ? "Starting the desktop…" : desktop.status();
           return { state, text };
         },
-        start: () => void desktop.ready(true).catch(() => {}),
+        start: () => {
+          if (ctx.settings().enabled !== false) void desktop.ready(true).catch(() => {});
+        },
+        enabled: () => ctx.settings().enabled !== false,
       };
       viewSlot[DESKTOP_VIEW] = view;
       // Ready before it's first needed: the image builds (minutes, once) and the container starts in the

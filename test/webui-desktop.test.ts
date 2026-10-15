@@ -55,6 +55,7 @@ function handleFor(port: number): DesktopViewHandle {
     password: async () => "vnc-pass",
     status: () => ({ state: "ready", text: "noVNC" }),
     start: () => {},
+    enabled: () => true,
   };
 }
 
@@ -203,5 +204,28 @@ test("a new token (everyone signed out) closes the open proxied connections", as
   await vi.waitFor(() => expect(websockify.sockets.size).toBe(0));
   proxy.close();
   await new Promise((resolve) => server.close(resolve));
+  await websockify.close();
+});
+
+test("with the desktop turned off in Settings, the panel reads unavailable, Start does nothing and the websocket is refused", async () => {
+  const websockify = await fakeWebsockify();
+  const { daemon, port, cookie } = await bootWebui();
+  const bridge = (globalThis as Record<symbol, import("../extensions/webui/app/src/lib/protocol.ts").WebuiBridge>)[
+    Symbol.for("japa.webui.bridge")
+  ]!;
+  const packaged = slot[VIEW]!; // the packaged desktop's, loaded with autostart off
+  expect(packaged.enabled()).toBe(true);
+  expect((await bridge.desktop()).available).toBe(true);
+  expect(await bridge.settings!.set("extensions.desktop.enabled", false)).toMatch(/^Set extensions\.desktop\.enabled/);
+  expect(slot[VIEW]).toBe(packaged); // still loaded, only off
+  expect(await bridge.desktop()).toEqual({ available: false });
+  expect(bridge.startDesktop()).toBe(false);
+  expect(packaged.status().state).toBe("stopped");
+  slot[VIEW] = { ...handleFor(websockify.port), enabled: () => false };
+  const c = await upgrade(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  await vi.waitFor(() => expect(c.closed()).toBe(true));
+  expect(statusLine(c.received())).toBe("HTTP/1.1 503 Service Unavailable");
+  expect(websockify.requests).toEqual([]);
+  await daemon.close();
   await websockify.close();
 });
