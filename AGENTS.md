@@ -28,8 +28,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   `svelte-check` on extensions/webui/app with TypeScript 6 — the root `typescript` dep is 6 because svelte-check and
   SvelteKit need its JS API; scripts and `japa check` call `node_modules/@typescript/native/bin/tsc` explicitly)
 - Build the web UI: `npm run build` (extensions/webui/app → extensions/webui/build, git-ignored)
-- Run: `scripts/run.sh` (foreground daemon; set `JAPA_HOME` to a scratch dir; with `JAPA_HOME` set and no settings.json there it writes a
-  starter one, CoS anthropic/claude-sonnet-4-5 without credentials — connect a provider in the web UI's Settings);
+- Run: `scripts/run.sh` (foreground daemon; set `JAPA_HOME` to a scratch dir; with no settings.json it writes a starter
+  one, CoS anthropic/claude-sonnet-4-5 without credentials — connect a provider in the web UI's Settings);
   `scripts/run.sh <command>` runs any other CLI command (e.g. `chat`, `status`, `--version`).
 - Gated e2e: `JAPA_DOCKER_TESTS=1 npx vitest --run test/desktop-docker.test.ts` (desktop on Docker),
   `JAPA_SYSBOX_TESTS=1 npx vitest --run test/sysbox.test.ts` (real Sysbox instances; needs Sysbox, a pushed branch:

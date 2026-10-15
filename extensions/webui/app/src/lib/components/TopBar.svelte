@@ -191,7 +191,7 @@
   }
 
   /* A phone: the account (who's signed in, Sign out) takes a second row, so the bar never overflows. */
-  @media (max-width: 480px) {
+  @media (max-width: 560px) {
     .inner {
       flex-wrap: wrap;
       gap: 0.35rem 0.5rem;
