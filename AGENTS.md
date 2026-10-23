@@ -54,7 +54,7 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
 - `src/kernel/` — the daemon: `boot.ts` (wires everything), `contracts.ts` (the extension contracts, exported via
   `src/sdk.ts` as `japa/sdk`), `cos.ts` + `identity.md` (the CoS agent), `replies.ts` (reply stream), `origin.ts` + `sources.ts` (input origins; `InputSource` of root user entries for `root.events`),
   `send-file.ts` (the CoS's `send_file` tool), `files.ts` (sizes/MIME helpers), `messaging/` (the kernel side of
-  chat platforms: routing, merging, menus, secret prompts, `attachments.ts` = inbound file conversion incl. PDF text),
+  chat platforms: routing, merging, menus, secret prompts, `attachments.ts` = inbound file conversion incl. PDF text, and `parseNotes`, its inverse),
   `jobs/` (background jobs), `sandbox/` (bwrap job sandboxes; mounts `attachments/` read-only, `outbox/` and
   `desktop/shared` writable), `memory/`, settings, secrets, check.
 - `src/sdk.ts` — the public `japa/sdk` for extensions
@@ -63,7 +63,8 @@ documents the whole product; older design docs live in `docs/superpowers/`. Keep
   - `extensions/webui/index.ts` — manifest + surface (session key, status line, HTTP server, bridge on `Symbol.for("japa.webui.bridge")`)
   - `extensions/webui/server.ts` — Host/Origin checks, security headers, sign-in/out, throttle, session gate in front of SvelteKit
   - `extensions/webui/users.ts` — `<home>/webui/users.json` (scrypt hashes, session stamps); `src/cli/webui-users.ts` — `japa webui users`
-  - `extensions/webui/auth.ts` — per-user HMAC session cookies, sign-in throttle; `live.ts` + `transcript.ts` — live hub / projection
+  - `extensions/webui/auth.ts` — per-user HMAC session cookies, sign-in throttle; `live.ts` + `transcript.ts` — live hub / projection (incl. the file table)
+  - `extensions/webui/files.ts` — multipart `POST /api/submit` (files) and `GET /api/files/<id>` (downloads)
   - `extensions/webui/settings.ts` (Settings over the kernel's `SurfaceContext.admin`, built in `src/kernel/admin.ts`),
     `flows.ts` (provider/extension sign-in flows), `server.ts` `desktopProxy` (the Desktop panel's websocket to noVNC;
     the desktop publishes its handle on `Symbol.for("japa.desktop.view")`)

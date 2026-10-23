@@ -62,15 +62,18 @@ export function applyEvents(
   return t;
 }
 
-/** The file's size in bytes: `known`, else read from the host now; undefined when neither works. */
-function sizeOf(path: string, known: number | undefined): number | undefined {
-  if (typeof known === "number" && Number.isFinite(known) && known >= 0) return known;
+/**
+ * The file's size in bytes: `known`, else read from the host now; with `exact` (an upload, whose note's size is
+ * rounded) read from the host first. Undefined when neither works.
+ */
+function sizeOf(path: string, known: number | undefined, exact: boolean): number | undefined {
+  const valid = typeof known === "number" && Number.isFinite(known) && known >= 0;
+  if (valid && !exact) return known;
   try {
     const info = statSync(path);
-    return info.isFile() ? info.size : undefined;
-  } catch {
-    return undefined;
-  }
+    if (info.isFile()) return info.size;
+  } catch {}
+  return valid ? known : undefined;
 }
 
 /** `entry`'s lines; the references of its files go into `files`. */
@@ -82,7 +85,7 @@ function linesOf(entry: EntryRecord, source: InputSource | undefined, files: Map
   const fileView = (path: string, name: string, mimeType: string, size: number | undefined, upload: boolean): FileView => {
     const id = `${entry.id}-${index++}`;
     files.set(id, { path, name, mimeType, upload });
-    const known = sizeOf(path, size);
+    const known = sizeOf(path, size, upload);
     return { id, name, mimeType, ...(known !== undefined && { size: known }) };
   };
   return (entry.model ?? []).flatMap((m): Line[] => {
