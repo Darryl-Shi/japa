@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { connect, isIP, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { API, DESKTOP_VIEW_KEY, type DesktopViewHandle, REQUEST_KEY, type WebuiRequest } from "./app/src/lib/protocol.ts";
+import { type FilesMessage, isMultipart, serveFile, submitMultipart } from "./files.ts";
+import type { FileRef } from "./transcript.ts";
 import { clearedCookie, dummyHash, sessionCookie, sessionUser, Throttle } from "./auth.ts";
 import { type UsersResult, verifyPassword } from "./users.ts";
 
@@ -20,6 +22,14 @@ export type PipelineDeps = {
   sessionKey(): Promise<string | undefined>;
   handler: Handler;
   now?(): number;
+  /** The transcript file a `FileView.id` refers to (the live hub's table); without it every `/api/files/<id>` is 404. */
+  file?(id: string): FileRef | undefined;
+  /** japa's home: a person's uploads are served only from inside `<home>/attachments/`. */
+  home?: string;
+  /** Converts and submits a multipart message (`ctx.input`, then `ctx.root.submit`); without it such a POST is 503. */
+  submitFiles?(message: FilesMessage): Promise<void>;
+  /** The cap on a multipart submit's body (default `MAX_SUBMIT_BODY`; tests lower it). */
+  maxSubmitBytes?: number;
 };
 
 const LOGIN_BODY_LIMIT = 4096;
@@ -127,6 +137,25 @@ export function pipeline(deps: PipelineDeps): (req: IncomingMessage, res: Server
       // Sessions are stateless: this clears this browser's cookie only.
       res.setHeader("Set-Cookie", clearedCookie());
       return redirect(res, "/login");
+    }
+    // Files in and out, here rather than in the app: the app never sees a host path, nor a body over its 512 KB limit.
+    if (path.startsWith(`${API.files}/`)) {
+      if (method !== "GET" && method !== "HEAD") {
+        res.setHeader("Allow", "GET, HEAD");
+        return json(res, 405, { error: "Method not allowed" });
+      }
+      let id: string;
+      try {
+        id = decodeURIComponent(path.slice(API.files.length + 1));
+      } catch {
+        return json(res, 404, { error: "Not found" });
+      }
+      const ref = id === "" || id.includes("/") ? undefined : deps.file?.(id);
+      return serveFile(req, res, ref, deps.home, url.searchParams.get("download") === "1");
+    }
+    if (path === API.submit && method === "POST" && isMultipart(req)) {
+      if (deps.submitFiles === undefined) return json(res, 503, { error: "Sending files is unavailable" });
+      return submitMultipart(req, res, deps.submitFiles, deps.maxSubmitBytes);
     }
     deps.handler(req, res, () => send(res, 404, "Not found"));
   }

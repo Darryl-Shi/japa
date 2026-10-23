@@ -50,9 +50,9 @@ export type Sources = {
 /**
  * Tracks the root's input submissions (the commit stream, after a scan, as `watchReplies` does) to tell each root user
  * entry's source. An entry not yet known re-reads the submissions once per batch, so a source always comes with its
- * entry.
+ * entry. A person's input's typed text and files are parsed from its notes under `home` (see `sourceOf`).
  */
-export async function watchSources(harness: Harness, storage: Storage): Promise<Sources> {
+export async function watchSources(harness: Harness, storage: Storage, home?: string): Promise<Sources> {
   const requestIds = new Map<EntryId, string | undefined>(); // user entry → its submission's requestId
   const record = (s: SubmissionRecord) => {
     if (s.type === "input" && s.entry !== undefined) requestIds.set(s.entry, s.requestId);
@@ -84,7 +84,7 @@ export async function watchSources(harness: Harness, storage: Storage): Promise<
         for (const e of missing) scanned.add(e.id);
       }
       // No record found: `sourceOf(undefined)`, a person's.
-      return new Map(entries.map((e) => [e.id, sourceOf(requestIds.get(e.id), textOf(e))]));
+      return new Map(entries.map((e) => [e.id, sourceOf(requestIds.get(e.id), textOf(e), home)]));
     },
     stop: unsubscribe,
   };

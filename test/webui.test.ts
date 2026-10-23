@@ -1,7 +1,7 @@
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import type { AgentEvent } from "@earendil-works/pi-durable";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { type AddressInfo, createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -309,6 +309,72 @@ test("a web submission reaches the CoS from webui/web, once per id, and its repl
   await daemon.close();
   await reading.catch(() => {});
   await bob.reading.catch(() => {});
+});
+
+test("a file message is saved under attachments, shows live as a user line with its file, and downloads as uploaded", async () => {
+  const { extension, surface } = probe();
+  const { daemon, faux, home, base, cookie } = await bootWebui(fakeBuild(), [extension]);
+  const raw: AgentEvent[] = [];
+  const watch = await surface().root.events((events) => raw.push(...events));
+  const events = await fetch(`${base}/api/events`, { headers: { cookie } });
+  const live: LiveEvent[] = [];
+  const reading = (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of events.body!) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop()!;
+      for (const part of parts) live.push(JSON.parse(part.slice("data: ".length)));
+    }
+  })();
+  await vi.waitFor(() => expect(live[0]?.type).toBe("snapshot"));
+
+  faux.setResponses([fauxAssistantMessage([fauxText("Got your notes")])]);
+  const bytes = Buffer.from("line one\nline two\n\u00e9\n");
+  const submit = () => {
+    const form = new FormData();
+    form.append("text", "summarise this");
+    form.append("mode", "followUp");
+    form.append("id", "upload-0001");
+    form.append("file", new Blob([bytes], { type: "text/plain" }), "notes.txt");
+    return fetch(`${base}/api/submit`, { method: "POST", headers: { cookie, origin: base }, body: form });
+  };
+  expect((await submit()).status).toBe(204);
+  await vi.waitFor(() => expect(JSON.stringify(raw)).toContain('"requestId":"surface:webui:web:upload-0001"'));
+  const day = join(home, "attachments", new Date().toISOString().slice(0, 10));
+  expect(readdirSync(day)).toEqual(["upload-0001-notes.txt"]);
+  expect(readFileSync(join(day, "upload-0001-notes.txt"))).toEqual(bytes);
+
+  await vi.waitFor(() => expect(JSON.stringify(live)).toContain("Got your notes"));
+  const userLine = live
+    .flatMap((e) => (e.type === "lines" ? e.lines : e.type === "snapshot" ? e.state.lines : []))
+    .find((l) => l.kind === "user");
+  expect(userLine).toEqual({
+    kind: "user",
+    text: "summarise this",
+    files: [{ id: expect.any(String), name: "notes.txt", mimeType: "text/plain", size: expect.any(Number) }],
+  });
+  expect(JSON.stringify(live)).not.toContain(home);
+
+  // A retry saves nothing again and submits nothing again.
+  expect((await submit()).status).toBe(204);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(readdirSync(day)).toEqual(["upload-0001-notes.txt"]);
+  expect((await texts(daemon.root, "user")).filter((t) => t.startsWith("summarise this"))).toHaveLength(1);
+
+  const id = userLine!.kind === "user" ? userLine!.files![0]!.id : "";
+  const download = await fetch(`${base}/api/files/${id}`, { headers: { cookie } });
+  expect(download.status).toBe(200);
+  expect(download.headers.get("content-type")).toBe("application/octet-stream");
+  expect(download.headers.get("content-disposition")).toBe(`attachment; filename="notes.txt"; filename*=UTF-8''notes.txt`);
+  expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);
+  expect((await fetch(`${base}/api/files/${id}`)).status).toBe(401);
+  expect((await fetch(`${base}/api/files/nope-0`, { headers: { cookie } })).status).toBe(404);
+
+  await watch.stop();
+  await daemon.close();
+  await reading.catch(() => {});
 });
 
 test("the bridge subscription sees the CoS's reply", async () => {

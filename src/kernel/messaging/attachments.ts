@@ -1,9 +1,9 @@
 import type { UserInput } from "@earendil-works/pi-durable";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { getDocumentProxy, extractText } from "unpdf";
-import type { IncomingFile } from "../contracts.ts";
-import { extensionOf, humanSize } from "../files.ts";
+import type { AttachedFile, IncomingFile } from "../contracts.ts";
+import { extensionOf, humanSize, mimeFromName } from "../files.ts";
 import { message } from "../loader.ts";
 
 /** How long a PDF's text extraction may take before it is given up. */
@@ -154,4 +154,109 @@ export async function inputOf(
     mimeType: image.mimeType,
   }));
   return [{ type: "text", text }, ...parts];
+}
+
+const NO_VISION = "(this model cannot see images)";
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+const FILE_NOTE = /^\[file saved to (.+) \((.*), (\d+(?:\.\d+)?) (B|KB|MB|GB|TB)\)\]$/;
+const IMAGE_NOTE = /^\[image saved to (.+)\]$/;
+const FAILED = /^\[file could not be saved: .*\]$/;
+const PDF_TEXT = /^\[PDF text, \d+ pages\]$/;
+const PDF_NONE = /^(?:\[PDF has no extractable text\]|\[PDF text could not be extracted: .*\])$/;
+const TRUNCATED = /^\[Truncated; .*\]$/;
+
+type Item = { file: AttachedFile } | { failed: string };
+
+/**
+ * The original name of the file saved at `path` (see `inputOf`): without the `<message id>-` prefix and a `-<n>`
+ * collision suffix (stripped only when the unsuffixed sibling exists); an unnamed file (`<id>[-<i>].<ext>`) keeps its
+ * saved name.
+ */
+function originalName(path: string, messageId: string | undefined, exists: (path: string) => boolean): string {
+  const file = basename(path);
+  let prefix: string;
+  if (messageId !== undefined && messageId !== "" && file.startsWith(`${messageId}-`)) prefix = `${messageId}-`;
+  else if (messageId !== undefined && messageId !== "" && file.startsWith(`${messageId}.`)) return file;
+  else {
+    const dash = file.indexOf("-");
+    if (dash <= 0) return file;
+    prefix = file.slice(0, dash + 1);
+  }
+  const rest = file.slice(prefix.length);
+  if (/^\d+(?:-\d+)?\.[^.]+$/.test(rest)) return file; // unnamed: `<id>-<i>.<ext>`, maybe with a collision suffix
+  const dot = file.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [file.slice(0, dot), file.slice(dot)] : [file, ""];
+  const collision = /^(.*)-([1-9]\d*)$/.exec(stem);
+  if (collision && Number(collision[2]) >= 2 && collision[1]!.length > prefix.length) {
+    if (exists(join(dirname(path), collision[1]! + ext))) return collision[1]!.slice(prefix.length) + ext;
+  }
+  return rest;
+}
+
+/**
+ * Parses `lines` as a whole note block (see `inputOf`): notes, each file's optional PDF text tail and failed-save lines,
+ * then an optional no-vision line; `undefined` when they aren't one.
+ */
+function noteBlock(lines: string[], parseItem: (line: string) => Item | undefined): Item[] | undefined {
+  const items: Item[] = [];
+  let i = 0;
+  const end = lines.length - (lines.at(-1) === NO_VISION ? 1 : 0);
+  while (i < end) {
+    const item = parseItem(lines[i]!);
+    if (item === undefined) return undefined;
+    items.push(item);
+    i++;
+    if (!("file" in item) || i >= end) continue;
+    if (PDF_NONE.test(lines[i]!)) i++;
+    else if (PDF_TEXT.test(lines[i]!)) {
+      i++;
+      while (i < end && parseItem(lines[i]!) === undefined && !TRUNCATED.test(lines[i]!)) i++;
+      if (i < end && TRUNCATED.test(lines[i]!)) i++;
+    }
+  }
+  return items;
+}
+
+/**
+ * The inverse of `inputOf`'s notes: the typed text of an input's `text` and the files the kernel saved for it (under
+ * `<home>/attachments/`). Notes are recognised only in the trailing note block and only with a path inside the
+ * attachments dir; a failed save's line stays in the text, inlined PDF text and the no-vision line are dropped. Names
+ * lose the `<messageId>-` prefix (or, without it, everything up to the first `-`) and a collision suffix.
+ */
+export function parseNotes(
+  home: string,
+  text: string,
+  messageId?: string,
+  exists: (path: string) => boolean = existsSync,
+): { text: string; files: AttachedFile[] } {
+  const root = join(home, "attachments") + sep;
+  const inside = (path: string) => isAbsolute(path) && normalize(path) === path && path.startsWith(root);
+  const parseItem = (line: string): Item | undefined => {
+    if (FAILED.test(line)) return { failed: line };
+    const note = FILE_NOTE.exec(line);
+    if (note && inside(note[1]!)) {
+      const [, path, mimeType, amount, unit] = note as unknown as [string, string, string, string, string];
+      const size = Math.round(Number(amount) * 1024 ** SIZE_UNITS.indexOf(unit));
+      return { file: { path, name: originalName(path, messageId, exists), mimeType, size } };
+    }
+    const image = IMAGE_NOTE.exec(line);
+    if (image && inside(image[1]!)) {
+      const path = image[1]!;
+      return { file: { path, name: originalName(path, messageId, exists), mimeType: mimeFromName(path) } };
+    }
+    return undefined;
+  };
+  const lines = text.split("\n");
+  for (let k = 0; k < lines.length; k++) {
+    if (parseItem(lines[k]!) === undefined) continue;
+    const items = noteBlock(lines.slice(k), parseItem);
+    if (items === undefined) continue;
+    const typed = lines.slice(0, k).join("\n");
+    const failed = items.flatMap((item) => ("failed" in item ? [item.failed] : []));
+    return {
+      text: [...(typed === "" ? [] : [typed]), ...failed].join("\n"),
+      files: items.flatMap((item) => ("file" in item ? [item.file] : [])),
+    };
+  }
+  return { text, files: [] };
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fly } from "svelte/transition";
+  import { fade, fly } from "svelte/transition";
   import { MediaQuery } from "svelte/reactivity";
   import { Live } from "$lib/live.svelte";
   import { duration } from "$lib/motion";
@@ -61,6 +61,49 @@
     settingsOpen = true;
   }
 
+  // Files dragged anywhere over the chat attach to the message, with an overlay while they're over the page.
+  let composer: Composer | undefined = $state();
+  let dragDepth = 0;
+  let dragging = $state(false);
+  const carriesFiles = (e: DragEvent) => !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
+  /** The chat is what's showing (not Settings' page nor a sheet over it). */
+  const canDrop = () => !settingsWide && !overlay;
+
+  function ondragenter(e: DragEvent): void {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    dragging = canDrop();
+  }
+
+  function ondragover(e: DragEvent): void {
+    if (!carriesFiles(e)) return;
+    // Always claim a file drag: a file dropped elsewhere would otherwise make the browser navigate to it.
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = canDrop() ? "copy" : "none";
+  }
+
+  function ondragleave(e: DragEvent): void {
+    if (!carriesFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dragging = false;
+  }
+
+  function ondrop(e: DragEvent): void {
+    if (!carriesFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dragging = false;
+    if (!canDrop() || !e.dataTransfer) return;
+    composer?.addFiles(Array.from(e.dataTransfer.files));
+    composer?.focus();
+  }
+
+  function ondragend(): void {
+    dragDepth = 0;
+    dragging = false;
+  }
+
   function onkeydown(e: KeyboardEvent): void {
     if (e.key !== "Escape" || e.defaultPrevented || overlay || settingsWide || !live.busy) return;
     e.preventDefault();
@@ -68,7 +111,13 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {ondragenter} {ondragover} {ondragleave} {ondrop} {ondragend} />
+
+{#if dragging}
+  <div class="drop" aria-hidden="true" transition:fade={{ duration: duration(120) }}>
+    <p>Drop files to attach</p>
+  </div>
+{/if}
 
 <TopBar
   connection={live.connection}
@@ -98,7 +147,13 @@
     <div class="chat" hidden={settingsWide}>
       <main class="column main" id="main">
         <h1 class="visually-hidden">Chat with japa</h1>
-        <Transcript lines={live.lines} streaming={live.streaming} pending={live.pending} busy={live.busy} />
+        <Transcript
+          lines={live.lines}
+          streaming={live.streaming}
+          pending={live.pending}
+          busy={live.busy}
+          oninfo={(text) => live.info(text)}
+        />
       </main>
 
       <footer class="dock">
@@ -116,7 +171,13 @@
               </div>
             {/key}
           {/if}
-          <Composer busy={live.busy} onsend={(text) => live.submit(text)} onstop={() => void live.abort()} />
+          <Composer
+            bind:this={composer}
+            busy={live.busy}
+            upload={live.upload}
+            onsend={(text, files) => live.submit(text, files)}
+            onstop={() => void live.abort()}
+          />
         </div>
       </footer>
     </div>
@@ -141,6 +202,28 @@
 {/if}
 
 <style>
+  .drop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+    background: var(--backdrop);
+    pointer-events: none;
+  }
+
+  .drop p {
+    margin: 0;
+    padding: 2.5rem 3rem;
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    font-size: var(--text-lg);
+    font-weight: 600;
+  }
+
   .workspace {
     flex: 1;
     display: flex;

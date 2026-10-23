@@ -3,12 +3,14 @@
 import type { AgentEvent, EntryId } from "@earendil-works/pi-durable";
 import type { InputSource, Job, SecretRequest, SurfaceContext } from "japa/sdk";
 import type { JobView, LiveEvent, SecretRequestView, Snapshot } from "./app/src/lib/protocol.ts";
-import { applyEvents, type Transcript } from "./transcript.ts";
+import { applyEvents, emptyTranscript, type FileRef, type Transcript } from "./transcript.ts";
 
 export type Hub = {
   /** Sends a snapshot now, then every update; `close` when the hub closes. Returns unsubscribe. */
   subscribe(send: (e: LiveEvent) => void, close: () => void): () => void;
   snapshot(): Snapshot;
+  /** The transcript file `id` (a `FileView.id` in the current projection) refers to; undefined if none. */
+  file(id: string): FileRef | undefined;
   /** Feeds a batch of root conversation events, with the sources of its user entries. */
   events(events: readonly AgentEvent[], sources?: ReadonlyMap<EntryId, InputSource>): void;
   jobs(jobs: Job[]): void;
@@ -32,8 +34,10 @@ export function jobView(j: Job): JobView {
 
 export const secretView = (r: SecretRequest): SecretRequestView => ({ id: r.id, name: r.name, why: r.why, at: r.at });
 
+type Lines = Pick<Transcript, "lines" | "streaming" | "busy">;
+
 /** The updates that take `before` to `after`, `snapshot` naming whether the batch re-read the conversation. */
-export function transcriptUpdates(before: Transcript, after: Transcript, snapshot: boolean): LiveEvent[] {
+export function transcriptUpdates(before: Lines, after: Lines, snapshot: boolean): LiveEvent[] {
   const { lines, streaming, busy } = after;
   const appended = before.lines.length <= lines.length && before.lines.every((l, i) => lines[i] === l);
   if (snapshot || !appended) return [{ type: "transcript", lines, streaming, busy }];
@@ -51,6 +55,8 @@ export function transcriptUpdates(before: Transcript, after: Transcript, snapsho
 
 export function createHub(): Hub {
   let state: Snapshot = { lines: [], streaming: "", busy: false, jobs: [], secrets: [], connected: false };
+  /** The projection the state's lines come from, with its files. */
+  let transcript: Transcript = emptyTranscript();
   const subscribers = new Map<(e: LiveEvent) => void, () => void>();
   let closed = false;
 
@@ -84,9 +90,11 @@ export function createHub(): Hub {
       return () => void subscribers.delete(send);
     },
     snapshot: () => ({ ...state }),
+    file: (id) => transcript.files.get(id),
     events(events, sources) {
-      const before: Transcript = state;
+      const before = transcript;
       const after = applyEvents(before, events, sources);
+      transcript = after;
       state = { ...state, lines: after.lines, streaming: after.streaming, busy: after.busy, connected: true };
       broadcast(transcriptUpdates(before, after, events.some((e) => e.type === "snapshot")));
     },
