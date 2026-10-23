@@ -16,6 +16,7 @@ import {
 } from "japa/sdk";
 import { BRIDGE_KEY, type DesktopView, type WebuiBridge } from "./app/src/lib/protocol.ts";
 import { generateSessionKey } from "./auth.ts";
+import type { FilesMessage } from "./files.ts";
 import { startLive } from "./live.ts";
 import { desktopHandle, desktopProxy, type Handler, hostPort, pipeline } from "./server.ts";
 import { settingsBridge } from "./settings.ts";
@@ -111,7 +112,13 @@ export function webuiExtension(options: { buildDir?: string } = {}): JapaExtensi
     const store = userStore(ctx.home);
     const users = () => store.load();
     const sessionKey = async () => (await k.secret(SESSION_KEY_SECRET))?.trim();
-    const server: Server = createServer(pipeline({ bind, hosts, users, sessionKey, handler }));
+    const submitFiles = async ({ id, text, mode, files }: FilesMessage) => {
+      const input = await ctx.input([{ id, text: text || undefined, files }]);
+      await ctx.root.submit(input, mode, { surface: "webui", chat: "web", id });
+    };
+    const server: Server = createServer(
+      pipeline({ bind, hosts, users, sessionKey, handler, file: (id) => live.file(id), home: ctx.home, submitFiles }),
+    );
     const proxy = desktopProxy({ bind, hosts, users, sessionKey });
     server.on("upgrade", proxy.upgrade);
     const stop = async () => {

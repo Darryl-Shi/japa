@@ -1,11 +1,18 @@
 // The page's live state: one EventSource on /api/events, applied to runes; plus the actions (POSTs).
 import { API, type JobView, type Line, type LiveEvent, type SecretRequestView, type SubmitMode } from "$lib/protocol";
 import { toLogin } from "$lib/api";
+import { errorOf, isImage, sameFileNames } from "$lib/files";
 
 export type Connection = "connecting" | "live" | "reconnecting";
 
+/** A file of a pending message; `url`: an object URL of the local file, for an image's thumbnail. */
+export type PendingFile = { name: string; size: number; mimeType: string; url?: string };
+
 /** A message sent from this tab that hasn't shown up in the transcript yet. */
-export type PendingMessage = { id: string; text: string; steer: boolean };
+export type PendingMessage = { id: string; text: string; steer: boolean; files: PendingFile[] };
+
+/** An upload's progress: bytes of the request body sent so far, of `total`. */
+export type UploadProgress = { sent: number; total: number };
 
 const SUBMIT_ATTEMPTS = 5;
 const MAX_BACKOFF_MS = 5_000;
@@ -33,6 +40,8 @@ export class Live {
   attached = $state(true);
   connection = $state<Connection>("connecting");
   pending = $state.raw<PendingMessage[]>([]);
+  /** The file upload under way (one at a time: the composer waits for it), if any. */
+  upload = $state<UploadProgress | undefined>();
 
   #source: EventSource | undefined;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -149,7 +158,16 @@ export class Live {
         break;
     }
     // A steer not taken before the run ended (it was stopped) is dropped by the kernel: so is its bubble.
-    if (!this.busy && this.pending.some((p) => p.steer)) this.pending = this.pending.filter((p) => !p.steer);
+    if (!this.busy && this.pending.some((p) => p.steer)) this.#setPending(this.pending.filter((p) => !p.steer));
+  }
+
+  /** Replaces the pending list, revoking the thumbnails of messages no longer in it. */
+  #setPending(next: PendingMessage[]): void {
+    for (const p of this.pending) {
+      if (next.includes(p)) continue;
+      for (const f of p.files) if (f.url) URL.revokeObjectURL(f.url);
+    }
+    this.pending = next;
   }
 
   #flushDelta(): void {
@@ -168,10 +186,11 @@ export class Live {
     let pending = this.pending;
     for (const line of lines) {
       if (line.kind !== "user") continue;
-      const i = pending.findIndex((p) => sameText(p.text, line.text));
+      const files = line.files ?? [];
+      const i = pending.findIndex((p) => sameText(p.text, line.text) && sameFileNames(p.files, files));
       if (i >= 0) pending = pending.filter((_, j) => j !== i);
     }
-    if (pending !== this.pending) this.pending = pending;
+    if (pending !== this.pending) this.#setPending(pending);
   }
 
   /** A note shown in the transcript (local to this tab; a reconnect's snapshot replaces it). */
@@ -181,29 +200,95 @@ export class Live {
 
   /**
    * Sends a message: steers the reply while busy, else queues it as a follow-up. Retries network failures with the
-   * same id, so the server ignores duplicates. Resolves false when it finally failed (the caller restores the text).
+   * same id, so the server ignores duplicates. Resolves false when it finally failed (the caller restores the text
+   * and files). With `files`, it's one multipart upload whose progress is `upload` meanwhile.
    */
-  async submit(text: string): Promise<boolean> {
+  async submit(text: string, files: File[] = []): Promise<boolean> {
     const id = newId();
     const mode: SubmitMode = this.busy ? "steer" : "followUp";
-    this.pending = [...this.pending, { id, text, steer: mode === "steer" }];
-    const drop = () => (this.pending = this.pending.filter((p) => p.id !== id));
-    for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt++) {
-      if (attempt > 0) await sleep(Math.min(500 * 2 ** (attempt - 1), MAX_BACKOFF_MS));
-      let res: Response;
-      try {
-        res = await postJson(API.submit, { text, mode, id });
-      } catch {
-        continue;
+    const shown: PendingFile[] = files.map((f) => ({
+      name: f.name,
+      size: f.size,
+      mimeType: f.type || "application/octet-stream",
+      url: isImage(f.type) ? URL.createObjectURL(f) : undefined,
+    }));
+    this.pending = [...this.pending, { id, text, steer: mode === "steer", files: shown }];
+    const drop = () => this.#setPending(this.pending.filter((p) => p.id !== id));
+    try {
+      for (let attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt++) {
+        if (attempt > 0) await sleep(Math.min(500 * 2 ** (attempt - 1), MAX_BACKOFF_MS));
+        let res: { ok: boolean; status: number; error: () => Promise<string | undefined> };
+        try {
+          if (files.length === 0) {
+            const r = await postJson(API.submit, { text, mode, id });
+            res = { ok: r.ok, status: r.status, error: () => r.json().then(errorOf, () => undefined) };
+          } else {
+            res = await this.#upload(text, mode, id, files);
+          }
+        } catch {
+          continue;
+        }
+        if (res.ok) return true;
+        drop();
+        if (res.status === 401) {
+          toLogin();
+          return false;
+        }
+        const message =
+          (await res.error()) ?? (res.status === 413 ? "Those files are too large to send." : undefined);
+        this.info(message ?? `Request failed (${res.status}).`);
+        return false;
       }
-      if (res.ok) return true;
       drop();
-      await this.#reportFailure(res);
+      this.info("Couldn't reach japa — your message wasn't sent.");
       return false;
+    } finally {
+      this.upload = undefined;
     }
-    drop();
-    this.info("Couldn't reach japa — your message wasn't sent.");
-    return false;
+  }
+
+  /** One multipart POST of the message and its files, reporting progress in `upload`; rejects on a network error. */
+  #upload(
+    text: string,
+    mode: SubmitMode,
+    id: string,
+    files: File[],
+  ): Promise<{ ok: boolean; status: number; error: () => Promise<string | undefined> }> {
+    const form = new FormData();
+    form.append("text", text);
+    form.append("mode", mode);
+    form.append("id", id);
+    for (const f of files) form.append("file", f, f.name);
+    const total = files.reduce((sum, f) => sum + f.size, 0);
+    this.upload = { sent: 0, total };
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", API.submit);
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = (e) => {
+        // e.total counts the multipart framing too: scale to the files' bytes, which is what the composer shows.
+        const sent = e.lengthComputable && e.total > 0 ? Math.round((e.loaded / e.total) * total) : e.loaded;
+        this.upload = { sent: Math.min(sent, total), total };
+      };
+      xhr.onload = () => {
+        const body = xhr.responseText;
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          error: async () => {
+            try {
+              return errorOf(JSON.parse(body));
+            } catch {
+              return undefined;
+            }
+          },
+        });
+      };
+      xhr.onerror = () => reject(new Error("network error"));
+      xhr.onabort = () => reject(new Error("aborted"));
+      xhr.ontimeout = () => reject(new Error("timeout"));
+      xhr.send(form);
+    });
   }
 
   async abort(): Promise<void> {
