@@ -40,6 +40,7 @@ export type {
 export { logChange } from "./kernel/changes.ts";
 export type {
   AdminContext,
+  AttachedFile,
   BootContext,
   Dispose,
   EnvironmentAdapter,

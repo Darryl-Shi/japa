@@ -1,3 +1,19 @@
+# Progress — files in and out of the web UI (run-mvkf4hte-v8wn)
+
+- [x] Kernel: `AttachedFile`, `InputSource.person` `text`/`files`; `parseNotes` beside `inputOf` (round-trip tests)
+- [x] Web UI daemon: projection (`user.files`, `file` lines, hub file table), `files.ts` (multipart submit, `/api/files/<id>`)
+- [x] App: composer attachments (picker, drop overlay, paste, chips, limits, progress), FileChip/FileCard, downloads
+- [x] Tests: attachment-notes, sources, webui-files, webui-live, webui (e2e upload/download), webui-app-files
+- [x] docs/spec.md (new spec + surface contract, webui, files-in-and-out), README Web UI
+- [x] Manual e2e with curl against a real daemon (upload, retry, forged note, download headers, 401/404, 413)
+
+Decisions: see docs/spec.md "Implementation notes" of the new spec. Collision suffix stripped only when the
+un-suffixed sibling exists; upload sizes read from disk. File errors are JSON `{ error }`. No headless browser
+available here (download blocked), so the Svelte UI was checked by svelte-check, build and unit tests only.
+No CI workflow (none in repo).
+
+---
+
 # Progress — job reports and kernel notes not shown as user messages (run-mv99v71i-371c)
 
 - [x] Kernel: `InputSource` (japa/sdk), `sourceOf` (origin.ts), `watchSources` (sources.ts), `root.events` 2nd arg

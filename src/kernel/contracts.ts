@@ -50,13 +50,21 @@ export type Status = {
 export type Origin = { surface: string; chat?: string } | "proactive";
 
 /**
+ * A file the kernel saved for a person's input (under `<home>/attachments/`): its path on japa's host, its original
+ * (sanitised) name, and its MIME type and size in bytes when its note gives them (an image's MIME type is guessed from
+ * its extension; a size from the note is the rounded human size).
+ */
+export type AttachedFile = { path: string; name: string; mimeType?: string; size?: number };
+
+/**
  * Where a root user entry came from. `person`: submitted by a surface on a person's behalf (or with no requestId: the
- * gateway). `job_report`: a background job's report; `title` and `status` from the report's own header, `text` its body
+ * gateway); `text` is what the person typed (the kernel's file notes, inlined PDF text and the no-vision line
+ * removed; a failed save's line kept), `files` the files saved for it, in order (empty for plain text). `job_report`: a background job's report; `title` and `status` from the report's own header, `text` its body
  * without the header (with the publish outcome line, if any). `note`: any other input the kernel posted (trigger wakes,
  * with `from` the extension; secret notes; `[japa]` notes; sign-in reports), shown as-is.
  */
 export type InputSource =
-  | { type: "person"; surface: string; chat?: string }
+  | { type: "person"; surface: string; chat?: string; text: string; files: AttachedFile[] }
   | { type: "job_report"; jobId: string; title: string; status: string; text: string }
   | { type: "note"; from?: string };
 

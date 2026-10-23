@@ -383,6 +383,14 @@ tabs and devices can be open; they all stay in sync, and reconnect on their own 
   read `~/.japa/webui/users.json`), or why it isn't running: `not built` (run `npm run build` in the
   checkout) or `can't listen on …` (e.g. the port is taken). Either way the rest of japa keeps running.
 
+- **Files**: attach files with the paperclip, by dropping them anywhere on the chat page, or by pasting (e.g. a
+  screenshot); they show as chips (images with a thumbnail) and a message can be files only. At most 10 files and
+  50 MB in total per message. japa saves them under `~/.japa/attachments/<date>/` as it does Telegram's, reads PDFs'
+  text and shows images to a vision model. Your messages show what you typed plus a chip per file (from Telegram
+  too); click one to download it. A file the CoS sends you (`send_file`) shows as a card with its caption and a
+  Download button (images get a preview; images and PDFs also Open in a new tab). Only images and PDFs ever open in
+  the browser: everything else, HTML and SVG included, downloads. A file deleted on japa's host says so instead.
+
 ### Settings in the browser
 
 The gear button opens **Settings**, japa's control panel for a running, set-up japa (first-run setup is still

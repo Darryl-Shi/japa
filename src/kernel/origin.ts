@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { InputSource, Origin } from "./contracts.ts";
+import { parseNotes } from "./messaging/attachments.ts";
 
 /** `surface:<surface>:<chat>:<id>`, each part URI-encoded; `id` defaults to a fresh UUID. */
 export function requestIdFor(origin: { surface: string; chat?: string; id?: string }): string {
@@ -16,17 +17,32 @@ export function originOf(requestId: string | undefined): Origin {
   return match[2] ? { surface, chat: decodeURIComponent(match[2]) } : { surface };
 }
 
+/** The message id of a `surface:<surface>:<chat>:<id>` requestId. */
+function messageIdOf(requestId: string | undefined): string | undefined {
+  const match = /^surface:[^:]*:[^:]*:([^:]*)$/.exec(requestId ?? "");
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return undefined;
+  }
+}
+
 const JOB_STATUSES = ["queued", "running", "needs_input", "done", "failed", "cancelled"];
 
 /**
  * The source of a root input, from its submission's requestId and its text (see `InputSource`): `surface:…` or no
  * requestId is a person's; `report:<jobId>:<seq>[:<attempt>]` whose text starts with the header `reportText` wrote
  * (`[job <id> "<title>" <status>] `) is a job report; anything else the kernel posted is a note. Only kernel inputs'
- * text is parsed: a person's never is.
+ * text is parsed for a report's header: a person's only for the kernel's file notes (`parseNotes`, given `home`; without
+ * it the text is kept whole and there are no files).
  */
-export function sourceOf(requestId: string | undefined, text: string): InputSource {
+export function sourceOf(requestId: string | undefined, text: string, home?: string): InputSource {
   const origin = originOf(requestId);
-  if (origin !== "proactive") return { type: "person", ...origin };
+  if (origin !== "proactive") {
+    const typed = home === undefined ? { text, files: [] } : parseNotes(home, text, messageIdOf(requestId));
+    return { type: "person", ...origin, ...typed };
+  }
   const id = requestId!;
   if (id.startsWith("report:")) return reportSource(id.split(":")[1]!, text) ?? { type: "note" };
   if (id.startsWith("trigger:")) return { type: "note", from: id.split(":")[1]! };

@@ -34,7 +34,8 @@ export default {
         "script-src": ["self"],
         "style-src": ["self"],
         ...(styleSrcAttr ? { "style-src-attr": styleSrcAttr } : {}),
-        "img-src": ["self", "data:"],
+        // blob: the composer's and pending bubbles' thumbnails of local images (object URLs).
+        "img-src": ["self", "data:", "blob:"],
         "font-src": ["self"],
         "connect-src": ["self"],
         "object-src": ["none"],

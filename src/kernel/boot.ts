@@ -455,7 +455,7 @@ export async function boot(options: BootOptions): Promise<Daemon> {
               return { ...e, entries: [...page.items.toReversed(), ...e.entries] };
             };
             // Each batch comes with the sources of its user entries (see `SurfaceContext.root.events`).
-            const sources = await watchSources(opened, store);
+            const sources = await watchSources(opened, store, home);
             try {
               const stream = await watchEvents(opened, ROOT_CONVERSATION_ID, ctx);
               const snapshot = [await withHistory(stream.snapshot)];

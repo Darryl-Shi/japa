@@ -6,13 +6,23 @@
   import { renderMarkdown } from "$lib/markdown";
   import { duration } from "$lib/motion";
   import JobReport from "./JobReport.svelte";
+  import FileChip from "./FileChip.svelte";
+  import FileCard from "./FileCard.svelte";
 
   let {
     lines,
     streaming,
     pending,
     busy,
-  }: { lines: Line[]; streaming: string; pending: PendingMessage[]; busy: boolean } = $props();
+    oninfo,
+  }: {
+    lines: Line[];
+    streaming: string;
+    pending: PendingMessage[];
+    busy: boolean;
+    /** Shows a note in the transcript (a failed download's message). */
+    oninfo: (text: string) => void;
+  } = $props();
 
   const empty = $derived(lines.length === 0 && streaming === "" && pending.length === 0);
   const streamingHtml = $derived(streaming === "" ? "" : renderMarkdown(streaming));
@@ -92,7 +102,18 @@
       {#each lines as line, i (i)}
         <li class="line {line.kind}" in:fade={{ duration: duration(150) }}>
           {#if line.kind === "user"}
-            <div class="bubble">{line.text}</div>
+            <div class="sent">
+              {#if line.text.trim() !== ""}<div class="bubble">{line.text}</div>{/if}
+              {#if line.files && line.files.length > 0}
+                <div class="files">
+                  {#each line.files as file (file.id)}
+                    <FileChip id={file.id} name={file.name} mimeType={file.mimeType} size={file.size} {oninfo} />
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else if line.kind === "file"}
+            <FileCard file={line.file} caption={line.caption} {oninfo} />
           {:else if line.kind === "assistant"}
             <div class="markdown">{@html renderMarkdown(line.text)}</div>
           {:else if line.kind === "tool"}
@@ -116,7 +137,16 @@
       {/if}
       {#each pending as message (message.id)}
         <li class="line user pending" in:fly={{ y: 6, duration: duration(150) }}>
-          <div class="bubble">{message.text}</div>
+          <div class="sent">
+            {#if message.text.trim() !== ""}<div class="bubble">{message.text}</div>{/if}
+            {#if message.files.length > 0}
+              <div class="files">
+                {#each message.files as file, j (j)}
+                  <FileChip name={file.name} mimeType={file.mimeType} size={file.size} thumb={file.url} />
+                {/each}
+              </div>
+            {/if}
+          </div>
           <span class="visually-hidden">Sending…</span>
         </li>
       {/each}
@@ -172,8 +202,25 @@
     justify-content: flex-end;
   }
 
-  .bubble {
+  .sent {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.4rem;
     max-width: min(85%, 560px);
+    min-width: 0;
+  }
+
+  .files {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.35rem;
+    max-width: 100%;
+  }
+
+  .bubble {
+    max-width: 100%;
     padding: 0.6rem 1rem;
     border-radius: var(--radius-lg);
     border-bottom-right-radius: 6px;
@@ -182,7 +229,8 @@
     overflow-wrap: anywhere;
   }
 
-  .pending .bubble {
+  .pending .bubble,
+  .pending .files {
     opacity: 0.55;
   }
 
