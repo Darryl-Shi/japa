@@ -25,9 +25,22 @@ export type WebuiRequest = {
  * sign-in reports) is a `note` shown as-is.
  */
 export type Line =
-  | { kind: "user" | "assistant" | "tool" | "info"; text: string }
+  | { kind: "user"; text: string; files?: FileView[] }
+  | { kind: "assistant" | "tool" | "info"; text: string }
+  /** A file the CoS sent (`send_file`), with its caption (markdown). */
+  | { kind: "file"; file: FileView; caption?: string }
   | { kind: "report"; jobId: string; title: string; status: string; text: string }
   | { kind: "note"; text: string };
+
+/**
+ * A file as the browser sees it: `id` is an opaque, stable reference (the entry id and the file's index) resolved by
+ * `GET /api/files/<id>`; the host path never reaches the browser.
+ */
+export type FileView = { id: string; name: string; mimeType: string; size?: number };
+
+/** The composer's limits on one message's files (the server enforces them again). */
+export const MAX_FILES = 10;
+export const MAX_FILES_BYTES = 50 * 1024 * 1024;
 
 export type JobStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "cancelled";
 
@@ -261,6 +274,12 @@ export interface WebuiBridge {
  * HTTP API (all same-origin, all but the sign-in page and static assets need the session cookie; else 401):
  * - GET  /api/events                 text/event-stream of LiveEvent JSON
  * - POST /api/submit                 { text: string, mode: SubmitMode, id: string }  → 204
+ *   or multipart/form-data with fields `text`, `mode`, `id` and one `file` part per file (≤ MAX_FILES, ≤
+ *   MAX_FILES_BYTES in total; handled by the surface's own server before the app): → 204; 413 over the cap, 400
+ *   malformed / too many files / bad mode or id; a retried `id` already accepted → 204 without saving again
+ * - GET  /api/files/<id>[?download=1] a transcript file (FileView.id): raster images and PDFs inline with their type,
+ *                                    anything else `attachment` as application/octet-stream; 404 `{ error }` for an
+ *                                    unknown id or a file gone from the host ("<name> no longer exists on japa's host")
  * - POST /api/abort                  → 204
  * - POST /api/secrets/fulfil         { requestId: string, value: string }             → 204
  * - POST /api/secrets/decline        { requestId: string }                            → 204
@@ -304,6 +323,7 @@ export interface WebuiBridge {
 export const API = {
   events: "/api/events",
   submit: "/api/submit",
+  files: "/api/files",
   abort: "/api/abort",
   fulfil: "/api/secrets/fulfil",
   decline: "/api/secrets/decline",
