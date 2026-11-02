@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { JsonObject, ToolExecutionApi, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import type { KernelContext } from "../src/kernel/contracts.ts";
-import type { Desktop, DesktopConfig, Docker, ExecResult } from "../extensions/desktop/container.ts";
+import { type Desktop, type DesktopConfig, type Docker, type ExecResult, PROBE } from "../extensions/desktop/container.ts";
 import { vi } from "vitest";
 import { tempHome } from "./helpers.ts";
 
@@ -26,11 +26,14 @@ export function stubKernel(settings: JsonObject = {}) {
   return { kernel, home, settings, secrets, emitted };
 }
 
-/** A stateful stand-in for the docker command: an image, one container, and overridable replies. */
+/**
+ * A stateful stand-in for the docker command: an image, one container, the desktop parts its watchdog probe finds
+ * failing (`state.failing`; a stopped container runs no probe), and overridable replies.
+ */
 export function fakeDocker() {
   const calls: string[][] = [];
   const inputs: (string | undefined)[] = [];
-  const state: { image: boolean; container?: { running: boolean; hash: string } } = { image: true };
+  const state: { image: boolean; container?: { running: boolean; hash: string }; failing: string[] } = { image: true, failing: [] };
   const replies: { match: (args: string[]) => boolean; result: Partial<ExecResult> | Error }[] = [];
   let held: Promise<void> | undefined;
 
@@ -38,8 +41,14 @@ export function fakeDocker() {
     const [command, sub] = args;
     if (command === "container" && sub === "inspect") {
       if (!state.container) return { code: 1, stderr: `Error: No such container: ${args.at(-1)}\n` };
+      if (args.includes("{{.State.Running}}")) return { stdout: Buffer.from(`${state.container.running}\n`) };
       return { stdout: Buffer.from(`${state.container.running} ${state.container.hash}\n`) };
     }
+    if (command === "exec" && args.at(-1) === PROBE) {
+      if (!state.container?.running) return { code: 1, stderr: "Error response from daemon: container is not running\n" };
+      return { stdout: Buffer.from([...state.failing, "probed", ""].join("\n")) };
+    }
+    if (command === "restart") state.container!.running = true;
     if (command === "image" && sub === "rm") state.image = false;
     if (command === "image") return { code: state.image || sub === "rm" ? 0 : 1 };
     if (command === "build") {

@@ -57,6 +57,7 @@ test("unit quotes ExecStart, escaping \\ and \"; JAPA_HOME only with customHome"
   const text = unitText(env);
   expect(text).toContain('ExecStart="/a b/japa" "daemon"');
   expect(text).toContain('Environment="PATH=/usr/bin:/bin"');
+  expect(text).toContain("Restart=always\nRestartSec=5\n");
   expect(text).not.toContain("JAPA_HOME");
 
   expect(unitText({ ...env, command: ['/a"b/japa', "daemon"] })).toContain('ExecStart="/a\\"b/japa" "daemon"');

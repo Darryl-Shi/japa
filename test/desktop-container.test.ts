@@ -6,9 +6,12 @@ import {
   BROWSER_RESTARTED,
   BUILDING,
   DESKTOP_DIR,
+  DESKTOP_RESTARTED,
   desktopContainer,
   dockerCli,
   IMAGE_HASH,
+  PARTS,
+  PROBE,
   RECREATED,
   STARTING,
   UPGRADED,
@@ -248,72 +251,186 @@ test("exec runs as japa inside the container", async () => {
 /** Matches the watchdog's `curl` of `path` on the browser's DevTools endpoint. */
 const cdp = (path: string) => (args: string[]) => args[0] === "exec" && args.at(-1) === `http://127.0.0.1:9222${path}`;
 const PKILL = ["exec", "-u", "japa", "japa-desktop", "pkill", "-KILL", "-f", "^/usr/lib/chromium/"];
-const killed = (calls: string[][]) => calls.filter((c) => c.includes("pkill"));
-
-test("the watchdog restarts a browser that fails three checks in a row, and tells the chief of staff", async () => {
+const supervisorctl = (part: string) => ["exec", "-u", "root", "japa-desktop", "supervisorctl", "restart", part];
+/** The watchdog's actions: restarts of parts, the browser or the container, and starts. */
+const actions = (calls: string[][]) =>
+  calls.filter((c) => c.includes("pkill") || c.includes("supervisorctl") || c[0] === "restart" || c[0] === "start");
+/** Runs `times` watchdog checks. */
+const watch = async (desktop: { watch(): Promise<void> }, times: number) => {
+  for (let i = 0; i < times; i++) await desktop.watch();
+};
+/** Runs `body` with console.error silenced; answers what was logged. */
+async function quietly(body: () => Promise<void>) {
   const logged = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    const { fake, stub, desktop } = setup();
-    await desktop.watch();
-    expect(fake.calls).toEqual([]); // not up: nothing to check
-    await desktop.ready(false);
-    fake.calls.length = 0;
-    await desktop.watch();
-    expect(fake.calls[0]).toEqual(["exec", "-u", "japa", "japa-desktop", "curl", "-sf", "-m", "10", "http://127.0.0.1:9222/json/version"]);
-    fake.reply(cdp("/json/version"), { code: 28 });
-    await desktop.watch();
-    await desktop.watch();
-    expect(killed(fake.calls)).toEqual([]);
-    await desktop.watch();
-    expect(killed(fake.calls)).toEqual([PKILL]);
-    expect(stub.emitted).toEqual([{ key: expect.stringMatching(/^browser-restart:/), text: BROWSER_RESTARTED }]);
-    expect(logged).toHaveBeenCalledWith("desktop: the browser stopped answering; restarted it");
+    await body();
+    return logged.mock.calls.map((c) => c[0]);
   } finally {
     logged.mockRestore();
+  }
+}
+
+test("the watchdog checks every part of the desktop in one call, only while the desktop is up", async () => {
+  const { fake, desktop } = setup();
+  await desktop.watch();
+  expect(fake.calls).toEqual([]); // not up: nothing to check
+  await desktop.ready(false);
+  fake.calls.length = 0;
+  await desktop.watch();
+  expect(fake.calls[0]).toEqual(["exec", "-u", "japa", "japa-desktop", "sh", "-c", PROBE]);
+  for (const check of Object.values(PARTS)) expect(PROBE).toContain(`(${check}) >/dev/null 2>&1 || echo `);
+  expect(PROBE.split("\n").slice(-2)).toEqual(["wait", "echo probed"]);
+  expect(actions(fake.calls)).toEqual([]);
+});
+
+test("a part that fails three checks in a row is restarted, and if that doesn't mend it, the whole desktop", async () => {
+  const { fake, stub, desktop } = setup();
+  await desktop.ready(false);
+  const logged = await quietly(async () => {
+    fake.state.failing = ["x11vnc"];
+    await watch(desktop, 2);
+    expect(actions(fake.calls)).toEqual([]);
+    await desktop.watch();
+    expect(actions(fake.calls)).toEqual([supervisorctl("x11vnc")]);
+    expect(stub.emitted).toEqual([]); // nothing the chief of staff uses was lost
+    await watch(desktop, 3);
+    expect(actions(fake.calls)).toEqual([supervisorctl("x11vnc"), ["restart", "-t", "10", "japa-desktop"]]);
+    expect(stub.emitted).toEqual([{ key: expect.stringMatching(/^desktop-restart:/), text: DESKTOP_RESTARTED }]);
+  });
+  expect(logged).toEqual(["desktop: x11vnc stopped answering; restarted it", "desktop: the container stopped answering; restarted it"]);
+});
+
+test("a part that answers again after its restart is restarted alone the next time", async () => {
+  const { fake, desktop } = setup();
+  await desktop.ready(false);
+  await quietly(async () => {
+    fake.state.failing = ["novnc"];
+    await watch(desktop, 3);
+    fake.state.failing = [];
+    await desktop.watch();
+    fake.state.failing = ["novnc"];
+    await watch(desktop, 3);
+  });
+  expect(actions(fake.calls)).toEqual([supervisorctl("novnc"), supervisorctl("novnc")]);
+});
+
+test("a frozen browser is killed (supervisord starts it again) and the chief of staff told; its DevTools forward isn't blamed", async () => {
+  const { fake, stub, desktop } = setup();
+  await desktop.ready(false);
+  const logged = await quietly(async () => {
+    fake.state.failing = ["chromium", "cdp"];
+    await watch(desktop, 3);
+  });
+  expect(actions(fake.calls)).toEqual([PKILL]);
+  expect(stub.emitted).toEqual([{ key: expect.stringMatching(/^browser-restart:/), text: BROWSER_RESTARTED }]);
+  expect(logged).toEqual(["desktop: the browser stopped answering; restarted it"]);
+});
+
+test("a dead screen restarts the whole desktop at once, not the parts that need it", async () => {
+  const { fake, stub, desktop } = setup();
+  await desktop.ready(false);
+  await quietly(async () => {
+    fake.state.failing = ["xvfb", "xfce", "x11vnc", "chromium", "cdp"];
+    await watch(desktop, 3);
+  });
+  expect(actions(fake.calls)).toEqual([["restart", "-t", "10", "japa-desktop"]]);
+  expect(stub.emitted.map((e) => e.text)).toEqual([DESKTOP_RESTARTED]);
+});
+
+test("a desktop too stuck to run the probe is restarted; a stopped one is started again", async () => {
+  const { fake, stub, desktop } = setup();
+  await desktop.ready(false);
+  await quietly(async () => {
+    fake.replyTimes(3, (a) => a.at(-1) === PROBE, { code: 137 }); // killed by the watchdog's timeout
+    await watch(desktop, 3);
+    expect(actions(fake.calls)).toEqual([["restart", "-t", "10", "japa-desktop"]]);
+    expect(stub.emitted.map((e) => e.text)).toEqual([DESKTOP_RESTARTED]);
+    await desktop.watch(); // all well again
+
+    fake.state.container!.running = false;
+    fake.calls.length = 0;
+    await watch(desktop, 3);
+  });
+  expect(actions(fake.calls)).toEqual([["start", "japa-desktop"]]);
+  expect(fake.state.container!.running).toBe(true);
+  expect(stub.emitted).toHaveLength(1); // starting it again isn't news
+});
+
+test("a desktop that stays broken is restarted less and less often, and the chief of staff told once", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const { fake, stub, desktop } = setup();
+    await desktop.ready(false);
+    const minutes: number[] = []; // when the container was restarted
+    const run = (from: number, to: number) =>
+      quietly(async () => {
+        for (let minute = from; minute <= to; minute++) {
+          vi.setSystemTime(minute * 60_000);
+          const before = actions(fake.calls).length;
+          await desktop.watch();
+          if (actions(fake.calls).length > before) minutes.push(minute);
+        }
+      });
+    fake.state.failing = ["xvfb"];
+    await run(1, 40);
+    expect(minutes).toEqual([3, 6, 12, 21, 39]); // waits of 2, 4, 8, 16 min (and the 3 checks it takes to notice)
+    expect(stub.emitted.map((e) => e.text)).toEqual([DESKTOP_RESTARTED]);
+
+    fake.state.failing = []; // mended: the next outage starts afresh
+    await run(41, 41);
+    fake.state.failing = ["xvfb"];
+    await run(42, 44);
+    expect(minutes.at(-1)).toBe(44);
+    expect(stub.emitted).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
   }
 });
 
 test("an answer resets the watchdog's count, and nothing is said when there was no browser to kill", async () => {
   const { fake, stub, desktop } = setup();
   await desktop.ready(false);
-  fake.replyTimes(2, cdp("/json/version"), { code: 7 });
-  for (let i = 0; i < 5; i++) await desktop.watch(); // fails, fails, answers, answers, answers
-  fake.replyTimes(2, cdp("/json/version"), { code: 7 });
-  await desktop.watch();
-  await desktop.watch();
-  expect(killed(fake.calls)).toEqual([]);
-  fake.reply(cdp("/json/version"), { code: 7 });
+  fake.state.failing = ["chromium"];
+  await watch(desktop, 2);
+  fake.state.failing = [];
+  await watch(desktop, 3);
+  fake.state.failing = ["chromium"];
+  await watch(desktop, 2);
+  expect(actions(fake.calls)).toEqual([]);
   fake.reply((a) => a.includes("pkill"), { code: 1 });
   await desktop.watch();
-  expect(killed(fake.calls)).toEqual([PKILL]);
+  expect(actions(fake.calls)).toEqual([PKILL]);
   expect(stub.emitted).toEqual([]);
 });
 
 test("with memory high, the watchdog closes the tabs beyond the five most recently active", async () => {
-  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const { fake, desktop } = setup();
-    await desktop.ready(false);
-    // DevTools lists the most recently active first; workers and other targets aren't tabs.
-    const targets = [
-      { id: "P1", type: "page" }, { id: "W1", type: "service_worker" }, { id: "P2", type: "page" }, { id: "P3", type: "page" },
-      { id: "P4", type: "page" }, { id: "I1", type: "iframe" }, { id: "P5", type: "page" }, { id: "P6", type: "page" },
-      { id: "../bad", type: "page" }, { id: "P7", type: "page" },
-    ];
-    fake.reply(cdp("/json/list"), { stdout: Buffer.from(JSON.stringify(targets)) });
-    fake.reply((a) => a[0] === "stats", { stdout: Buffer.from("74.9%\n") });
+  const { fake, desktop } = setup();
+  await desktop.ready(false);
+  // DevTools lists the most recently active first; workers and other targets aren't tabs.
+  const targets = [
+    { id: "P1", type: "page" }, { id: "W1", type: "service_worker" }, { id: "P2", type: "page" }, { id: "P3", type: "page" },
+    { id: "P4", type: "page" }, { id: "I1", type: "iframe" }, { id: "P5", type: "page" }, { id: "P6", type: "page" },
+    { id: "../bad", type: "page" }, { id: "P7", type: "page" },
+  ];
+  fake.reply(cdp("/json/list"), { stdout: Buffer.from(JSON.stringify(targets)) });
+  fake.reply((a) => a[0] === "stats", { stdout: Buffer.from("74.9%\n") });
+  const logged = await quietly(async () => {
     await desktop.watch();
     expect(fake.calls.find((c) => c[0] === "stats")).toEqual(["stats", "--no-stream", "--format", "{{.MemPerc}}", "japa-desktop"]);
     expect(fake.calls.some(cdp("/json/list"))).toBe(false);
     fake.reply((a) => a[0] === "stats", { stdout: Buffer.from("75.02%\n") });
     await desktop.watch();
-    expect(fake.calls.filter((c) => c.at(-1)!.includes("/json/close/")).map((c) => c.at(-1))).toEqual([
-      "http://127.0.0.1:9222/json/close/P6", "http://127.0.0.1:9222/json/close/P7",
-    ]);
-    expect(logged).toHaveBeenCalledWith("desktop: memory at 75% of its limit; closed 2 idle browser tabs");
-  } finally {
-    logged.mockRestore();
-  }
+  });
+  expect(fake.calls.filter((c) => c.at(-1)!.includes("/json/close/")).map((c) => c.at(-1))).toEqual([
+    "http://127.0.0.1:9222/json/close/P6", "http://127.0.0.1:9222/json/close/P7",
+  ]);
+  expect(logged).toEqual(["desktop: memory at 75% of its limit; closed 2 idle browser tabs"]);
+
+  // Not while the browser is failing.
+  fake.state.failing = ["chromium"];
+  fake.calls.length = 0;
+  await desktop.watch();
+  expect(fake.calls.some((c) => c[0] === "stats")).toBe(false);
 });
 
 test("dockerCli reports a missing docker command", async () => {

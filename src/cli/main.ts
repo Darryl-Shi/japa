@@ -16,6 +16,7 @@ import { APP, layoutOf } from "./layout.ts";
 import { Cancelled, clackPrompter } from "./prompt.ts";
 import { serviceCommand, serviceEnv } from "./service.ts";
 import { setupCommand } from "./setup.ts";
+import { watchForStalls } from "./stall-watchdog.ts";
 import { uninstall } from "./uninstall.ts";
 import { chatUpdater } from "./update-launch.ts";
 import { updateCommand } from "./update.ts";
@@ -46,6 +47,8 @@ Commands:
   --version  Print the version and git commit`;
 
 async function daemon(home: string): Promise<void> {
+  // A daemon whose event loop is stuck ends itself, and the service starts it afresh.
+  watchForStalls();
   const d = await boot({ home, updater: chatUpdater(APP, home) });
   console.log(`japa is running (${socketPath(home)})`);
   for (const e of d.status().errors) console.error(`${e.name}: ${e.error}`);

@@ -25,9 +25,11 @@ export type Desktop = {
   /** The VNC password (the `desktop.vncPassword` secret), generated and stored if unset. */
   password(): Promise<string>;
   /**
-   * One watchdog check (the extension runs it every minute), only while the desktop is up: a browser that hasn't
-   * answered `HUNG_CHECKS` checks in a row is restarted and the chief of staff told; with memory use at `MEMORY_HIGH`
-   * of the limit or more, the tabs beyond the `KEPT_TABS` most recently active are closed.
+   * One watchdog check (the extension runs it every minute), only while the desktop is up. Each of its `PARTS` that
+   * fails `HUNG_CHECKS` checks in a row is restarted; one that fails again after that, a dead screen, or a container
+   * that doesn't answer at all restarts the whole container (a stopped one is started again). The chief of staff is
+   * told when the browser or the whole desktop restarts. With memory use at `MEMORY_HIGH` of the limit or more, the
+   * tabs beyond the `KEPT_TABS` most recently active are closed.
    */
   watch(): Promise<void>;
   dispose(): void;
@@ -41,8 +43,32 @@ export const RECREATED =
   "The desktop's container was broken and has been recreated: software installed with apt is gone; everything under /home/japa is kept.";
 export const BROWSER_RESTARTED =
   "The desktop's browser stopped answering for a few minutes and was restarted: its open tabs are gone; its logins are kept.";
+export const DESKTOP_RESTARTED =
+  "The desktop stopped answering for a few minutes and was restarted: its open windows and tabs are gone; everything under /home/japa is kept.";
 const NOT_STARTED = "The desktop did not start within 60 s.";
-/** Watchdog checks in a row the browser must fail before it's restarted. */
+/**
+ * The parts of the desktop the watchdog checks, by supervisord program, each with the shell command (run as japa in the
+ * container) that succeeds while it works: the screen answers, the window manager runs, the VNC server greets, noVNC
+ * serves its page, the browser and its DevTools forward answer.
+ */
+export const PARTS = {
+  xvfb: "timeout 10 xdotool getmouselocation",
+  xfce: "pgrep -x xfwm4",
+  x11vnc: "timeout 10 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5900 && head -c 3 <&3 | grep -q RFB'",
+  novnc: "curl -sf -m 10 -o /dev/null http://127.0.0.1:6080/vnc.html",
+  chromium: "curl -sf -m 10 -o /dev/null http://127.0.0.1:9222/json/version",
+  cdp: "curl -sf -m 10 -o /dev/null http://127.0.0.1:9223/json/version",
+};
+type Part = keyof typeof PARTS;
+/** The probe's last line: it ran to the end. */
+const PROBED = "probed";
+/** Runs every part's check at once (≤ 10 s) and prints the name of each that failed, then `PROBED`. */
+export const PROBE = [
+  ...Object.entries(PARTS).map(([part, check]) => `(${check}) >/dev/null 2>&1 || echo ${part} &`),
+  "wait",
+  `echo ${PROBED}`,
+].join("\n");
+/** Watchdog checks in a row a part (or the container) must fail before it's restarted. */
 export const HUNG_CHECKS = 3;
 /** The share of the container's memory limit at which the watchdog closes idle tabs. */
 export const MEMORY_HIGH = 0.75;
@@ -52,6 +78,8 @@ export const KEPT_TABS = 5;
 const CDP = "http://127.0.0.1:9222";
 /** How long one of the watchdog's docker calls may take. */
 const WATCH_TIMEOUT = 30_000;
+/** The least time between two whole-container restarts by the watchdog, doubled after each that didn't help. */
+const RESTART_BACKOFF = 120_000;
 const needsDocker = (reason: string) =>
   `The desktop needs Docker: ${reason}` +
   (/permission denied/i.test(reason)
@@ -100,7 +128,10 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   let queue: Promise<unknown> = Promise.resolve();
   let starting = 0; // ready() calls in flight
   let up = false; // the last bringUp brought the container up
-  let unanswered = 0; // watchdog checks in a row the browser didn't answer
+  const misses = new Map<Part | "container", number>(); // watchdog checks in a row each failed
+  const restarted = new Set<Part>(); // parts the watchdog restarted that haven't answered since
+  let restarts = 0; // whole-container restarts since every part last answered
+  let quietUntil = 0; // no container restart before this: backing off while restarts don't help
   let watching = false; // a watchdog check in flight
 
   const settings = () => kernel().settings() as { cpus?: number; memory?: string; shm?: string; bind?: string };
@@ -129,21 +160,86 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
     if (!up || building || starting > 0 || watching) return;
     watching = true;
     try {
-      if ((await cdp("/json/version")).code !== 0) {
-        if (++unanswered < HUNG_CHECKS) return;
-        unanswered = 0;
-        // Every Chromium process, a crash handler holding one included; supervisord starts the browser again.
-        const killed = await watchCall(["exec", "-u", "japa", name, "pkill", "-KILL", "-f", "^/usr/lib/chromium/"]);
-        if (killed.code !== 0) return; // no browser to kill (it's restarting), or the container is down
-        console.error("desktop: the browser stopped answering; restarted it");
-        await kernel().trigger.emit({ key: `browser-restart:${randomUUID()}`, text: BROWSER_RESTARTED });
+      const lines = (await watchCall(["exec", "-u", "japa", name, "sh", "-c", PROBE])).stdout.toString().split("\n");
+      if (!lines.includes(PROBED)) {
+        // The container is down, or too stuck to run the probe.
+        if (missed("container")) await restartContainer();
         return;
       }
-      unanswered = 0;
-      await closeIdleTabs();
+      misses.delete("container");
+      const failing = new Set(lines.filter((line): line is Part => Object.hasOwn(PARTS, line)));
+      if (failing.size === 0) restarts = quietUntil = 0;
+      // Blame the cause alone: a dead screen takes every other part with it, a dead browser its DevTools forward.
+      const blamed = failing.has("xvfb")
+        ? new Set<Part>(["xvfb"])
+        : new Set([...failing].filter((part) => part !== "cdp" || !failing.has("chromium")));
+      for (const part of Object.keys(PARTS) as Part[]) {
+        if (!blamed.has(part)) {
+          misses.delete(part);
+          if (!failing.has(part)) restarted.delete(part);
+          continue;
+        }
+        if (!missed(part)) continue;
+        // Everything runs on the screen; and a part its restart didn't mend needs a fresh container.
+        if (part === "xvfb" || restarted.has(part)) {
+          await restartContainer();
+          return;
+        }
+        restarted.add(part);
+        await restartPart(part);
+      }
+      if (!failing.has("chromium")) await closeIdleTabs();
     } finally {
       watching = false;
     }
+  }
+
+  /** Counts a failed check of `part`: whether it has now failed `HUNG_CHECKS` in a row (and starts counting again). */
+  function missed(part: Part | "container") {
+    const count = (misses.get(part) ?? 0) + 1;
+    misses.set(part, count);
+    if (count < HUNG_CHECKS) return false;
+    misses.delete(part);
+    return true;
+  }
+
+  /** Restarts one part through supervisord; the browser by killing all of Chromium (supervisord starts it again). */
+  async function restartPart(part: Part) {
+    if (part === "chromium") {
+      // Every Chromium process, a crash handler holding one included.
+      const killed = await watchCall(["exec", "-u", "japa", name, "pkill", "-KILL", "-f", "^/usr/lib/chromium/"]);
+      if (killed.code !== 0) return; // no browser to kill: it's restarting, or supervisord gave up (next time: the container)
+      console.error("desktop: the browser stopped answering; restarted it");
+      await kernel().trigger.emit({ key: `browser-restart:${randomUUID()}`, text: BROWSER_RESTARTED });
+      return;
+    }
+    const result = await watchCall(["exec", "-u", "root", name, "supervisorctl", "restart", part]);
+    console.error(`desktop: ${part} stopped answering; ${result.code === 0 ? "restarted it" : "couldn't restart it"}`);
+  }
+
+  /**
+   * Restarts the whole container, or brings it up again (as `ready` does) when it isn't running. While restarts don't
+   * help, each waits twice as long as the last (2 min, 4, ... 32), and only the first tells the chief of staff.
+   */
+  async function restartContainer() {
+    misses.clear();
+    restarted.clear();
+    if (Date.now() < quietUntil) return;
+    restarts++;
+    quietUntil = Date.now() + RESTART_BACKOFF * 2 ** Math.min(restarts - 1, 4);
+    const inspected = await watchCall(["container", "inspect", "--format", "{{.State.Running}}", name]);
+    if (inspected.stdout.toString().trim() !== "true") {
+      console.error("desktop: the container isn't running; starting it");
+      await serialized().catch(() => {}); // a failure shows in the status line, as for `ready`
+      return;
+    }
+    const result = await watchCall(["restart", "-t", "10", name]);
+    if (result.code !== 0) {
+      console.error(`desktop: the container stopped answering; couldn't restart it: ${firstLine(result.stderr)}`);
+      return;
+    }
+    console.error("desktop: the container stopped answering; restarted it");
+    if (restarts === 1) await kernel().trigger.emit({ key: `desktop-restart:${randomUUID()}`, text: DESKTOP_RESTARTED });
   }
 
   /** With memory use high, closes the tabs beyond the `KEPT_TABS` most recently active (CDP lists those first). */

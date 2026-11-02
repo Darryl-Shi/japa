@@ -309,6 +309,11 @@ It runs the `japa` launcher or, when the launcher doesn't run this checkout (one
 checkout's `src/cli/main.ts` directly on the Node you installed the service with; either way with the PATH (and
 `JAPA_HOME`, if set) of the shell you installed it from.
 
+The service comes back by itself: systemd starts japa again 5 s after any exit but a stop (a crash included), and
+japa ends itself when its event loop has been stuck for two minutes, logging why, so a frozen daemon is restarted
+too (`JAPA_STALL_WATCHDOG=0` turns that off, say for a debugger). A unit written before this used `Restart=on-failure`;
+`japa service install` rewrites it.
+
 | Subcommand | What it does |
 | --- | --- |
 | `install` | Write and enable the unit, then start it (while `japa daemon` runs in the foreground it's written and enabled but not started, with an error telling you to stop the foreground daemon) |
@@ -587,10 +592,16 @@ installed and usable by the user running japa (on Linux: `sudo usermod -aG docke
   japa clears Docker's build cache and tries once more. Each happens once until the desktop comes up again, so a
   lasting problem shows in `japa status` as before. The home volume is always kept; the chief of staff is told when
   software installed with apt was lost.
-- **Watchdog.** Every minute while the desktop is up, japa checks that its browser answers. After three missed checks
-  in a row it restarts the browser (open tabs are lost, logins are kept) and tells the chief of staff. When the
-  container uses 75% or more of its memory limit, japa closes all but the five most recently used tabs, so the browser
-  doesn't run out of memory. Chromium runs without its crash reporter, which once froze the browser for good.
+- **Watchdog.** Every minute while the desktop is up, japa checks each of its parts: the screen (Xvfb), the window
+  manager (Xfce), the VNC server, noVNC, the browser and the browser's DevTools forward. A part that fails three
+  checks in a row is restarted (the browser's open tabs are lost, its logins kept). If it fails three more after that,
+  or the screen dies, or the container doesn't answer at all, japa restarts the whole container (everything under
+  `/home/japa` is kept), or starts it if it has stopped; while that doesn't help, it waits twice as long before each
+  next try (2 minutes, then 4, up to 32). The chief of staff is told when the browser restarts, and once per outage
+  when the whole desktop does; the daemon's log (`japa service logs`) has a line for every restart. Crashes need no watchdog:
+  supervisord restarts any part that exits, and Docker the container. When the container uses 75% or more of its
+  memory limit, japa closes all but the five most recently used tabs, so the browser doesn't run out of memory.
+  Chromium runs without its crash reporter, which once froze the browser for good.
 
 ## Google
 

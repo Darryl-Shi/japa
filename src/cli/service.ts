@@ -71,7 +71,8 @@ export function unitText(env: ServiceEnv): string {
     "",
     "[Service]",
     `ExecStart=${[systemdQuote(executable!), ...args.map(execArg)].join(" ")}`,
-    "Restart=on-failure",
+    // Any exit but a stop starts it again: a crash, an unexpected clean exit, or its stall watchdog ending it.
+    "Restart=always",
     "RestartSec=5",
     `Environment=${systemdQuote(`PATH=${env.path}`)}`,
   ];

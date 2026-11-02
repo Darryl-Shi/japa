@@ -10,6 +10,19 @@ zygote. The container was also at its 4 GiB limit (39 tabs left open, 7 OOM kill
       → `pkill -KILL -f ^/usr/lib/chromium/` (supervisord restarts it) + a trigger to the CoS; memory ≥ 75% of the
       limit (`docker stats` MemPerc) → close the pages beyond the 5 most recently active (`/json/list` is MRU-first).
 - [x] Tests in test/desktop-container.test.ts; README Desktop section.
+- [x] Round 2, every part recovers from freezes, not just the browser:
+  - `Desktop.watch()` runs one probe (`PROBE`: every `PARTS` check at once, ≤ 10 s, as japa) — xvfb (xdotool),
+    xfce (xfwm4 runs), x11vnc (RFB greeting on 5900), novnc (vnc.html), chromium (9222), cdp (9223). 3 misses →
+    `supervisorctl restart <part>` as root (chromium: pkill as before); a part that misses 3 more after its restart,
+    a dead xvfb (everything needs it) or a probe that doesn't run → `docker restart -t 10`, or `bringUp` when the
+    container isn't running. Blame: xvfb alone when it's down; cdp not while chromium is. CoS told for browser and
+    whole-desktop restarts (once per outage); every restart logged. Container restarts back off 2, 4, ... 32 min
+    while they don't help, reset once every part answers.
+  - supervisord programs `stopasgroup`/`killasgroup`, so a restart takes the program's children (xfce's session).
+  - Daemon: `src/cli/stall-watchdog.ts`, a worker thread watching a shared beat counter; stuck 120 s → a line on
+    fd 2 and SIGKILL (counts checks, not wall time, so waking from sleep isn't a stall). Unit `Restart=always`.
+  - Tests: test/desktop-container.test.ts (fake docker answers the probe from `state.failing`),
+    test/stall-watchdog.test.ts (real child processes), test/service.test.ts.
 
 # Progress — files in and out of the web UI (run-mvkf4hte-v8wn)
 
