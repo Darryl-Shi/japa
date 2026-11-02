@@ -1,3 +1,16 @@
+# Progress — desktop browser freeze fix (2026-11-02)
+
+The desktop's Chromium froze for ~21 h on oracle: its GPU process died, the crash handler (crashpad) attached to dump
+it and never let the dead process go, so the zygote waited on it forever and the browser's main thread waited on the
+zygote. The container was also at its 4 GiB limit (39 tabs left open, 7 OOM kills).
+
+- [x] `supervisord.conf`: Chromium runs with `--disable-crashpad-for-testing` (checked on Chromium 154: no handler
+      starts, and a killed GPU process is relaunched; `--disable-breakpad` doesn't stop the handler).
+- [x] `container.ts` `Desktop.watch()`, every minute from `index.ts` while up: 3 missed `/json/version` checks in a row
+      → `pkill -KILL -f ^/usr/lib/chromium/` (supervisord restarts it) + a trigger to the CoS; memory ≥ 75% of the
+      limit (`docker stats` MemPerc) → close the pages beyond the 5 most recently active (`/json/list` is MRU-first).
+- [x] Tests in test/desktop-container.test.ts; README Desktop section.
+
 # Progress — files in and out of the web UI (run-mvkf4hte-v8wn)
 
 - [x] Kernel: `AttachedFile`, `InputSource.person` `text`/`files`; `parseNotes` beside `inputOf` (round-trip tests)

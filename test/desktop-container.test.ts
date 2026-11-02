@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import {
+  BROWSER_RESTARTED,
   BUILDING,
   DESKTOP_DIR,
   desktopContainer,
@@ -242,6 +243,77 @@ test("exec runs as japa inside the container", async () => {
     ["exec", "-i", "-u", "japa", "japa-desktop", "xclip", "-i"],
   ]);
   expect(fake.inputs.at(-1)).toBe("hi");
+});
+
+/** Matches the watchdog's `curl` of `path` on the browser's DevTools endpoint. */
+const cdp = (path: string) => (args: string[]) => args[0] === "exec" && args.at(-1) === `http://127.0.0.1:9222${path}`;
+const PKILL = ["exec", "-u", "japa", "japa-desktop", "pkill", "-KILL", "-f", "^/usr/lib/chromium/"];
+const killed = (calls: string[][]) => calls.filter((c) => c.includes("pkill"));
+
+test("the watchdog restarts a browser that fails three checks in a row, and tells the chief of staff", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const { fake, stub, desktop } = setup();
+    await desktop.watch();
+    expect(fake.calls).toEqual([]); // not up: nothing to check
+    await desktop.ready(false);
+    fake.calls.length = 0;
+    await desktop.watch();
+    expect(fake.calls[0]).toEqual(["exec", "-u", "japa", "japa-desktop", "curl", "-sf", "-m", "10", "http://127.0.0.1:9222/json/version"]);
+    fake.reply(cdp("/json/version"), { code: 28 });
+    await desktop.watch();
+    await desktop.watch();
+    expect(killed(fake.calls)).toEqual([]);
+    await desktop.watch();
+    expect(killed(fake.calls)).toEqual([PKILL]);
+    expect(stub.emitted).toEqual([{ key: expect.stringMatching(/^browser-restart:/), text: BROWSER_RESTARTED }]);
+    expect(logged).toHaveBeenCalledWith("desktop: the browser stopped answering; restarted it");
+  } finally {
+    logged.mockRestore();
+  }
+});
+
+test("an answer resets the watchdog's count, and nothing is said when there was no browser to kill", async () => {
+  const { fake, stub, desktop } = setup();
+  await desktop.ready(false);
+  fake.replyTimes(2, cdp("/json/version"), { code: 7 });
+  for (let i = 0; i < 5; i++) await desktop.watch(); // fails, fails, answers, answers, answers
+  fake.replyTimes(2, cdp("/json/version"), { code: 7 });
+  await desktop.watch();
+  await desktop.watch();
+  expect(killed(fake.calls)).toEqual([]);
+  fake.reply(cdp("/json/version"), { code: 7 });
+  fake.reply((a) => a.includes("pkill"), { code: 1 });
+  await desktop.watch();
+  expect(killed(fake.calls)).toEqual([PKILL]);
+  expect(stub.emitted).toEqual([]);
+});
+
+test("with memory high, the watchdog closes the tabs beyond the five most recently active", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const { fake, desktop } = setup();
+    await desktop.ready(false);
+    // DevTools lists the most recently active first; workers and other targets aren't tabs.
+    const targets = [
+      { id: "P1", type: "page" }, { id: "W1", type: "service_worker" }, { id: "P2", type: "page" }, { id: "P3", type: "page" },
+      { id: "P4", type: "page" }, { id: "I1", type: "iframe" }, { id: "P5", type: "page" }, { id: "P6", type: "page" },
+      { id: "../bad", type: "page" }, { id: "P7", type: "page" },
+    ];
+    fake.reply(cdp("/json/list"), { stdout: Buffer.from(JSON.stringify(targets)) });
+    fake.reply((a) => a[0] === "stats", { stdout: Buffer.from("74.9%\n") });
+    await desktop.watch();
+    expect(fake.calls.find((c) => c[0] === "stats")).toEqual(["stats", "--no-stream", "--format", "{{.MemPerc}}", "japa-desktop"]);
+    expect(fake.calls.some(cdp("/json/list"))).toBe(false);
+    fake.reply((a) => a[0] === "stats", { stdout: Buffer.from("75.02%\n") });
+    await desktop.watch();
+    expect(fake.calls.filter((c) => c.at(-1)!.includes("/json/close/")).map((c) => c.at(-1))).toEqual([
+      "http://127.0.0.1:9222/json/close/P6", "http://127.0.0.1:9222/json/close/P7",
+    ]);
+    expect(logged).toHaveBeenCalledWith("desktop: memory at 75% of its limit; closed 2 idle browser tabs");
+  } finally {
+    logged.mockRestore();
+  }
 });
 
 test("dockerCli reports a missing docker command", async () => {

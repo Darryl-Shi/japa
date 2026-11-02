@@ -587,6 +587,10 @@ installed and usable by the user running japa (on Linux: `sudo usermod -aG docke
   japa clears Docker's build cache and tries once more. Each happens once until the desktop comes up again, so a
   lasting problem shows in `japa status` as before. The home volume is always kept; the chief of staff is told when
   software installed with apt was lost.
+- **Watchdog.** Every minute while the desktop is up, japa checks that its browser answers. After three missed checks
+  in a row it restarts the browser (open tabs are lost, logins are kept) and tells the chief of staff. When the
+  container uses 75% or more of its memory limit, japa closes all but the five most recently used tabs, so the browser
+  doesn't run out of memory. Chromium runs without its crash reporter, which once froze the browser for good.
 
 ## Google
 

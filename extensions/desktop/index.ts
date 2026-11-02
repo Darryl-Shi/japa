@@ -21,6 +21,8 @@ export type DesktopViewHandle = {
 };
 export const DESKTOP_VIEW = Symbol.for("japa.desktop.view");
 const viewSlot = globalThis as Record<symbol, DesktopViewHandle | undefined>;
+/** How often the watchdog checks the desktop's browser and memory (`Desktop.watch`). */
+const WATCH_EVERY = 60_000;
 
 export function desktopExtension(config: DesktopConfig): JapaExtension {
   let kernel: KernelContext | undefined;
@@ -86,7 +88,13 @@ export function desktopExtension(config: DesktopConfig): JapaExtension {
       if (ctx.settings().autostart !== false && process.env.JAPA_DESKTOP_AUTOSTART !== "0") {
         desktop.ready(true).catch(() => {});
       }
+      // A frozen browser is restarted and idle tabs closed when memory runs high, so the desktop keeps working unwatched.
+      const watchdog = setInterval(() => {
+        if (ctx.settings().enabled !== false) desktop.watch().catch(() => {});
+      }, WATCH_EVERY);
+      watchdog.unref();
       return async () => {
+        clearInterval(watchdog);
         if (viewSlot[DESKTOP_VIEW] === view) delete viewSlot[DESKTOP_VIEW];
         desktop.dispose();
         await browser.close();

@@ -24,6 +24,12 @@ export type Desktop = {
   state(): "ready" | "starting" | "building" | "failed" | "stopped";
   /** The VNC password (the `desktop.vncPassword` secret), generated and stored if unset. */
   password(): Promise<string>;
+  /**
+   * One watchdog check (the extension runs it every minute), only while the desktop is up: a browser that hasn't
+   * answered `HUNG_CHECKS` checks in a row is restarted and the chief of staff told; with memory use at `MEMORY_HIGH`
+   * of the limit or more, the tabs beyond the `KEPT_TABS` most recently active are closed.
+   */
+  watch(): Promise<void>;
   dispose(): void;
 };
 
@@ -33,7 +39,19 @@ export const UPGRADED =
   "The desktop was recreated with a new image or settings: software installed with apt is gone; everything under /home/japa is kept.";
 export const RECREATED =
   "The desktop's container was broken and has been recreated: software installed with apt is gone; everything under /home/japa is kept.";
+export const BROWSER_RESTARTED =
+  "The desktop's browser stopped answering for a few minutes and was restarted: its open tabs are gone; its logins are kept.";
 const NOT_STARTED = "The desktop did not start within 60 s.";
+/** Watchdog checks in a row the browser must fail before it's restarted. */
+export const HUNG_CHECKS = 3;
+/** The share of the container's memory limit at which the watchdog closes idle tabs. */
+export const MEMORY_HIGH = 0.75;
+/** The most recently active tabs the watchdog keeps open. */
+export const KEPT_TABS = 5;
+/** The browser's DevTools endpoint, inside the container. */
+const CDP = "http://127.0.0.1:9222";
+/** How long one of the watchdog's docker calls may take. */
+const WATCH_TIMEOUT = 30_000;
 const needsDocker = (reason: string) =>
   `The desktop needs Docker: ${reason}` +
   (/permission denied/i.test(reason)
@@ -82,6 +100,8 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   let queue: Promise<unknown> = Promise.resolve();
   let starting = 0; // ready() calls in flight
   let up = false; // the last bringUp brought the container up
+  let unanswered = 0; // watchdog checks in a row the browser didn't answer
+  let watching = false; // a watchdog check in flight
 
   const settings = () => kernel().settings() as { cpus?: number; memory?: string; shm?: string; bind?: string };
   const bind = () => settings().bind ?? "127.0.0.1";
@@ -101,6 +121,52 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
   };
   const exec = (argv: string[], input?: string) =>
     docker(["exec", ...(input === undefined ? [] : ["-i"]), "-u", "japa", name, ...argv], { input });
+  /** A watchdog docker call: given up (a failure) after `WATCH_TIMEOUT`, so a stuck docker can't stall the checks. */
+  const watchCall = (args: string[]) => docker(args, { signal: AbortSignal.timeout(WATCH_TIMEOUT) });
+  const cdp = (path: string) => watchCall(["exec", "-u", "japa", name, "curl", "-sf", "-m", "10", `${CDP}${path}`]);
+
+  async function watch() {
+    if (!up || building || starting > 0 || watching) return;
+    watching = true;
+    try {
+      if ((await cdp("/json/version")).code !== 0) {
+        if (++unanswered < HUNG_CHECKS) return;
+        unanswered = 0;
+        // Every Chromium process, a crash handler holding one included; supervisord starts the browser again.
+        const killed = await watchCall(["exec", "-u", "japa", name, "pkill", "-KILL", "-f", "^/usr/lib/chromium/"]);
+        if (killed.code !== 0) return; // no browser to kill (it's restarting), or the container is down
+        console.error("desktop: the browser stopped answering; restarted it");
+        await kernel().trigger.emit({ key: `browser-restart:${randomUUID()}`, text: BROWSER_RESTARTED });
+        return;
+      }
+      unanswered = 0;
+      await closeIdleTabs();
+    } finally {
+      watching = false;
+    }
+  }
+
+  /** With memory use high, closes the tabs beyond the `KEPT_TABS` most recently active (CDP lists those first). */
+  async function closeIdleTabs() {
+    const stats = await watchCall(["stats", "--no-stream", "--format", "{{.MemPerc}}", name]);
+    const used = Number.parseFloat(stats.stdout.toString()) / 100;
+    if (stats.code !== 0 || !(used >= MEMORY_HIGH)) return;
+    const listed = await cdp("/json/list");
+    let targets: unknown;
+    try {
+      targets = JSON.parse(listed.stdout.toString());
+    } catch {
+      return;
+    }
+    if (listed.code !== 0 || !Array.isArray(targets)) return;
+    const idle = targets
+      .filter((t): t is { id: string } => t?.type === "page" && typeof t.id === "string" && /^[A-Za-z0-9]+$/.test(t.id))
+      .slice(KEPT_TABS);
+    for (const tab of idle) await cdp(`/json/close/${tab.id}`);
+    if (idle.length) {
+      console.error(`desktop: memory at ${Math.round(used * 100)}% of its limit; closed ${idle.length} idle browser tabs`);
+    }
+  }
 
   async function password() {
     const k = kernel();
@@ -248,6 +314,7 @@ export function desktopContainer(config: DesktopConfig, kernel: () => KernelCont
       return starting > 0 ? "starting" : "stopped";
     },
     password,
+    watch,
     dispose: () => abort.abort(),
   };
 
